@@ -19,6 +19,9 @@
 //! the value engine, but cannot represent multiple diagnostics for one value.
 
 use chrono::Utc;
+use tidb_query_datatype::codec::native_eval_type::{
+    native_datum_conversion_target, NativeDatumConversionTarget,
+};
 
 pub(crate) mod diagnostics;
 use crate::parser_types_errors::{
@@ -121,21 +124,20 @@ impl Datum {
         if self.is_null() || matches!(target.code(), FieldTypeCode::Null) {
             return Ok(exact(Self::Null));
         }
-        match target.code() {
-            FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong => {
-                if target.is_unsigned() {
-                    self.convert_to_unsigned_reported(target.code(), flags, diagnostics)
-                        .map(map_converted(Self::UInt))
-                } else {
-                    self.convert_to_signed_reported(target.code(), flags, zone, diagnostics)
-                        .map(map_converted(Self::Int))
-                }
-            }
-            FieldTypeCode::Float | FieldTypeCode::Double => {
+        let target_code = target.code();
+        let conversion_target = native_datum_conversion_target(
+            target_code.as_shared_type_name_code(),
+            target.is_unsigned(),
+        );
+        match conversion_target {
+            NativeDatumConversionTarget::Null => Ok(exact(Self::Null)),
+            NativeDatumConversionTarget::SignedInteger => self
+                .convert_to_signed_reported(target_code, flags, zone, diagnostics)
+                .map(map_converted(Self::Int)),
+            NativeDatumConversionTarget::UnsignedInteger => self
+                .convert_to_unsigned_reported(target_code, flags, diagnostics)
+                .map(map_converted(Self::UInt)),
+            NativeDatumConversionTarget::Float32 | NativeDatumConversionTarget::Float64 => {
                 let converted = match self {
                     Self::String(value) => {
                         crate::convert::str_to_float_reported(value.as_utf8()?, false, diagnostics)
@@ -154,7 +156,7 @@ impl Datum {
                 let produced = produce_float_reported(converted.value, target, diagnostics);
                 let event = numeric_conversion_event(converted.event, produced.event, flags);
                 Ok(Converted {
-                    value: if matches!(target.code(), FieldTypeCode::Float) {
+                    value: if matches!(conversion_target, NativeDatumConversionTarget::Float32) {
                         Self::Float32(f64::from(produced.value as f32))
                     } else {
                         Self::Real(produced.value)
@@ -162,13 +164,7 @@ impl Datum {
                     event,
                 })
             }
-            FieldTypeCode::String
-            | FieldTypeCode::Varchar
-            | FieldTypeCode::VarString
-            | FieldTypeCode::Blob
-            | FieldTypeCode::TinyBlob
-            | FieldTypeCode::MediumBlob
-            | FieldTypeCode::LongBlob => {
+            NativeDatumConversionTarget::String => {
                 let bytes = self.string_conversion_bytes(target, flags)?;
                 let produced = produce_string_reported(bytes, target, true, diagnostics)?;
                 Ok(Converted {
@@ -180,22 +176,36 @@ impl Datum {
                     event: produced.event,
                 })
             }
-            FieldTypeCode::NewDecimal => self.convert_to_decimal_target(target, diagnostics),
-            FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp => {
+            NativeDatumConversionTarget::Decimal => {
+                self.convert_to_decimal_target(target, diagnostics)
+            }
+            NativeDatumConversionTarget::DateTime => {
                 diagnostics.unreported(self.convert_to_time_target(target, flags, zone))
             }
-            FieldTypeCode::Duration => {
+            NativeDatumConversionTarget::Duration => {
                 diagnostics.unreported(self.convert_to_duration_target(target, zone))
             }
-            FieldTypeCode::Year => diagnostics.unreported(self.convert_to_year(flags, zone)),
-            FieldTypeCode::Enum => diagnostics.unreported(self.convert_to_enum(target, flags)),
-            FieldTypeCode::Set => diagnostics.unreported(self.convert_to_set(target, flags)),
-            FieldTypeCode::Bit => diagnostics.unreported(self.convert_to_bit(target, flags)),
-            FieldTypeCode::Json => diagnostics.unreported(self.convert_to_json_target()),
-            FieldTypeCode::VectorFloat32 => diagnostics.unreported(self.convert_to_vector(target)),
-            other => Err(DatumValueError::Unsupported(
+            NativeDatumConversionTarget::Year => {
+                diagnostics.unreported(self.convert_to_year(flags, zone))
+            }
+            NativeDatumConversionTarget::Enum => {
+                diagnostics.unreported(self.convert_to_enum(target, flags))
+            }
+            NativeDatumConversionTarget::Set => {
+                diagnostics.unreported(self.convert_to_set(target, flags))
+            }
+            NativeDatumConversionTarget::Bit => {
+                diagnostics.unreported(self.convert_to_bit(target, flags))
+            }
+            NativeDatumConversionTarget::Json => {
+                diagnostics.unreported(self.convert_to_json_target())
+            }
+            NativeDatumConversionTarget::VectorFloat32 => {
+                diagnostics.unreported(self.convert_to_vector(target))
+            }
+            NativeDatumConversionTarget::Unsupported => Err(DatumValueError::Unsupported(
                 self.kind(),
-                field_target_name(other),
+                field_target_name(target_code),
             )),
         }
     }
@@ -3319,4 +3329,69 @@ fn shared_float_target_preserves_nonfinite_rounding_error_order_and_typed_diagno
     let untouched = produce_float_with_type(1e40, &unknown);
     assert_eq!(untouched.value, 1e40);
     assert_eq!(untouched.event, None); // Unknown(4) is NOT the known FLOAT code.
+}
+
+#[cfg(test)]
+#[test]
+fn shared_datum_target_selector_routes_storage_domains_and_rejects_unknown_identity() {
+    let flags = ConversionFlags::default();
+    assert_eq!(
+        Datum::new_bytes([0xff])
+            .convert_to(&FieldType::new(FieldTypeCode::Null), flags)
+            .unwrap()
+            .value,
+        Datum::Null
+    );
+    assert_eq!(
+        Datum::Int(7)
+            .convert_to(
+                &FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+                flags,
+            )
+            .unwrap()
+            .value,
+        Datum::UInt(7)
+    );
+    assert!(matches!(
+        Datum::Int(2)
+            .convert_to(&FieldType::new(FieldTypeCode::Float), flags)
+            .unwrap()
+            .value,
+        Datum::Float32(value) if value == 2.0
+    ));
+    assert!(matches!(
+        Datum::Int(2)
+            .convert_to(&FieldType::new(FieldTypeCode::Double), flags)
+            .unwrap()
+            .value,
+        Datum::Real(value) if value == 2.0
+    ));
+    assert!(matches!(
+        Datum::Int(7)
+            .convert_to(&FieldType::new(FieldTypeCode::Varchar), flags)
+            .unwrap()
+            .value,
+        Datum::String(_)
+    ));
+    assert!(matches!(
+        Datum::Int(7)
+            .convert_to(&FieldType::new(FieldTypeCode::NewDecimal), flags)
+            .unwrap()
+            .value,
+        Datum::Decimal(_)
+    ));
+    assert!(matches!(
+        Datum::UInt(7)
+            .convert_to(
+                &FieldType::new(FieldTypeCode::NewDecimal).with_array(true),
+                flags,
+            )
+            .unwrap()
+            .value,
+        Datum::Json(_)
+    ));
+    assert!(matches!(
+        Datum::Int(1).convert_to(&FieldType::new(FieldTypeCode::Unknown(8)), flags),
+        Err(DatumValueError::Unsupported(_, "unknown"))
+    ));
 }

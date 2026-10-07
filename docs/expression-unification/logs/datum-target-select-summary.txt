@@ -1,0 +1,24 @@
+datum-target-select-159 / R165
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/datum-target-select-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib datum_target_selector -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_datum_target_selector_routes_storage_domains_and_rejects_unknown_identity -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib source_convert_to_integer_float_string_decimal_rows -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/539 5.10/0.00 0 6ec068bf696f8369f37e58e2deb49f11dbf0847d177cb0abae9268ec21802af5
+native-datatype 504/0/0/0 3.65/7.08 0 a944daedf3e81fd50d09ee6266cfbe7071ea7e70b4b6d8d08e14633a15ac216b
+native-new 1/0/0/503 0.16/0.00 0 09b22be4e06726cf2975814bc04bdb4b6840aa0b24a9b7d7b2b637c54da6721b
+native-existing 1/0/0/503 0.09/0.00 0 a354543a5a56ed22c66ec1bc24fe2b1b1577fe16d89c63e39f5029049e5bf169
+session-sql 1/0/0/2269 28.00/0.04 0 b416ee9f8da28d7223ad2484c8a3c3e793300221fb030d0fdd98c237f8731f89
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);6old SDK/30old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns the complete Datum conversion target-domain selector. Native FieldTypeCode family match is deleted; actual conversion, values, typed errors, diagnostics/event order, timezone/context effects and storage adaptation remain native. Tests cover every named domain, signedness, named/unknown identity, null, float-width result identity, string/Decimal/JSON array routing and unsupported errors.
+Two fresh production agents wrote non-overlapping files without commands; the native worker was interrupted only after its complete diff was present and reviewed. Parent appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype504, existing conversion1 and numeric/temporal SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
