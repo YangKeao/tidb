@@ -1,0 +1,24 @@
+field-cast-render-155 / R161
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/field-cast-render-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_cast_render -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_cast_renderer_keeps_charset_precision_unknown_and_array_grammar -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_remaining_field_type_surface_is_source_complete -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib cast_as_vector_uses_the_vector_value_domain -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/535 2.66/0.00 0 c55308c00ad20a3457c03ae8d27372d04525ef16045ac6d378e103650e983871
+native-datatype 499/0/0/0 2.57/7.27 0 770aaeb5558d35c608c1b412e1dfc2c8ad57b4857fd7e2a85a1c3d14e4eee82f
+native-new 1/0/0/498 0.11/0.00 0 dac8edc0cd6c7f127ffcbbc2c813a755235403cc5d36e44daca757b0be10ed5f
+native-existing 1/0/0/93 1.10/0.00 0 b484fb98a1b4a43f79000417d679364f6c539287e5ca524733a87f97441f046d
+session-sql 1/0/0/2269 14.67/0.01 0 61dd789a55e89cbc50445b4e44e417eb6722685cd1fde37b58dca5acc19a7607
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);5old SDK/28old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name owns complete restricted CAST type grammar rendering. Native local match/assembly is deleted; only array-element identity/metadata projection remains. Tests cover CHAR/BINARY, explicit charset, DECIMAL comma-space, temporal precision, signedness, unknown identity and ARRAY suffix.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior partial CAST records unchanged. Compact/source/full restore and expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype499, source surface1 and vector CAST SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

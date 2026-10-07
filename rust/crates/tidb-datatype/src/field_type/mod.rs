@@ -25,6 +25,7 @@ use crate::go_runtime::GoSharedSlice;
 use crate::{output_format, Charset, Collation, EvalType, GoString};
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use tidb_query_datatype::codec::native_type_name;
 
 pub use aggregate::{agg_field_type, aggregate_eval_type, merge_field_type, set_type_flag};
 pub use builder::FieldTypeBuilder;
@@ -1306,66 +1307,17 @@ impl FieldType {
 
     /// Restores the restricted type grammar used by `CAST` expressions.
     pub fn restore_as_cast_type(&self, explicit_charset: bool) -> String {
-        let mut output = String::new();
-        match self.array_element_code() {
-            FieldTypeCode::VarString | FieldTypeCode::String => {
-                let binary = self.charset_name.as_ref() == "binary"
-                    && self.collation_name.as_ref() == "binary";
-                output.push_str(if binary { "BINARY" } else { "CHAR" });
-                if self.flen != UNSPECIFIED_LENGTH {
-                    output.push_str(&format!("({})", self.flen));
-                }
-                if explicit_charset && !binary {
-                    if self.has_flag(FieldTypeFlags::BINARY) {
-                        output.push_str(" BINARY");
-                    }
-                    if self.charset_name.as_ref() != "binary"
-                        && self.charset_name.as_ref() != "utf8mb4"
-                    {
-                        output.push_str(" CHARSET ");
-                        output.push_str(&self.charset_name.to_uppercase());
-                    }
-                }
-            }
-            FieldTypeCode::Date => output.push_str("DATE"),
-            FieldTypeCode::Datetime => {
-                output.push_str("DATETIME");
-                if self.decimal > 0 {
-                    output.push_str(&format!("({})", self.decimal));
-                }
-            }
-            FieldTypeCode::NewDecimal => {
-                output.push_str("DECIMAL");
-                if self.flen > 0 && self.decimal > 0 {
-                    output.push_str(&format!("({}, {})", self.flen, self.decimal));
-                } else if self.flen > 0 {
-                    output.push_str(&format!("({})", self.flen));
-                }
-            }
-            FieldTypeCode::Duration => {
-                output.push_str("TIME");
-                if self.decimal > 0 {
-                    output.push_str(&format!("({})", self.decimal));
-                }
-            }
-            FieldTypeCode::LongLong => {
-                output.push_str(if self.is_unsigned() {
-                    "UNSIGNED"
-                } else {
-                    "SIGNED"
-                });
-            }
-            FieldTypeCode::Json => output.push_str("JSON"),
-            FieldTypeCode::Double => output.push_str("DOUBLE"),
-            FieldTypeCode::Float => output.push_str("FLOAT"),
-            FieldTypeCode::Year => output.push_str("YEAR"),
-            FieldTypeCode::VectorFloat32 => output.push_str("VECTOR"),
-            _ => {}
-        }
-        if self.is_array() {
-            output.push_str(" ARRAY");
-        }
-        output
+        native_type_name::native_restore_as_cast_type(
+            self.array_element_code().as_shared_type_name_code(),
+            self.is_array(),
+            self.flen,
+            self.decimal,
+            self.is_unsigned(),
+            self.has_flag(FieldTypeFlags::BINARY),
+            &self.charset_name,
+            &self.collation_name,
+            explicit_charset,
+        )
     }
 }
 
@@ -2451,5 +2403,51 @@ mod tests {
         }))
         .is_err());
         assert_eq!((partial.flen(), partial.decimal()), (9, 3));
+    }
+
+    #[test]
+    fn shared_field_cast_renderer_keeps_charset_precision_unknown_and_array_grammar() {
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::VarString)
+                .with_flen(4)
+                .with_charset_name("binary")
+                .with_collation_name("binary")
+                .restore_as_cast_type(true),
+            "BINARY(4)"
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::String)
+                .with_flen(3)
+                .with_charset_name("latin1")
+                .with_collation_name("latin1_bin")
+                .with_added_flags(FieldTypeFlags::BINARY)
+                .restore_as_cast_type(true),
+            "CHAR(3) BINARY CHARSET LATIN1"
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::NewDecimal)
+                .with_flen(10)
+                .with_decimal(2)
+                .restore_as_cast_type(false),
+            "DECIMAL(10, 2)"
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::LongLong)
+                .with_unsigned(true)
+                .restore_as_cast_type(false),
+            "UNSIGNED"
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::Unknown(253))
+                .with_array(true)
+                .restore_as_cast_type(true),
+            " ARRAY"
+        );
+        assert_eq!(
+            FieldType::parser(FieldTypeCode::VectorFloat32)
+                .with_array(true)
+                .restore_as_cast_type(false),
+            "VECTOR ARRAY"
+        );
     }
 }
