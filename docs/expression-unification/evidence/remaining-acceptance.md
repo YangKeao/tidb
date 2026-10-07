@@ -32,6 +32,8 @@ R157 shares [FieldType aggregate policies](field-aggregate-policy-checkpoint.md)
 
 R158 shares [complete FieldType aggregate controllers](field-aggregate-controller-checkpoint.md): both native aggregate policy loops are deleted in favor of allocation-free SDK iterator controllers. No family, whole-CAST/M2 or package credit is added.
 
+R159 shares [runtime/parser FieldType value metadata policy](field-value-policy-checkpoint.md): both large native DefaultTypeForValue matches and width helpers are deleted in favor of one SDK owner. No family, whole-CAST/M2 or package credit is added.
+
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
 R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), **not a new family**. Its native rounding/wrapping/range/overflow algorithm now belongs to TiKV. Other CAST domains, outer NULL and UNION negative bypass remain; legacy wire conversion has a distinct unchanged policy. R92 [type deduplication](decimal-policy-checkpoint.md) subsequently moves the full native float-format policy and Decimal precision-cast body to TiKV. LowerExp and Ryu policies remain distinct through a shared layout renderer; CAST warning classification and source preparation are still caller-owned. This adds no C4 profile or family credit. R91–R92 added no family credit; R93 retains all226 prior objects and adds only bounded staleness.

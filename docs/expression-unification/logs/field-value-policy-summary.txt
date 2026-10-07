@@ -1,0 +1,24 @@
+field-value-policy-153 / R159
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-value-policy-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_value_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_value_policy_keeps_runtime_parser_literal_and_charset_differences -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all default_type_for_value -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/533 5.46/0.00 0 d924c9dd23e8b56f30ca13ed38864dcddb9f585eeeb2cf6fe8b7e165c2bc1606
+native-datatype 496/0/0/0 4.37/7.06 0 a3d8c84480f3df2c78910c8020e9661584ce2bf8c2f522d6b89be3a0c07b50fa
+native-new 1/0/0/495 0.19/0.00 0 b9e62b5b227cd03ef3cd167415cc0b3692b8515b77781eecc0dc3dee3bfe8cc9
+native-existing 2/0/0/92 1.37/0.00 0 88df03695d1c05c5e94507b9e4adb6361def8624a8bd2a666b0f8a3e9298216c
+session-sql 1/0/0/2269 27.30/0.04 0 d86d7d4900cda0fe7a8e47f38894329485a0753009c23c562b6c68b77a701bc3
+
+SDK2/native1 Rust files;1 new SDK Rustfile.2new tests(SDK1/native1);0old touched-file test bodies. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+New SDK native_field_value owns both complete runtime/parser DefaultTypeForValue matches, digit/Go-float widths and charset/flags/code/flen/decimal policy. Native deletes both large matches and four width helpers; it projects public value shapes and applies specs. InferParam datum extraction remains native. Parent pre-Cargo review corrected unit NativeFieldValue::Bool adapter construction; no launch/RED preceded correction.
+Two fresh production agents completed/froze non-overlapping files without commands; parent owned module export, review correction, tests, formatting and validation.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Renderer andbroaderM2/root/liveDAG/final remain. Full native datatype496, source two default modes2 and numeric/temporal SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

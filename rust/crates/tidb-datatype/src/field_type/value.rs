@@ -3,6 +3,13 @@
 
 use super::{FieldType, FieldTypeCode, FieldTypeFlags, UNSPECIFIED_LENGTH};
 use crate::{Datum, TimeType};
+use tidb_query_datatype::codec::{
+    native_field_value::{
+        native_default_field_type_for_value, native_parser_default_field_type_for_value,
+        NativeFieldCharsetPolicy, NativeFieldTypeSpec, NativeFieldValue,
+    },
+    native_type_name::NativeTypeNameCode,
+};
 
 /// Go `types.InferParamTypeFromDatum`: execute-time parameter metadata, not
 /// literal display widths. The datum remains byte-preserving and unchanged.
@@ -155,159 +162,81 @@ pub enum FieldTypeValue<'a> {
     Unsupported,
 }
 
+fn native_field_value(value: &FieldTypeValue<'_>) -> NativeFieldValue {
+    match value {
+        FieldTypeValue::Null => NativeFieldValue::Null,
+        FieldTypeValue::Bool(_) => NativeFieldValue::Bool,
+        FieldTypeValue::Signed(value) => NativeFieldValue::Signed(*value),
+        FieldTypeValue::Unsigned(value) => NativeFieldValue::Unsigned(*value),
+        FieldTypeValue::String(value) => NativeFieldValue::StringLen(value.len()),
+        FieldTypeValue::Float32(value) => NativeFieldValue::Float32(*value),
+        FieldTypeValue::Float64(value) => NativeFieldValue::Float64(*value),
+        FieldTypeValue::Bytes(value) => NativeFieldValue::BytesLen(value.len()),
+        FieldTypeValue::BitLiteral(value) => NativeFieldValue::BitLiteralLen(value.len()),
+        FieldTypeValue::HexLiteral(value) => NativeFieldValue::HexLiteralLen(value.len()),
+        FieldTypeValue::BinaryLiteral(value) => NativeFieldValue::BinaryLiteralLen(value.len()),
+        FieldTypeValue::Date => NativeFieldValue::Date,
+        FieldTypeValue::Datetime { fsp } => NativeFieldValue::Datetime { fsp: *fsp },
+        FieldTypeValue::Timestamp { fsp } => NativeFieldValue::Timestamp { fsp: *fsp },
+        FieldTypeValue::Duration { display_len, fsp } => NativeFieldValue::Duration {
+            display_len: *display_len,
+            fsp: *fsp,
+        },
+        FieldTypeValue::Decimal {
+            display_len,
+            fraction_digits,
+        } => NativeFieldValue::Decimal {
+            display_len: *display_len,
+            fraction_digits: *fraction_digits,
+        },
+        FieldTypeValue::Enum(value) => NativeFieldValue::EnumLen(value.len()),
+        FieldTypeValue::Set(value) => NativeFieldValue::SetLen(value.len()),
+        FieldTypeValue::Json => NativeFieldValue::Json,
+        FieldTypeValue::VectorFloat32 => NativeFieldValue::VectorFloat32,
+        FieldTypeValue::Unsupported => NativeFieldValue::Unsupported,
+    }
+}
+
+fn apply_native_field_type_spec(
+    spec: NativeFieldTypeSpec,
+    charset: &str,
+    collation: &str,
+) -> FieldType {
+    let raw_code = match spec.code {
+        NativeTypeNameCode::Known(raw) | NativeTypeNameCode::Unknown(raw) => raw,
+    };
+    let field_type = FieldType::parser(FieldTypeCode::from_mysql_type(raw_code))
+        .with_flags(spec.flags)
+        .with_flen(spec.flen)
+        .with_decimal(spec.decimal);
+    match spec.charset_policy {
+        NativeFieldCharsetPolicy::Binary => field_type
+            .with_charset_name("binary")
+            .with_collation_name("binary"),
+        NativeFieldCharsetPolicy::Input => field_type
+            .with_charset_name(charset)
+            .with_collation_name(collation),
+        NativeFieldCharsetPolicy::Utf8 => field_type
+            .with_charset_name("utf8mb4")
+            .with_collation_name("utf8mb4_bin"),
+        NativeFieldCharsetPolicy::Preserve => field_type,
+    }
+}
+
 /// Mechanically mirrors `pkg/types.DefaultTypeForValue` metadata decisions.
 pub fn default_field_type_for_value(
     value: FieldTypeValue<'_>,
     charset: &str,
     collation: &str,
 ) -> FieldType {
-    let not_null = !matches!(&value, FieldTypeValue::Null);
-    let mut field_type = FieldType::parser(FieldTypeCode::Unspecified);
-    if not_null {
-        field_type = field_type.with_added_flags(FieldTypeFlags::NOT_NULL);
-    }
-    let binary = |field_type: FieldType| {
-        field_type
-            .with_charset_name("binary")
-            .with_collation_name("binary")
-            .with_added_flags(FieldTypeFlags::BINARY)
-    };
-    match value {
-        FieldTypeValue::Null => binary(
-            field_type
-                .with_code(FieldTypeCode::Null)
-                .with_flen(0)
-                .with_decimal(0),
-        ),
-        FieldTypeValue::Bool(_) => binary(
-            field_type
-                .with_code(FieldTypeCode::LongLong)
-                .with_flen(1)
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::IS_BOOLEAN),
-        ),
-        FieldTypeValue::Signed(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::LongLong)
-                .with_flen(signed_display_len(value))
-                .with_decimal(0),
-        ),
-        FieldTypeValue::Unsigned(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::LongLong)
-                .with_flen(unsigned_display_len(value))
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::UNSIGNED),
-        ),
-        FieldTypeValue::String(value) => field_type
-            .with_code(FieldTypeCode::VarString)
-            .with_flen(value.len() as i64)
-            .with_decimal(UNSPECIFIED_LENGTH)
-            .with_charset_name(charset)
-            .with_collation_name(collation),
-        FieldTypeValue::Float32(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Float)
-                .with_flen(go_fixed_shortest_f32(value).len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Float64(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Double)
-                .with_flen(go_fixed_shortest_f64(value).len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Bytes(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Blob)
-                .with_flen(value.len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::BitLiteral(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::VarString)
-                .with_flen((value.len() * 3) as i64)
-                .with_decimal(0),
-        ),
-        FieldTypeValue::HexLiteral(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::VarString)
-                .with_flen((value.len() * 3) as i64)
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::UNSIGNED),
-        ),
-        FieldTypeValue::BinaryLiteral(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::VarString)
-                .with_flen(value.len() as i64)
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::UNSIGNED),
-        )
-        .with_removed_flags(FieldTypeFlags::BINARY),
-        FieldTypeValue::Date => binary(
-            field_type
-                .with_code(FieldTypeCode::Date)
-                .with_flen(10)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Datetime { fsp } => binary(
-            field_type
-                .with_code(FieldTypeCode::Datetime)
-                .with_flen(19 + if fsp > 0 { fsp + 1 } else { 0 })
-                .with_decimal(fsp),
-        ),
-        FieldTypeValue::Timestamp { fsp } => binary(
-            field_type
-                .with_code(FieldTypeCode::Timestamp)
-                .with_flen(19 + if fsp > 0 { fsp + 1 } else { 0 })
-                .with_decimal(fsp),
-        ),
-        FieldTypeValue::Duration { display_len, fsp } => binary(
-            field_type
-                .with_code(FieldTypeCode::Duration)
-                .with_flen(if fsp > 0 { fsp + 1 } else { display_len })
-                .with_decimal(fsp),
-        ),
-        FieldTypeValue::Decimal {
-            display_len,
-            fraction_digits,
-        } => binary(
-            field_type
-                .with_code(FieldTypeCode::NewDecimal)
-                .with_flen((display_len + 1).min(super::MAX_DECIMAL_WIDTH))
-                .with_decimal(fraction_digits.min(super::MAX_DECIMAL_SCALE)),
-        ),
-        FieldTypeValue::Enum(name) => binary(
-            field_type
-                .with_code(FieldTypeCode::Enum)
-                .with_flen(name.len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Set(name) => binary(
-            field_type
-                .with_code(FieldTypeCode::Set)
-                .with_flen(name.len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Json => field_type
-            .with_code(FieldTypeCode::Json)
-            .with_flen(UNSPECIFIED_LENGTH)
-            .with_decimal(0)
-            .with_charset_name("utf8mb4")
-            .with_collation_name("utf8mb4_bin"),
-        FieldTypeValue::VectorFloat32 => binary(
-            field_type
-                .with_code(FieldTypeCode::VectorFloat32)
-                .with_flen(UNSPECIFIED_LENGTH)
-                .with_decimal(0),
-        ),
-        FieldTypeValue::Unsupported => field_type
-            .with_code(FieldTypeCode::Unspecified)
-            .with_flen(UNSPECIFIED_LENGTH)
-            .with_decimal(UNSPECIFIED_LENGTH)
-            .with_charset_name("utf8mb4")
-            .with_collation_name("utf8mb4_bin"),
-    }
+    let spec = native_default_field_type_for_value(
+        native_field_value(&value),
+        FieldTypeFlags::NOT_NULL,
+        FieldTypeFlags::BINARY,
+        FieldTypeFlags::UNSIGNED,
+        FieldTypeFlags::IS_BOOLEAN,
+    );
+    apply_native_field_type_spec(spec, charset, collation)
 }
 
 /// Mirrors `pkg/parser/test_driver.DefaultTypeForValue`.
@@ -320,147 +249,89 @@ pub fn parser_default_field_type_for_value(
     charset: &str,
     collation: &str,
 ) -> FieldType {
-    let field_type = FieldType::parser(FieldTypeCode::Unspecified);
-    let binary = |field_type: FieldType| {
-        field_type
-            .with_charset_name("binary")
-            .with_collation_name("binary")
-            .with_added_flags(FieldTypeFlags::BINARY)
-    };
-    match value {
-        FieldTypeValue::Null => binary(
-            field_type
-                .with_code(FieldTypeCode::Null)
-                .with_flen(0)
-                .with_decimal(0),
-        ),
-        FieldTypeValue::Bool(_) => binary(
-            field_type
-                .with_code(FieldTypeCode::LongLong)
-                .with_flen(1)
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::IS_BOOLEAN),
-        ),
-        FieldTypeValue::Signed(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::LongLong)
-                .with_flen(signed_display_len(value))
-                .with_decimal(0),
-        ),
-        FieldTypeValue::Unsigned(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::LongLong)
-                .with_flen(unsigned_display_len(value))
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::UNSIGNED),
-        ),
-        FieldTypeValue::String(value) => field_type
-            .with_code(FieldTypeCode::VarString)
-            .with_flen(value.len() as i64)
-            .with_decimal(UNSPECIFIED_LENGTH)
-            .with_charset_name(charset)
-            .with_collation_name(collation),
-        FieldTypeValue::Float32(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Float)
-                .with_flen(go_fixed_shortest_f32(value).len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Float64(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Double)
-                .with_flen(go_fixed_shortest_f64(value).len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::Bytes(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Blob)
-                .with_flen(value.len() as i64)
-                .with_decimal(UNSPECIFIED_LENGTH),
-        ),
-        FieldTypeValue::BitLiteral(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::VarString)
-                .with_flen(value.len() as i64)
-                .with_decimal(0),
-        ),
-        FieldTypeValue::HexLiteral(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::VarString)
-                .with_flen((value.len() * 3) as i64)
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::UNSIGNED),
-        ),
-        FieldTypeValue::BinaryLiteral(value) => binary(
-            field_type
-                .with_code(FieldTypeCode::Bit)
-                .with_flen((value.len() * 8) as i64)
-                .with_decimal(0)
-                .with_added_flags(FieldTypeFlags::UNSIGNED),
-        )
-        .with_removed_flags(FieldTypeFlags::BINARY),
-        FieldTypeValue::Decimal {
-            display_len,
-            fraction_digits,
-        } => binary(
-            field_type
-                .with_code(FieldTypeCode::NewDecimal)
-                .with_flen(display_len)
-                .with_decimal(fraction_digits),
-        ),
-        _ => field_type
-            .with_code(FieldTypeCode::Unspecified)
-            .with_flen(UNSPECIFIED_LENGTH)
-            .with_decimal(UNSPECIFIED_LENGTH),
-    }
+    let spec = native_parser_default_field_type_for_value(
+        native_field_value(&value),
+        FieldTypeFlags::BINARY,
+        FieldTypeFlags::UNSIGNED,
+        FieldTypeFlags::IS_BOOLEAN,
+    );
+    apply_native_field_type_spec(spec, charset, collation)
 }
 
-fn go_fixed_shortest_f32(value: f32) -> String {
-    if value.is_nan() {
-        "NaN".to_owned()
-    } else if value == f32::INFINITY {
-        "+Inf".to_owned()
-    } else if value == f32::NEG_INFINITY {
-        "-Inf".to_owned()
-    } else {
-        value.to_string()
-    }
-}
+#[cfg(test)]
+mod shared_value_policy_tests {
+    use super::*;
 
-fn go_fixed_shortest_f64(value: f64) -> String {
-    if value.is_nan() {
-        "NaN".to_owned()
-    } else if value == f64::INFINITY {
-        "+Inf".to_owned()
-    } else if value == f64::NEG_INFINITY {
-        "-Inf".to_owned()
-    } else {
-        value.to_string()
-    }
-}
+    #[test]
+    fn shared_field_value_policy_keeps_runtime_parser_literal_and_charset_differences() {
+        let runtime = default_field_type_for_value(
+            FieldTypeValue::BinaryLiteral(&[0xaa, 0xbb]),
+            "utf8mb4",
+            "utf8mb4_bin",
+        );
+        assert_eq!(
+            (runtime.code(), runtime.flen(), runtime.decimal()),
+            (FieldTypeCode::VarString, 2, 0)
+        );
+        assert!(runtime.is_unsigned());
+        assert!(!runtime.has_flag(FieldTypeFlags::BINARY));
+        assert_eq!(
+            (runtime.charset_name(), runtime.collation_name()),
+            ("binary", "binary")
+        );
 
-const fn signed_display_len(value: i64) -> i64 {
-    if value == 0 {
-        return 1;
-    }
-    let negative = value < 0;
-    let mut magnitude = value.unsigned_abs();
-    let mut digits = if negative { 1 } else { 0 };
-    while magnitude != 0 {
-        digits += 1;
-        magnitude /= 10;
-    }
-    digits
-}
+        let parser = parser_default_field_type_for_value(
+            FieldTypeValue::BinaryLiteral(&[0xaa, 0xbb]),
+            "utf8mb4",
+            "utf8mb4_bin",
+        );
+        assert_eq!(
+            (parser.code(), parser.flen(), parser.decimal()),
+            (FieldTypeCode::Bit, 16, 0)
+        );
+        assert!(parser.is_unsigned());
+        assert!(!parser.has_flag(FieldTypeFlags::BINARY));
 
-const fn unsigned_display_len(mut value: u64) -> i64 {
-    if value == 0 {
-        return 1;
+        let runtime_decimal = default_field_type_for_value(
+            FieldTypeValue::Decimal {
+                display_len: 100,
+                fraction_digits: 40,
+            },
+            "utf8mb4",
+            "utf8mb4_bin",
+        );
+        let parser_decimal = parser_default_field_type_for_value(
+            FieldTypeValue::Decimal {
+                display_len: 100,
+                fraction_digits: 40,
+            },
+            "utf8mb4",
+            "utf8mb4_bin",
+        );
+        assert_eq!(
+            (runtime_decimal.flen(), runtime_decimal.decimal()),
+            (65, 30)
+        );
+        assert_eq!((parser_decimal.flen(), parser_decimal.decimal()), (100, 40));
+
+        let runtime_unsupported =
+            default_field_type_for_value(FieldTypeValue::Unsupported, "ignored", "ignored");
+        assert!(runtime_unsupported.has_flag(FieldTypeFlags::NOT_NULL));
+        assert_eq!(
+            (
+                runtime_unsupported.charset_name(),
+                runtime_unsupported.collation_name()
+            ),
+            ("utf8mb4", "utf8mb4_bin")
+        );
+        let parser_unsupported =
+            parser_default_field_type_for_value(FieldTypeValue::Unsupported, "ignored", "ignored");
+        assert_eq!(
+            (
+                parser_unsupported.charset_name(),
+                parser_unsupported.collation_name()
+            ),
+            ("", "")
+        );
     }
-    let mut digits = 0;
-    while value != 0 {
-        digits += 1;
-        value /= 10;
-    }
-    digits
 }
