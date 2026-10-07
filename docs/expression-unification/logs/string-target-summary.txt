@@ -1,0 +1,24 @@
+string-target-137 / R143
+5matched Cargo launches,5GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/string-target-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_string_target -- --test-threads=1
+[tikv-type] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_string_type_preserves_named_identity_and_exact_collation -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[sql-dml] ../../tools/cargo-tidb test --locked -p tidb-session --lib insert_casts_to_column_type -- --test-threads=1
+[sql-cast] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_padding -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/509 5.57/0.00 0 6ca6671c559b2cb855e800bfab5572a585a25cd6f10d9eab7674af44d6f06f35
+tikv-type 1/0/0/510 0.21/0.00 0 0bfb140626452f8f8ed2f6395f6233dca5e6f2a56aa94ad45b0fdc4581eec429
+native-datatype 480/0/0/0 4.35/7.11 0 0796a933a146c705abefccc5f4e650481e09d50f268bcc2c306ccdde8fc1e545
+sql-dml 1/0/0/2269 28.51/0.02 0 ecb8d2c2e2d7872066c7dfdbf53e48ea1d23f02bbf0d95a96ff41baca8271262
+sql-cast 1/0/0/2269 0.13/0.02 0 e5a53883836e4256826cbbb09af6962fe407daabbfb66fae7c6ca3be080eabbc
+
+SDK3/native1 Rust files;one new SDKfile native_string_convert.rs,no new nativefiles.3new tests(SDK2/native1);1old SDK/24old native touched-file test bodies unchanged. Expression/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK owns ProduceStr byte/rune limits, terminal validUTF8 prefix, whitespace-tail warning/truncate policy and binary fixedString zero-pad; named blob/char/varchar predicates preserve Unknown identity. Canonical strict decoder+rune_count reused, no decoder copy. Invalid nonblob byte width1 and nonbinary blob preceding-invalid bytes preserved; logical count only when diagnostics enabled. Callback runs at original diagnostic site before truncation/padding; descriptor message stays behind native Diagnostics closure. Native supplies actual FieldType/charset and typed ERR_TRUNCATED/ERR_DATA_TOO_LONG effects.
+Subagent A failed after its final successful edit and before its closing report; parent adopted the complete datum_convert.rs adapter/test, formatted and validated it. A later confirmed no known unfinished syntax/semantic issue and made no further writes. No Cargo failure/retry.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Sourceconversion/eventmerge, otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype480 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

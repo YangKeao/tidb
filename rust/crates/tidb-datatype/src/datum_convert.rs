@@ -1044,64 +1044,32 @@ pub fn produce_string_with_type(
 }
 
 fn produce_string_reported(
-    mut value: Vec<u8>,
+    value: Vec<u8>,
     target: &FieldType,
     pad_zero: bool,
     diagnostics: &mut Diagnostics<'_, '_>,
 ) -> Result<Converted<Vec<u8>>, DatumValueError> {
-    let flen = target.flen();
-    if flen < 0 {
-        return Ok(exact(value));
-    }
-    let flen = flen as usize;
-    let binary = target.charset() == Charset::Binary;
-    let byte_limited = binary || target.code().is_type_blob();
-    let split = if byte_limited {
-        (value.len() > flen).then(|| {
-            if binary {
-                flen
+    let converted = tidb_query_datatype::codec::native_string_convert::native_produce_string(
+        value,
+        target.flen(),
+        target.code().as_shared_string_type(),
+        target.charset() == Charset::Binary,
+        pad_zero,
+        diagnostics.enabled(),
+        |diagnostic| {
+            if diagnostic.is_warning() {
+                diagnostics.warn(|| ERR_TRUNCATED.generate(diagnostic.message()));
             } else {
-                complete_utf8_prefix(&value, flen)
+                diagnostics.truncate(|| ERR_DATA_TOO_LONG.generate(diagnostic.message()));
             }
-        })
-    } else {
-        utf8_split_at(&value, flen)?
-    };
-    let mut event = None;
-    if let Some(split) = split {
-        // Only the error path needs the original logical length for messages.
-        let data_len = if byte_limited || !diagnostics.enabled() {
-            value.len()
-        } else {
-            crate::collation::go_rune_count(&value)
-        };
-        let overflow = &value[split..];
-        let whitespace_only = overflow
-            .iter()
-            .all(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'));
-        if whitespace_only && !binary && target.code().is_type_char() {
-            if matches!(target.code(), FieldTypeCode::Varchar) {
-                diagnostics.warn(|| {
-                    ERR_TRUNCATED.generate(format!(
-                        "Data truncated, field len {flen}, data len {data_len}",
-                    ))
-                });
-                event = Some(ScalarConversionEvent::Truncated);
-            }
-        } else {
-            diagnostics.truncate(|| {
-                ERR_DATA_TOO_LONG.generate(format!(
-                    "Data Too Long, field len {flen}, data len {data_len}",
-                ))
-            });
-            event = Some(ScalarConversionEvent::Truncated);
-        }
-        value.truncate(split);
-    }
-    if pad_zero && binary && matches!(target.code(), FieldTypeCode::String) && value.len() < flen {
-        value.resize(flen, 0);
-    }
-    Ok(Converted { value, event })
+        },
+    );
+    Ok(Converted {
+        value: converted.value,
+        event: converted
+            .truncated
+            .then_some(ScalarConversionEvent::Truncated),
+    })
 }
 
 fn decimal_target_overflow(target: &FieldType) -> tidb_error::terror::TerrorError {
@@ -1554,49 +1522,6 @@ fn value_to_literal_uint(bytes: &[u8], event: &mut Option<ScalarConversionEvent>
         *event = Some(ScalarConversionEvent::Truncated);
     }
     outcome.value()
-}
-
-/// The byte offset `flen` characters into `bytes`, or `None` when the value
-/// is already short enough.
-///
-/// Go `ProduceStrWithSpecifiedTp` measures with `utf8.RuneCountInString`,
-/// which never fails: a byte that starts no valid sequence counts as one
-/// RuneError rune one byte wide. Rejecting such a value instead would refuse
-/// writes TiDB accepts -- captured, `INSERT INTO l1 VALUES (0xE9)` into a
-/// `latin1` column stores the byte `E9` unchanged, because TiDB's `latin1`
-/// is byte-preserving and never validates.
-fn utf8_split_at(bytes: &[u8], flen: usize) -> Result<Option<usize>, DatumValueError> {
-    let mut index = 0;
-    for _ in 0..flen {
-        if index >= bytes.len() {
-            return Ok(None);
-        }
-        index += crate::collation::rune_width(&bytes[index..]);
-    }
-    Ok((index < bytes.len()).then_some(index))
-}
-
-/// Go's text/blob byte limit must end with a complete, valid rune. Invalid
-/// trailing bytes do not become part of the accepted prefix; preceding bytes
-/// remain byte-preserving, like DecodeLastRuneInString in ProduceStrWithSpecifiedTp.
-fn complete_utf8_prefix(bytes: &[u8], limit: usize) -> usize {
-    let mut end = limit;
-    while end > 0 {
-        if bytes[end - 1].is_ascii() {
-            return end;
-        }
-        let mut start = end - 1;
-        let minimum_start = end.saturating_sub(4);
-        while start > minimum_start && bytes[start] & 0xc0 == 0x80 {
-            start -= 1;
-        }
-        let width = crate::collation::rune_width(&bytes[start..end]);
-        if width > 1 && start + width == end {
-            return end;
-        }
-        end -= 1;
-    }
-    end
 }
 
 fn max_decimal_text(flen: usize, scale: usize) -> String {
@@ -2583,6 +2508,171 @@ mod tests {
                 converted.value
             );
         }
+    }
+
+    #[test]
+    fn shared_string_target_keeps_byte_rune_padding_and_typed_diagnostic_domains() {
+        use crate::{ConversionContext, ConversionLocation, ConversionWarningAppender};
+        use std::cell::RefCell;
+        use tidb_error::terror::TerrorError;
+
+        let target = |code, flen, binary| {
+            FieldType::new(code)
+                .with_flen(flen)
+                .with_charset_name(if binary { "binary" } else { "utf8mb4" })
+                .with_collation_name(if binary { "binary" } else { "utf8mb4_bin" })
+        };
+        for flen in [-1, -7] {
+            let input = vec![0xff, b'a'];
+            let converted = produce_string_with_type(
+                input.clone(),
+                &target(FieldTypeCode::String, flen, true),
+                true,
+            )
+            .unwrap();
+            assert_eq!(converted.value, input);
+            assert_eq!(converted.event, None);
+        }
+        let binary = target(FieldTypeCode::String, 4, true);
+        let padded = produce_string_with_type(vec![b'a', 0xff], &binary, true).unwrap();
+        assert_eq!(padded.value, [b'a', 0xff, 0, 0]);
+        assert_eq!(padded.event, None);
+        assert_eq!(
+            produce_string_with_type(vec![b'a'], &binary, false)
+                .unwrap()
+                .value,
+            [b'a']
+        );
+        assert_eq!(
+            produce_string_with_type(vec![b'a'], &target(FieldTypeCode::VarString, 4, true), true)
+                .unwrap()
+                .value,
+            [b'a']
+        );
+        let invalid_tail = vec![0xff, b'a', 0xe2, 0x82, b'X'];
+        for (is_binary, expected) in [
+            (true, vec![0xff, b'a', 0xe2, 0x82]),
+            (false, vec![0xff, b'a']),
+        ] {
+            let converted = produce_string_with_type(
+                invalid_tail.clone(),
+                &target(FieldTypeCode::Blob, 4, is_binary),
+                false,
+            )
+            .unwrap();
+            assert_eq!(converted.value, expected);
+            assert_eq!(converted.event, Some(ScalarConversionEvent::Truncated));
+        }
+        #[derive(Default)]
+        struct Warnings(RefCell<Vec<TerrorError>>);
+        impl ConversionWarningAppender for Warnings {
+            fn append_conversion_warning(&self, error: TerrorError) {
+                self.0.borrow_mut().push(error);
+            }
+        }
+        let warnings = Warnings::default();
+        let strict = ConversionFlags::default()
+            .with_ignore_truncate_err(false)
+            .with_truncate_as_warning(false);
+        for (mode, flags) in [
+            ("strict", strict),
+            ("warn", strict.with_truncate_as_warning(true)),
+            ("ignore", strict.with_ignore_truncate_err(true)),
+        ] {
+            let context = ConversionContext::new(flags, ConversionLocation::UTC, &warnings);
+            let mut diagnostics = Diagnostics::new(Some(&context));
+            // Invalid FF is one rune; C3 A9 is one rune; diagnostic length is 3, not 4 bytes.
+            let converted = produce_string_reported(
+                vec![0xff, 0xc3, 0xa9, b'z'],
+                &target(FieldTypeCode::Varchar, 2, false),
+                false,
+                &mut diagnostics,
+            )
+            .unwrap();
+            assert_eq!(converted.value, [0xff, 0xc3, 0xa9]);
+            assert_eq!(converted.event, Some(ScalarConversionEvent::Truncated));
+            match mode {
+                "strict" => {
+                    let error = diagnostics.error.unwrap();
+                    assert_eq!(error.identity(), ERR_DATA_TOO_LONG.identity());
+                    assert_eq!(error.message(), "Data Too Long, field len 2, data len 3");
+                    assert!(warnings.0.borrow().is_empty());
+                }
+                "warn" => {
+                    assert!(diagnostics.error.is_none());
+                    let recorded = warnings.0.take();
+                    assert_eq!(recorded.len(), 1);
+                    assert_eq!(recorded[0].identity(), ERR_DATA_TOO_LONG.identity());
+                    assert_eq!(
+                        recorded[0].message(),
+                        "Data Too Long, field len 2, data len 3"
+                    );
+                }
+                _ => {
+                    assert!(diagnostics.error.is_none());
+                    assert!(warnings.0.borrow().is_empty());
+                }
+            }
+        }
+        let context = ConversionContext::new(strict, ConversionLocation::UTC, &warnings);
+        let mut diagnostics = Diagnostics::new(Some(&context));
+        let varchar = produce_string_reported(
+            b"a \t".to_vec(),
+            &target(FieldTypeCode::Varchar, 1, false),
+            false,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(varchar.value, b"a");
+        assert_eq!(varchar.event, Some(ScalarConversionEvent::Truncated));
+        assert!(diagnostics.error.is_none());
+        let fixed = produce_string_reported(
+            b"a \t".to_vec(),
+            &target(FieldTypeCode::String, 1, false),
+            false,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(fixed.value, b"a");
+        assert_eq!(fixed.event, None);
+        assert!(diagnostics.error.is_none());
+        let varstring = produce_string_reported(
+            b"a \t".to_vec(),
+            &target(FieldTypeCode::VarString, 1, false),
+            false,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(varstring.event, Some(ScalarConversionEvent::Truncated));
+        let error = diagnostics.error.unwrap();
+        assert_eq!(error.identity(), ERR_DATA_TOO_LONG.identity());
+        assert_eq!(error.message(), "Data Too Long, field len 1, data len 3");
+        let recorded = warnings.0.take();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].identity(), ERR_TRUNCATED.identity());
+        assert_eq!(
+            recorded[0].message(),
+            "Data truncated, field len 1, data len 3"
+        );
+        let mut diagnostics = Diagnostics::new(Some(&context));
+        let nbsp = produce_string_reported(
+            "a\u{00a0}".as_bytes().to_vec(),
+            &target(FieldTypeCode::String, 1, false),
+            false,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(nbsp.event, Some(ScalarConversionEvent::Truncated));
+        assert_eq!(
+            diagnostics.error.unwrap().message(),
+            "Data Too Long, field len 1, data len 2"
+        );
+        let converted = Datum::new_bytes(b"a".to_vec())
+            .convert_to_in_context(&binary, &context, &SessionTimeZone::utc())
+            .unwrap();
+        assert_eq!(converted.value, Datum::new_bytes(vec![b'a', 0, 0, 0]));
+        assert!(converted.error.is_none());
+        assert!(warnings.0.borrow().is_empty());
     }
 }
 
