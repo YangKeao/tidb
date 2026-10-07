@@ -1268,17 +1268,14 @@ fn decimal_to_signed(
     upper: i64,
     target: FieldTypeCode,
 ) -> Converted<i64> {
-    let rounded = value.round_to_i64();
-    let raw = rounded.unwrap_or_else(|| value.round_to_i64_saturating());
-    let bounded = numeric_outcome(convert_int_to_int(raw, lower, upper, target));
-    Converted {
-        value: bounded.value,
-        event: if rounded.is_none() {
-            Some(overflow_event(value.to_string(), target))
-        } else {
-            bounded.event
-        },
-    }
+    crate::convert::from_shared_integer_conversion(
+        tidb_query_datatype::codec::native_integer_convert::native_convert_decimal_to_int(
+            value.as_shared_parse(),
+            lower,
+            upper,
+            target.as_shared_type_name_code(),
+        ),
+    )
 }
 
 fn decimal_to_unsigned(value: &Decimal, upper: u64, target: FieldTypeCode) -> Converted<u64> {
@@ -1919,6 +1916,34 @@ mod tests {
                 .unwrap()
                 .value,
             Datum::new_decimal(Decimal::from_signed_literal("12.35"))
+        );
+    }
+
+    #[test]
+    fn shared_decimal_signed_target_keeps_round_bound_and_source_overflow_subjects() {
+        let tiny = FieldTypeCode::Tiny;
+        for (text, expected) in [("126.5", 127), ("127.4", 127)] {
+            assert_eq!(
+                decimal_to_signed(&Decimal::from_signed_literal(text), -128, 127, tiny),
+                Converted {
+                    value: expected,
+                    event: None
+                },
+            );
+        }
+        let bounded = decimal_to_signed(&Decimal::from_signed_literal("127.5"), -128, 127, tiny);
+        assert_eq!(bounded.value, 127);
+        assert_eq!(bounded.event, Some(overflow_event("128".into(), tiny)));
+        let source = decimal_to_signed(
+            &Decimal::from_signed_literal("9223372036854775808.00"),
+            -128,
+            127,
+            tiny,
+        );
+        assert_eq!(source.value, 127);
+        assert_eq!(
+            source.event,
+            Some(overflow_event("9223372036854775808.00".into(), tiny)),
         );
     }
 

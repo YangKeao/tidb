@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **year-text-142**, following **decimal-uint-141**.
+Current checkpoint: **decimal-signed-target-143**, following **year-text-142**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-Existing SDK owner `native_temporal_convert.rs` now owns YEAR trimmed parse source, overflow-side zero and original-length/leading-zero adjustment. Native invokes the shared integer parser and retains actual typed-event projection.
+Existing SDK owner `native_integer_convert.rs` now consumes the shared Decimal ref and owns half-up rounding, lazy saturation, signed target bounds, exact visible source subject and source-overflow precedence. Native only projects the shared converted carrier.
 
 ## Verification
 
-[Evidence](evidence/year-text-checkpoint.md), [commands/counts/hashes](logs/year-text-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/decimal-signed-checkpoint.md), [commands/counts/hashes](logs/decimal-signed-target-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five Cargo gates GREEN: SDK1, full native datatype485, new/existing YEAR2 and session SQL consumer1. Two new tests;2 SDK/28 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary records the SDK lease stop/parent transfer before Cargo.
+Five final Cargo gates GREEN: SDK1, full native datatype486, new/existing conversion2 and session SQL consumer1. Two new tests;5 SDK/29 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary retains two attempts that failed only because the same new test assumed ties-even rather than canonical half-up rounding.
 
 ## Remaining
 
