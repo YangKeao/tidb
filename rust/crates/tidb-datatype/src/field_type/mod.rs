@@ -45,30 +45,18 @@ pub fn enum_set_display_length_from_lengths(
     code: FieldTypeCode,
     lengths: impl IntoIterator<Item = usize>,
 ) -> i64 {
-    let lengths = lengths.into_iter().map(|length| length as i64);
-    match code {
-        FieldTypeCode::Enum => lengths.max().unwrap_or(0),
-        FieldTypeCode::Set => {
-            let lengths = lengths.collect::<Vec<_>>();
-            lengths.iter().sum::<i64>() + lengths.len().saturating_sub(1) as i64
-        }
-        _ => UNSPECIFIED_LENGTH,
-    }
+    tidb_query_datatype::codec::native_string_type::native_enum_set_display_length(
+        code.as_shared_string_type(),
+        lengths,
+    )
 }
 
 /// Source `HasCharset` rule shared by parser syntax and runtime field types.
 pub const fn field_type_has_charset(code: FieldTypeCode, flags: u32) -> bool {
-    match code {
-        FieldTypeCode::Varchar
-        | FieldTypeCode::String
-        | FieldTypeCode::VarString
-        | FieldTypeCode::Blob
-        | FieldTypeCode::TinyBlob
-        | FieldTypeCode::MediumBlob
-        | FieldTypeCode::LongBlob => flags & FieldTypeFlags::BINARY == 0,
-        FieldTypeCode::Enum | FieldTypeCode::Set => true,
-        _ => false,
-    }
+    tidb_query_datatype::codec::native_string_type::native_field_type_has_charset(
+        code.as_shared_string_type(),
+        flags & FieldTypeFlags::BINARY != 0,
+    )
 }
 
 /// Source sentinel for unspecified field length or decimal scale.
@@ -477,6 +465,8 @@ impl FieldTypeCode {
             Self::Blob => Shared::Blob,
             Self::VarString => Shared::VarString,
             Self::String => Shared::String,
+            Self::Enum => Shared::Enum,
+            Self::Set => Shared::Set,
             other => Shared::Other(other.mysql_type()),
         }
     }
@@ -1482,8 +1472,9 @@ mod tests {
     use std::hash::{Hash, Hasher};
 
     use super::{
-        default_field_type_for_value, FieldType, FieldTypeCode, FieldTypeFlags, FieldTypeValue,
-        MAX_DECIMAL_SCALE, MAX_DECIMAL_WIDTH, UNSPECIFIED_LENGTH,
+        default_field_type_for_value, enum_set_display_length_from_lengths, field_type_has_charset,
+        FieldType, FieldTypeCode, FieldTypeFlags, FieldTypeValue, MAX_DECIMAL_SCALE,
+        MAX_DECIMAL_WIDTH, UNSPECIFIED_LENGTH,
     };
 
     // The Go-compatible mutators (SetFlag/AddFlag/AndFlag/ToggleFlag/DelFlag,
@@ -2285,6 +2276,61 @@ mod tests {
             let field = FieldType::new(code).with_raw_flags(u64::MAX);
             let value: NativeEvalType = field.eval_type();
             assert_eq!(value, expected);
+        }
+    }
+
+    #[test]
+    fn shared_field_string_metadata_keeps_lengths_binary_flags_and_unknown_identity() {
+        assert_eq!(
+            enum_set_display_length_from_lengths(FieldTypeCode::Enum, []),
+            0
+        );
+        assert_eq!(
+            enum_set_display_length_from_lengths(FieldTypeCode::Enum, [1, 4, 2]),
+            4,
+        );
+        assert_eq!(
+            enum_set_display_length_from_lengths(FieldTypeCode::Set, []),
+            0
+        );
+        assert_eq!(
+            enum_set_display_length_from_lengths(FieldTypeCode::Set, [1, 4, 0]),
+            7,
+        );
+        assert_eq!(
+            enum_set_display_length_from_lengths(FieldTypeCode::Unknown(247), [9]),
+            UNSPECIFIED_LENGTH,
+        );
+        for code in [
+            FieldTypeCode::Varchar,
+            FieldTypeCode::String,
+            FieldTypeCode::VarString,
+            FieldTypeCode::TinyBlob,
+            FieldTypeCode::MediumBlob,
+            FieldTypeCode::LongBlob,
+            FieldTypeCode::Blob,
+        ] {
+            assert!(field_type_has_charset(code, 0), "{code:?}");
+            assert!(
+                !field_type_has_charset(code, FieldTypeFlags::BINARY),
+                "{code:?}"
+            );
+        }
+        for code in [FieldTypeCode::Enum, FieldTypeCode::Set] {
+            assert!(field_type_has_charset(code, 0));
+            assert!(field_type_has_charset(code, FieldTypeFlags::BINARY));
+        }
+        for code in [
+            FieldTypeCode::Unspecified,
+            FieldTypeCode::Year,
+            FieldTypeCode::Unknown(FieldTypeCode::Enum.mysql_type()),
+            FieldTypeCode::Unknown(FieldTypeCode::Set.mysql_type()),
+        ] {
+            assert!(!field_type_has_charset(code, 0), "{code:?}");
+            assert!(
+                !field_type_has_charset(code, FieldTypeFlags::BINARY),
+                "{code:?}"
+            );
         }
     }
 }

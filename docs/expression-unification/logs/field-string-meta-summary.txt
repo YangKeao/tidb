@@ -1,0 +1,25 @@
+field-string-meta-145 / R151
+6 matched Cargo launches:5 final GREEN plus1 retained compile RED;no production compile/test failure,zero-match or interruption. One corrected rerun.
+Raw: /home/agent/tidb/expression-unification/logs/field-string-meta-{id}.log.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_string_metadata -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-compile-red then corrected native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_string_metadata_keeps_lengths_binary_flags_and_unknown_identity -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_eval_type_alias_preserves_native_array_unknown_and_flag_identity -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib charset_and_collation_metadata_surfaces -- --test-threads=1
+
+Final receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/522 2.59/0.00 0 1cba8f90ebcb31e20297c579279828e2fcf147d428b110e3345b96c19b3204b3
+native-datatype 488/0/0/0 1.33/7.02 0 b825fd581ac618594303f784ad66de1c5de045932b3b927d623c0d4f97292a1a
+native-new 1/0/0/487 0.09/0.00 0 ab73c589198c27da2323837fef38cc728b6c15ea707cf7d2e72de8b2128bfb78
+native-existing 1/0/0/487 0.09/0.00 0 72f98dda95f2db8cbe455c0e84adc04f3b077359b39c0628a4fe2aca2b1bffd7
+session-sql 1/0/0/2269 22.47/0.04 0 d0eb8e4aef014df3193d24a4373178d58ae8a980d2b399db1537f945be78e8a0
+Retained compile RED: native-compile-red exit101 sha256 8810dba8787aa3c919e633b6b7f13ba78f5a8d77aca9da207035e8f4e37cf9a5. The newly appended test module omitted imports for its two parent functions, producing11 E0425 diagnostics before any test ran. Parent added only those test imports; production and all old tests stayed unchanged.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);1old SDK/23old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_string_type now has named Enum/Set and owns display length plus HasCharset/BINARY classification. Native projects actual code/flags; unknown numeric aliases remain Other. Empty ENUM/SET, separator count, binary strings, Enum/Set binary independence and SQL charset/collation metadata remain exact.
+Both production-only agents completed and froze exact single-file changes without tests or commands; parent adopted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype488 and one charset/collation SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
