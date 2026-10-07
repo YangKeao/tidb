@@ -329,17 +329,7 @@ impl FieldTypeCode {
 
     /// Mirrors `pkg/parser/types/field_type.go::IsVarLengthType`.
     pub const fn is_var_length_type(self) -> bool {
-        matches!(
-            self,
-            Self::Varchar
-                | Self::VarString
-                | Self::Json
-                | Self::Blob
-                | Self::TinyBlob
-                | Self::MediumBlob
-                | Self::LongBlob
-                | Self::VectorFloat32
-        )
+        self.as_shared_string_type().is_var_length_type()
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeBlob`.
@@ -467,6 +457,9 @@ impl FieldTypeCode {
             Self::String => Shared::String,
             Self::Enum => Shared::Enum,
             Self::Set => Shared::Set,
+            Self::Bit => Shared::Bit,
+            Self::Json => Shared::Json,
+            Self::VectorFloat32 => Shared::VectorFloat32,
             other => Shared::Other(other.mysql_type()),
         }
     }
@@ -958,10 +951,7 @@ impl FieldType {
 
     /// Mirrors parser `FieldType.Hybrid`.
     pub const fn is_hybrid(&self) -> bool {
-        matches!(
-            self.code(),
-            FieldTypeCode::Enum | FieldTypeCode::Bit | FieldTypeCode::Set
-        )
+        self.code().as_shared_string_type().is_hybrid()
     }
 
     /// Mirrors the expression-oriented `FieldType.Equal` rules.
@@ -1027,7 +1017,9 @@ impl FieldType {
 
     /// Returns whether this is a non-binary character string.
     pub fn is_character_string(&self) -> bool {
-        self.is_string() && !self.is_binary_string()
+        self.code()
+            .as_shared_string_type()
+            .is_character_string(self.collation_name.as_ref())
     }
 
     /// Mirrors `pkg/types/etc.go::NeedRestoredData` with the new-collation
@@ -1039,20 +1031,12 @@ impl FieldType {
     /// Mirrors `pkg/types/etc.go::NeedRestoredDataWithCollate` for the
     /// collations represented by this dependency leaf.
     pub fn need_restored_data_with_collation(&self, use_new_collate: bool) -> bool {
-        if !use_new_collate || !self.is_character_string() {
-            return false;
-        }
-        // Go's trailing `ft.GetCollate() != "utf8mb4_0900_bin"` guard, which
-        // overrides the VARCHAR exemption below: this collation NEVER carries
-        // restored data, whatever the SQL type.
-        if self.collation_name.as_ref() == "utf8mb4_0900_bin" {
-            return false;
-        }
-        // `collate.IsBinCollation`, whose membership is the same list as
-        // `crate::collation::is_bin_collation` -- `utf8mb4_0900_bin` included,
-        // `gbk_bin` excluded because its sort key transcodes the data.
-        let bin_collation = crate::is_bin_collation(&self.collation_name);
-        !bin_collation || self.code().is_type_varchar()
+        tidb_query_datatype::codec::native_string_type::native_need_restored_data(
+            self.code().as_shared_string_type(),
+            self.collation_name.as_ref(),
+            use_new_collate,
+            crate::is_bin_collation(&self.collation_name),
+        )
     }
 
     /// Mirrors `FieldType.SetFlenUnderLimit`.
@@ -2332,5 +2316,49 @@ mod tests {
                 "{code:?}"
             );
         }
+    }
+
+    #[test]
+    fn shared_field_string_policy_keeps_named_unknown_and_restored_data_rules() {
+        for code in [FieldTypeCode::Enum, FieldTypeCode::Bit, FieldTypeCode::Set] {
+            assert!(FieldType::new(code).is_hybrid(), "{code:?}");
+        }
+        for code in [
+            FieldTypeCode::Varchar,
+            FieldTypeCode::VarString,
+            FieldTypeCode::Json,
+            FieldTypeCode::TinyBlob,
+            FieldTypeCode::MediumBlob,
+            FieldTypeCode::LongBlob,
+            FieldTypeCode::Blob,
+            FieldTypeCode::VectorFloat32,
+        ] {
+            assert!(code.is_var_length_type(), "{code:?}");
+        }
+        for raw in [
+            FieldTypeCode::Bit.mysql_type(),
+            FieldTypeCode::Json.mysql_type(),
+            FieldTypeCode::VectorFloat32.mysql_type(),
+        ] {
+            let unknown = FieldTypeCode::Unknown(raw);
+            assert!(!unknown.is_var_length_type(), "{unknown:?}");
+            assert!(!FieldType::new(unknown).is_hybrid(), "{unknown:?}");
+        }
+        let utf8 = FieldType::new(FieldTypeCode::String).with_collation_name("utf8mb4_general_ci");
+        assert!(utf8.is_character_string());
+        assert!(utf8.need_restored_data());
+        assert!(!utf8.need_restored_data_with_collation(false));
+        let binary = FieldType::new(FieldTypeCode::String).with_collation_name("binary");
+        assert!(!binary.is_character_string());
+        assert!(!binary.need_restored_data());
+        let varchar_bin = FieldType::new(FieldTypeCode::Varchar).with_collation_name("utf8mb4_bin");
+        assert!(varchar_bin.need_restored_data());
+        let string_bin = FieldType::new(FieldTypeCode::String).with_collation_name("utf8mb4_bin");
+        assert!(!string_bin.need_restored_data());
+        let gbk_bin = FieldType::new(FieldTypeCode::String).with_collation_name("gbk_bin");
+        assert!(gbk_bin.need_restored_data());
+        let utf8_0900 =
+            FieldType::new(FieldTypeCode::String).with_collation_name("utf8mb4_0900_bin");
+        assert!(!utf8_0900.need_restored_data());
     }
 }

@@ -1,0 +1,24 @@
+field-string-policy-146 / R152
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-string-policy-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_string_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_string_policy_keeps_named_unknown_and_restored_data_rules -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib test_need_restored_data -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib charset_and_collation_metadata_surfaces -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/523 2.66/0.00 0 505f2153a136085180e4f7daed60352780ff625da962d0eb8e0ccc897d9d5de9
+native-datatype 489/0/0/0 2.42/6.98 0 cb20b54ec3fd404f12a18290d68891dc4d35d030c39609b1a3bdb419abb5f4e6
+native-new 1/0/0/488 0.09/0.00 0 2f568cd83679e4e3d048bb837bbbeba4d4c30c52c19b72b7403f9fd6fdf3a88e
+native-existing 1/0/0/488 0.09/0.00 0 516ef87578b55dc1a0eaafef3944daf6e29837f37184be6f6e1f17a91bc552b7
+session-sql 1/0/0/2269 16.44/0.03 0 6de3ae871741980e6774540993b00f2f7bc73ded020f984b25a1c57d940e3566
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);2old SDK/24old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_string_type now has named Bit/JSON/Vector and owns hybrid, var-length, character-string and restored-data policy. Native projects actual named/unknown type, exact collation text and bin-collation fact. Unknown numeric aliases, exact binary, utf8mb4_0900_bin override, GBK sort-key behavior, new-collation switch and VARCHAR exception remain exact.
+Both production-only agents completed and froze exact single-file changes without tests or commands; parent adopted, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype489 and one charset/collation SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

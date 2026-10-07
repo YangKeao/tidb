@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **field-string-meta-145**, following **decimal-unsigned-ref-144**.
+Current checkpoint: **field-string-policy-146**, following **field-string-meta-145**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-Existing SDK owner `native_string_type.rs` now has named Enum/Set identity and owns ENUM/SET display length plus FieldType HasCharset/BINARY classification. Native projects actual code and flags; raw unknown bytes remain Other.
+Existing SDK owner `native_string_type.rs` now has named Bit/JSON/Vector identity and owns hybrid, variable-length, character-string and restored-data policy. Native projects actual named/unknown type, collation text and bin-collation fact only.
 
 ## Verification
 
-[Evidence](evidence/field-string-meta-checkpoint.md), [commands/counts/hashes](logs/field-string-meta-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/field-string-policy-checkpoint.md), [commands/counts/hashes](logs/field-string-policy-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five final Cargo gates GREEN: SDK1, full native datatype488, new/existing FieldType2 and session SQL consumer1. Two new tests;1 SDK/23 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary retains one test-import-only compile RED.
+Five Cargo gates GREEN: SDK1, full native datatype489, new/existing FieldType2 and session SQL consumer1. Two new tests;2 SDK/24 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit.
 
 ## Remaining
 
