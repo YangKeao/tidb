@@ -1462,20 +1462,18 @@ fn duration_target_facade_keeps_null_raw_storage_events_and_error_domains() {
 fn year_from_text(
     text: &str,
 ) -> Result<(i64, bool, Option<ScalarConversionEvent>), DatumValueError> {
-    let trimmed = text.trim();
-    let mut converted = crate::str_to_int(trimmed, false);
-    // Go `ConvertToMysqlYear` returns the zero YEAR beside any `StrToInt`
-    // error. In particular, an overflowing decimal string must not continue
-    // through `AdjustYear` with `i64::MAX`, which would turn the error-side
-    // value into the upper YEAR bound (2155).
-    if matches!(
+    use tidb_query_datatype::codec::native_temporal_convert::{
+        native_year_text_finish, native_year_text_source,
+    };
+    let source = native_year_text_source(text);
+    let mut converted = crate::str_to_int(source.trimmed, false);
+    let parsed_overflow = matches!(
         converted.event.as_ref(),
         Some(ScalarConversionEvent::Overflow(_))
-    ) {
-        converted.value = 0;
-    }
-    let adjust_zero = text.len() != 4 && converted.value == 0 && trimmed.starts_with('0');
-    Ok((converted.value, adjust_zero, converted.event))
+    );
+    let finish = native_year_text_finish(&source, converted.value, parsed_overflow);
+    converted.value = finish.value;
+    Ok((converted.value, finish.adjust_zero, converted.event))
 }
 
 fn value_to_literal_uint(bytes: &[u8], event: &mut Option<ScalarConversionEvent>) -> u64 {
@@ -1767,6 +1765,26 @@ mod tests {
             converted.event,
             Some(ScalarConversionEvent::Overflow(_))
         ));
+    }
+
+    #[test]
+    fn shared_year_text_controller_keeps_original_length_zero_and_typed_overflow() {
+        for (text, adjust_zero) in [
+            ("0000", false),
+            ("00", true),
+            (" 00 ", false),
+            (" 0000 ", true),
+        ] {
+            let (value, actual_adjust_zero, event) = year_from_text(text).unwrap();
+            assert_eq!(value, 0, "{text:?}");
+            assert_eq!(actual_adjust_zero, adjust_zero, "{text:?}");
+            assert_eq!(event, None, "{text:?}");
+        }
+        let (value, adjust_zero, event) =
+            year_from_text("99999999999999999999999999999999999").unwrap();
+        assert_eq!(value, 0);
+        assert!(!adjust_zero);
+        assert!(matches!(event, Some(ScalarConversionEvent::Overflow(_))));
     }
 
     #[test]

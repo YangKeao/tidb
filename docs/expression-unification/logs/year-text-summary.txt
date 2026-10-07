@@ -1,0 +1,24 @@
+year-text-142 / R148
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/year-text-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib year_text_source -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_year_text_controller_keeps_original_length_zero_and_typed_overflow -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib overflowing_year_text_returns_zero_beside_the_error -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/519 4.85/0.00 0 24ebe6d51e897c619e025300b5cbf88b384340564f03225654ff264f2d3a3538
+native-datatype 485/0/0/0 3.29/7.04 0 cb50511be588fd78389d500d73639d4ca087261901a9fc0b824c5f7efd106561
+native-new 1/0/0/484 0.09/0.00 0 bce5a91c02b6bfd772b7bddc02ad9970149d9b3a34d206da7a7911edd9dd6b92
+native-existing 1/0/0/484 0.10/0.00 0 56d2e803ee77f08ceb234066997edc7e698a5ba5c31cb6119135136b86e637cd
+session-sql 1/0/0/2269 24.95/0.02 0 8cabdb9a1828fe9d2b1f831b212f4072a0826a92c8ca052ecdd035381d38c008
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);2old SDK/28old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_temporal_convert now owns YEAR trimmed parse source, overflow-side zero and original-length/leading-zero adjustment. Native invokes shared str_to_int and moves its actual typed event. Original versus trimmed length, four-byte0000, non-four-byte leading zero and overflowing text remain exact.
+Native agent completed/froze production-only adapter promptly after exact by-reference signature confirmation. SDK agent first closed its delayed R147 turn, then did not publish R148 source despite two priority messages; parent stopped that turn and implemented the frozen25-line controller before adding both tests. No Cargo command had run before transfer and no production correction was needed.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype485 and one YEAR SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

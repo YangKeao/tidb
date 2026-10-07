@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **decimal-uint-141**, following **numeric-event-140**.
+Current checkpoint: **year-text-142**, following **decimal-uint-141**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-Existing SDK owner `native_integer_convert.rs` now owns scientific-notation expansion and exact DECIMAL-text-to-UNSIGNED conversion. Native retains public APIs, typed-error mapping and actual Decimal text rendering. No float bridge is introduced.
+Existing SDK owner `native_temporal_convert.rs` now owns YEAR trimmed parse source, overflow-side zero and original-length/leading-zero adjustment. Native invokes the shared integer parser and retains actual typed-event projection.
 
 ## Verification
 
-[Evidence](evidence/decimal-uint-checkpoint.md), [commands/counts/hashes](logs/decimal-uint-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/year-text-checkpoint.md), [commands/counts/hashes](logs/year-text-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five final Cargo gates GREEN: SDK3, full native datatype484, new/existing conversion2 and session SQL consumer1. Three new tests;3 SDK/24 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary retains one test-oracle RED and records parent adoption after both agents completed production changes but delayed tests/final responses.
+Five Cargo gates GREEN: SDK1, full native datatype485, new/existing YEAR2 and session SQL consumer1. Two new tests;2 SDK/28 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary records the SDK lease stop/parent transfer before Cargo.
 
 ## Remaining
 
