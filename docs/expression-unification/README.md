@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **string-target-137**, following **numeric-text-136**.
+Current checkpoint: **datatype-bound-138**, following **string-target-137**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-New SDK datatype owner `native_string_convert.rs` shares ProduceStr byte/rune limiting, complete UTF-8 prefixes, whitespace-tail diagnostics and binary fixed-string padding. Named classification extends `native_string_type.rs`. Native projects actual FieldType/charset and typed errors. Canonical UTF-8 helpers and original invalid-byte, lazy-length and warning/truncate behavior are retained.
+SDK `native_eval_type.rs` now owns GetMaxValue/GetMinValue target dispatch, reusing integer/float owners, exact Decimal boundary text and one canonical duration limit. Native materializes actual Datum/collation/Decimal/Duration/Time storage only. Known/Unknown identity, ARRAY effective type, metadata casts, Float32 narrowing, legacy Decimal text and temporal endpoints are retained.
 
 ## Verification
 
-[Evidence](evidence/string-target-checkpoint.md), [commands/counts/hashes](logs/string-target-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/datatype-bound-checkpoint.md), [commands/counts/hashes](logs/datatype-bound-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five Cargo gates GREEN: SDK target2/named type1, full native datatype480 and existing SQL2. Three new tests;1 SDK/24 native old touched-file test bodies unchanged. One new SDK file, no new native files or SQL fixture/probe credit. The native subagent failed after its final edit; parent adopted, formatted and validated the complete change.
+Five Cargo gates GREEN: SDK dispatch1/Decimal1, full native datatype481, existing reverse1 and executor SQL consumer1. Three new tests;7 SDK/25 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. Parent adopted/formatted/validated the complete native diff after requesting a late freeze interrupt; chronology is recorded in the summary.
 
 ## Remaining
 

@@ -1082,127 +1082,76 @@ fn decimal_target_overflow(target: &FieldType) -> tidb_error::terror::TerrorErro
 
 /// Source `GetMaxValue`.
 pub fn get_max_value(target: &FieldType) -> Datum {
-    match target.code() {
-        code @ (FieldTypeCode::Tiny
-        | FieldTypeCode::Short
-        | FieldTypeCode::Int24
-        | FieldTypeCode::Long
-        | FieldTypeCode::LongLong) => {
-            if target.is_unsigned() {
-                Datum::UInt(integer_unsigned_upper_bound(code))
-            } else {
-                Datum::Int(integer_signed_upper_bound(code))
-            }
-        }
-        FieldTypeCode::Float => Datum::Float32(f64::from(crate::get_max_float(
-            target.flen() as i32,
-            target.decimal() as i32,
-        ) as f32)),
-        FieldTypeCode::Double => Datum::Real(crate::get_max_float(
-            target.flen() as i32,
-            target.decimal() as i32,
-        )),
-        FieldTypeCode::String
-        | FieldTypeCode::Varchar
-        | FieldTypeCode::VarString
-        | FieldTypeCode::Blob
-        | FieldTypeCode::TinyBlob
-        | FieldTypeCode::MediumBlob
-        | FieldTypeCode::LongBlob => Datum::new_collation_string([250], target.collation()),
-        FieldTypeCode::NewDecimal => {
-            Datum::new_decimal(Decimal::from_signed_literal(&max_decimal_text(
-                target.flen().max(0) as usize,
-                target.decimal().max(0) as usize,
-            )))
-        }
-        FieldTypeCode::Duration => {
-            Datum::new_duration(MySqlDuration::maximum(0).expect("FSP zero is valid"))
-        }
-        FieldTypeCode::Date | FieldTypeCode::Datetime => Datum::new_time(
-            Time::new(
-                CoreTime::from_date(9999, 12, 31, 23, 59, 59, 999_999),
-                if matches!(target.code(), FieldTypeCode::Date) {
-                    TimeType::Date
-                } else {
-                    TimeType::DateTime
-                },
-                0,
-            )
-            .expect("source maximum datetime is valid"),
-        ),
-        FieldTypeCode::Timestamp => Datum::new_time(
-            Time::new(
-                CoreTime::from_date(2038, 1, 19, 3, 14, 7, 999_999),
-                TimeType::Timestamp,
-                0,
-            )
-            .expect("source maximum timestamp is valid"),
-        ),
-        _ => Datum::Null,
-    }
+    project_bound(target, true)
 }
 
 /// Source `GetMinValue`.
 pub fn get_min_value(target: &FieldType) -> Datum {
-    match target.code() {
-        code @ (FieldTypeCode::Tiny
-        | FieldTypeCode::Short
-        | FieldTypeCode::Int24
-        | FieldTypeCode::Long
-        | FieldTypeCode::LongLong) => {
-            if target.is_unsigned() {
-                Datum::UInt(0)
+    project_bound(target, false)
+}
+
+fn project_bound(target: &FieldType, maximum: bool) -> Datum {
+    use tidb_query_datatype::codec::native_eval_type::{
+        native_type_bound, NativeBoundTemporalKind, NativeBoundValue,
+    };
+    match native_type_bound(
+        target.code().as_shared_type_name_code(),
+        target.flen(),
+        target.decimal(),
+        target.is_unsigned(),
+        maximum,
+    ) {
+        NativeBoundValue::Null => Datum::Null,
+        NativeBoundValue::Int(value) => Datum::Int(value),
+        NativeBoundValue::UInt(value) => Datum::UInt(value),
+        NativeBoundValue::Real { value, float32 } => {
+            if float32 {
+                Datum::Float32(value)
             } else {
-                Datum::Int(integer_signed_lower_bound(code))
+                Datum::Real(value)
             }
         }
-        FieldTypeCode::Float => Datum::Float32(-f64::from(crate::get_max_float(
-            target.flen() as i32,
-            target.decimal() as i32,
-        ) as f32)),
-        FieldTypeCode::Double => Datum::Real(-crate::get_max_float(
-            target.flen() as i32,
-            target.decimal() as i32,
-        )),
-        FieldTypeCode::String
-        | FieldTypeCode::Varchar
-        | FieldTypeCode::VarString
-        | FieldTypeCode::Blob
-        | FieldTypeCode::TinyBlob
-        | FieldTypeCode::MediumBlob
-        | FieldTypeCode::LongBlob => Datum::new_collation_string([1], target.collation()),
-        FieldTypeCode::NewDecimal => Datum::new_decimal(Decimal::from_signed_literal(&format!(
-            "-{}",
-            max_decimal_text(
-                target.flen().max(0) as usize,
-                target.decimal().max(0) as usize
-            )
-        ))),
-        FieldTypeCode::Duration => Datum::new_duration(
-            MySqlDuration::from_nanoseconds(crate::MIN_TIME_NANOS, 0)
-                .expect("source minimum duration is valid"),
+        NativeBoundValue::StringByte(value) => {
+            Datum::new_collation_string([value], target.collation())
+        }
+        NativeBoundValue::DecimalText(text) => {
+            Datum::new_decimal(Decimal::from_signed_literal(&text))
+        }
+        NativeBoundValue::DurationNanos(nanos) => Datum::new_duration(
+            MySqlDuration::from_nanoseconds(nanos, 0).expect("SDK bound duration is valid"),
         ),
-        FieldTypeCode::Date | FieldTypeCode::Datetime => Datum::new_time(
-            Time::new(
-                CoreTime::from_date(1, 1, 1, 0, 0, 0, 0),
-                if matches!(target.code(), FieldTypeCode::Date) {
-                    TimeType::Date
-                } else {
-                    TimeType::DateTime
-                },
-                0,
+        NativeBoundValue::Temporal {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            microsecond,
+            kind,
+        } => {
+            let kind = match kind {
+                NativeBoundTemporalKind::Date => TimeType::Date,
+                NativeBoundTemporalKind::DateTime => TimeType::DateTime,
+                NativeBoundTemporalKind::Timestamp => TimeType::Timestamp,
+            };
+            Datum::new_time(
+                Time::new(
+                    CoreTime::from_date(
+                        year as u16,
+                        month as u8,
+                        day as u8,
+                        hour as u8,
+                        minute as u8,
+                        second as u8,
+                        microsecond as u32,
+                    ),
+                    kind,
+                    0,
+                )
+                .expect("SDK bound temporal value is valid"),
             )
-            .expect("source minimum datetime is valid"),
-        ),
-        FieldTypeCode::Timestamp => Datum::new_time(
-            Time::new(
-                CoreTime::from_date(1970, 1, 1, 0, 0, 1, 0),
-                TimeType::Timestamp,
-                0,
-            )
-            .expect("source minimum timestamp is valid"),
-        ),
-        _ => Datum::Null,
+        }
     }
 }
 
@@ -1525,11 +1474,11 @@ fn value_to_literal_uint(bytes: &[u8], event: &mut Option<ScalarConversionEvent>
 }
 
 fn max_decimal_text(flen: usize, scale: usize) -> String {
-    let integer = flen.saturating_sub(scale);
-    if scale == 0 {
-        return "9".repeat(integer);
-    }
-    format!("{}.{}", "9".repeat(integer.max(1)), "9".repeat(scale))
+    tidb_query_datatype::codec::native_decimal_convert::native_bound_decimal_text(
+        flen as i64,
+        scale as i64,
+        true,
+    )
 }
 
 fn numeric_outcome<T>(result: Result<T, (T, ScalarConversionError)>) -> Converted<T> {
@@ -2673,6 +2622,193 @@ mod tests {
         assert_eq!(converted.value, Datum::new_bytes(vec![b'a', 0, 0, 0]));
         assert!(converted.error.is_none());
         assert!(warnings.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn shared_datatype_bounds_keep_effective_codes_metadata_storage_and_source_bounds() {
+        for (code, lower, upper, unsigned_upper) in [
+            (FieldTypeCode::Tiny, -128, 127, 255),
+            (FieldTypeCode::Short, -32768, 32767, 65535),
+            (FieldTypeCode::Int24, -8388608, 8388607, 16777215),
+            (
+                FieldTypeCode::Long,
+                i64::from(i32::MIN),
+                i64::from(i32::MAX),
+                u64::from(u32::MAX),
+            ),
+            (FieldTypeCode::LongLong, i64::MIN, i64::MAX, u64::MAX),
+        ] {
+            let target = FieldType::new(code).with_flen(-7).with_decimal(-3);
+            assert_eq!(get_min_value(&target), Datum::Int(lower));
+            assert_eq!(get_max_value(&target), Datum::Int(upper));
+            let target = target.with_added_flags(FieldTypeFlags::UNSIGNED);
+            assert_eq!(get_min_value(&target), Datum::UInt(0));
+            assert_eq!(get_max_value(&target), Datum::UInt(unsigned_upper));
+        }
+        for (code, max, min, negative_max, negative_min) in [
+            (
+                FieldTypeCode::Float,
+                Datum::Float32(f64::from(99.9_f32)),
+                Datum::Float32(-f64::from(99.9_f32)),
+                Datum::Float32(-9.0),
+                Datum::Float32(9.0),
+            ),
+            (
+                FieldTypeCode::Double,
+                Datum::Real(99.9),
+                Datum::Real(-99.9),
+                Datum::Real(-9.0),
+                Datum::Real(9.0),
+            ),
+        ] {
+            let target = FieldType::new(code)
+                .with_flen(3)
+                .with_decimal(1)
+                .with_added_flags(FieldTypeFlags::UNSIGNED);
+            assert_eq!(get_max_value(&target), max);
+            assert_eq!(get_min_value(&target), min); // Unsigned does not change these float bounds.
+            let target = target.with_flen(-1).with_decimal(-1);
+            assert_eq!(get_max_value(&target), negative_max);
+            assert_eq!(get_min_value(&target), negative_min);
+        }
+        for code in [
+            FieldTypeCode::String,
+            FieldTypeCode::Varchar,
+            FieldTypeCode::VarString,
+            FieldTypeCode::Blob,
+            FieldTypeCode::TinyBlob,
+            FieldTypeCode::MediumBlob,
+            FieldTypeCode::LongBlob,
+        ] {
+            for collation in ["binary", "utf8mb4_general_ci"] {
+                let target = FieldType::new(code)
+                    .with_flen(0)
+                    .with_collation_name(collation);
+                for (value, byte) in [(get_min_value(&target), 1), (get_max_value(&target), 250)] {
+                    assert_eq!(value.collation(), Some(target.collation()));
+                    let Datum::String(value) = value else {
+                        panic!("string bound storage, including binary collation")
+                    };
+                    assert_eq!(value.bytes(), &[byte]);
+                }
+            }
+        }
+        for (flen, scale, maximum, minimum) in [
+            (5, 2, "999.99", "-999.99"),
+            (2, 5, "9.99999", "-9.99999"),
+            (-1, 2, "9.99", "-9.99"),
+            (3, -7, "999", "-999"),
+            (-1, -1, "0", "0"),
+        ] {
+            let target = FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(flen)
+                .with_decimal(scale)
+                .with_added_flags(FieldTypeFlags::UNSIGNED);
+            for (value, expected) in [
+                (get_max_value(&target), maximum),
+                (get_min_value(&target), minimum),
+            ] {
+                let Datum::Decimal(value) = value else {
+                    panic!("decimal bound storage")
+                };
+                assert_eq!(value.to_string(), expected);
+                assert_eq!(value.declared_shape(), None);
+            }
+        }
+        let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+        for (value, expected) in [
+            (get_max_value(&duration), crate::MAX_TIME_NANOS),
+            (get_min_value(&duration), crate::MIN_TIME_NANOS),
+        ] {
+            let Datum::Duration(value) = value else {
+                panic!("duration bound")
+            };
+            assert_eq!(value.nanoseconds(), expected);
+            assert_eq!(value.fsp(), 0);
+        }
+        for (code, kind, min_core, max_core) in [
+            (
+                FieldTypeCode::Date,
+                TimeType::Date,
+                CoreTime::from_date(1, 1, 1, 0, 0, 0, 0),
+                CoreTime::from_date(9999, 12, 31, 23, 59, 59, 999999),
+            ),
+            (
+                FieldTypeCode::Datetime,
+                TimeType::DateTime,
+                CoreTime::from_date(1, 1, 1, 0, 0, 0, 0),
+                CoreTime::from_date(9999, 12, 31, 23, 59, 59, 999999),
+            ),
+            (
+                FieldTypeCode::Timestamp,
+                TimeType::Timestamp,
+                CoreTime::from_date(1970, 1, 1, 0, 0, 1, 0),
+                CoreTime::from_date(2038, 1, 19, 3, 14, 7, 999999),
+            ),
+        ] {
+            let target = FieldType::new(code).with_decimal(6);
+            for (value, core) in [
+                (get_min_value(&target), min_core),
+                (get_max_value(&target), max_core),
+            ] {
+                let expected = Time::new(core, kind, 0).unwrap();
+                let Datum::Time(value) = value else {
+                    panic!("temporal bound")
+                };
+                assert_eq!(value.core_time(), expected.core_time());
+                assert_eq!(value.kind(), kind);
+                assert_eq!(value.fsp(), 0);
+            }
+        }
+        for code in [
+            FieldTypeCode::Unspecified,
+            FieldTypeCode::Null,
+            FieldTypeCode::Year,
+            FieldTypeCode::NewDate,
+            FieldTypeCode::Bit,
+            FieldTypeCode::Json,
+            FieldTypeCode::Enum,
+            FieldTypeCode::Set,
+            FieldTypeCode::Geometry,
+            FieldTypeCode::VectorFloat32,
+        ] {
+            let target = FieldType::new(code);
+            assert_eq!(get_min_value(&target), Datum::Null);
+            assert_eq!(get_max_value(&target), Datum::Null);
+        }
+        for byte in 0..=u8::MAX {
+            let unknown = FieldType::new(FieldTypeCode::Unknown(byte))
+                .with_flen(5)
+                .with_decimal(2);
+            assert_eq!(get_min_value(&unknown), Datum::Null);
+            assert_eq!(get_max_value(&unknown), Datum::Null);
+        }
+        let array = FieldType::new(FieldTypeCode::Tiny).with_array(true);
+        assert_eq!(get_min_value(&array), Datum::Null);
+        assert_eq!(get_max_value(&array), Datum::Null);
+        for (source, minimum, maximum) in [
+            (Datum::Int(1), Datum::Int(i64::MIN), Datum::Int(i64::MAX)),
+            (Datum::UInt(1), Datum::UInt(0), Datum::UInt(u64::MAX)),
+            (
+                Datum::Float32(1.0),
+                Datum::Float32(-f64::from(f32::MAX)),
+                Datum::Float32(f64::from(f32::MAX)),
+            ),
+            (
+                Datum::Real(1.0),
+                Datum::Real(-f64::MAX),
+                Datum::Real(f64::MAX),
+            ),
+            (
+                Datum::Decimal(Decimal::from_literal("0.0007")),
+                Datum::Decimal(Decimal::from_signed_literal("-9.9999")),
+                Datum::Decimal(Decimal::from_literal("9.9999")),
+            ),
+            (Datum::new_string("x"), Datum::MinNotNull, Datum::MaxValue),
+        ] {
+            assert_eq!(source_kind_bound(&source, RoundingType::Floor), minimum);
+            assert_eq!(source_kind_bound(&source, RoundingType::Ceiling), maximum);
+        }
     }
 }
 

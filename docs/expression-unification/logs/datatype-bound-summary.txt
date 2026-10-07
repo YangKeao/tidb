@@ -1,0 +1,24 @@
+datatype-bound-138 / R144
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/datatype-bound-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-eval] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_type_bounds_keep_known_identity_unsigned_float_metadata_and_temporal_payloads -- --test-threads=1
+[tikv-decimal] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib native_decimal_bound_text_preserves_zero_shapes_excess_scale_and_sign_prefix -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-reverse] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib test_change_reverse_result_by_upper_lower_bound -- --test-threads=1
+[executor-sql] ../../tools/cargo-tidb test --locked -p tidb-executor --lib explaining_a_correlated_scalar_type_reads_no_storage -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv-eval 1/0/0/512 4.63/0.00 0 bba5b2f31f15d543300112ca3e0854b0778c277e6be6a3a4c4a5d7d900d8fb1c
+tikv-decimal 1/0/0/512 0.12/0.00 0 dfb5540a6d575a2e8a427509cf6dfd8100a019720427a574a025a2dca0e40df3
+native-datatype 481/0/0/0 3.27/7.12 0 dc6694796e757e10cefca53ffb64b38c96fdbf45c3c6af7c5fabbe4499b4f0cf
+native-reverse 1/0/0/480 0.09/0.00 0 722f833669462d240db722362bc48857322b4bc2aabd84bd9a3f5f8dcee81b41
+executor-sql 1/0/0/1482 31.80/0.02 0 b35938c4167c184acd3db0880f1acb47751e9e5f0c04f94cd72c2641fb97449e
+
+SDK3/native1 Rust files, no new Rustfiles.3new tests(SDK2/native1);7old SDK/25old native touched-file test bodies unchanged. Executor/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK owns GetMax/GetMin type dispatch, integer/float owner reuse, exact Decimal boundary text and one canonical duration limit. Native only projects actual Datum/collation/Decimal/Duration/Time storage. Known/Unknown identity, ARRAY effective code, unsigned, i64-to-i32 floating metadata casts, Float32 narrowing/sign, 9.frac/empty/lone-minus Decimal text, temporal endpoints/FSP0 and source-kind-bound behavior preserved.
+Parent requested interrupt only after the native agent had visibly completed its adapter/test and sent FINAL FROZEN; the runtime later labeled the stopped turn without a closing message. Parent adopted, formatted and validated the complete diff; no code/test failure or missing edit.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Sourceconversion/eventmerge, otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype481 and one executor SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
