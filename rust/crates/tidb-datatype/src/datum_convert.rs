@@ -24,11 +24,13 @@ use tidb_query_datatype::codec::native_eval_type::{
     native_decimal_input_diagnostic_action, native_decimal_target_shape,
     native_enum_conversion_route, native_set_conversion_route,
     native_signed_integer_diagnostic_action, native_string_conversion_route,
+    native_time_input_route, native_time_target_fsp, native_time_target_kind,
     native_unsigned_integer_diagnostic_action, NativeBitInputRoute, NativeBitTargetShape,
     NativeDatumConversionTarget, NativeDecimalInputDiagnosticAction, NativeDecimalTargetShape,
     NativeElementInput, NativeEnumConversionRoute, NativeIntegerDiagnosticAction,
     NativeIntegerDiagnosticSource, NativeSetConversionRoute, NativeStringConversionRoute,
-    NativeStringConversionSource,
+    NativeStringConversionSource, NativeTimeInputRoute, NativeTimeInputSource,
+    NativeTimeTargetKind,
 };
 
 pub(crate) mod diagnostics;
@@ -69,6 +71,19 @@ fn integer_diagnostic_source(value: &Datum) -> NativeIntegerDiagnosticSource {
         }
         Datum::Decimal(_) => NativeIntegerDiagnosticSource::Decimal,
         _ => NativeIntegerDiagnosticSource::Other,
+    }
+}
+
+fn time_input_source(value: &Datum) -> NativeTimeInputSource {
+    match value {
+        Datum::Time(_) => NativeTimeInputSource::Time,
+        Datum::Duration(_) => NativeTimeInputSource::Duration,
+        Datum::String(_) | Datum::Bytes(_) => NativeTimeInputSource::Text,
+        Datum::Int(_) => NativeTimeInputSource::SignedInteger,
+        Datum::UInt(_) => NativeTimeInputSource::UnsignedInteger,
+        Datum::Decimal(_) => NativeTimeInputSource::Decimal,
+        Datum::Json(_) => NativeTimeInputSource::Json,
+        _ => NativeTimeInputSource::Other,
     }
 }
 
@@ -644,140 +659,163 @@ impl Datum {
         flags: ConversionFlags,
         zone: &SessionTimeZone,
     ) -> Result<Converted<Self>, DatumValueError> {
-        let kind = match target.code() {
-            FieldTypeCode::Date => TimeType::Date,
-            FieldTypeCode::Datetime => TimeType::DateTime,
-            FieldTypeCode::Timestamp => TimeType::Timestamp,
-            _ => unreachable!(),
+        let kind = match native_time_target_kind(target.code().as_shared_type_name_code()) {
+            NativeTimeTargetKind::Date => TimeType::Date,
+            NativeTimeTargetKind::DateTime => TimeType::DateTime,
+            NativeTimeTargetKind::Timestamp => TimeType::Timestamp,
+            NativeTimeTargetKind::Unsupported => unreachable!(),
         };
-        let fsp = if target.decimal() == UNSPECIFIED_LENGTH {
-            0
-        } else {
-            target.decimal()
-        };
+        let fsp = native_time_target_fsp(target.decimal(), UNSPECIFIED_LENGTH);
         let zero_in_date = flags.ignore_zero_in_date_err();
         let ignore_zero_date_err = flags.ignore_zero_date_err();
         let invalid_date = flags.ignore_invalid_date_err();
         // Go's fallback datum: `NewTime(ZeroCoreTime, tp, DefaultFsp)`.
         let zero = Time::new(CoreTime::default(), kind, 0).map_err(conversion_error)?;
         let wrong_value = move |_error| DatumValueError::IncorrectTemporal(zero);
+        let input_route = native_time_input_route(
+            time_input_source(self),
+            matches!(self, Self::UInt(value) if *value <= i64::MAX as u64),
+        );
         let mut event = None;
-        let time = match self {
-            Self::Time(value) => {
-                let (converted, adjusted) = value
-                    .convert_kind(kind, zero_in_date, invalid_date, zone)
-                    .map_err(wrong_value)?;
-                if adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+        let time = match input_route {
+            NativeTimeInputRoute::Time => match self {
+                Self::Time(value) => {
+                    let (converted, adjusted) = value
+                        .convert_kind(kind, zero_in_date, invalid_date, zone)
+                        .map_err(wrong_value)?;
+                    if adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    converted.round_frac(fsp, zone).map_err(wrong_value)?
                 }
-                converted.round_frac(fsp, zone).map_err(wrong_value)?
-            }
+                _ => unreachable!("time route requires time datum"),
+            },
             // Go `Duration.ConvertToTime`: `gotime.Now().In(ctx.Location())`,
             // which is [`session_now`] -- the same one the YEAR arm reads.
-            Self::Duration(value) => value
-                .convert_to_time(session_now(zone), kind, zero_in_date, invalid_date)
-                .and_then(|time| time.round_frac(fsp, zone))
-                .map_err(wrong_value)?,
-            Self::String(value) => {
-                let parsed = parse_time(
-                    value.as_utf8()?,
-                    kind,
-                    fsp,
-                    false,
-                    zero_in_date,
-                    invalid_date,
-                    zone,
-                )
-                .map_err(wrong_value)?;
-                if parsed.dst_adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+            NativeTimeInputRoute::Duration => match self {
+                Self::Duration(value) => value
+                    .convert_to_time(session_now(zone), kind, zero_in_date, invalid_date)
+                    .and_then(|time| time.round_frac(fsp, zone))
+                    .map_err(wrong_value)?,
+                _ => unreachable!("duration route requires duration datum"),
+            },
+            NativeTimeInputRoute::Text => match self {
+                Self::String(value) => {
+                    let parsed = parse_time(
+                        value.as_utf8()?,
+                        kind,
+                        fsp,
+                        false,
+                        zero_in_date,
+                        invalid_date,
+                        zone,
+                    )
+                    .map_err(wrong_value)?;
+                    if parsed.dst_adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    parsed.time
                 }
-                parsed.time
-            }
-            Self::Bytes(value) => {
-                let parsed = parse_time(
-                    std::str::from_utf8(value)?,
-                    kind,
-                    fsp,
-                    false,
-                    zero_in_date,
-                    invalid_date,
-                    zone,
-                )
-                .map_err(wrong_value)?;
-                if parsed.dst_adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                Self::Bytes(value) => {
+                    let parsed = parse_time(
+                        std::str::from_utf8(value)?,
+                        kind,
+                        fsp,
+                        false,
+                        zero_in_date,
+                        invalid_date,
+                        zone,
+                    )
+                    .map_err(wrong_value)?;
+                    if parsed.dst_adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    parsed.time
                 }
-                parsed.time
-            }
-            Self::Int(value) => {
-                let parsed = parse_time_from_num(
-                    *value,
-                    kind,
-                    fsp,
-                    zero_in_date,
-                    invalid_date,
-                    ignore_zero_date_err,
-                    zone,
-                )
-                .map_err(wrong_value)?;
-                if parsed.dst_adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                _ => unreachable!("text route requires string or bytes datum"),
+            },
+            NativeTimeInputRoute::SignedInteger => match self {
+                Self::Int(value) => {
+                    let parsed = parse_time_from_num(
+                        *value,
+                        kind,
+                        fsp,
+                        zero_in_date,
+                        invalid_date,
+                        ignore_zero_date_err,
+                        zone,
+                    )
+                    .map_err(wrong_value)?;
+                    if parsed.dst_adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    parsed.time
                 }
-                parsed.time
-            }
-            Self::UInt(value) if *value <= i64::MAX as u64 => {
-                let parsed = parse_time_from_num(
-                    *value as i64,
-                    kind,
-                    fsp,
-                    zero_in_date,
-                    invalid_date,
-                    ignore_zero_date_err,
-                    zone,
-                )
-                .map_err(wrong_value)?;
-                if parsed.dst_adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                _ => unreachable!("signed integer route requires int datum"),
+            },
+            NativeTimeInputRoute::BoundedUnsignedInteger => match self {
+                Self::UInt(value) => {
+                    let parsed = parse_time_from_num(
+                        *value as i64,
+                        kind,
+                        fsp,
+                        zero_in_date,
+                        invalid_date,
+                        ignore_zero_date_err,
+                        zone,
+                    )
+                    .map_err(wrong_value)?;
+                    if parsed.dst_adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    parsed.time
                 }
-                parsed.time
-            }
-            Self::Decimal(value) => {
-                // Datum.ConvertTo uses ParseTimeFromFloatString, not the
-                // distinct ParseTimeFromDecimal helper used by numeric casts.
-                // Parse at the target FSP so every discarded digit and any
-                // carry across a date/DST boundary are handled in one step.
-                let parsed = crate::time_parse::parse_time_with_flags(
-                    &value.to_string(),
-                    kind,
-                    fsp,
-                    true,
-                    flags,
-                    zone,
-                )
-                .map_err(wrong_value)?;
-                if parsed.dst_adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                _ => unreachable!("bounded unsigned integer route requires uint datum"),
+            },
+            NativeTimeInputRoute::Decimal => match self {
+                Self::Decimal(value) => {
+                    // Datum.ConvertTo uses ParseTimeFromFloatString, not the
+                    // distinct ParseTimeFromDecimal helper used by numeric casts.
+                    // Parse at the target FSP so every discarded digit and any
+                    // carry across a date/DST boundary are handled in one step.
+                    let parsed = crate::time_parse::parse_time_with_flags(
+                        &value.to_string(),
+                        kind,
+                        fsp,
+                        true,
+                        flags,
+                        zone,
+                    )
+                    .map_err(wrong_value)?;
+                    if parsed.dst_adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    parsed.time
                 }
-                parsed.time
-            }
-            Self::Json(value) => {
-                let parsed = parse_time(
-                    &value.unquote()?,
-                    kind,
-                    fsp,
-                    false,
-                    zero_in_date,
-                    invalid_date,
-                    zone,
-                )
-                .map_err(wrong_value)?;
-                if parsed.dst_adjusted {
-                    event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                _ => unreachable!("decimal route requires decimal datum"),
+            },
+            NativeTimeInputRoute::Json => match self {
+                Self::Json(value) => {
+                    let parsed = parse_time(
+                        &value.unquote()?,
+                        kind,
+                        fsp,
+                        false,
+                        zero_in_date,
+                        invalid_date,
+                        zone,
+                    )
+                    .map_err(wrong_value)?;
+                    if parsed.dst_adjusted {
+                        event = Some(ScalarConversionEvent::TimestampInDSTTransition);
+                    }
+                    parsed.time
                 }
-                parsed.time
+                _ => unreachable!("json route requires json datum"),
+            },
+            NativeTimeInputRoute::Unsupported => {
+                return Err(DatumValueError::Unsupported(self.kind(), "time"));
             }
-            _ => return Err(DatumValueError::Unsupported(self.kind(), "time")),
         };
         Ok(Converted {
             value: Self::new_time(time),
@@ -3673,5 +3711,47 @@ fn shared_enum_set_routes_keep_native_projection_and_vector_asymmetry() {
     assert!(matches!(
         vector.convert_to(&set_target, ConversionFlags::default()),
         Err(DatumValueError::Unsupported(_, "set"))
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn shared_time_routes_keep_native_projection_fsp_target_kind_and_unsigned_bound() {
+    assert_eq!(
+        time_input_source(&Datum::new_string("2024-01-02")),
+        NativeTimeInputSource::Text
+    );
+    assert_eq!(
+        time_input_source(&Datum::Int(1)),
+        NativeTimeInputSource::SignedInteger
+    );
+    assert_eq!(
+        time_input_source(&Datum::UInt(1)),
+        NativeTimeInputSource::UnsignedInteger
+    );
+    assert_eq!(
+        time_input_source(&Datum::new_decimal(Decimal::from_signed_literal("1"))),
+        NativeTimeInputSource::Decimal
+    );
+    assert_eq!(
+        time_input_source(&Datum::Null),
+        NativeTimeInputSource::Other
+    );
+
+    let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+    let converted = Datum::new_string("2024-01-02 03:04:05.123")
+        .convert_to(&datetime, ConversionFlags::default())
+        .unwrap();
+    let Datum::Time(value) = converted.value else {
+        panic!("expected time")
+    };
+    assert_eq!(value.kind(), TimeType::DateTime);
+    assert_eq!(value.fsp(), 3);
+    assert_eq!(converted.event, None);
+
+    let target = FieldType::new(FieldTypeCode::Date);
+    assert!(matches!(
+        Datum::UInt(i64::MAX as u64 + 1).convert_to(&target, ConversionFlags::default()),
+        Err(DatumValueError::Unsupported(_, "time"))
     ));
 }

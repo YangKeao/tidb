@@ -1,0 +1,24 @@
+datum-time-route-165 / R171
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/datum-time-route-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib time_route_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_time_routes_keep_native_projection_fsp_target_kind_and_unsigned_bound -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib decimal_temporal_conversion_uses_float_string_parser -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/545 5.55/0.00 0 d08da1c5a720ec46c1d7c610ad4b8c1feb2585a04c55bb94920fcce2a4129413
+native-datatype 510/0/0/0 4.26/7.19 0 256b744ae99a1d640f805e404cba9e43b9d625c343326257cecf0e40e07d4c21
+native-new 1/0/0/509 0.23/0.00 0 99117e6bc6ef6b3bb49222a29069e6af3a299b537c0c561543a5e7abaf007031
+native-existing 1/0/0/509 0.10/0.00 0 060535cbea2a1785807d1fa669e51da01b06d8f36cf5e60f14d520644e056ae2
+session-sql 1/0/0/2269 25.70/0.04 0 af0febe23f9556b586d8a32b6e4a92e65dfad3842eec232f2e7a19a14a5e095f
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);12old SDK/36old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns DATE/DATETIME/TIMESTAMP target kind, FSP sentinel and input route selection. Native target-code/FSP/source-kind selectors are deleted; actual parse/round, zero/invalid-date flags, timezone/DST, typed zero fallback and concrete values/events remain native. Tests cover named/unknown target identity, all source routes, unsigned i64 bound, native projection/FSP/kind, Decimal temporal parsing and numeric-temporal SQL.
+Two fresh production agents wrote/froze non-overlapping files without commands; native agent interrupted only after complete diff; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype510, existing Decimal temporal1 and numeric-temporal SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
