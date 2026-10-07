@@ -1,0 +1,24 @@
+field-aggregate-policy-151 / R157
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-aggregate-policy-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_aggregate_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_aggregate_policy_keeps_flags_bumps_and_unknown_zero_identity -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all test_agg_field_type -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib intersect_binds_tighter_than_union_in_execution -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/531 2.53/0.00 0 27dd3fe0725c93ec2f35f9c9263f66cebcd10e8f2628eb8a9c08b0c2ca394b91
+native-datatype 494/0/0/0 2.29/6.95 0 4e611c023077eeb72d76ec9b90dc2139ab9f682be5ac6822f2197c772f26e3ef
+native-new 1/0/0/493 0.09/0.00 0 cf404d09bad03e5802a753a212e739002e662b00afc0b54b485fedc110667ede
+native-existing 3/0/0/91 0.92/0.00 0 937022a855340784755ef2d0c44fea404b178934189177a12410905fbb58e540
+session-sql 1/0/0/2269 12.55/0.01 0 36f080838af8fb4bdb7f6c408d8ad09d8babbcefbc074d3d9dd3ff55f746943e
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);4old SDK/1old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type now owns aggregate flag merge/set, mixed-sign integer bump, Unspecified-aware eval merge and binary-output decision. Native retains concrete FieldType scans and assignments. Full identity makes Unknown(0) distinct from Known(0). Parent pre-Cargo review caught the initial native adapter passing `aggregate.is_string_kind()` instead of `aggregate` to binary-output API; corrected before any compile/test launch, so no RED receipt.
+Two fresh production agents completed/froze non-overlapping files without commands. Parent reviewed, corrected the adapter argument, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Binary-string metadata scan, renderer andbroaderM2/root/liveDAG/final remain. Full native datatype494, source aggregate3 and set-operation SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

@@ -5,7 +5,13 @@
 
 use super::{FieldType, FieldTypeCode, FieldTypeFlags};
 use crate::EvalType;
-use tidb_query_datatype::codec::native_type_name::{native_merge_field_type, NativeTypeNameCode};
+use tidb_query_datatype::codec::{
+    native_eval_type::{
+        native_aggregate_binary_output, native_merge_aggregate_eval_type, native_merge_type_flags,
+        native_mixed_sign_bumped_type, native_set_type_flag,
+    },
+    native_type_name::{native_merge_field_type, NativeTypeNameCode},
+};
 
 /// Exact table lookup used by Go `mergeFieldType`.
 pub const fn merge_field_type(left: FieldTypeCode, right: FieldTypeCode) -> FieldTypeCode {
@@ -20,8 +26,12 @@ pub const fn merge_field_type(left: FieldTypeCode, right: FieldTypeCode) -> Fiel
 }
 
 const fn merge_type_flags(left: u32, right: u32) -> u32 {
-    left & (right & FieldTypeFlags::NOT_NULL | !FieldTypeFlags::NOT_NULL)
-        & (right & FieldTypeFlags::UNSIGNED | !FieldTypeFlags::UNSIGNED)
+    native_merge_type_flags(
+        left,
+        right,
+        FieldTypeFlags::NOT_NULL,
+        FieldTypeFlags::UNSIGNED,
+    )
 }
 
 /// Exact `AggFieldType`, including mixed-sign integral promotion.
@@ -45,14 +55,13 @@ pub fn agg_field_type(types: &[FieldType]) -> FieldType {
                 && (field_type.code() == current.code() || field_type.code() == FieldTypeCode::Bit)
         });
         if bumps_range {
-            current.set_code(match current.code() {
-                FieldTypeCode::Tiny => FieldTypeCode::Short,
-                FieldTypeCode::Short => FieldTypeCode::Int24,
-                FieldTypeCode::Int24 => FieldTypeCode::Long,
-                FieldTypeCode::Long => FieldTypeCode::LongLong,
-                FieldTypeCode::LongLong => FieldTypeCode::NewDecimal,
-                other => other,
-            });
+            current.set_code(
+                match native_mixed_sign_bumped_type(current.code().as_shared_type_name_code()) {
+                    NativeTypeNameCode::Known(raw) | NativeTypeNameCode::Unknown(raw) => {
+                        FieldTypeCode::from_mysql_type(raw)
+                    }
+                },
+            );
         }
     }
     if current.is_unsigned() && !mixed_sign {
@@ -63,11 +72,7 @@ pub fn agg_field_type(types: &[FieldType]) -> FieldType {
 
 /// Sets or clears a source type flag.
 pub const fn set_type_flag(flags: &mut u32, item: u32, on: bool) {
-    if on {
-        *flags |= item
-    } else {
-        *flags &= !item
-    }
+    *flags = native_set_type_flag(*flags, item, on)
 }
 
 /// Exact `AggregateEvalType` merge and output-flag behavior.
@@ -112,46 +117,36 @@ pub fn aggregate_eval_type(types: &[FieldType], flags: &mut u32) -> EvalType {
     set_type_flag(
         flags,
         FieldTypeFlags::BINARY,
-        !aggregate.is_string_kind() || binary_string,
+        native_aggregate_binary_output(aggregate, binary_string),
     );
     aggregate
 }
 
 fn merge_eval_type(
-    mut left_eval: EvalType,
-    mut right_eval: EvalType,
+    left_eval: EvalType,
+    right_eval: EvalType,
     left: &FieldType,
     right: &FieldType,
     left_unsigned: bool,
     right_unsigned: bool,
 ) -> EvalType {
-    if left.code() == FieldTypeCode::Unspecified || right.code() == FieldTypeCode::Unspecified {
-        if left.code() == right.code() {
-            return EvalType::String;
-        }
-        if left.code() == FieldTypeCode::Unspecified {
-            left_eval = right_eval;
-        } else {
-            right_eval = left_eval;
-        }
-    }
-    if left_eval.is_string_kind() || right_eval.is_string_kind() {
-        EvalType::String
-    } else if left_eval == EvalType::Real || right_eval == EvalType::Real {
-        EvalType::Real
-    } else if left_eval == EvalType::Decimal
-        || right_eval == EvalType::Decimal
-        || left_unsigned != right_unsigned
-    {
-        EvalType::Decimal
-    } else {
-        EvalType::Int
-    }
+    native_merge_aggregate_eval_type(
+        left_eval,
+        right_eval,
+        left.code().as_shared_type_name_code(),
+        right.code().as_shared_type_name_code(),
+        left_unsigned,
+        right_unsigned,
+    )
 }
 
 #[cfg(test)]
 mod shared_merge_tests {
-    use super::{merge_field_type, FieldTypeCode};
+    use super::{
+        agg_field_type, aggregate_eval_type, merge_field_type, set_type_flag, FieldType,
+        FieldTypeCode, FieldTypeFlags,
+    };
+    use crate::EvalType;
 
     #[test]
     fn shared_field_merge_table_keeps_matrix_and_zero_index_policy() {
@@ -193,5 +188,42 @@ mod shared_merge_tests {
                 "{left:?}/{right:?}"
             );
         }
+    }
+
+    #[test]
+    fn shared_field_aggregate_policy_keeps_flags_bumps_and_unknown_zero_identity() {
+        let mut flags = 0;
+        set_type_flag(&mut flags, FieldTypeFlags::UNSIGNED, true);
+        assert_eq!(flags, FieldTypeFlags::UNSIGNED);
+        set_type_flag(&mut flags, FieldTypeFlags::UNSIGNED, false);
+        assert_eq!(flags, 0);
+
+        let mixed = agg_field_type(&[
+            FieldType::parser(FieldTypeCode::Tiny).with_unsigned(true),
+            FieldType::parser(FieldTypeCode::Tiny),
+        ]);
+        assert_eq!(mixed.code(), FieldTypeCode::Short);
+
+        let mut output_flags = 0;
+        let aggregate = aggregate_eval_type(
+            &[
+                FieldType::parser(FieldTypeCode::Unspecified),
+                FieldType::parser(FieldTypeCode::Long),
+            ],
+            &mut output_flags,
+        );
+        assert_eq!(aggregate, EvalType::Int);
+        assert_ne!(output_flags & FieldTypeFlags::BINARY, 0);
+
+        output_flags = 0;
+        let aggregate = aggregate_eval_type(
+            &[
+                FieldType::parser(FieldTypeCode::Unknown(0)),
+                FieldType::parser(FieldTypeCode::Long),
+            ],
+            &mut output_flags,
+        );
+        assert_eq!(aggregate, EvalType::String);
+        assert_eq!(output_flags & FieldTypeFlags::BINARY, 0);
     }
 }
