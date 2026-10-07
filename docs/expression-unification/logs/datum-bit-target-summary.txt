@@ -1,0 +1,24 @@
+datum-bit-target-163 / R169
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/datum-bit-target-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib bit_target_controller -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_bit_target_controller_keeps_invalid_bounded_full_width_and_input_routes -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib source_convert_to_enum_set_bit_json_vector_and_temporal_rows -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::dml::a_bit_column_reports_an_overflow_as_data_too_long -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/543 5.08/0.00 0 705b398cc69687e805a0503a8a9ddd1d4c3fdbfa6a275464123f36a1734c4266
+native-datatype 508/0/0/0 3.55/7.11 0 6376e93b29ac9cb3da342dad949fccd2678113f798da721d338d0f2b5064e2b0
+native-new 1/0/0/507 0.10/0.00 0 7c927606ffdad47254a171765c42b21fa83d1697f71831e4c2a3efb8b890c47f
+native-existing 1/0/0/507 0.09/0.00 0 65dca9218ee3174ba5bb0fef58df974069edfba720f1d618a73cae11cb5d97ec
+session-sql 1/0/0/2269 26.26/0.01 0 4e72719709e783ad31edb3f49b19fc267a3b3d635d12d300414055618989a14c
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);10old SDK/34old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns BIT target shape and input route selection. Native flen validation/shift/width and source-kind selectors are deleted; literal parsing, actual unsigned conversion, concrete errors/events and BinaryLiteral construction remain native. Tests cover invalid boundaries, upper/width table, route precedence, bytes clamp, 9-bit storage, full-width negative signed cast, existing mixed conversions and exact BIT write overflow SQL.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype508, existing mixed conversion1 and BIT write SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

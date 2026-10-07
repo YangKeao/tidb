@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **datum-decimal-target-162**, following **datum-integer-diagnostic-161**.
+Current checkpoint: **datum-bit-target-163**, following **datum-decimal-target-162**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No complete write-lowering, whole CAST/M2 or Go-package credit.
 
-Existing SDK owner `native_eval_type.rs` now owns Decimal target metadata shape and input diagnostic-action selection. Native conversion keeps actual Decimal parse/round/fit, concrete typed errors and caller context writes; local flen/decimal controller and source/event diagnostic match are deleted.
+Existing SDK owner `native_eval_type.rs` now owns BIT target shape and input route selection. Native conversion keeps literal parsing, actual unsigned conversion, concrete errors/events and BinaryLiteral construction; local flen validation/shift/width and source-kind selectors are deleted.
 
 ## Verification
 
-[Evidence](evidence/datum-decimal-target-checkpoint.md), [commands/counts/hashes](logs/datum-decimal-target-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/datum-bit-target-checkpoint.md), [commands/counts/hashes](logs/datum-bit-target-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five final Cargo gates GREEN: SDK1, full native datatype507, native-new1, existing Decimal row1 and numeric session SQL1. Initial SDK and native compiles both exposed the same const `i64::max` incompatibility; both RED receipts are retained, and exact conditional clamping passed both reruns. Two new tests;9 SDK/33 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit.
+Five Cargo gates GREEN: SDK1, full native datatype508, native-new1, existing mixed conversion1 and exact BIT write session SQL1. Two new tests;10 SDK/34 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit.
 
 ## Remaining
 

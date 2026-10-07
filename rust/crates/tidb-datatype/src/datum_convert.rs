@@ -20,9 +20,10 @@
 
 use chrono::Utc;
 use tidb_query_datatype::codec::native_eval_type::{
-    native_datum_conversion_target, native_decimal_input_diagnostic_action,
-    native_decimal_target_shape, native_signed_integer_diagnostic_action,
-    native_string_conversion_route, native_unsigned_integer_diagnostic_action,
+    native_bit_input_route, native_bit_target_shape, native_datum_conversion_target,
+    native_decimal_input_diagnostic_action, native_decimal_target_shape,
+    native_signed_integer_diagnostic_action, native_string_conversion_route,
+    native_unsigned_integer_diagnostic_action, NativeBitInputRoute, NativeBitTargetShape,
     NativeDatumConversionTarget, NativeDecimalInputDiagnosticAction, NativeDecimalTargetShape,
     NativeIntegerDiagnosticAction, NativeIntegerDiagnosticSource, NativeStringConversionRoute,
     NativeStringConversionSource,
@@ -972,30 +973,45 @@ impl Datum {
         flags: ConversionFlags,
     ) -> Result<Converted<Self>, DatumValueError> {
         let flen = target.flen();
-        if !(1..=64).contains(&flen) {
+        let target_shape = native_bit_target_shape(flen);
+        if matches!(target_shape, NativeBitTargetShape::Invalid) {
             return Err(DatumValueError::Comparison(format!(
                 "Data Too Long, field len {flen}"
             )));
         }
+        let input_route = native_bit_input_route(
+            matches!(self, Self::String(_) | Self::Bytes(_)),
+            matches!(self, Self::Int(_)),
+        );
         let mut event = None;
-        let mut value = match self {
-            Self::String(value) => value_to_literal_uint(value.bytes(), &mut event),
-            Self::Bytes(value) => value_to_literal_uint(value, &mut event),
-            Self::Int(value) => *value as u64,
-            _ => {
+        let mut value = match input_route {
+            NativeBitInputRoute::Bytes => match self {
+                Self::String(value) => value_to_literal_uint(value.bytes(), &mut event),
+                Self::Bytes(value) => value_to_literal_uint(value, &mut event),
+                _ => unreachable!("byte route requires string or bytes datum"),
+            },
+            NativeBitInputRoute::Signed => match self {
+                Self::Int(value) => *value as u64,
+                _ => unreachable!("signed route requires int datum"),
+            },
+            NativeBitInputRoute::Unsigned => {
                 let converted = self.convert_to_unsigned(target.code(), flags)?;
                 event = converted.event;
                 converted.value
             }
         };
-        if flen < 64 {
-            let upper = (1_u64 << flen) - 1;
-            if value > upper {
-                value = upper;
-                event = Some(ScalarConversionEvent::Truncated);
+        let width_bytes = match target_shape {
+            NativeBitTargetShape::Invalid => unreachable!("invalid target returned above"),
+            NativeBitTargetShape::Full { width_bytes } => width_bytes,
+            NativeBitTargetShape::Bounded { upper, width_bytes } => {
+                if value > upper {
+                    value = upper;
+                    event = Some(ScalarConversionEvent::Truncated);
+                }
+                width_bytes
             }
-        }
-        let width = BinaryLiteralWidth::try_from(((flen + 7) / 8) as u8)
+        };
+        let width = BinaryLiteralWidth::try_from(width_bytes)
             .map_err(|error| DatumValueError::Comparison(error.to_string()))?;
         Ok(Converted {
             value: Self::new_mysql_bit(BinaryLiteral::from_uint(value, Some(width))),
@@ -3545,4 +3561,39 @@ fn shared_decimal_target_controller_keeps_unbounded_invalid_bounded_overflow_and
         .convert_to(&FieldType::new(FieldTypeCode::NewDecimal), flags)
         .unwrap();
     assert_eq!(text.event, Some(ScalarConversionEvent::Truncated));
+}
+
+#[cfg(test)]
+#[test]
+fn shared_bit_target_controller_keeps_invalid_bounded_full_width_and_input_routes() {
+    let flags = ConversionFlags::default();
+    let invalid = FieldType::new(FieldTypeCode::Bit).with_flen(0);
+    assert!(matches!(
+        Datum::UInt(1).convert_to(&invalid, flags),
+        Err(DatumValueError::Comparison(message)) if message == "Data Too Long, field len 0"
+    ));
+
+    let one = FieldType::new(FieldTypeCode::Bit).with_flen(1);
+    let clamped_bytes = Datum::new_bytes(vec![2]).convert_to(&one, flags).unwrap();
+    assert_eq!(clamped_bytes.event, Some(ScalarConversionEvent::Truncated));
+    assert!(matches!(
+        clamped_bytes.value,
+        Datum::Bit(value) if value.as_bytes() == [1]
+    ));
+
+    let nine = FieldType::new(FieldTypeCode::Bit).with_flen(9);
+    let widened = Datum::UInt(1).convert_to(&nine, flags).unwrap();
+    assert_eq!(widened.event, None);
+    assert!(matches!(
+        widened.value,
+        Datum::Bit(value) if value.as_bytes() == [0, 1]
+    ));
+
+    let full = FieldType::new(FieldTypeCode::Bit).with_flen(64);
+    let signed = Datum::Int(-1).convert_to(&full, flags).unwrap();
+    assert_eq!(signed.event, None);
+    assert!(matches!(
+        signed.value,
+        Datum::Bit(value) if value.as_bytes() == [0xff; 8]
+    ));
 }
