@@ -1,0 +1,24 @@
+expr-diagnostic-render-169 / R175
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/expr-diagnostic-render-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib diagnostic_renderer_preserves -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-expr --lib shared_diagnostic_renderer_keeps_native_ast_operator_projection -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-expr --lib test_arithmetic_overflow_error_message_with_column_name -- --test-threads=1
+[native-math] ../../tools/cargo-tidb test --locked -p tidb-expr --lib math_overflow_errors_render_the_source_expression -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_global_vars::an_overflow_names_its_class_and_folded_constants_name_their_expression -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/549 5.27/0.00 0 06ab24cbb4a9b0ba7fd06f1835d0b00943ee66abc270f4529d0f14025784e1b8
+native-new 1/0/0/1743 20.53/0.00 0 c5f9e0a6664d6e4f9e83fedd12525cd9b9bd4c2ae2b111fe069c242072cd3144
+native-existing 1/0/0/1743 0.13/0.00 0 63e595e8d54c2ff84068e3347ccca6bbe5940dbdcb7f25b00f97409f96b73e6f
+native-math 1/0/0/1743 0.12/0.00 0 51f50f18e9fabc6503eb589a3d0f8e27f6116bd6203da5e202b3422cd28ef121
+session-sql 1/0/0/2269 30.01/0.01 0 1fae21145fc7b38ed0fb590f4936883a2641bf555ef29d0871161f90814fa7d3
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);14old SDK/32old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns six operator symbols and binary/cast/decimal-cast/function-call diagnostic text composition. Native repeated format/join bodies are deleted; AST recursion, value/name resolution, target metadata and typed errors remain native. Tests cover all operators, exact render shapes, AST projection, arithmetic and math source expressions and SQL overflow text.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Whole expression renderer/evaluator is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Five targeted gates passed. Full tidb-expr was deliberately not claimed/rerun as green because R100 retained four historical failures. Full unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

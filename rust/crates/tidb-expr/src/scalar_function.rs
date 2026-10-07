@@ -50,6 +50,11 @@ use tidb_chunk::chunk::Chunk;
 use tidb_chunk::row::Row;
 use tidb_codec::{encode_compact_bytes, encode_int};
 use tidb_datatype::{Datum, EvalType, FieldType, UNSPECIFIED_LENGTH};
+use tidb_query_datatype::codec::native_eval_type::{
+    native_arithmetic_symbol, native_render_binary_expression, native_render_cast_expression,
+    native_render_decimal_cast_expression, native_render_function_expression,
+    NativeArithmeticOperator,
+};
 
 const MAX_ADVISORY_LOCK_TIMEOUT_SECS: i64 = 1_073_741_824;
 
@@ -322,16 +327,20 @@ pub struct ScalarFunction {
     ilike_pattern_cache: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledIlikePattern>,
 }
 
-pub(crate) fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
+fn native_arithmetic_operator(op: tidb_ast::BinaryOp) -> Option<NativeArithmeticOperator> {
     Some(match op {
-        tidb_ast::BinaryOp::Plus => "+",
-        tidb_ast::BinaryOp::Minus => "-",
-        tidb_ast::BinaryOp::Mul => "*",
-        tidb_ast::BinaryOp::Div => "/",
-        tidb_ast::BinaryOp::IntDiv => "DIV",
-        tidb_ast::BinaryOp::Mod => "%",
+        tidb_ast::BinaryOp::Plus => NativeArithmeticOperator::Plus,
+        tidb_ast::BinaryOp::Minus => NativeArithmeticOperator::Minus,
+        tidb_ast::BinaryOp::Mul => NativeArithmeticOperator::Multiply,
+        tidb_ast::BinaryOp::Div => NativeArithmeticOperator::Divide,
+        tidb_ast::BinaryOp::IntDiv => NativeArithmeticOperator::IntegerDivide,
+        tidb_ast::BinaryOp::Mod => NativeArithmeticOperator::Modulo,
         _ => return None,
     })
+}
+
+pub(crate) fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
+    Some(native_arithmetic_symbol(native_arithmetic_operator(op)?))
 }
 
 fn numeric_expression_text(
@@ -387,20 +396,20 @@ fn numeric_expression_text(
                 let [argument] = function.args.as_slice() else {
                     return None;
                 };
-                return Some(format!(
-                    "cast({}, {})",
-                    numeric_expression_text(argument, go_float_format, ctx)?,
-                    function.get_static_type()?.source_string(),
+                return Some(native_render_cast_expression(
+                    &numeric_expression_text(argument, go_float_format, ctx)?,
+                    &function.get_static_type()?.source_string(),
                 ));
             }
-            let op = arithmetic_symbol(binary_op_for_name(function.func_name.lowercase())?)?;
+            let op =
+                native_arithmetic_operator(binary_op_for_name(function.func_name.lowercase())?)?;
             let [left, right] = function.args.as_slice() else {
                 return None;
             };
-            Some(format!(
-                "({} {op} {})",
-                numeric_expression_text(left, go_float_format, ctx)?,
-                numeric_expression_text(right, go_float_format, ctx)?
+            Some(native_render_binary_expression(
+                &numeric_expression_text(left, go_float_format, ctx)?,
+                op,
+                &numeric_expression_text(right, go_float_format, ctx)?,
             ))
         }
     }
@@ -447,11 +456,11 @@ fn numeric_argument_text(
             target.set_decimal_under_limit(i64::from(fraction));
         }
     }
-    Some(format!(
-        "cast({text}, decimal({},{}){} BINARY)",
+    Some(native_render_decimal_cast_expression(
+        &text,
         target.flen(),
-        target.decimal().max(0),
-        if field.is_unsigned() { " UNSIGNED" } else { "" }
+        target.decimal(),
+        field.is_unsigned(),
     ))
 }
 
@@ -490,14 +499,14 @@ fn arithmetic_overflow_expression(
     go_float_format: bool,
     ctx: &dyn Columns,
 ) -> Option<String> {
-    let symbol = arithmetic_symbol(op)?;
+    let op = native_arithmetic_operator(op)?;
     let [left, right] = function.get_args() else {
         return None;
     };
-    Some(format!(
-        "({} {symbol} {})",
-        numeric_argument_text(function, left, go_float_format, ctx, None)?,
-        numeric_argument_text(function, right, go_float_format, ctx, None)?
+    Some(native_render_binary_expression(
+        &numeric_argument_text(function, left, go_float_format, ctx, None)?,
+        op,
+        &numeric_argument_text(function, right, go_float_format, ctx, None)?,
     ))
 }
 
@@ -578,14 +587,14 @@ fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Opt
             }
             Expression::ScalarFunction(function) => {
                 if let Some(op) = binary_op_for_name(function.func_name.lowercase()) {
-                    let symbol = arithmetic_symbol(op)?;
+                    let op = native_arithmetic_operator(op)?;
                     let [left, right] = function.args.as_slice() else {
                         return None;
                     };
-                    return Some(format!(
-                        "({} {symbol} {})",
-                        render(left, ctx)?,
-                        render(right, ctx)?
+                    return Some(native_render_binary_expression(
+                        &render(left, ctx)?,
+                        op,
+                        &render(right, ctx)?,
                     ));
                 }
                 let args = function
@@ -593,10 +602,9 @@ fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Opt
                     .iter()
                     .map(|expression| render(expression, ctx))
                     .collect::<Option<Vec<_>>>()?;
-                Some(format!(
-                    "{}({})",
+                Some(native_render_function_expression(
                     function.func_name.lowercase(),
-                    args.join(", ")
+                    &args,
                 ))
             }
             _ => None,
@@ -608,10 +616,9 @@ fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Opt
         .iter()
         .map(|expression| render(expression, ctx))
         .collect::<Option<Vec<_>>>()?;
-    Some(format!(
-        "{}({})",
+    Some(native_render_function_expression(
         function.func_name.lowercase(),
-        args.join(", ")
+        &args,
     ))
 }
 
@@ -6061,4 +6068,28 @@ fn coalesce_keeps_typed_temporal_projection_raw_fsp_and_late_string_cast() {
             Datum::Null
         );
     });
+}
+
+#[cfg(test)]
+#[test]
+fn shared_diagnostic_renderer_keeps_native_ast_operator_projection() {
+    for (operator, expected) in [
+        (tidb_ast::BinaryOp::Plus, "+"),
+        (tidb_ast::BinaryOp::Minus, "-"),
+        (tidb_ast::BinaryOp::Mul, "*"),
+        (tidb_ast::BinaryOp::Div, "/"),
+        (tidb_ast::BinaryOp::IntDiv, "DIV"),
+        (tidb_ast::BinaryOp::Mod, "%"),
+    ] {
+        assert_eq!(arithmetic_symbol(operator), Some(expected));
+    }
+    assert_eq!(arithmetic_symbol(tidb_ast::BinaryOp::LogicAnd), None);
+    assert_eq!(
+        native_render_binary_expression(
+            "cast(a, decimal(20,0) BINARY)",
+            NativeArithmeticOperator::IntegerDivide,
+            "b",
+        ),
+        "(cast(a, decimal(20,0) BINARY) DIV b)"
+    );
 }
