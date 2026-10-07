@@ -3775,39 +3775,38 @@ impl LegacyEvaluator<'_> {
                 | SimpleSig::CastTimeAsString
                 | SimpleSig::CastDurationAsString),
                 children,
-            ) => {
-                match sig {
-                    SimpleSig::CastIntAsString => {
-                        let value = legacy_some!(self.folded_int(children.first())?);
-                        // Go formats by the source's UNSIGNED flag; the i128
-                        // carries the sign here. The `TypeYear` "0" -> "0000"
-                        // special case folds -- no field type on the wire.
-                        let text = i64::try_from(value)
-                            .map(|signed| signed.to_string())
-                            .unwrap_or_else(|_| format!("{}", value as u64));
-                        Some(text.into_bytes())
-                    }
-                    // Go `strconv.FormatFloat(val, 'f', -1, 64)`: the
-                    // shortest decimal form without an exponent -- Rust's
-                    // `Display` for f64.
-                    SimpleSig::CastRealAsString => {
-                        let value = legacy_some!(self.eval_real(children.first())?);
-                        Some(format!("{value}").into_bytes())
-                    }
-                    SimpleSig::CastDecimalAsString => {
-                        let value = legacy_some!(self.eval_decimal(children.first())?);
-                        Some(value.to_string().into_bytes())
-                    }
-                    SimpleSig::CastStringAsString => self.eval_bytes(children.first())?,
-                    SimpleSig::CastTimeAsString => self
-                        .eval_time(children.first())?
-                        .map(|time| time.to_string().into_bytes()),
-                    SimpleSig::CastDurationAsString => self
-                        .eval_duration(children.first())?
-                        .map(|duration| duration.to_string().into_bytes()),
-                    _ => None,
+            ) => match sig {
+                SimpleSig::CastIntAsString => {
+                    let value = legacy_some!(self.folded_int(children.first())?);
+                    Some(tidb_expr::eval_legacy_cast_string_integer(value))
                 }
-            }
+                SimpleSig::CastRealAsString => {
+                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let datum = Datum::Real(value);
+                    tidb_expr::eval_legacy_cast_string_datum(&datum)
+                }
+                SimpleSig::CastDecimalAsString => {
+                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let datum = Datum::Decimal(value);
+                    tidb_expr::eval_legacy_cast_string_datum(&datum)
+                }
+                SimpleSig::CastStringAsString => {
+                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let datum = Datum::Bytes(value);
+                    tidb_expr::eval_legacy_cast_string_datum(&datum)
+                }
+                SimpleSig::CastTimeAsString => {
+                    let value = legacy_some!(self.eval_time(children.first())?);
+                    let datum = Datum::Time(value);
+                    tidb_expr::eval_legacy_cast_string_datum(&datum)
+                }
+                SimpleSig::CastDurationAsString => {
+                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let datum = Datum::Duration(value);
+                    tidb_expr::eval_legacy_cast_string_datum(&datum)
+                }
+                _ => None,
+            },
             // FROM_UNIXTIME(seconds, format): the FromUnixTime datetime
             // rendered through `DateFormat`'s layout table.
             SimpleExpr::Func(SimpleSig::FromUnixTime2Arg, children) => {
@@ -10001,6 +10000,25 @@ mod tests {
         // "-42" reads -42 -> true.
         let bare = SimpleExpr::Func(SimpleSig::CastIntAsString, vec![SimpleExpr::Int(-42)]);
         assert_eq!(eval_expr(&bare, &[], 4, &zone()).expect("evals"), Some(1));
+    }
+
+    #[test]
+    fn shared_legacy_string_cast_bridge_covers_decimal_and_raw_bytes() {
+        let decimal = SimpleExpr::Func(
+            SimpleSig::CastDecimalAsString,
+            vec![SimpleExpr::Decimal(tidb_datatype::Decimal::from_literal(
+                "1.25",
+            ))],
+        );
+        assert_eq!(
+            eval_bytes(Some(&decimal), &[], 4, &zone()),
+            Some(b"1.25".to_vec())
+        );
+        let raw = SimpleExpr::Func(
+            SimpleSig::CastStringAsString,
+            vec![SimpleExpr::Bytes(vec![0xff])],
+        );
+        assert_eq!(eval_bytes(Some(&raw), &[], 4, &zone()), Some(vec![0xff]));
     }
 
     #[test]

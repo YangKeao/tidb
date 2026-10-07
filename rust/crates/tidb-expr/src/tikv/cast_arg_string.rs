@@ -27,6 +27,16 @@ pub(crate) fn eval_cast_arg_as_string(value: &Datum) -> Result<Datum, EvalError>
         .map_err(EvalError::Unsupported)
 }
 
+pub fn eval_legacy_cast_string_integer(value: i128) -> Vec<u8> {
+    tidb_query_datatype::codec::native_sql_string::native_legacy_cast_string_integer(value)
+}
+
+pub fn eval_legacy_cast_string_datum(value: &Datum) -> Option<Vec<u8>> {
+    tidb_query_datatype::codec::native_sql_string::native_legacy_cast_string(
+        value.as_shared_json_input(),
+    )
+}
+
 pub(crate) fn eval_cast_arg_as_string_type(
     source: &FieldType,
     explicit_collation: bool,
@@ -55,4 +65,19 @@ pub(crate) fn eval_cast_arg_as_string_type(
             target
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_string_cast_bridge_projects_integer_raw_bytes_and_folded_errors() {
+    assert_eq!(eval_legacy_cast_string_integer(-7), b"-7");
+    assert_eq!(
+        eval_legacy_cast_string_datum(&Datum::new_bytes(vec![0xff])),
+        Some(vec![0xff])
+    );
+    assert_eq!(
+        eval_legacy_cast_string_datum(&Datum::Real(2.5)),
+        Some(b"2.5".to_vec())
+    );
+    assert_eq!(eval_legacy_cast_string_datum(&Datum::MinNotNull), None);
 }
