@@ -20,7 +20,8 @@
 
 use chrono::Utc;
 use tidb_query_datatype::codec::native_eval_type::{
-    native_datum_conversion_target, NativeDatumConversionTarget,
+    native_datum_conversion_target, native_string_conversion_route, NativeDatumConversionTarget,
+    NativeStringConversionRoute, NativeStringConversionSource,
 };
 
 pub(crate) mod diagnostics;
@@ -215,40 +216,38 @@ impl Datum {
         target: &FieldType,
         flags: ConversionFlags,
     ) -> Result<Vec<u8>, DatumValueError> {
-        if matches!(self, Self::String(_) | Self::Bytes(_)) {
-            let from_binary = self.collation() == Some(Collation::Binary);
-            let to_binary = target.charset() == Charset::Binary;
-            if from_binary && to_binary {
+        let source = match self {
+            Self::String(_) | Self::Bytes(_) => NativeStringConversionSource::Text,
+            Self::BinaryLiteral(_) => NativeStringConversionSource::BinaryLiteral,
+            _ => NativeStringConversionSource::Other,
+        };
+        let from_binary = self.collation() == Some(Collation::Binary);
+        let to_binary = target.charset() == Charset::Binary;
+        let transformed = match native_string_conversion_route(source, from_binary, to_binary) {
+            NativeStringConversionRoute::RawBinary => {
                 return Ok(self.as_raw_bytes().unwrap().to_vec());
             }
-            let transformed = if from_binary {
+            NativeStringConversionRoute::DecodeBinary
+            | NativeStringConversionRoute::DecodeBinaryLiteral => {
                 self.binary_string_decoded(flags, target.charset().name())
-            } else if to_binary {
+            }
+            NativeStringConversionRoute::EncodeBinary => {
                 return Ok(self.binary_string_encoded().unwrap());
-            } else {
-                self.string_with_check(flags, target.charset().name())
-                    .unwrap()
-            };
-            let (bytes, error) = transformed.into_parts();
-            if let Some(error) = error {
-                return Err(DatumValueError::Comparison(error.to_string()));
             }
-            return Ok(bytes);
-        }
-        // Go `convertToString`'s `KindBinaryLiteral` arm, which is the same
-        // accessor the `fromBinary` arm above uses.
-        if matches!(self, Self::BinaryLiteral(_)) {
-            let (bytes, error) = self
-                .binary_string_decoded(flags, target.charset().name())
-                .into_parts();
-            if let Some(error) = error {
-                return Err(DatumValueError::Comparison(error.to_string()));
+            NativeStringConversionRoute::ValidateText => self
+                .string_with_check(flags, target.charset().name())
+                .unwrap(),
+            NativeStringConversionRoute::Stringify => {
+                return self.to_bytes().map_err(|error| {
+                    DatumValueError::Comparison(format!("string conversion failed: {error}"))
+                });
             }
-            return Ok(bytes);
+        };
+        let (bytes, error) = transformed.into_parts();
+        if let Some(error) = error {
+            return Err(DatumValueError::Comparison(error.to_string()));
         }
-        self.to_bytes().map_err(|error| {
-            DatumValueError::Comparison(format!("string conversion failed: {error}"))
-        })
+        Ok(bytes)
     }
 
     fn convert_to_signed(
@@ -3394,4 +3393,49 @@ fn shared_datum_target_selector_routes_storage_domains_and_rejects_unknown_ident
         Datum::Int(1).convert_to(&FieldType::new(FieldTypeCode::Unknown(8)), flags),
         Err(DatumValueError::Unsupported(_, "unknown"))
     ));
+}
+
+#[cfg(test)]
+#[test]
+fn shared_datum_string_route_keeps_raw_decode_encode_validate_literal_and_stringify_paths() {
+    let flags = ConversionFlags::default();
+    let binary_target = FieldType::new(FieldTypeCode::Blob).with_collation(Collation::Binary);
+    let text_target = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Utf8Mb4Bin);
+
+    assert_eq!(
+        Datum::new_bytes([0xff])
+            .string_conversion_bytes(&binary_target, flags)
+            .unwrap(),
+        [0xff]
+    );
+    assert_eq!(
+        Datum::new_bytes(b"binary".to_vec())
+            .string_conversion_bytes(&text_target, flags)
+            .unwrap(),
+        b"binary"
+    );
+    assert_eq!(
+        Datum::new_string("text")
+            .string_conversion_bytes(&binary_target, flags)
+            .unwrap(),
+        b"text"
+    );
+    assert_eq!(
+        Datum::new_string("checked")
+            .string_conversion_bytes(&text_target, flags)
+            .unwrap(),
+        b"checked"
+    );
+    assert_eq!(
+        Datum::new_binary_literal(BinaryLiteral::from(b"literal".to_vec()))
+            .string_conversion_bytes(&text_target, flags)
+            .unwrap(),
+        b"literal"
+    );
+    assert_eq!(
+        Datum::Int(7)
+            .string_conversion_bytes(&text_target, flags)
+            .unwrap(),
+        b"7"
+    );
 }

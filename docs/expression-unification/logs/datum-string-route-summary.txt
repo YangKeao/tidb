@@ -1,0 +1,24 @@
+datum-string-route-160 / R166
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/datum-string-route-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib datum_string_route -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_datum_string_route_keeps_raw_decode_encode_validate_literal_and_stringify_paths -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib test_convert_to_binary_string -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib gbk_column_stores_utf8_and_transcodes_at_the_boundary -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/540 5.48/0.00 0 1cc3a8278a7680d555fc8a94c637a88ab18afa44187a3bd96cd55fc635374817
+native-datatype 505/0/0/0 3.67/7.41 0 7e7a419adbe12ead0ff5c52c9c5821be31feabfb73cb8e6a9e6edf792d493ec0
+native-new 1/0/0/504 0.16/0.00 0 7f437d7fbec53697fb06273dc7284222d9de5fa11e024c141865e08701ef8a3c
+native-existing 1/0/0/504 0.09/0.00 0 54cda1d69c6da33986fe00e582a9044d094758c8525c4b530751d3bef5de2b28
+session-sql 1/0/0/2269 26.61/0.02 0 83fa256624bc7f68c46b944231e2972ccebf66dd1a31604dfbad3a16e1fb5ed8
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);7old SDK/31old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns the complete string-target route selector. Native source-kind/from-to binary branching is deleted; actual bytes/charset transforms, flags, typed errors and context effects remain native. Binary-literal and text transform error mapping is unified. Tests cover all Text truth-table rows, BinaryLiteral/Other precedence and raw/decode/encode/validate/literal/stringify native paths plus GBK write SQL.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype505, existing binary-string conversion1 and GBK write SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
