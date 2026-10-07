@@ -1,0 +1,24 @@
+expr-diagnostic-argument-170 / R176
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/expr-diagnostic-argument-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib diagnostic_argument_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-expr --lib shared_diagnostic_argument_policy_keeps_native_eval_type_projection -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-expr --lib test_arithmetic_overflow_error_message_with_column_name -- --test-threads=1
+[native-domain] ../../tools/cargo-tidb test --locked -p tidb-expr --lib numeric_argument_consumers_keep_json_and_vectorized_diagnostic_domains -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_global_vars::an_overflow_names_its_class_and_folded_constants_name_their_expression -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/550 5.94/0.00 0 8b44acc8282f92538f7f66a7fe7f45b2316f75e76f1c8477073ce7983e4138a7
+native-new 1/0/0/1744 16.85/0.00 0 666fca2d991aaf220fd4e037bb9b3b37343d1a6c194d6be0acf7b4b2ae84114c
+native-existing 1/0/0/1744 0.21/0.00 0 d7c2720425d265f82a83c87f85c861fa1858df5d5a9b3d72316d2d85c15a1d18
+native-domain 1/0/0/1744 0.14/0.00 0 a0e5901eb248a4034f1e332f7802a805025f5a54b74ec37c1dfb6c213b0c150a
+session-sql 1/0/0/2269 24.65/0.01 0 960d22caae429e7c924eb79c63a190550a63e716125942aeab613536edae9ae0
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);15old SDK/33old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns column-reference naming, numeric binary-literal display domain and INTDIV DECIMAL wrap predicate. Native duplicate column branches, domain match and multi-clause wrap predicate are deleted; AST/Datum/FieldType projection and actual float formatting remain native. Tests cover column fallback/names, domain truth table, wrap truth table, native EvalType projection, arithmetic source names, JSON/vector numeric domains and SQL overflow text.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Whole expression renderer/evaluator is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Five targeted gates passed. Full tidb-expr was not claimed/rerun as green because R100 retained four historical failures. Full unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

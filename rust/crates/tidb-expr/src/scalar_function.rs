@@ -51,9 +51,11 @@ use tidb_chunk::row::Row;
 use tidb_codec::{encode_compact_bytes, encode_int};
 use tidb_datatype::{Datum, EvalType, FieldType, UNSPECIFIED_LENGTH};
 use tidb_query_datatype::codec::native_eval_type::{
-    native_arithmetic_symbol, native_render_binary_expression, native_render_cast_expression,
+    native_arithmetic_symbol, native_binary_literal_render, native_render_binary_expression,
+    native_render_cast_expression, native_render_column_reference,
     native_render_decimal_cast_expression, native_render_function_expression,
-    NativeArithmeticOperator,
+    native_should_wrap_intdiv_decimal_argument, NativeArithmeticOperator,
+    NativeBinaryLiteralRender, NativeNumericDiagnosticDomain,
 };
 
 const MAX_ADVISORY_LOCK_TIMEOUT_SECS: i64 = 1_073_741_824;
@@ -339,6 +341,15 @@ fn native_arithmetic_operator(op: tidb_ast::BinaryOp) -> Option<NativeArithmetic
     })
 }
 
+fn native_numeric_diagnostic_domain(domain: Option<EvalType>) -> NativeNumericDiagnosticDomain {
+    match domain {
+        Some(EvalType::Int) => NativeNumericDiagnosticDomain::Integer,
+        Some(EvalType::Real) => NativeNumericDiagnosticDomain::Real,
+        Some(EvalType::Decimal) => NativeNumericDiagnosticDomain::Decimal,
+        _ => NativeNumericDiagnosticDomain::Other,
+    }
+}
+
 pub(crate) fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
     Some(native_arithmetic_symbol(native_arithmetic_operator(op)?))
 }
@@ -380,17 +391,15 @@ fn numeric_expression_text(
                     return numeric_expression_text(expression, go_float_format, ctx);
                 }
             }
-            Some(if column.orig_name.is_empty() {
-                format!("Column#{}", column.unique_id)
-            } else {
-                column.orig_name.clone()
-            })
+            Some(native_render_column_reference(
+                &column.orig_name,
+                column.unique_id,
+            ))
         }
-        Expression::CorrelatedColumn(column) => Some(if column.column.orig_name.is_empty() {
-            format!("Column#{}", column.column.unique_id)
-        } else {
-            column.column.orig_name.clone()
-        }),
+        Expression::CorrelatedColumn(column) => Some(native_render_column_reference(
+            &column.column.orig_name,
+            column.column.unique_id,
+        )),
         Expression::ScalarFunction(function) => {
             if function.func_name.lowercase() == "cast_json" {
                 let [argument] = function.args.as_slice() else {
@@ -433,19 +442,25 @@ fn numeric_argument_text(
                 unreachable!()
             };
             let value = value.to_int().value();
-            match function.numeric_operand_domain() {
-                Some(EvalType::Int) if !field.is_unsigned() => (value as i64).to_string(),
-                Some(EvalType::Real) => tidb_datatype::format_float_g_shortest(value as f64),
-                _ => value.to_string(),
+            match native_binary_literal_render(
+                native_numeric_diagnostic_domain(function.numeric_operand_domain()),
+                field.is_unsigned(),
+            ) {
+                NativeBinaryLiteralRender::Signed => (value as i64).to_string(),
+                NativeBinaryLiteralRender::Real => {
+                    tidb_datatype::format_float_g_shortest(value as f64)
+                }
+                NativeBinaryLiteralRender::Unsigned => value.to_string(),
             }
         }
         _ => numeric_expression_text(expression, float, ctx)?,
     };
-    if function.func_name.lowercase() != "intdiv"
-        || function.numeric_operand_domain() != Some(EvalType::Decimal)
-        || field.eval_type() == EvalType::Decimal
-        || matches!(expression, Expression::Constant(constant) if constant.literal_value().is_some())
-    {
+    if !native_should_wrap_intdiv_decimal_argument(
+        function.func_name.lowercase() == "intdiv",
+        native_numeric_diagnostic_domain(function.numeric_operand_domain()),
+        field.eval_type() == EvalType::Decimal,
+        matches!(expression, Expression::Constant(constant) if constant.literal_value().is_some()),
+    ) {
         return Some(text);
     }
     let mut target = numeric_decimal_cast_type(field);
@@ -6092,4 +6107,31 @@ fn shared_diagnostic_renderer_keeps_native_ast_operator_projection() {
         ),
         "(cast(a, decimal(20,0) BINARY) DIV b)"
     );
+}
+
+#[cfg(test)]
+#[test]
+fn shared_diagnostic_argument_policy_keeps_native_eval_type_projection() {
+    assert_eq!(
+        native_numeric_diagnostic_domain(Some(EvalType::Int)),
+        NativeNumericDiagnosticDomain::Integer
+    );
+    assert_eq!(
+        native_numeric_diagnostic_domain(Some(EvalType::Real)),
+        NativeNumericDiagnosticDomain::Real
+    );
+    assert_eq!(
+        native_numeric_diagnostic_domain(Some(EvalType::Decimal)),
+        NativeNumericDiagnosticDomain::Decimal
+    );
+    assert_eq!(
+        native_numeric_diagnostic_domain(Some(EvalType::Json)),
+        NativeNumericDiagnosticDomain::Other
+    );
+    assert_eq!(
+        native_numeric_diagnostic_domain(None),
+        NativeNumericDiagnosticDomain::Other
+    );
+    assert_eq!(native_render_column_reference("", 7), "Column#7");
+    assert_eq!(native_render_column_reference("t.a", 7), "t.a");
 }
