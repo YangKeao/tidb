@@ -1,0 +1,24 @@
+decimal-unsigned-ref-144 / R150
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/decimal-unsigned-ref-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib decimal_ref_to_uint -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_decimal_ref_to_uint_keeps_visible_scale_and_typed_target_errors -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib test_convert_decimal_str_to_uint -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/521 2.63/0.00 0 b176a4b44e01cf7d0a76398d272eac3c14c872d4dd54cd1af7cdedfd81310369
+native-datatype 487/0/0/0 2.35/6.97 0 a7188ea912d1d399fbe20d5a28065e2cee822375e91294f3e88b53d67cfc5400
+native-new 1/0/0/486 0.09/0.00 0 9ac91e0b8bb2eafa0fc019b53107a714bf3322397cfcd6e238c4447c8cae155e
+native-existing 1/0/0/486 0.09/0.00 0 047b7becf4072140d530bb6d4cce6abca2c6737fb3523178660ae78ddf8b0245
+session-sql 1/0/0/2269 12.73/0.03 0 4d0f2ac35b48608bfeca52620de76eb167096b8109d3b854610c6791432f1599
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);6old SDK/25old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_integer_convert now consumes the shared Decimal ref, renders canonical visible sign/scale/storage metadata exactly once and reuses the exact scientific/text/round/bound algorithm. Native convert.rs public facade maps shared typed errors only; its Decimal to_string transport is gone. No float bridge or duplicated formatter.
+Both production-only agents completed and froze exact single-file changes without tests or commands; parent adopted, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype487 and one Decimal SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

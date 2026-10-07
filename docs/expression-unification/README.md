@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **decimal-signed-target-143**, following **year-text-142**.
+Current checkpoint: **decimal-unsigned-ref-144**, following **decimal-signed-target-143**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-Existing SDK owner `native_integer_convert.rs` now consumes the shared Decimal ref and owns half-up rounding, lazy saturation, signed target bounds, exact visible source subject and source-overflow precedence. Native only projects the shared converted carrier.
+Existing SDK owner `native_integer_convert.rs` now consumes the shared Decimal ref for DECIMAL-to-UNSIGNED, renders canonical visible metadata once and reuses its exact text algorithm. Native retains its public facade and typed-error mapping only.
 
 ## Verification
 
-[Evidence](evidence/decimal-signed-checkpoint.md), [commands/counts/hashes](logs/decimal-signed-target-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/decimal-unsigned-ref-checkpoint.md), [commands/counts/hashes](logs/decimal-unsigned-ref-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five final Cargo gates GREEN: SDK1, full native datatype486, new/existing conversion2 and session SQL consumer1. Two new tests;5 SDK/29 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary retains two attempts that failed only because the same new test assumed ties-even rather than canonical half-up rounding.
+Five Cargo gates GREEN: SDK1, full native datatype487, new/existing conversion2 and session SQL consumer1. Two new tests;6 SDK/25 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit.
 
 ## Remaining
 

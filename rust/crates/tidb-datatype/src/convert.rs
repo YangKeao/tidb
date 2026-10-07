@@ -326,7 +326,12 @@ pub fn convert_decimal_to_uint(
     upper_bound: u64,
     target: FieldTypeCode,
 ) -> Result<u64, (u64, ScalarConversionError)> {
-    convert_decimal_str_to_uint(&value.to_string(), upper_bound, target)
+    shared_integer_convert::native_convert_decimal_to_uint(
+        value.as_shared_parse(),
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// A source numeric prefix plus the truncation event that `Context` decides
@@ -1194,6 +1199,48 @@ mod tests {
             convert_decimal_str_to_uint("0.5", 0, FieldTypeCode::Tiny)
         })
         .is_err());
+    }
+
+    #[test]
+    fn shared_decimal_ref_to_uint_keeps_visible_scale_and_typed_target_errors() {
+        for (text, expected) in [("072.500", 73), ("255.4", 255)] {
+            assert_eq!(
+                convert_decimal_to_uint(
+                    &Decimal::from_literal(text),
+                    u8::MAX.into(),
+                    FieldTypeCode::Tiny,
+                ),
+                Ok(expected),
+            );
+        }
+        assert_eq!(
+            convert_decimal_to_uint(
+                &Decimal::from_literal("255.50"),
+                u8::MAX.into(),
+                FieldTypeCode::Tiny,
+            ),
+            Err((
+                u8::MAX.into(),
+                ScalarConversionError::Overflow {
+                    value: "255.50".into(),
+                    target: FieldTypeCode::Tiny,
+                }
+            )),
+        );
+        assert_eq!(
+            convert_decimal_to_uint(
+                &Decimal::from_literal("-1.00"),
+                u8::MAX.into(),
+                FieldTypeCode::Tiny,
+            ),
+            Err((
+                0,
+                ScalarConversionError::Overflow {
+                    value: "-1.00".into(),
+                    target: FieldTypeCode::Tiny,
+                }
+            )),
+        );
     }
 
     /// `pkg/types/convert_test.go:921` `TestGetValidFloat`, first table.
