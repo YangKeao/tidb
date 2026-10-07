@@ -1166,66 +1166,19 @@ impl FieldType {
     /// which Go preserves rather than replacing.
     #[must_use]
     pub fn restore_bytes(&self) -> Vec<u8> {
-        let mut output = type_to_str(self.code(), &self.charset_name)
-            .to_ascii_uppercase()
-            .into_bytes();
-        let (precision, scale) = match self.code() {
-            FieldTypeCode::Enum | FieldTypeCode::Set => {
-                output.push(b'(');
-                self.elems.with_visible(|elements| {
-                    for (index, elem) in elements.iter().enumerate() {
-                        if index != 0 {
-                            output.push(b',');
-                        }
-                        output.push(b'\'');
-                        for byte in elem.as_bytes() {
-                            output.push(*byte);
-                            if *byte == b'\'' {
-                                output.push(*byte);
-                            }
-                        }
-                        output.push(b'\'');
-                    }
-                });
-                output.push(b')');
-                (UNSPECIFIED_LENGTH, UNSPECIFIED_LENGTH)
-            }
-            FieldTypeCode::Timestamp | FieldTypeCode::Datetime | FieldTypeCode::Duration => {
-                (self.decimal, UNSPECIFIED_LENGTH)
-            }
-            FieldTypeCode::Unspecified
-            | FieldTypeCode::Float
-            | FieldTypeCode::Double
-            | FieldTypeCode::NewDecimal => (self.flen, self.decimal),
-            _ => (self.flen, UNSPECIFIED_LENGTH),
-        };
-        if precision != UNSPECIFIED_LENGTH {
-            output.extend_from_slice(format!("({precision}").as_bytes());
-            if scale != UNSPECIFIED_LENGTH {
-                output.extend_from_slice(format!(",{scale}").as_bytes());
-            }
-            output.push(b')');
-        }
-        if self.is_unsigned() {
-            output.extend_from_slice(b" UNSIGNED");
-        }
-        if self.has_flag(FieldTypeFlags::ZEROFILL) {
-            output.extend_from_slice(b" ZEROFILL");
-        }
-        if self.has_flag(FieldTypeFlags::BINARY) && self.charset_name.as_ref() != "binary" {
-            output.extend_from_slice(b" BINARY");
-        }
-        if self.code().is_type_char() || self.code().is_type_blob() {
-            if !self.charset_name.is_empty() && self.charset_name.as_ref() != "binary" {
-                output.extend_from_slice(b" CHARACTER SET ");
-                output.extend_from_slice(self.charset_name.to_uppercase().as_bytes());
-            }
-            if !self.collation_name.is_empty() && self.collation_name.as_ref() != "binary" {
-                output.extend_from_slice(b" COLLATE ");
-                output.extend_from_slice(self.collation_name.as_bytes());
-            }
-        }
-        output
+        self.elems.with_visible(|elements| {
+            native_type_name::native_restore_field_type_bytes(
+                self.code().as_shared_type_name_code(),
+                self.flen,
+                self.decimal,
+                self.is_unsigned(),
+                self.has_flag(FieldTypeFlags::ZEROFILL),
+                self.has_flag(FieldTypeFlags::BINARY),
+                &self.charset_name,
+                &self.collation_name,
+                elements.iter().map(|elem| elem.as_bytes()),
+            )
+        })
     }
 
     /// UTF-8 display projection of [`Self::restore_bytes`]. Invalid source
@@ -2444,6 +2397,57 @@ mod tests {
                 .with_added_flags(FieldTypeFlags::BINARY)
                 .source_string(),
             " BINARY"
+        );
+    }
+
+    #[test]
+    fn shared_field_byte_renderer_keeps_raw_elements_precision_flags_charset_and_arrays() {
+        assert_eq!(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_elems([
+                    GoString::from(vec![b'a', b'\'', 0xff]),
+                    GoString::from(vec![0]),
+                ])
+                .with_flags(
+                    FieldTypeFlags::UNSIGNED | FieldTypeFlags::ZEROFILL | FieldTypeFlags::BINARY
+                )
+                .with_charset_name("utf8")
+                .restore_bytes(),
+            b"ENUM('a''\xff','\0') UNSIGNED ZEROFILL BINARY"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(10)
+                .with_decimal(2)
+                .restore_bytes(),
+            b"DECIMAL(10,2)"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::Varchar)
+                .with_flen(10)
+                .with_added_flags(FieldTypeFlags::BINARY)
+                .with_charset_name("utf8")
+                .with_collation_name("utf8_bin")
+                .restore_bytes(),
+            b"VARCHAR(10) BINARY CHARACTER SET UTF8 COLLATE utf8_bin"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::Unknown(15))
+                .with_flen(3)
+                .with_decimal(7)
+                .with_added_flags(FieldTypeFlags::BINARY)
+                .with_charset_name("utf8")
+                .with_collation_name("utf8_bin")
+                .restore_bytes(),
+            b"(3) BINARY"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(10)
+                .with_decimal(2)
+                .with_array(true)
+                .restore_bytes(),
+            b"JSON(10)"
         );
     }
 }

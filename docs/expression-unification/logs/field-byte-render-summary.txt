@@ -1,0 +1,29 @@
+field-byte-render-158 / R164
+6 Cargo launches:5 final GREEN;1 broad-filter SQL RED retained;1 narrowed retry. No compile failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-byte-render-{id}.log
+
+Exact final commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_byte_render -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_byte_renderer_keeps_raw_elements_precision_flags_charset_and_arrays -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib binary_elements_preserve_bytes_clone_memory_restore_and_json_replacement -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_show::show_create_table -- --exact --test-threads=1
+
+Final receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/538 2.63/0.00 0 e6859f6a0edda8ccad209f3cb89b86a52344ccb721762190621fbf6dc2c25958
+native-datatype 503/0/0/0 2.44/7.34 0 923ae1ebd92a2fda0f2619ec0f54869a2987e21734b5a3e8d374df349f79d49b
+native-new 1/0/0/502 0.09/0.00 0 341a01947b5dc59831bc68fb46ccbc044df7224ca04284b3d6cf01c5d75471b1
+native-existing 1/0/0/502 0.09/0.00 0 669a08c46139213ba32bfb5104bfd3aa6388f2eacb618b2b73daba0b7718256b
+session-sql 1/0/0/2269 0.15/0.01 0 67146c0b38e5e140de2d187b4f3156470fbf4d1120000fbd30965d33f740bb53
+
+Retained RED:
+[session-sql-broad-red] ../../tools/cargo-tidb test --locked -p tidb-session --lib show_create_table -- --test-threads=1
+session-sql-broad-red 12/1/0/2257 13.01/0.09 101 6e5fb432a8371ea745fa2783f8829369d5ce5e87d9469da43372297127d398f7
+The broad substring included `show_create_table_matches_go_for_every_served_information_schema_table`, whose global catalog assertion expected49 but saw32. The other12 SHOW CREATE tests, including the target, passed. Exact `tests_show::show_create_table --exact` then passed. No production/test modification was made for unrelated catalog state.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);8old SDK/31old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name owns complete lossless FieldType byte restore grammar. Native byte renderer body is deleted; only effective identity/metadata/raw-element projection remains. Tests cover arbitrary invalid bytes, quote doubling, precision/scale sentinel, flag order, charset/collation, named/unknown identity and array effective JSON behavior. All FieldType renderer policy is now SDK-owned.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior partial CAST records unchanged. Separate expression text renderer andbroaderM2/root/liveDAG/final remain. Full native datatype503, existing raw-byte1 and exact SHOW CREATE SQL1 passed; broad SQL RED retained. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
