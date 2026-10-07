@@ -16,6 +16,24 @@ use crate::{Columns, Datum, EvalError};
 use tidb_datatype::{EvalType, FieldType, SessionTimeZone};
 use tidb_query_expr::{NativeCastIntegerResult as Report, NativeCastIntegerTarget as Target};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LegacyCastIntegerResult {
+    Value(i128),
+    Overflow(f64),
+}
+
+pub fn eval_legacy_cast_integer_datum(value: &Datum) -> Option<LegacyCastIntegerResult> {
+    use tidb_query_datatype::codec::native_numeric::NativeLegacyIntegerCast as Native;
+
+    tidb_query_datatype::codec::native_numeric::native_legacy_cast_integer(
+        value.as_shared_numeric_input(),
+    )
+    .map(|result| match result {
+        Native::Value(value) => LegacyCastIntegerResult::Value(i128::from(value)),
+        Native::Overflow(value) => LegacyCastIntegerResult::Overflow(value),
+    })
+}
+
 #[cfg(test)]
 fn input(value: &Datum) -> tidb_query_expr::NativeCastIntegerInput<'_> {
     tidb_query_expr::native_cast_integer_input_from_numeric(value.as_shared_numeric_input())
@@ -320,4 +338,18 @@ fn source_type(source: Option<&FieldType>) -> Option<tidb_query_expr::NativeInte
         EvalType::Json => Type::Json,
         EvalType::VectorFloat32 => Type::VectorFloat32,
     })
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_integer_cast_bridge_projects_values_overflow_and_unsupported() {
+    assert_eq!(
+        eval_legacy_cast_integer_datum(&Datum::Real(2.5)),
+        Some(LegacyCastIntegerResult::Value(3))
+    );
+    assert!(matches!(
+        eval_legacy_cast_integer_datum(&Datum::Real(9.3e18)),
+        Some(LegacyCastIntegerResult::Overflow(_))
+    ));
+    assert_eq!(eval_legacy_cast_integer_datum(&Datum::Null), None);
 }

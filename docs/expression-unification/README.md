@@ -1,9 +1,9 @@
 # Expression unification experiment
 
-Current paired checkpoint **legacy-cast-string-176**, after legacy REAL CAST. Functional **239/245 (97.55%)**, strict **0**, remaining **6**; partial CAST deletion.
+Current paired checkpoint **legacy-cast-integer-177**. Functional **239/245 (97.55%)**, strict **0**, remaining **6**; partial CAST deletion.
 
-TiKV owns legacy i128 sign selection, numeric/temporal STRING rendering, raw bytes passthrough and error folding. TiDB bridge projects Datum; Unistore keeps child/NULL projection. Six local `SimpleSig::*AsString` bodies are deleted.
+TiKV owns legacy REAL half-away rounding/range, Decimal truncation/overflow and lossy text prefix saturation for integer CAST. TiDB projects Value/Overflow; Unistore keeps child/NULL and concrete error construction. Three local bodies are deleted.
 
-[Evidence](evidence/legacy-cast-string-checkpoint.md) · [receipts](logs/legacy-cast-string-summary.txt) · [manifest](checkpoint.json) · [remaining](evidence/remaining-acceptance.md).
+[Evidence](evidence/legacy-cast-integer-checkpoint.md) · [receipts](logs/legacy-cast-integer-summary.txt) · [manifest](checkpoint.json) · [remaining](evidence/remaining-acceptance.md).
 
-Four final targeted Cargo gates GREEN. Other legacy CAST targets block family credit. R100 historical failures and full expression/unistore/workspace/lint/dev/bazel/release/performance/memory/TiFlash/FIPS/package/PR-readiness remain unverified. Goal active.
+Four final targeted gates GREEN; one new-test compile RED retained and fixed with assertion derives. Other CAST targets, R100 failures and broad final gates remain. Goal active.

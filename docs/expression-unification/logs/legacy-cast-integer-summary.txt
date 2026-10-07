@@ -1,0 +1,9 @@
+legacy-cast-integer-177 / R183
+4 final GREEN; retained bridge-test compile RED E0369/E0277 fixed only by deriving Debug/PartialEq.
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/554 4.42/0.00 0 e0ea945f6814d6ef9f11dac3fd135925618554f7d1ce11eea3e5f77479da390a
+native-bridge 1/0/0/1750 8.35/0.00 0 c6697a531937c452b1fb7da90175a41a56dc22ad4d797d4f7386affc6d9150c7
+unistore-real 1/0/0/239 6.57/0.00 0 e4a4e3942e9a4b5c282e0926175032dd6a6df1a0eef203b743e6cacee5314621
+unistore-string 1/0/0/239 0.12/0.00 0 c35bb86afe859346e8bbf30d78c7486a20771595d84a376c58392b4e7eca45a1
+RED native-bridge-compile-red exit101 sha256 8e515cac9cbb1e09c836a505988747f8f4da51550203d643884499a56ac97d03.
+All commands cargo test --locked package --lib exact filter -- --test-threads=1. TiKV1/TiDB4 Rust,0 new files;2 new tests; old tests unchanged. Functional239/245 strict0 remaining6; R100/broad gates retained; goal active.

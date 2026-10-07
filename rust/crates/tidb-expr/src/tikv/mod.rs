@@ -50,6 +50,7 @@ pub(crate) use cast_float::{eval_cast_double_in, eval_cast_float_in, eval_cast_f
 pub use cast_float::{eval_legacy_cast_real_datum, eval_legacy_cast_real_integer};
 mod cast_integer;
 pub(crate) use cast_integer::eval_cast_arg_as_int_in;
+pub use cast_integer::{eval_legacy_cast_integer_datum, LegacyCastIntegerResult};
 #[cfg(test)]
 mod cast_arg_integer_tests;
 #[cfg(test)]

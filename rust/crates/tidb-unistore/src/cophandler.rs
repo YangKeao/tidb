@@ -4235,63 +4235,53 @@ impl LegacyEvaluator<'_> {
                         // MySQL division precision, unsignedness, or warnings.
                         tidb_expr::eval_legacy_decimal_integer_division_in(args, self.raw_columns)?
                     }
-                    // Go `builtinCast*AsIntSig` under `AS SIGNED`:
-                    // `ConvertFloatToInt`/decimal truncation -- the REAL source
-                    // ROUNDS to nearest (half away), and an out-of-BIGINT
-                    // result is the cast overflow error
-                    // ("constant %v overflows bigint").
                     SimpleSig::CastRealAsInt => {
                         let Some(value) = self.eval_real(children.first())? else {
                             return Ok(None);
                         };
-                        let rounded = value.round();
-                        if rounded < -9_223_372_036_854_775_808.0
-                            || rounded >= 9_223_372_036_854_775_808.0
-                        {
-                            return Err(format!(
-                                "constant {} overflows bigint",
-                                go_float_display(rounded)
-                            )
-                            .into());
+                        let datum = Datum::Real(value);
+                        match tidb_expr::eval_legacy_cast_integer_datum(&datum) {
+                            Some(tidb_expr::LegacyCastIntegerResult::Value(value)) => Some(value),
+                            Some(tidb_expr::LegacyCastIntegerResult::Overflow(subject)) => {
+                                return Err(LegacyEvalError::Sql(format!(
+                                    "constant {} overflows bigint",
+                                    go_float_display(subject)
+                                )));
+                            }
+                            None => None,
                         }
-                        Some(i128::from(rounded as i64))
                     }
                     SimpleSig::CastDecimalAsInt => {
                         let Some(value) = self.eval_decimal(children.first())? else {
                             return Ok(None);
                         };
-                        // `Decimal.ToInt`: truncation toward zero; the warning
-                        // flag IS the overflow event.
-                        let (truncated, overflow) = value.to_i64_trunc();
-                        if overflow.is_some() {
-                            return Err(format!(
-                                "constant {} overflows bigint",
-                                go_float_display(value.to_f64())
-                            )
-                            .into());
+                        let datum = Datum::Decimal(value);
+                        match tidb_expr::eval_legacy_cast_integer_datum(&datum) {
+                            Some(tidb_expr::LegacyCastIntegerResult::Value(value)) => Some(value),
+                            Some(tidb_expr::LegacyCastIntegerResult::Overflow(subject)) => {
+                                return Err(LegacyEvalError::Sql(format!(
+                                    "constant {} overflows bigint",
+                                    go_float_display(subject)
+                                )));
+                            }
+                            None => None,
                         }
-                        Some(i128::from(truncated))
                     }
                     SimpleSig::CastStringAsInt => {
-                        // Go `StrToInt`: best-effort prefix conversion; the
-                        // truncation warning has no coprocessor sink, garbage
-                        // answers 0 and the range saturates to the BIGINT bound
-                        // (the non-strict SELECT observable).
                         let Some(raw) = self.eval_bytes(children.first())? else {
                             return Ok(None);
                         };
-                        let text = String::from_utf8_lossy(&raw);
-                        let Some(prefix) = numeric_prefix(text.trim_start(), false) else {
-                            return Ok(Some(0));
-                        };
-                        let value = prefix.parse::<i64>().unwrap_or_else(|_| {
-                            if prefix.starts_with('-') {
-                                i64::MIN
-                            } else {
-                                i64::MAX
+                        let datum = Datum::Bytes(raw);
+                        match tidb_expr::eval_legacy_cast_integer_datum(&datum) {
+                            Some(tidb_expr::LegacyCastIntegerResult::Value(value)) => Some(value),
+                            Some(tidb_expr::LegacyCastIntegerResult::Overflow(subject)) => {
+                                return Err(LegacyEvalError::Sql(format!(
+                                    "constant {} overflows bigint",
+                                    go_float_display(subject)
+                                )));
                             }
-                        });
-                        Some(i128::from(value))
+                            None => None,
+                        }
                     }
                     SimpleSig::CastStringAsReal => {
                         // A bare AS REAL cast answers its own truth; the value
