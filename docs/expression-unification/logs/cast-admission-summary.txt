@@ -1,0 +1,5 @@
+cast-admission-178 / R184
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/1034 16.71/0.00 0 2af2edfcb4040fadebbe2047975c3d54e4fb05a8e52301abf7df0e55e37fb9cc
+native 1/0/0/1751 14.89/0.00 0 7f885efd1e87381541cd1a19fe29e575bbccb0d9b86652a31c8ddc45d1069c13
+Both cargo test --locked package --lib exact filter -- --test-threads=1. One native launch used a repo-root-prefixed rustfmt path from rust/ and exited1 before Cargo/log; corrected path then formatter/diff and Cargo GREEN. TiKV2/TiDB1 Rust;2 new tests;0 new files. Functional239/245 strict0 remaining6; broad gates/R100 retained.

@@ -1,9 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **legacy-cast-integer-177**. Functional **239/245 (97.55%)**, strict **0**, remaining **6**; partial CAST deletion.
+Current paired checkpoint **cast-admission-178**. Functional **239/245 (97.55%)**, strict **0**, remaining **6**.
 
-TiKV owns legacy REAL half-away rounding/range, Decimal truncation/overflow and lossy text prefix saturation for integer CAST. TiDB projects Value/Overflow; Unistore keeps child/NULL and concrete error construction. Three local bodies are deleted.
+TiKV owns AST CAST range-sentinel and Vector target admission. TiDB retains Datum/CastType projection and established errors. [Evidence](evidence/cast-admission-checkpoint.md) · [receipts](logs/cast-admission-summary.txt) · [manifest](checkpoint.json).
 
-[Evidence](evidence/legacy-cast-integer-checkpoint.md) · [receipts](logs/legacy-cast-integer-summary.txt) · [manifest](checkpoint.json) · [remaining](evidence/remaining-acceptance.md).
-
-Four final targeted gates GREEN; one new-test compile RED retained and fixed with assertion derives. Other CAST targets, R100 failures and broad final gates remain. Goal active.
+Two targeted gates GREEN. Whole CAST remains partial; R100 historical failures and full workspace/lint/dev/bazel/release/performance/final-readiness gates remain unverified. Goal active.

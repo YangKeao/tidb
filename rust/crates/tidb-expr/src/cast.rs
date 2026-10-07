@@ -53,18 +53,32 @@ pub(crate) fn eval_cast(
     source: Option<&tidb_datatype::FieldType>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    if v.is_range_sentinel() {
-        return Err(EvalError::Unsupported("range sentinel cast operand"));
-    }
-    if matches!(v, Datum::VectorFloat32(_))
-        && !matches!(
-            cast_type,
-            CastType::Char { .. } | CastType::Binary { .. } | CastType::Vector { .. }
-        )
-    {
-        return Err(EvalError::Unsupported(
-            "a vector can only be cast to string or vector",
-        ));
+    use tidb_query_expr::{
+        NativeCastAdmission, NativeCastAdmissionSource, NativeCastAdmissionTarget,
+    };
+
+    let admission_source = if v.is_range_sentinel() {
+        NativeCastAdmissionSource::RangeSentinel
+    } else if matches!(v, Datum::VectorFloat32(_)) {
+        NativeCastAdmissionSource::Vector
+    } else {
+        NativeCastAdmissionSource::Other
+    };
+    let target = match cast_type {
+        CastType::Char { .. } | CastType::Binary { .. } => NativeCastAdmissionTarget::String,
+        CastType::Vector { .. } => NativeCastAdmissionTarget::Vector,
+        _ => NativeCastAdmissionTarget::Other,
+    };
+    match tidb_query_expr::native_cast_admission(admission_source, target) {
+        NativeCastAdmission::Allow => {}
+        NativeCastAdmission::RejectRangeSentinel => {
+            return Err(EvalError::Unsupported("range sentinel cast operand"));
+        }
+        NativeCastAdmission::RejectVectorTarget => {
+            return Err(EvalError::Unsupported(
+                "a vector can only be cast to string or vector",
+            ));
+        }
     }
     match cast_type {
         CastType::Signed => crate::tikv::eval_cast_signed_in(ctx, &v).map(Datum::Int),
@@ -1269,4 +1283,32 @@ fn real_unsigned_worker_keeps_rounding_overflow_and_union_boundary() {
     );
     assert!(ctx.values.take().is_empty());
     assert_eq!(ctx.policy_reads.get(), 0);
+}
+
+#[cfg(test)]
+#[test]
+fn shared_cast_admission_preserves_range_and_vector_target_errors() {
+    use tidb_datatype::VectorFloat32;
+    let ctx = crate::context::NoColumns;
+    assert_eq!(
+        eval_cast(&CastType::Signed, Datum::MinNotNull, None, &ctx),
+        Err(EvalError::Unsupported("range sentinel cast operand"))
+    );
+    let vector = Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0]));
+    assert_eq!(
+        eval_cast(&CastType::Signed, vector.clone(), None, &ctx),
+        Err(EvalError::Unsupported(
+            "a vector can only be cast to string or vector"
+        ))
+    );
+    assert!(eval_cast(
+        &CastType::Char {
+            len: None,
+            charset: None
+        },
+        vector,
+        None,
+        &ctx
+    )
+    .is_ok());
 }
