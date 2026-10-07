@@ -7,8 +7,8 @@ use super::{FieldType, FieldTypeCode, FieldTypeFlags};
 use crate::EvalType;
 use tidb_query_datatype::codec::{
     native_eval_type::{
-        native_aggregate_binary_output, native_merge_aggregate_eval_type, native_merge_type_flags,
-        native_mixed_sign_bumped_type, native_set_type_flag,
+        native_agg_field_type, native_aggregate_eval_type, native_set_type_flag,
+        NativeAggregateField,
     },
     native_type_name::{native_merge_field_type, NativeTypeNameCode},
 };
@@ -25,49 +25,33 @@ pub const fn merge_field_type(left: FieldTypeCode, right: FieldTypeCode) -> Fiel
     }
 }
 
-const fn merge_type_flags(left: u32, right: u32) -> u32 {
-    native_merge_type_flags(
-        left,
-        right,
-        FieldTypeFlags::NOT_NULL,
-        FieldTypeFlags::UNSIGNED,
+fn native_aggregate_field(field_type: &FieldType) -> NativeAggregateField {
+    NativeAggregateField::new(
+        field_type.code().as_shared_type_name_code(),
+        field_type.code().as_shared_string_type(),
+        field_type.eval_type(),
+        field_type.flags(),
     )
 }
 
 /// Exact `AggFieldType`, including mixed-sign integral promotion.
 pub fn agg_field_type(types: &[FieldType]) -> FieldType {
-    let Some(first) = types.first() else {
+    let Some((code, flags)) = native_agg_field_type(
+        types.iter().map(native_aggregate_field),
+        FieldTypeFlags::NOT_NULL,
+        FieldTypeFlags::UNSIGNED,
+    ) else {
         return FieldType::parser(FieldTypeCode::Unspecified)
             .with_flen(0)
             .with_decimal(0);
     };
-    let mut current = first.clone();
-    let mut mixed_sign = false;
-    for next in &types[1..] {
-        mixed_sign |= current.is_unsigned() != next.is_unsigned();
-        current.set_code(merge_field_type(current.code(), next.code()));
-        let merged_flags = merge_type_flags(current.flags(), next.flags());
-        current = current.with_flags(merged_flags);
-    }
-    if mixed_sign && current.code().is_type_integer() {
-        let bumps_range = types.iter().any(|field_type| {
-            field_type.is_unsigned()
-                && (field_type.code() == current.code() || field_type.code() == FieldTypeCode::Bit)
-        });
-        if bumps_range {
-            current.set_code(
-                match native_mixed_sign_bumped_type(current.code().as_shared_type_name_code()) {
-                    NativeTypeNameCode::Known(raw) | NativeTypeNameCode::Unknown(raw) => {
-                        FieldTypeCode::from_mysql_type(raw)
-                    }
-                },
-            );
+    let mut result = types[0].clone();
+    result.set_code(match code {
+        NativeTypeNameCode::Known(raw) | NativeTypeNameCode::Unknown(raw) => {
+            FieldTypeCode::from_mysql_type(raw)
         }
-    }
-    if current.is_unsigned() && !mixed_sign {
-        current = current.with_added_flags(FieldTypeFlags::UNSIGNED);
-    }
-    current
+    });
+    result.with_flags(flags)
 }
 
 /// Sets or clears a source type flag.
@@ -77,67 +61,14 @@ pub const fn set_type_flag(flags: &mut u32, item: u32, on: bool) {
 
 /// Exact `AggregateEvalType` merge and output-flag behavior.
 pub fn aggregate_eval_type(types: &[FieldType], flags: &mut u32) -> EvalType {
-    let mut aggregate = EvalType::String;
-    let mut unsigned = false;
-    let mut first = false;
-    let mut binary_string = false;
-    let mut left = types
-        .first()
-        .expect("AggregateEvalType requires an argument");
-    for field_type in types {
-        if field_type.code() == FieldTypeCode::Null {
-            continue;
-        }
-        let right_eval = field_type.eval_type();
-        if (field_type.code().is_type_blob()
-            || field_type.code().is_type_varchar()
-            || field_type.code().is_type_char())
-            && field_type.has_flag(FieldTypeFlags::BINARY)
-        {
-            binary_string = true;
-        }
-        if !first {
-            first = true;
-            aggregate = right_eval;
-            unsigned = field_type.is_unsigned();
-        } else {
-            aggregate = merge_eval_type(
-                aggregate,
-                right_eval,
-                left,
-                field_type,
-                unsigned,
-                field_type.is_unsigned(),
-            );
-            unsigned &= field_type.is_unsigned();
-        }
-        left = field_type;
-    }
-    set_type_flag(flags, FieldTypeFlags::UNSIGNED, unsigned);
-    set_type_flag(
-        flags,
+    let result = native_aggregate_eval_type(
+        types.iter().map(native_aggregate_field),
+        FieldTypeFlags::UNSIGNED,
         FieldTypeFlags::BINARY,
-        native_aggregate_binary_output(aggregate, binary_string),
     );
-    aggregate
-}
-
-fn merge_eval_type(
-    left_eval: EvalType,
-    right_eval: EvalType,
-    left: &FieldType,
-    right: &FieldType,
-    left_unsigned: bool,
-    right_unsigned: bool,
-) -> EvalType {
-    native_merge_aggregate_eval_type(
-        left_eval,
-        right_eval,
-        left.code().as_shared_type_name_code(),
-        right.code().as_shared_type_name_code(),
-        left_unsigned,
-        right_unsigned,
-    )
+    set_type_flag(flags, FieldTypeFlags::UNSIGNED, result.unsigned);
+    set_type_flag(flags, FieldTypeFlags::BINARY, result.binary_output);
+    result.eval
 }
 
 #[cfg(test)]
@@ -225,5 +156,49 @@ mod shared_merge_tests {
         );
         assert_eq!(aggregate, EvalType::String);
         assert_eq!(output_flags & FieldTypeFlags::BINARY, 0);
+    }
+
+    #[test]
+    fn shared_field_aggregate_controller_keeps_empty_first_metadata_null_and_binary_shapes() {
+        let empty = agg_field_type(&[]);
+        assert_eq!(
+            (empty.code(), empty.flen(), empty.decimal()),
+            (FieldTypeCode::Unspecified, 0, 0)
+        );
+        let first = FieldType::parser(FieldTypeCode::Tiny)
+            .with_unsigned(true)
+            .with_flen(11)
+            .with_decimal(2);
+        let mixed = agg_field_type(&[first, FieldType::parser(FieldTypeCode::Tiny)]);
+        assert_eq!(
+            (mixed.code(), mixed.flen(), mixed.decimal()),
+            (FieldTypeCode::Short, 11, 2)
+        );
+
+        let mut flags = FieldTypeFlags::UNSIGNED | FieldTypeFlags::BINARY;
+        assert_eq!(
+            aggregate_eval_type(&[FieldType::parser(FieldTypeCode::Null)], &mut flags),
+            EvalType::String
+        );
+        assert_eq!(
+            flags & (FieldTypeFlags::UNSIGNED | FieldTypeFlags::BINARY),
+            0
+        );
+
+        flags = 0;
+        assert_eq!(
+            aggregate_eval_type(
+                &[FieldType::parser(FieldTypeCode::Varchar)
+                    .with_added_flags(FieldTypeFlags::BINARY)],
+                &mut flags,
+            ),
+            EvalType::String
+        );
+        assert_ne!(flags & FieldTypeFlags::BINARY, 0);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut empty_flags = 0;
+            aggregate_eval_type(&[], &mut empty_flags);
+        }))
+        .is_err());
     }
 }

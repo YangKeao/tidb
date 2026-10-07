@@ -1,0 +1,24 @@
+field-aggregate-controller-152 / R158
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-aggregate-controller-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_aggregate_controller -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_aggregate_controller_keeps_empty_first_metadata_null_and_binary_shapes -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all test_agg_field_type -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib intersect_binds_tighter_than_union_in_execution -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/532 4.84/0.00 0 58bf671eacdf3d432899592cbc658ed8a73a287bd65320280f64d557645c2516
+native-datatype 495/0/0/0 3.46/7.02 0 6554499503ab86842f0e833e69530c6622e6e620cc6a82b6b072a2af9d3926b1
+native-new 1/0/0/494 0.09/0.00 0 7cf011a815e904cb6b5b53926160f4d35593d8dfe768711b11991fff8feff161
+native-existing 3/0/0/91 1.34/0.00 0 87858cfe8822c7e830606f98947def100e0829f8025eaa962f501149e4eb0afd
+session-sql 1/0/0/2269 29.52/0.01 0 2be764a0d8a63af5b79c40ccf002d4773c4d461515b25b71df27e177b4d13d4d
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);5old SDK/2old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type now owns complete allocation-free iterator controllers for AggFieldType and AggregateEvalType. Native aggregate loops are deleted; native projects complete descriptors, preserves the empty FieldType shape and applies shared results. SDK preserves empty eval panic, all-null shape, Null last exclusion, full Known/Unknown identity, exact named unsigned bitset, mixed-sign bump, binary metadata and first native metadata clone.
+Two fresh production agents completed/froze non-overlapping files without commands. Parent reviewed, formatted, appended tests and validated; no correction or retained RED.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Renderer andbroaderM2/root/liveDAG/final remain. Full native datatype495, source aggregate3 and set-operation SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
