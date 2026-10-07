@@ -428,9 +428,8 @@ impl FieldTypeCode {
 
     /// Go `mysql.IsIntegerType` (`parser/mysql/util.go:52`).
     pub const fn is_integer_type(self) -> bool {
-        matches!(
-            self,
-            Self::Tiny | Self::Short | Self::Int24 | Self::Long | Self::LongLong
+        tidb_query_datatype::codec::native_type_name::native_mysql_is_integer_type(
+            self.as_shared_type_name_code(),
         )
     }
 
@@ -438,28 +437,11 @@ impl FieldTypeCode {
     /// (`parser/mysql/util.go:65`), whose table this reproduces entry for
     /// entry; an unlisted type is Go's `(-1, -1)`.
     pub const fn default_field_length_and_decimal(self) -> (i32, i32) {
-        match self {
-            Self::Bit => (1, 0),
-            Self::Tiny => (4, 0),
-            Self::Short => (6, 0),
-            Self::Int24 => (9, 0),
-            Self::Long => (11, 0),
-            Self::LongLong => (20, 0),
-            Self::Double => (22, -1),
-            Self::Float => (12, -1),
-            Self::NewDecimal | Self::Duration | Self::Date => (10, 0),
-            Self::Timestamp | Self::Datetime => (19, 0),
-            Self::Year => (4, 0),
-            Self::String => (1, 0),
-            Self::Varchar | Self::VarString => (5, 0),
-            Self::TinyBlob => (255, 0),
-            Self::Blob => (65535, 0),
-            Self::MediumBlob => (16_777_215, 0),
-            Self::LongBlob | Self::Json => (4_294_967_295_u32 as i32, 0),
-            Self::Null => (0, 0),
-            Self::Set | Self::Enum => (-1, 0),
-            _ => (-1, -1),
-        }
+        let (flen, decimal) =
+            tidb_query_datatype::codec::native_type_name::native_default_field_length_and_decimal(
+                self.as_shared_type_name_code(),
+            );
+        (flen as i32, decimal as i32)
     }
 
     /// Go `types.ConvertBetweenCharAndVarchar` (`field_type.go:1609`). The
@@ -468,8 +450,8 @@ impl FieldTypeCode {
     /// `new_collations_enabled_on_first_bootstrap` true), so the gate is a
     /// constant here and named rather than threaded.
     pub const fn converts_between_char_and_varchar(self, to: Self) -> bool {
-        (self.is_type_varchar() && matches!(to, Self::String))
-            || (matches!(self, Self::String) && to.is_type_varchar())
+        self.as_shared_string_type()
+            .converts_between_char_and_varchar(to.as_shared_string_type())
     }
 }
 
@@ -745,14 +727,11 @@ impl FieldType {
 
     /// Mirrors `FieldType.IsDecimalValid` for DECIMAL metadata.
     pub const fn is_decimal_valid(&self) -> bool {
-        if !matches!(self.code(), FieldTypeCode::NewDecimal) {
-            return true;
-        }
-        self.decimal >= 0
-            && self.decimal <= MAX_DECIMAL_SCALE
-            && self.flen > 0
-            && self.flen <= MAX_DECIMAL_WIDTH
-            && self.flen >= self.decimal
+        tidb_query_datatype::codec::native_eval_type::native_decimal_metadata_valid(
+            self.code().as_shared_type_name_code(),
+            self.decimal,
+            self.flen,
+        )
     }
 
     /// Returns the registered collation metadata.
@@ -1106,26 +1085,21 @@ impl FieldType {
         decimal_delta: i64,
         flen_delta: i64,
     ) {
-        if self.code() != FieldTypeCode::NewDecimal {
+        let Some(decimal) =
+            tidb_query_datatype::codec::native_eval_type::native_update_decimal_scale(
+                self.code().as_shared_type_name_code(),
+                old.decimal,
+                decimal_delta,
+            )
+        else {
             return;
-        }
-        if old.decimal < 0 {
-            self.decimal = MAX_DECIMAL_SCALE;
-        } else {
-            self.decimal = old.decimal + decimal_delta;
-        }
-        self.flen = if old.flen < 0 {
-            MAX_DECIMAL_WIDTH
-        } else {
-            (old.flen
-                + flen_delta
-                + if old.decimal < 0 {
-                    MAX_DECIMAL_SCALE
-                } else {
-                    0
-                })
-            .min(MAX_DECIMAL_WIDTH)
         };
+        self.decimal = decimal;
+        self.flen = tidb_query_datatype::codec::native_eval_type::native_update_decimal_flen(
+            old.decimal,
+            old.flen,
+            flen_delta,
+        );
     }
 
     /// Formats the compact information-schema spelling. The boolean is the
@@ -2418,5 +2392,64 @@ mod tests {
             assert!(!unknown.is_type_temporal());
             assert!(!unknown.is_temporal_with_date());
         }
+    }
+
+    #[test]
+    fn shared_field_decimal_meta_keeps_limits_updates_and_partial_mutation_order() {
+        assert!(FieldTypeCode::Tiny.is_integer_type());
+        assert!(!FieldTypeCode::Year.is_integer_type());
+        assert!(!FieldTypeCode::Unknown(FieldTypeCode::Tiny.mysql_type()).is_integer_type());
+        assert_eq!(
+            FieldTypeCode::LongBlob.default_field_length_and_decimal(),
+            (-1, 0)
+        );
+        assert!(FieldTypeCode::Varchar.converts_between_char_and_varchar(FieldTypeCode::String));
+        assert!(FieldTypeCode::String.converts_between_char_and_varchar(FieldTypeCode::VarString));
+        assert!(!FieldTypeCode::Unknown(FieldTypeCode::Varchar.mysql_type())
+            .converts_between_char_and_varchar(FieldTypeCode::String));
+
+        for (decimal, flen, valid) in [
+            (0, 1, true),
+            (30, 65, true),
+            (-1, 10, false),
+            (31, 65, false),
+            (2, 1, false),
+        ] {
+            let field = FieldType::new(FieldTypeCode::NewDecimal)
+                .with_decimal(decimal)
+                .with_flen(flen);
+            assert_eq!(field.is_decimal_valid(), valid, "{decimal}/{flen}");
+        }
+        assert!(FieldType::new(FieldTypeCode::Long)
+            .with_decimal(-1)
+            .with_flen(0)
+            .is_decimal_valid());
+
+        let old = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_decimal(2)
+            .with_flen(10);
+        let mut updated = FieldType::new(FieldTypeCode::NewDecimal);
+        updated.update_flen_and_decimal_under_limit(&old, 3, 4);
+        assert_eq!((updated.flen(), updated.decimal()), (14, 5));
+        let old_negative = old.clone().with_decimal(-1).with_flen(10);
+        updated.update_flen_and_decimal_under_limit(&old_negative, 99, 2);
+        assert_eq!((updated.flen(), updated.decimal()), (42, 30));
+        let mut non_decimal = FieldType::new(FieldTypeCode::Long)
+            .with_flen(7)
+            .with_decimal(1);
+        non_decimal.update_flen_and_decimal_under_limit(&old, 3, 4);
+        assert_eq!((non_decimal.flen(), non_decimal.decimal()), (7, 1));
+
+        let overflow_old = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_decimal(1)
+            .with_flen(1);
+        let mut partial = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_decimal(0)
+            .with_flen(9);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            partial.update_flen_and_decimal_under_limit(&overflow_old, 2, i64::MAX);
+        }))
+        .is_err());
+        assert_eq!((partial.flen(), partial.decimal()), (9, 3));
     }
 }

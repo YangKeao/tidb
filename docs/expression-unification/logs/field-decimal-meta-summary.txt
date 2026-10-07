@@ -1,0 +1,24 @@
+field-decimal-meta-149 / R155
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-decimal-meta-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_decimal_meta -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_decimal_meta_keeps_limits_updates_and_partial_mutation_order -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_decimal_delta_updates_flen_independently -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 3/0/0/527 2.53/0.00 0 d26825905820e14bb9e40b08c2998942f30534144aec501d7a7f8b80a6d59d79
+native-datatype 492/0/0/0 2.35/7.06 0 5bc0a2423dcc5ab4a63129115901906d3fd0bb2baaf79e5398462f61e3987423
+native-new 1/0/0/491 0.09/0.00 0 1c1733db21b7c40bb093d7ef0a4fdbc2977708999d5935c614412b80ea1f9172
+native-existing 1/0/0/93 0.99/0.00 0 de1621d0e18da4b2010d40b91d833d5b668938599b036795a7a818c1daed8303
+session-sql 1/0/0/2269 13.84/0.03 0 b614cd2f2da55345e171de0227fcf54a620d3dc8049be7e015f7bd37f50a7d98
+
+SDK3/native1 Rust files;0 new Rustfiles.4new tests(SDK3/native1);10old SDK/27old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name/native_string_type/native_eval_type now own MySQL integer, char/varchar, Decimal validity and flen/scale delta controllers. Native projects complete identity/metadata, casts the shared default tuple and assigns controller outputs only. A caught tuple-first computation drifting the old overflow partial-mutation order before integration; C split scale and flen APIs so native commits scale before flen arithmetic. New test exercises that caught panic state.
+Four production-only agents completed/froze non-overlapping files without commands; C's separately queued stale R148 edit was rejected by read-observation guard and made no source change. Parent formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype492, source Decimal delta1 and numeric/temporal metadata SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
