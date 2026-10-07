@@ -33,6 +33,7 @@ mod cast_decimal;
 #[cfg(test)]
 mod closed_decimal_tests;
 pub(crate) use cast_decimal::{eval_cast_decimal_in, report_cast_decimal_input_in};
+pub use cast_decimal::{eval_legacy_cast_decimal_datum, eval_legacy_cast_decimal_integer};
 mod cast_duration;
 pub(crate) use cast_duration::{
     eval_cast_arg_as_duration_in, eval_cast_duration_in, eval_parse_computed_duration_in,

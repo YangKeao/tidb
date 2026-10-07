@@ -406,6 +406,7 @@ pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
     eval_from_unixtime_legacy_scoped_in, eval_legacy_bytes_comparison_in,
+    eval_legacy_cast_decimal_datum, eval_legacy_cast_decimal_integer,
     eval_legacy_date_arithmetic_duration_in, eval_legacy_date_arithmetic_text_in,
     eval_legacy_date_arithmetic_time_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,

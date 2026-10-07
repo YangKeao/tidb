@@ -2936,50 +2936,38 @@ impl LegacyEvaluator<'_> {
                 | SimpleSig::CastTimeAsDecimal
                 | SimpleSig::CastDurationAsDecimal),
                 children,
-            ) => {
-                match sig {
-                    SimpleSig::CastIntAsDecimal => {
-                        let value = legacy_some!(self.folded_int(children.first())?);
-                        // An unsigned source renders through `from_uint` --
-                        // the i128 carries the value without the wire's flag.
-                        if let Ok(signed) = i64::try_from(value) {
-                            Some(tidb_datatype::Decimal::from_my_decimal(
-                                &tidb_datatype::MyDecimal::from_int(signed),
-                            ))
-                        } else {
-                            u64::try_from(value).ok().map(|value| {
-                                tidb_datatype::Decimal::from_my_decimal(
-                                    &tidb_datatype::MyDecimal::from_uint(value),
-                                )
-                            })
-                        }
-                    }
-                    SimpleSig::CastRealAsDecimal => {
-                        let value = legacy_some!(self.eval_real(children.first())?);
-                        // Go `FromFloat64`: the truncated warning folds.
-                        Some(tidb_datatype::Decimal::from_my_decimal(
-                            &tidb_datatype::MyDecimal::from_float64(value).0,
-                        ))
-                    }
-                    SimpleSig::CastDecimalAsDecimal => self.eval_decimal(children.first())?,
-                    SimpleSig::CastStringAsDecimal => {
-                        let raw = legacy_some!(self.eval_bytes(children.first())?);
-                        let text = String::from_utf8_lossy(&raw);
-                        // Go trims, then `FromString` (the truncated warning
-                        // folds; the numeric prefix survives).
-                        Some(tidb_datatype::Decimal::from_my_decimal(
-                            &tidb_datatype::MyDecimal::from_string(text.trim().as_bytes()).0,
-                        ))
-                    }
-                    SimpleSig::CastTimeAsDecimal => self
-                        .eval_time(children.first())?
-                        .map(tidb_datatype::Time::to_number),
-                    SimpleSig::CastDurationAsDecimal => self
-                        .eval_duration(children.first())?
-                        .map(tidb_datatype::MySqlDuration::to_number),
-                    _ => None,
+            ) => match sig {
+                SimpleSig::CastIntAsDecimal => {
+                    let value = legacy_some!(self.folded_int(children.first())?);
+                    tidb_expr::eval_legacy_cast_decimal_integer(value)
                 }
-            }
+                SimpleSig::CastRealAsDecimal => {
+                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let datum = Datum::Real(value);
+                    tidb_expr::eval_legacy_cast_decimal_datum(&datum)
+                }
+                SimpleSig::CastDecimalAsDecimal => {
+                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let datum = Datum::Decimal(value);
+                    tidb_expr::eval_legacy_cast_decimal_datum(&datum)
+                }
+                SimpleSig::CastStringAsDecimal => {
+                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let datum = Datum::Bytes(value);
+                    tidb_expr::eval_legacy_cast_decimal_datum(&datum)
+                }
+                SimpleSig::CastTimeAsDecimal => {
+                    let value = legacy_some!(self.eval_time(children.first())?);
+                    let datum = Datum::Time(value);
+                    tidb_expr::eval_legacy_cast_decimal_datum(&datum)
+                }
+                SimpleSig::CastDurationAsDecimal => {
+                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let datum = Datum::Duration(value);
+                    tidb_expr::eval_legacy_cast_decimal_datum(&datum)
+                }
+                _ => None,
+            },
             _ => None,
         })
     }
@@ -9879,6 +9867,49 @@ mod tests {
         let bare = SimpleExpr::Func(SimpleSig::CastIntAsDecimal, vec![SimpleExpr::Int(0)]);
         assert_eq!(eval_expr(&bare, &[], 4, &zone()).expect("evals"), Some(0));
     }
+
+    #[test]
+    fn shared_legacy_decimal_cast_bridge_covers_all_six_source_signatures() {
+        use tidb_datatype::{Datum, Decimal, MySqlDuration, Time, TimeType};
+        let decimal = |text: &str| SimpleExpr::Decimal(Decimal::from_literal(text));
+        let equals = |sig, source, expected: &str| {
+            SimpleExpr::Func(
+                SimpleSig::EqDecimal,
+                vec![SimpleExpr::Func(sig, vec![source]), decimal(expected)],
+            )
+        };
+        for expression in [
+            equals(SimpleSig::CastIntAsDecimal, SimpleExpr::Int(-7), "-7"),
+            equals(SimpleSig::CastRealAsDecimal, SimpleExpr::Real(2.5), "2.5"),
+            equals(SimpleSig::CastDecimalAsDecimal, decimal("3.25"), "3.25"),
+            equals(
+                SimpleSig::CastStringAsDecimal,
+                SimpleExpr::Bytes(b" 4.5tail".to_vec()),
+                "4.5",
+            ),
+            equals(
+                SimpleSig::CastTimeAsDecimal,
+                SimpleExpr::Time(
+                    Time::from_date_checked(2024, 3, 5, 14, 30, 45, 0, TimeType::DateTime, 0)
+                        .unwrap(),
+                ),
+                "20240305143045",
+            ),
+        ] {
+            assert_eq!(eval_expr(&expression, &[], 4, &zone()).unwrap(), Some(1));
+        }
+        let duration = MySqlDuration::from_nanoseconds(3_600_000_000_000, 0).unwrap();
+        let expression = equals(
+            SimpleSig::CastDurationAsDecimal,
+            SimpleExpr::Column(0),
+            "10000",
+        );
+        assert_eq!(
+            eval_expr(&expression, &[Datum::Duration(duration)], 4, &zone()).unwrap(),
+            Some(1)
+        );
+    }
+
     #[test]
     fn string_casts_render_each_source_like_go() {
         // EQString(CAST(x AS CHAR), expected) pins the exact rendering.

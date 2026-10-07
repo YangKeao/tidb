@@ -15,6 +15,17 @@
 use crate::{Columns, Datum, EvalError};
 use tidb_datatype::Decimal;
 
+/// Converts a legacy integer without changing the ordinary cast APIs.
+pub fn eval_legacy_cast_decimal_integer(value: i128) -> Option<tidb_datatype::Decimal> {
+    tidb_query_expr::native_legacy_cast_decimal_integer(value).map(Decimal::from_shared_parse)
+}
+
+/// Converts a legacy datum while folding conversion events and errors.
+pub fn eval_legacy_cast_decimal_datum(value: &Datum) -> Option<Decimal> {
+    tidb_query_expr::native_legacy_cast_decimal_numeric(value.as_shared_numeric_input())
+        .map(Decimal::from_shared_parse)
+}
+
 /// The ordinary cast caller retains its original NULL/range/vector guards.
 /// Conversion decisions, warning order, error folding and precision policy
 /// belong to the SDK; these closures actuate only the original primitives.

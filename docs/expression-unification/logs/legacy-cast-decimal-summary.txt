@@ -1,0 +1,25 @@
+legacy-cast-decimal-173 / R179
+5 Cargo launches;4 final GREEN;1 new-test compile RED retained;1 corrected rerun;no test failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/legacy-cast-decimal-{id}.log
+
+Final exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_expr --lib legacy_decimal_cast_preserves -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-bridge] ../../tools/cargo-tidb test --locked -p tidb-expr --lib decimal_cast_bridge_keeps_raw_parts_warning_order_default_conversion_and_union_report -- --test-threads=1
+[unistore-new] ../../tools/cargo-tidb test --locked -p tidb-unistore --lib shared_legacy_decimal_cast_bridge_covers_all_six_source_signatures -- --test-threads=1
+[unistore-existing] ../../tools/cargo-tidb test --locked -p tidb-unistore --lib decimal_casts_compose_as_comparison_operands -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/1033 9.92/0.00 0 4f82c5a63ecea4d6d40888d525b98ccbe892abdae16fb72d839f035b48bae1c6
+native-bridge 1/0/0/1746 13.51/0.00 0 9e8caf0e75e9c39779de77c39a0c76a1e14876b76e66e87ff22d15137f0f7932
+unistore-new 1/0/0/236 9.41/0.00 0 e44b8888507bd2d37019c6c6359abe0555a78585408389186fd2c288e73d9fe4
+unistore-existing 1/0/0/236 0.20/0.00 0 4721b9b8bf86dfcdb8ba5ae14aa5ed6474a1dcfad0b9fe6d1bdba53bc863b18b
+
+Retained RED:
+[tikv-compile-red] first SDK new test was appended in the existing `tests` module but referred to helpers `text` and alias `N` from sibling `numeric_tests`; E0425/E0433 compile exit101. Production untouched; test-only references changed to local `visible` and `NativeNumericInput`. sha256 c3d2588cff5c90650ebeaf62ce62b10e5dc8eb1ed9a4919f607a3e4990b01b79
+
+TiKV2/TiDB4 Rust files;0 new Rustfiles.2new tests(TiKV1/TiDB1);3old TiKV/116old TiDB touched-file test bodies unchanged.
+SDK native_cast_decimal owns legacy i128 signed/unsigned selection and existing numeric-input Decimal conversion with legacy event/error folding. TiDB bridge owns shared-to-native Decimal projection. Unistore deletes six local int/real/decimal/string/time/duration conversion bodies and keeps child evaluation, NULL folding and Datum projection. Tests cover i128 bounds, real/text prefix, all six direct SimpleSig source signatures and prior comparison composition.
+Three production agents completed/froze non-overlapping SDK/bridge/Unistore files through one workflow; parent reviewed, exported APIs, appended tests, formatted and validated.
+fmt/diff passed. Functional239/245 strict0 remaining6 unchanged. One partial CAST record prepended; prior27 partial records and239 family objects unchanged. Whole CAST is not claimed: other direct legacy target bodies remain. Baseline unsupported signatures/admissions unchanged. Full tidb-expr/unistore not claimed green because R100 retains expression4/unistore1 historical failures. Full workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
