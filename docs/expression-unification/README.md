@@ -1,13 +1,13 @@
 # Expression unification experiment
 
-Paired branch: `expression-unification-demo`. Current checkpoint: **legacy-cast-json-174**, after **legacy-cast-decimal-173**.
+Paired branch: `expression-unification-demo`. Current checkpoint: **legacy-cast-real-175**, after **legacy-cast-json-174**.
 
-Functional **239/245 (97.55%)**, strict **0**, remaining **6**—unchanged; this is partial CAST deletion.
+Functional **239/245 (97.55%)**, strict **0**, remaining **6**—unchanged; partial CAST deletion.
 
-TiKV owns legacy JSON encoding/parsing, lossy text boundary, temporal FSP restamping and error folding. A narrow TiDB bridge projects encoded JSON; Unistore keeps child/NULL/Datum projection. Seven local `SimpleSig::*AsJson` conversion bodies are deleted.
+TiKV owns legacy i128/real/decimal/lossy-text REAL conversion and event/error folding. TiDB bridge projects Datum; Unistore keeps child/NULL/result projection. Four local `SimpleSig::*AsReal` bodies are deleted and the direct Real identity bug is fixed.
 
-[Evidence](evidence/legacy-cast-json-checkpoint.md) · [receipts](logs/legacy-cast-json-summary.txt) · [manifest](checkpoint.json) · [ledger](migration-progress.json).
+[Evidence](evidence/legacy-cast-real-checkpoint.md) · [receipts](logs/legacy-cast-real-summary.txt) · [manifest](checkpoint.json) · [ledger](migration-progress.json).
 
-Four final Cargo gates GREEN. Three new tests;2 TiKV/116 TiDB old touched-file test bodies unchanged. A new-test Decimal expectation RED is retained and corrected from1.3 to exact1.25 before rerun.
+The new regression failed before implementation (`None` vs `Some(2.5)`) and the identical test plus four targeted gates pass afterward. Three new tests;2 TiKV/118 TiDB old touched-file tests unchanged.
 
-[Remaining](evidence/remaining-acceptance.md): other direct legacy CAST targets block family credit; five complex exceptions, broader M2/root/liveDAG/final acceptance remain. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/package/PR readiness unverified. Goal active.
+[Remaining](evidence/remaining-acceptance.md): other direct legacy CAST targets block family credit; five complex exceptions, broader M2/root/liveDAG/final acceptance remain. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/memory/TiFlash/FIPS/package/PR readiness unverified. Goal active.

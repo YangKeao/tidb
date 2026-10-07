@@ -74,6 +74,8 @@ R178 removes the seven native source-specific UNION CAST policy bodies; see [UNI
 
 R179 deletes six legacy `SimpleSig::*AsDecimal` conversion bodies; see [legacy DECIMAL CAST](legacy-cast-decimal-checkpoint.md). Other direct legacy CAST targets still block whole-family credit. Functional239/245, strict0 and remaining6 stay unchanged.
 
+R181 deletes four legacy `SimpleSig::*AsReal` conversion bodies and fixes direct Real identity with a required pre-fix RED; see [legacy REAL CAST](legacy-cast-real-checkpoint.md). Other direct legacy CAST targets still block whole-family credit. Functional239/245, strict0 and remaining6 stay unchanged.
+
 R180 deletes seven legacy `SimpleSig::*AsJson` conversion bodies; see [legacy JSON CAST](legacy-cast-json-checkpoint.md). Other direct legacy CAST targets still block whole-family credit. Functional239/245, strict0 and remaining6 stay unchanged.
 
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.

@@ -3281,31 +3281,23 @@ impl LegacyEvaluator<'_> {
                 // Go wraps the operand in the cast signature; the widening
                 // itself is exact for the admitted source kinds.
                 return Ok(match sig {
-                    SimpleSig::CastIntAsReal => {
-                        // The int channel carries no error for a leaf.
-                        let value = self.folded_int(children.first())?;
-                        value.map(|value| value as f64)
-                    }
+                    SimpleSig::CastIntAsReal => self
+                        .folded_int(children.first())?
+                        .map(tidb_expr::eval_legacy_cast_real_integer),
                     SimpleSig::CastDecimalAsReal => {
-                        Some(legacy_some!(self.eval_decimal(children.first())?).to_f64())
+                        let value = legacy_some!(self.eval_decimal(children.first())?);
+                        let datum = Datum::Decimal(value);
+                        tidb_expr::eval_legacy_cast_real_datum(&datum)
+                    }
+                    SimpleSig::CastRealAsReal => {
+                        let value = legacy_some!(self.eval_real(children.first())?);
+                        let datum = Datum::Real(value);
+                        tidb_expr::eval_legacy_cast_real_datum(&datum)
                     }
                     SimpleSig::CastStringAsReal => {
-                        let raw = legacy_some!(self.eval_bytes(children.first())?);
-                        let text = String::from_utf8_lossy(&raw);
-                        let Some(prefix) = numeric_prefix(text.trim_start(), true) else {
-                            return Ok(Some(0.0));
-                        };
-                        let parsed = prefix.parse::<f64>().unwrap_or(f64::NAN);
-                        // `strconv.ParseFloat` range saturation: ±MaxFloat64.
-                        Some(if parsed.is_infinite() {
-                            if parsed > 0.0 {
-                                f64::MAX
-                            } else {
-                                f64::MIN
-                            }
-                        } else {
-                            parsed
-                        })
+                        let value = legacy_some!(self.eval_bytes(children.first())?);
+                        let datum = Datum::Bytes(value);
+                        tidb_expr::eval_legacy_cast_real_datum(&datum)
                     }
                     SimpleSig::RoundReal => tidb_expr::eval_legacy_round_real_in(
                         self.eval_real(children.first())?,
@@ -7420,6 +7412,12 @@ mod tests {
             eval_expr(&condition, &row, 4, &zone()).expect("evals"),
             Some(1)
         );
+    }
+
+    #[test]
+    fn legacy_cast_real_as_real_preserves_identity() {
+        let cast = SimpleExpr::Func(SimpleSig::CastRealAsReal, vec![SimpleExpr::Real(2.5)]);
+        assert_eq!(eval_real(Some(&cast), &[], 4, &zone()), Some(2.5));
     }
 
     #[test]

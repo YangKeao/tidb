@@ -232,6 +232,16 @@ fn input(value: &Datum) -> Input<'_> {
     }
 }
 
+pub fn eval_legacy_cast_real_integer(value: i128) -> f64 {
+    tidb_query_datatype::codec::native_scalar_convert::native_legacy_cast_real_integer(value)
+}
+
+pub fn eval_legacy_cast_real_datum(value: &Datum) -> Option<f64> {
+    tidb_query_datatype::codec::native_scalar_convert::native_legacy_cast_real(
+        value.as_shared_numeric_input(),
+    )
+}
+
 fn evaluate(ctx: &dyn Columns, value: &Datum, target: Target) -> Result<f64, EvalError> {
     tidb_query_expr::native_cast_float_numeric(value.as_shared_numeric_input(), target, |message| {
         ctx.handle_truncate(message)
@@ -256,4 +266,16 @@ pub(crate) fn eval_cast_float_in(ctx: &dyn Columns, value: &Datum) -> Result<f64
 /// lossy string/JSON cast with a statement warning callback.
 pub(crate) fn eval_cast_float_value(value: &Datum) -> f64 {
     tidb_query_expr::native_cast_float_numeric_value(value.as_shared_numeric_input())
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_real_cast_bridge_keeps_i128_datum_and_folded_error_projection() {
+    assert_eq!(eval_legacy_cast_real_integer(-7), -7.0);
+    assert_eq!(eval_legacy_cast_real_datum(&Datum::Real(2.5)), Some(2.5));
+    assert_eq!(
+        eval_legacy_cast_real_datum(&Datum::new_bytes(b"12.5tail".to_vec())),
+        Some(12.5)
+    );
+    assert_eq!(eval_legacy_cast_real_datum(&Datum::MinNotNull), None);
 }

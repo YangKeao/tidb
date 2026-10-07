@@ -1,0 +1,12 @@
+legacy-cast-real-175 / R181
+6 Cargo launches;5 final GREEN;1 required pre-fix regression RED;no compile failure/retry/zero-match/interruption.
+Final commands: tikv `../tools/cargo-tikv test --locked -p tidb_query_datatype --lib legacy_real_cast_preserves -- --test-threads=1`; TiDB rust `../../tools/cargo-tidb test --locked` filters: `-p tidb-expr --lib legacy_real_cast_bridge_keeps`, `-p tidb-unistore --lib legacy_cast_real_as_real_preserves_identity`, `real_cast_composes_as_a_comparison_operand`, `string_casts_follow_go_prefix_conversion`, all with `-- --test-threads=1`.
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/552 2.74/0.00 0 11a533a8f3972a213ab3236656a4d757417d1867b6292f1f6892a12c9799fa95
+native-bridge 1/0/0/1748 9.86/0.00 0 8acc7f2ae0dc7f8c14a5af428cb5d83fb24cd7bdedd0645a569cca2400463853
+unistore-regression 1/0/0/238 4.86/0.00 0 5c88bf144b086212b0c36b3b90c9bd990c63d142a9e44e799bb048ff129fc570
+unistore-existing 1/0/0/238 0.12/0.00 0 6070255e9cb7aadb25da97e569a8e26987e93e426348036b62023ca0cac8f87c
+unistore-string 1/0/0/238 0.12/0.00 0 66cfb3774af3ab4352209bf6ee0be2f109e2de2023e2428d8a5b808673b96730
+Pre-fix RED: `legacy_cast_real_as_real_preserves_identity` failed because actual None vs Some(2.5), exit101 sha256 2e38e4863c4a4b21d63ff08eede121993d457c807779a1e43ccf0d8a1d340182. Same immutable test GREEN after implementation.
+TiKV1/TiDB4 Rust;0 new files.3 new tests(TiKV1/TiDB2);2 old TiKV/118 old TiDB test bodies unchanged. SDK owns i128/real/decimal/lossy-text REAL conversion and folded events/errors. Unistore deletes four local source algorithms, fixes Real identity, keeps child/NULL/result projection. Five gates cover SDK saturation/lossy bytes, bridge, pre-fix regression, comparison and string prefix.
+Functional239/245 strict0 remaining6 unchanged; one partial CAST record prepended; prior29 records and239 families unchanged. Other legacy targets block CAST. R100 expr4/unistore1 retained; full suites/workspace/lint/dev/bazel/release/performance/memory/TiFlash/FIPS/package/PR readiness unverified. Goal active.
