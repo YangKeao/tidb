@@ -22,7 +22,7 @@ mod value;
 
 use crate::charset::CharsetName;
 use crate::go_runtime::GoSharedSlice;
-use crate::{output_format, Charset, Collation, EvalType, GoString};
+use crate::{Charset, Collation, EvalType, GoString};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use tidb_query_datatype::codec::native_type_name;
@@ -1106,76 +1106,17 @@ impl FieldType {
     /// Formats the compact information-schema spelling. The boolean is the
     /// source `TiDBStrictIntegerDisplayWidth` switch.
     pub fn compact_str(&self, strict_integer_display_width: bool) -> String {
-        let mut suffix = String::new();
-        let (default_flen, default_decimal) = self.code().default_length_and_decimal();
-        let decimal_not_default = self.decimal != default_decimal
-            && self.decimal != 0
-            && self.decimal != UNSPECIFIED_LENGTH;
-        let display_flen = if self.flen == UNSPECIFIED_LENGTH {
-            default_flen
-        } else {
-            self.flen
-        };
-        let display_decimal = if self.decimal == UNSPECIFIED_LENGTH {
-            default_decimal
-        } else {
-            self.decimal
-        };
-        match self.code() {
-            FieldTypeCode::Enum | FieldTypeCode::Set => {
-                suffix.push_str("('");
-                self.elems.with_visible(|elements| {
-                    for (index, elem) in elements.iter().enumerate() {
-                        if index != 0 {
-                            suffix.push_str("','");
-                        }
-                        // Go `OutputFormat` ranges over a string, replacing
-                        // each invalid byte with U+FFFD before applying its
-                        // four rune escapes.
-                        suffix.push_str(&output_format(&elem.to_utf8_lossy_go()));
-                    }
-                });
-                suffix.push_str("')");
-            }
-            FieldTypeCode::Timestamp | FieldTypeCode::Datetime | FieldTypeCode::Duration => {
-                if decimal_not_default {
-                    suffix = format!("({display_decimal})");
-                }
-            }
-            FieldTypeCode::Double | FieldTypeCode::Float => {
-                if decimal_not_default {
-                    suffix = format!("({display_flen},{display_decimal})");
-                }
-            }
-            FieldTypeCode::NewDecimal => suffix = format!("({display_flen},{display_decimal})"),
-            FieldTypeCode::Bit
-            | FieldTypeCode::Varchar
-            | FieldTypeCode::String
-            | FieldTypeCode::VarString => suffix = format!("({display_flen})"),
-            FieldTypeCode::Tiny => {
-                if !strict_integer_display_width
-                    || self.has_flag(FieldTypeFlags::ZEROFILL)
-                    || display_flen == 1
-                {
-                    suffix = format!("({display_flen})");
-                }
-            }
-            FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong => {
-                if !strict_integer_display_width || self.has_flag(FieldTypeFlags::ZEROFILL) {
-                    suffix = format!("({display_flen})");
-                }
-            }
-            FieldTypeCode::Year => suffix = format!("({})", self.flen),
-            FieldTypeCode::VectorFloat32 if self.flen != UNSPECIFIED_LENGTH => {
-                suffix = format!("({})", self.flen)
-            }
-            FieldTypeCode::Null => suffix = "(0)".to_owned(),
-            _ => {}
-        }
-        format!("{}{}", type_to_str(self.code(), &self.charset_name), suffix)
+        self.elems.with_visible(|elements| {
+            native_type_name::native_compact_field_type(
+                self.code().as_shared_type_name_code(),
+                &self.charset_name,
+                self.flen,
+                self.decimal,
+                self.has_flag(FieldTypeFlags::ZEROFILL),
+                strict_integer_display_width,
+                elements.iter().map(|elem| elem.to_utf8_lossy_go()),
+            )
+        })
     }
 
     /// Mirrors Go `table.Column.GetTypeDesc`: the compact spelling with the
@@ -2448,6 +2389,38 @@ mod tests {
                 .with_array(true)
                 .restore_as_cast_type(false),
             "VECTOR ARRAY"
+        );
+    }
+
+    #[test]
+    fn shared_field_compact_renderer_keeps_elements_widths_precision_and_unknown_identity() {
+        assert_eq!(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_elems(["a'b", "x\n"])
+                .compact_str(true),
+            "enum('a''b','x\\n')"
+        );
+        let tiny = FieldType::new(FieldTypeCode::Tiny).with_flen(2);
+        assert_eq!(tiny.compact_str(true), "tinyint");
+        assert_eq!(tiny.compact_str(false), "tinyint(2)");
+        assert_eq!(
+            tiny.with_added_flags(FieldTypeFlags::ZEROFILL)
+                .compact_str(true),
+            "tinyint(2)"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(10)
+                .with_decimal(2)
+                .compact_str(true),
+            "decimal(10,2)"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::Unknown(1))
+                .with_flen(2)
+                .with_added_flags(FieldTypeFlags::ZEROFILL)
+                .compact_str(false),
+            ""
         );
     }
 }

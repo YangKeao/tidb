@@ -1,0 +1,24 @@
+field-compact-render-156 / R162
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/field-compact-render-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_compact_render -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_compact_renderer_keeps_elements_widths_precision_and_unknown_identity -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all runtime_field_type -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib show_columns_and_describe -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/536 2.70/0.00 0 a90593dc9468f0bec38b178e7985183ca5bfe70d6379a7f1d00cb7e427aa4112
+native-datatype 501/0/0/0 2.57/7.02 0 98bb4f066b55c1addc13fdd34e58d95fbc3beb87d9fba06e400ae04cacf007a1
+native-new 1/0/0/500 0.13/0.00 0 f9888493ce96a6e86ca7024a3f236951b0b94ae7409630bef096770b51b865bf
+native-existing 1/0/0/93 1.04/0.00 0 5a5d1635da6e160b4a6a0b20d3b822da869edbc86dbba6c8067b8e00ec2d1036
+session-sql 1/0/0/2269 13.47/0.01 0 b8459b3dedf2f09080e2caf3464b04e5b84a3e4dcfe7d3b5a7a0bf28bf28e07a
+
+SDK1/native2 Rust files;0 new Rustfiles.3new tests(SDK1/native2);6old SDK/29old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name owns output rune escaping and complete compact FieldType grammar/width policy. Native field match/assembly and format char loop are deleted; only element lossy-text/metadata projection and facades remain. Tests cover NUL/quote/newline/CR/backslash/Unicode, enum/set escaping, strict integer widths, zerofill, precision, aliases and unknown identity.
+Three fresh production agents completed/froze non-overlapping files without commands; parent reviewed, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior partial CAST records unchanged. Source/full restore and expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype501, source runtime1 and SHOW columns SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

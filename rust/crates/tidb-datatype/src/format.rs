@@ -205,15 +205,11 @@ impl<W: Write> Formatter for FlatFormatter<W> {
 /// carriage return are replaced. Backslashes and all other Unicode scalar
 /// values remain unchanged.
 pub fn output_format(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    for character in input.chars() {
-        match character {
-            '\0' => output.push_str("\\0"),
-            '\'' => output.push_str("''"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            _ => output.push(character),
-        }
-    }
-    output
+    tidb_query_datatype::codec::native_type_name::native_output_format(input)
+}
+
+#[cfg(test)]
+#[test]
+fn shared_output_format_keeps_rune_escaping_and_backslashes() {
+    assert_eq!(output_format("\0'\n\r\\😀"), "\\0''\\n\\r\\😀");
 }
