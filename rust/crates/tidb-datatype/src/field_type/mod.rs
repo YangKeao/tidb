@@ -280,51 +280,16 @@ impl FieldTypeCode {
 
     /// Returns Go `mysql.GetDefaultFieldLengthAndDecimal` metadata.
     pub const fn default_length_and_decimal(self) -> (i64, i64) {
-        match self {
-            Self::Bit => (1, 0),
-            Self::Tiny => (4, 0),
-            Self::Short => (6, 0),
-            Self::Int24 => (9, 0),
-            Self::Long => (11, 0),
-            Self::LongLong => (20, 0),
-            Self::Double => (22, -1),
-            Self::Float => (12, -1),
-            Self::NewDecimal => (10, 0),
-            Self::Duration => (10, 0),
-            Self::Date => (10, 0),
-            Self::Timestamp => (19, 0),
-            Self::Datetime => (19, 0),
-            Self::Year => (4, 0),
-            Self::String => (1, 0),
-            Self::Varchar | Self::VarString => (5, 0),
-            Self::TinyBlob => (255, 0),
-            Self::Blob => (65_535, 0),
-            Self::MediumBlob => (16_777_215, 0),
-            Self::LongBlob | Self::Json => (4_294_967_295, 0),
-            Self::Null => (0, 0),
-            Self::Enum | Self::Set => (-1, 0),
-            Self::Unspecified
-            | Self::NewDate
-            | Self::Geometry
-            | Self::VectorFloat32
-            | Self::Unknown(_) => (UNSPECIFIED_LENGTH, UNSPECIFIED_LENGTH),
-        }
+        tidb_query_datatype::codec::native_type_name::native_default_field_length_and_decimal(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Returns Go `mysql.GetDefaultFieldLengthAndDecimalForCast` metadata.
     pub const fn default_length_and_decimal_for_cast(self) -> (i64, i64) {
-        match self {
-            Self::String => (0, -1),
-            Self::Date => (10, 0),
-            Self::Datetime => (19, 0),
-            Self::NewDecimal => (10, 0),
-            Self::Duration => (10, 0),
-            Self::LongLong => (22, 0),
-            Self::Double => (22, -1),
-            Self::Float => (12, -1),
-            Self::Json => (4_194_304, 0),
-            _ => (UNSPECIFIED_LENGTH, UNSPECIFIED_LENGTH),
-        }
+        tidb_query_datatype::codec::native_type_name::native_default_field_length_and_decimal_for_cast(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Mirrors `pkg/parser/types/field_type.go::IsVarLengthType`.
@@ -334,96 +299,88 @@ impl FieldTypeCode {
 
     /// Mirrors `pkg/types/etc.go::IsTypeBlob`.
     pub const fn is_type_blob(self) -> bool {
-        matches!(
-            self,
-            Self::TinyBlob | Self::MediumBlob | Self::Blob | Self::LongBlob
-        )
+        self.as_shared_string_type().is_blob()
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeChar`.
     pub const fn is_type_char(self) -> bool {
-        matches!(self, Self::String | Self::Varchar)
+        self.as_shared_string_type().is_char()
     }
 
     /// Mirrors `pkg/parser/types.IsTypeVector`.
     pub const fn is_type_vector(self) -> bool {
-        matches!(self, Self::VectorFloat32)
+        self.as_shared_string_type().is_vector()
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeVarchar`.
     pub const fn is_type_varchar(self) -> bool {
-        matches!(self, Self::VarString | Self::Varchar)
+        self.as_shared_string_type().is_varchar()
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeUnspecified`.
     pub const fn is_type_unspecified(self) -> bool {
-        matches!(self, Self::Unspecified)
+        self.as_shared_string_type().is_unspecified()
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypePrefixable`.
     pub const fn is_type_prefixable(self) -> bool {
-        self.is_type_blob() || self.is_type_char()
+        self.as_shared_string_type().is_prefixable()
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeFractionable`.
     pub const fn is_type_fractionable(self) -> bool {
-        matches!(self, Self::Datetime | Self::Duration | Self::Timestamp)
+        tidb_query_datatype::codec::native_type_name::native_type_is_fractionable(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeTime`.
     pub const fn is_type_time(self) -> bool {
-        matches!(self, Self::Datetime | Self::Date | Self::Timestamp)
+        tidb_query_datatype::codec::native_type_name::native_type_is_time(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeFloat`.
     pub const fn is_type_float(self) -> bool {
-        matches!(self, Self::Float)
+        tidb_query_datatype::codec::native_type_name::native_type_is_float(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeInteger`.
     pub const fn is_type_integer(self) -> bool {
-        matches!(
-            self,
-            Self::Tiny | Self::Short | Self::Int24 | Self::Long | Self::LongLong | Self::Year
+        tidb_query_datatype::codec::native_type_name::native_type_is_integer(
+            self.as_shared_type_name_code(),
         )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeStoredAsInteger`.
     pub const fn is_type_stored_as_integer(self) -> bool {
-        self.is_type_integer()
-            || matches!(
-                self,
-                Self::Datetime | Self::Date | Self::Timestamp | Self::Duration
-            )
+        tidb_query_datatype::codec::native_type_name::native_type_is_stored_as_integer(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeNumeric`.
     pub const fn is_type_numeric(self) -> bool {
-        matches!(
-            self,
-            Self::Bit
-                | Self::Tiny
-                | Self::Int24
-                | Self::Long
-                | Self::LongLong
-                | Self::NewDecimal
-                | Self::Float
-                | Self::Double
-                | Self::Short
+        tidb_query_datatype::codec::native_type_name::native_type_is_numeric(
+            self.as_shared_type_name_code(),
         )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTypeTemporal`.
     pub const fn is_type_temporal(self) -> bool {
-        matches!(
-            self,
-            Self::Duration | Self::Datetime | Self::Timestamp | Self::Date | Self::NewDate
+        tidb_query_datatype::codec::native_type_name::native_type_is_temporal(
+            self.as_shared_type_name_code(),
         )
     }
 
     /// Mirrors `pkg/types/etc.go::IsTemporalWithDate`.
     pub const fn is_temporal_with_date(self) -> bool {
-        self.is_type_time()
+        tidb_query_datatype::codec::native_type_name::native_type_is_temporal_with_date(
+            self.as_shared_type_name_code(),
+        )
     }
 
     /// Projects native named/unknown identity for shared type-name lookup.
@@ -2405,5 +2362,61 @@ mod tests {
         assert!(!string.partial_equal(&not_null, true));
         let elems = blob.with_elems(["x"]);
         assert!(!string.partial_equal(&elems, true));
+    }
+
+    #[test]
+    fn shared_field_code_policy_keeps_defaults_classifiers_and_unknown_identity() {
+        for (code, expected, cast) in [
+            (FieldTypeCode::Tiny, (4, 0), (-1, -1)),
+            (FieldTypeCode::LongLong, (20, 0), (22, 0)),
+            (FieldTypeCode::Year, (4, 0), (-1, -1)),
+            (FieldTypeCode::Json, (4_294_967_295, 0), (4_194_304, 0)),
+            (FieldTypeCode::Enum, (-1, 0), (-1, -1)),
+            (FieldTypeCode::LongBlob, (4_294_967_295, 0), (-1, -1)),
+            (FieldTypeCode::String, (1, 0), (0, -1)),
+        ] {
+            assert_eq!(code.default_length_and_decimal(), expected, "{code:?}");
+            assert_eq!(code.default_length_and_decimal_for_cast(), cast, "{code:?}");
+            let unknown = FieldTypeCode::Unknown(code.mysql_type());
+            assert_eq!(unknown.default_length_and_decimal(), (-1, -1));
+            assert_eq!(unknown.default_length_and_decimal_for_cast(), (-1, -1));
+        }
+        for code in [FieldTypeCode::TinyBlob, FieldTypeCode::Blob] {
+            assert!(code.is_type_blob());
+            assert!(code.is_type_prefixable());
+        }
+        for code in [FieldTypeCode::String, FieldTypeCode::Varchar] {
+            assert!(code.is_type_char());
+            assert!(code.is_type_prefixable());
+        }
+        assert!(FieldTypeCode::VectorFloat32.is_type_vector());
+        assert!(FieldTypeCode::VarString.is_type_varchar());
+        assert!(FieldTypeCode::Unspecified.is_type_unspecified());
+        assert!(FieldTypeCode::Duration.is_type_fractionable());
+        assert!(!FieldTypeCode::Duration.is_type_time());
+        assert!(FieldTypeCode::Date.is_type_time());
+        assert!(FieldTypeCode::Float.is_type_float());
+        assert!(FieldTypeCode::Year.is_type_integer());
+        assert!(FieldTypeCode::Duration.is_type_stored_as_integer());
+        assert!(FieldTypeCode::NewDecimal.is_type_numeric());
+        assert!(FieldTypeCode::NewDate.is_type_temporal());
+        assert!(!FieldTypeCode::NewDate.is_temporal_with_date());
+        for raw in [0, 4, 11, 13, 14, 0xe1, 0xf6, 0xfc, 0xfe] {
+            let unknown = FieldTypeCode::Unknown(raw);
+            assert!(!unknown.is_type_blob());
+            assert!(!unknown.is_type_char());
+            assert!(!unknown.is_type_vector());
+            assert!(!unknown.is_type_varchar());
+            assert!(!unknown.is_type_unspecified());
+            assert!(!unknown.is_type_prefixable());
+            assert!(!unknown.is_type_fractionable());
+            assert!(!unknown.is_type_time());
+            assert!(!unknown.is_type_float());
+            assert!(!unknown.is_type_integer());
+            assert!(!unknown.is_type_stored_as_integer());
+            assert!(!unknown.is_type_numeric());
+            assert!(!unknown.is_type_temporal());
+            assert!(!unknown.is_temporal_with_date());
+        }
     }
 }

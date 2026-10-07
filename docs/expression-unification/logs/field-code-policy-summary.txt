@@ -1,0 +1,24 @@
+field-code-policy-148 / R154
+5 matched Cargo launches,5 GREEN;no Cargo compile/test failure,retry,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-code-policy-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_code_ -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_code_policy_keeps_defaults_classifiers_and_unknown_identity -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_str_to_type -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+Receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 2/0/0/525 2.54/0.00 0 56e4e61ab7adbfdbdba2616210be779e7e073ba5cb6aecf0d71745d2441d1476
+native-datatype 491/0/0/0 2.43/7.09 0 045c01ceb2f3b6f8636ce990c5dcc7dff593c879687f0e7aa505b0993d64dcd2
+native-new 1/0/0/490 0.09/0.00 0 1e619b5a6a9f48f9e830d95b3466ecc60bbe7aeed100cb5cea3b2578677a12a1
+native-existing 1/0/0/93 1.04/0.00 0 c2b0dc64e28674fbf925f336ec2413b9cc6143739888772d20f60d3e4568c756
+session-sql 1/0/0/2269 13.83/0.04 0 e477c2219e3ce50db2a88f4e4d15b0c2a4a774782dcf51428e5ff00354d93e17
+
+SDK2/native1 Rust files;0 new Rustfiles.3new tests(SDK2/native1);5old SDK/26old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name/native_string_type now own both default length/decimal tables and remaining FieldTypeCode classifiers. Native removes all corresponding tables/matches and projects complete named/unknown identity only. Unknown same-byte aliases remain false/fallback; NewDate/Year/default-vs-CAST/JSON CAST and prefixable distinctions remain exact.
+Three production-only agents completed and froze non-overlapping files without tests or commands; stale R145 writer state was explicitly terminated before B touched only its R154 lease. Parent formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype491, source parser1 and numeric/temporal metadata SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
