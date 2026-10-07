@@ -1,0 +1,29 @@
+field-source-render-157 / R163
+6 Cargo launches:5 final GREEN;1 new-test-oracle RED retained;1 retry. No compile failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/field-source-render-{id}.log
+
+Exact final commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_source_render -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_source_renderer_keeps_flag_exclusions_charset_and_unknown_identity -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all runtime_field_type -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib show_columns_and_describe -- --test-threads=1
+
+Final receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/537 2.68/0.00 0 cae715312f956b1d1392604da4af49463bb248f039df2be7bd752f2181caa2e3
+native-datatype 502/0/0/0 1.06/6.91 0 a74146ea19d41c7733986a8dd29fc4fc8f7c6487e195480d9de7cedaabf7dcdc
+native-new 1/0/0/501 0.09/0.00 0 d7646646bcd496b3e374f6a8b08053e1e7c9120d43e19180f0990bdac408da55
+native-existing 1/0/0/93 1.07/0.00 0 8e4fb09ac1a1028e2798ce45a8aae927f326b1530cfc92f32ce21213e46eb42c
+session-sql 1/0/0/2269 16.24/0.01 0 0f4dfb5aa40d273611249fa1034f99f1a17aef8f5b3914a7b62357f687fcd5b5
+
+Retained RED:
+[native-datatype-oracle-red] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+native-datatype-oracle-red 501/1/0/0 2.37/7.30 101 1e24ba785df37cf4f58bea31ab0130158b20237fbb38e75a9a703887c6ecb24c
+New test incorrectly expected strict ZEROFILL int text to omit `(5)`; actual existing compact policy correctly forces display width when ZEROFILL. Only the new oracle was corrected to `int(5)`; production remained unchanged. Full native rerun then 502/502 GREEN.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);7old SDK/30old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_type_name owns info-schema/type-description/source flags and charset/collation suffix policy. Native local parts/suffix bodies are deleted; only compact text/full identity/metadata projection remains. Tests cover Bit/Year unsigned exclusion, Year zerofill exclusion, String binary exclusion, suffix order/case, named char/blob and unknown identity.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior partial CAST records unchanged. Full byte restore and expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype502, source runtime1 and SHOW columns SQL1 passed; new-oracle RED retained. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

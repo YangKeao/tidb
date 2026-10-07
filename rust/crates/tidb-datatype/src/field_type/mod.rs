@@ -1129,46 +1129,36 @@ impl FieldType {
     /// `information_schema.columns.COLUMN_TYPE` reads Go's `InfoSchemaStr`
     /// instead; the two surfaces really do differ on that one word.
     pub fn type_desc(&self, strict_integer_display_width: bool) -> String {
-        let mut desc = self.info_schema_str(strict_integer_display_width);
-        if self.has_flag(FieldTypeFlags::ZEROFILL) && self.code() != FieldTypeCode::Year {
-            desc.push_str(" zerofill");
-        }
-        desc
+        let info_schema = self.info_schema_str(strict_integer_display_width);
+        native_type_name::native_field_type_desc(
+            &info_schema,
+            self.code().as_shared_type_name_code(),
+            self.has_flag(FieldTypeFlags::ZEROFILL),
+        )
     }
 
     /// Mirrors `FieldType.InfoSchemaStr`.
     pub fn info_schema_str(&self, strict_integer_display_width: bool) -> String {
-        let suffix = if self.is_unsigned()
-            && !matches!(self.code(), FieldTypeCode::Bit | FieldTypeCode::Year)
-        {
-            " unsigned"
-        } else {
-            ""
-        };
-        format!("{}{suffix}", self.compact_str(strict_integer_display_width))
+        let compact = self.compact_str(strict_integer_display_width);
+        native_type_name::native_field_info_schema_str(
+            &compact,
+            self.code().as_shared_type_name_code(),
+            self.is_unsigned(),
+        )
     }
 
     /// Mirrors `FieldType.String` with TiDB's runtime display-width policy.
     pub fn source_string(&self) -> String {
-        let mut parts = vec![self.compact_str(STRICT_INTEGER_DISPLAY_WIDTH)];
-        if self.is_unsigned() {
-            parts.push("UNSIGNED".to_owned());
-        }
-        if self.has_flag(FieldTypeFlags::ZEROFILL) {
-            parts.push("ZEROFILL".to_owned());
-        }
-        if self.has_flag(FieldTypeFlags::BINARY) && self.code() != FieldTypeCode::String {
-            parts.push("BINARY".to_owned());
-        }
-        if self.code().is_type_char() || self.code().is_type_blob() {
-            if !self.charset_name.is_empty() && self.charset_name.as_ref() != "binary" {
-                parts.push(format!("CHARACTER SET {}", self.charset_name));
-            }
-            if !self.collation_name.is_empty() && self.collation_name.as_ref() != "binary" {
-                parts.push(format!("COLLATE {}", self.collation_name));
-            }
-        }
-        parts.join(" ")
+        let compact = self.compact_str(STRICT_INTEGER_DISPLAY_WIDTH);
+        native_type_name::native_field_source_string(
+            &compact,
+            self.code().as_shared_type_name_code(),
+            self.is_unsigned(),
+            self.has_flag(FieldTypeFlags::ZEROFILL),
+            self.has_flag(FieldTypeFlags::BINARY),
+            &self.charset_name,
+            &self.collation_name,
+        )
     }
 
     /// Restores the field type using Go's default restore flags into its
@@ -2421,6 +2411,39 @@ mod tests {
                 .with_added_flags(FieldTypeFlags::ZEROFILL)
                 .compact_str(false),
             ""
+        );
+    }
+
+    #[test]
+    fn shared_field_source_renderer_keeps_flag_exclusions_charset_and_unknown_identity() {
+        let integer = FieldType::new(FieldTypeCode::Long).with_flen(5).with_flags(
+            FieldTypeFlags::UNSIGNED | FieldTypeFlags::ZEROFILL | FieldTypeFlags::BINARY,
+        );
+        assert_eq!(integer.info_schema_str(true), "int(5) unsigned");
+        assert_eq!(integer.type_desc(true), "int(5) unsigned zerofill");
+        assert_eq!(integer.source_string(), "int(5) UNSIGNED ZEROFILL BINARY");
+
+        let year = FieldType::new(FieldTypeCode::Year)
+            .with_flen(4)
+            .with_flags(FieldTypeFlags::UNSIGNED | FieldTypeFlags::ZEROFILL);
+        assert_eq!(year.info_schema_str(true), "year(4)");
+        assert_eq!(year.type_desc(true), "year(4)");
+        assert_eq!(year.source_string(), "year(4) UNSIGNED ZEROFILL");
+
+        assert_eq!(
+            FieldType::new(FieldTypeCode::String)
+                .with_flen(3)
+                .with_added_flags(FieldTypeFlags::BINARY)
+                .with_charset_name("utf8")
+                .with_collation_name("utf8_bin")
+                .source_string(),
+            "char(3) CHARACTER SET utf8 COLLATE utf8_bin"
+        );
+        assert_eq!(
+            FieldType::new(FieldTypeCode::Unknown(254))
+                .with_added_flags(FieldTypeFlags::BINARY)
+                .source_string(),
+            " BINARY"
         );
     }
 }
