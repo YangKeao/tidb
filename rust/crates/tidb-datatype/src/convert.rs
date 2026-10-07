@@ -137,6 +137,9 @@ pub(crate) fn from_shared_integer_error(
         NativeIntegerError::InvalidUnsignedInteger(value) => {
             ScalarConversionError::InvalidUnsignedInteger(value)
         }
+        NativeIntegerError::InvalidScientificExponent(value) => {
+            ScalarConversionError::InvalidScientificExponent(value)
+        }
     }
 }
 
@@ -298,32 +301,8 @@ pub fn convert_float_to_uint(
 
 /// Expands the scientific notation accepted by `convertScientificNotation`.
 pub fn convert_scientific_notation(input: &str) -> Result<String, ScalarConversionError> {
-    let Some(exponent_index) = input.find(['e', 'E']) else {
-        return Ok(input.to_owned());
-    };
-    let exponent = input[exponent_index + 1..]
-        .parse::<i64>()
-        .map_err(|_| ScalarConversionError::InvalidScientificExponent(input.to_owned()))?;
-    let mantissa = &input[..exponent_index];
-    if exponent == 0 {
-        return Ok(mantissa.to_owned());
-    }
-
-    let point = mantissa.find('.').unwrap_or(mantissa.len());
-    let mut digits = mantissa.to_owned();
-    if point < digits.len() {
-        digits.remove(point);
-    }
-    let new_point = point as i128 + exponent as i128;
-    if new_point <= 0 {
-        return Ok(format!("0.{}{}", "0".repeat((-new_point) as usize), digits));
-    }
-    if new_point >= digits.len() as i128 {
-        digits.push_str(&"0".repeat((new_point - digits.len() as i128) as usize));
-        return Ok(digits);
-    }
-    digits.insert(new_point as usize, '.');
-    Ok(digits)
+    shared_integer_convert::native_convert_scientific_notation(input)
+        .map_err(from_shared_integer_error)
 }
 
 /// `convertDecimalStrToUint`, kept public because decimal conversion delegates
@@ -333,35 +312,12 @@ pub fn convert_decimal_str_to_uint(
     upper_bound: u64,
     target: FieldTypeCode,
 ) -> Result<u64, (u64, ScalarConversionError)> {
-    let expanded = convert_scientific_notation(input).map_err(|error| (0, error))?;
-    let (mut integer, fraction) = expanded.split_once('.').unwrap_or((expanded.as_str(), ""));
-    integer = integer.trim_start_matches('0');
-    if integer.is_empty() {
-        integer = "0";
-    }
-    if integer.starts_with('-') {
-        return Err((0, overflow(&expanded, target)));
-    }
-    let round = u64::from(
-        fraction
-            .as_bytes()
-            .first()
-            .is_some_and(|digit| *digit >= b'5'),
-    );
-    let largest_integer = upper_bound - round;
-    let upper_text = largest_integer.to_string();
-    if integer.len() > upper_text.len()
-        || (integer.len() == upper_text.len() && integer > upper_text.as_str())
-    {
-        return Err((upper_bound, overflow(&expanded, target)));
-    }
-    let value = integer.parse::<u64>().map_err(|_| {
-        (
-            0,
-            ScalarConversionError::InvalidUnsignedInteger(integer.to_owned()),
-        )
-    })?;
-    Ok(value + round)
+    shared_integer_convert::native_convert_decimal_str_to_uint(
+        input,
+        upper_bound,
+        target.as_shared_type_name_code(),
+    )
+    .map_err(|(value, error)| (value, from_shared_integer_error(error)))
 }
 
 /// `ConvertDecimalToUint`.
@@ -1212,6 +1168,32 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn shared_decimal_uint_facade_preserves_typed_errors_subjects_and_panic_order() {
+        assert_eq!(
+            convert_scientific_notation("1e+").unwrap_err(),
+            ScalarConversionError::InvalidScientificExponent("1e+".into()),
+        );
+        assert_eq!(
+            convert_decimal_str_to_uint("1.5", u8::MAX.into(), FieldTypeCode::Tiny),
+            Ok(2),
+        );
+        assert_eq!(
+            convert_decimal_str_to_uint("25.6e1", u8::MAX.into(), FieldTypeCode::Tiny),
+            Err((
+                u8::MAX.into(),
+                ScalarConversionError::Overflow {
+                    value: "256".into(),
+                    target: FieldTypeCode::Tiny,
+                }
+            )),
+        );
+        assert!(std::panic::catch_unwind(|| {
+            convert_decimal_str_to_uint("0.5", 0, FieldTypeCode::Tiny)
+        })
+        .is_err());
     }
 
     /// `pkg/types/convert_test.go:921` `TestGetValidFloat`, first table.

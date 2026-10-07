@@ -1,0 +1,26 @@
+decimal-uint-141 / R147
+6 matched Cargo launches:5 final GREEN plus1 retained RED test-oracle attempt;no compile failure,production test failure,zero-match or interruption. One corrected rerun.
+Raw: /home/agent/tidb/expression-unification/logs/decimal-uint-{id}.log; retained RED decimal-uint-tikv-red.log.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv-red then corrected tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib decimal_text -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_decimal_uint_facade_preserves_typed_errors_subjects_and_panic_order -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib test_convert_decimal_str_to_uint -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics -- --test-threads=1
+
+Final receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 3/0/0/516 1.69/0.00 0 fc01c7a80df8820f5c348ec1491163991b953806f98085ff194f399549e08d13
+native-datatype 484/0/0/0 2.62/7.09 0 685565d0b4d73bb725a25a93ac9d8ef1f26232862e15b4764537f51f80df113d
+native-new 1/0/0/483 0.10/0.00 0 d07f8e8e179081ac45e362a8cb5b5b88a44839feb938c35a2a30bf0e4cfbe8ef
+native-existing 1/0/0/483 0.10/0.00 0 741f4258314f099d63637117276b07b232ce282c533bad79ac4faf5ec503e8d6
+session-sql 1/0/0/2269 17.81/0.04 0 e54bbd0e75ab2b74c39db969e3a33d9352994584df8151e7b7c92c691e459237
+Retained RED: tikv-red 2/1/0/516 2.69/0.00 101 fe5c791e46aa74afb9ebc69a8a93a591cce4ae7a79ec140d8bf65311ad89c57a
+RED was only a newly appended test's wrong expected text for 1.25e-2: expected0.00125 versus unchanged source behavior0.0125. Parent corrected the new oracle before rerun; production code and all old tests were unchanged.
+
+SDK1/native1 Rust files;0 new Rustfiles.3new tests(SDK2/native1);3old SDK/24old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_integer_convert now owns scientific expansion and exact Decimal-text-to-unsigned conversion. Native maps typed errors and preserves public APIs/actual Decimal-to-string. Point placement, expanded overflow subject, lexical bound, first fraction rounding and upper-minus-round panic order are exact; no float bridge.
+Both agents wrote their complete production changes but delayed requested tests/final responses; parent stopped the turns, adopted the production changes and appended all three tests. The first SDK test oracle RED above was parent-authored and corrected transparently.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype484 and one session SQL consumer passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

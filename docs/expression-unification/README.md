@@ -1,17 +1,17 @@
 # Expression unification experiment
 
 Paired YangKeao/tidb and YangKeao/tikv branch: `expression-unification-demo`.
-Current checkpoint: **numeric-event-140**, following **reverse-bound-139**.
+Current checkpoint: **decimal-uint-141**, following **numeric-event-140**.
 
 Functional **238/245 (97.14%)**, strict **0**, remaining **7**—unchanged. No whole CAST/M2 or Go-package credit.
 
-New SDK owner `native_conversion_event.rs` shares generic numeric outcome ownership, prefer-second selection and parsed-truncation versus bounded-overflow precedence. Native retains actual typed events/errors and Diagnostics call sites/effect order. Moved values and errors are not cloned.
+Existing SDK owner `native_integer_convert.rs` now owns scientific-notation expansion and exact DECIMAL-text-to-UNSIGNED conversion. Native retains public APIs, typed-error mapping and actual Decimal text rendering. No float bridge is introduced.
 
 ## Verification
 
-[Evidence](evidence/numeric-event-checkpoint.md), [commands/counts/hashes](logs/numeric-event-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
+[Evidence](evidence/decimal-uint-checkpoint.md), [commands/counts/hashes](logs/decimal-uint-summary.txt), [manifest](checkpoint.json), [ledger](migration-progress.json).
 
-Five Cargo gates GREEN: SDK2, full native datatype483, new/existing precedence2 and session SQL consumer1. Three new tests;0 SDK/27 native old touched-file test bodies unchanged. One new SDK file, no new native/SQL files or fixture/probe credit. The summary records parent adoption after the native agent completed adapters but delayed its test/final response.
+Five final Cargo gates GREEN: SDK3, full native datatype484, new/existing conversion2 and session SQL consumer1. Three new tests;3 SDK/24 native old touched-file test bodies unchanged. No new Rust/SQL files or fixture/probe credit. The summary retains one test-oracle RED and records parent adoption after both agents completed production changes but delayed tests/final responses.
 
 ## Remaining
 
