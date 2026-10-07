@@ -20,10 +20,12 @@
 
 use chrono::Utc;
 use tidb_query_datatype::codec::native_eval_type::{
-    native_datum_conversion_target, native_signed_integer_diagnostic_action,
+    native_datum_conversion_target, native_decimal_input_diagnostic_action,
+    native_decimal_target_shape, native_signed_integer_diagnostic_action,
     native_string_conversion_route, native_unsigned_integer_diagnostic_action,
-    NativeDatumConversionTarget, NativeIntegerDiagnosticAction, NativeIntegerDiagnosticSource,
-    NativeStringConversionRoute, NativeStringConversionSource,
+    NativeDatumConversionTarget, NativeDecimalInputDiagnosticAction, NativeDecimalTargetShape,
+    NativeIntegerDiagnosticAction, NativeIntegerDiagnosticSource, NativeStringConversionRoute,
+    NativeStringConversionSource,
 };
 
 pub(crate) mod diagnostics;
@@ -534,43 +536,55 @@ impl Datum {
         diagnostics: &mut Diagnostics<'_, '_>,
     ) -> Result<Converted<Self>, DatumValueError> {
         let converted = self.to_decimal()?;
-        match (self, converted.event.as_ref()) {
-            (Self::String(_) | Self::Bytes(_), Some(ScalarConversionEvent::Truncated)) => {
+        let is_text = matches!(self, Self::String(_) | Self::Bytes(_));
+        let is_truncated = matches!(
+            converted.event.as_ref(),
+            Some(ScalarConversionEvent::Truncated)
+        );
+        match native_decimal_input_diagnostic_action(is_text, is_truncated) {
+            NativeDecimalInputDiagnosticAction::TruncatedError => {
                 // Datum.ConvertTo uses MyDecimal.FromString directly, not
                 // ConvertDatumToDecimal's context-dependent truncation policy.
                 diagnostics.error(|| ERR_TRUNCATED.clone());
             }
-            (_, event) => diagnostics.unhandled(event),
+            NativeDecimalInputDiagnosticAction::Unhandled => {
+                diagnostics.unhandled(converted.event.as_ref());
+            }
         }
         let original = converted.value;
         let mut value = original.clone();
         let mut event = converted.event;
-        if target.flen() != UNSPECIFIED_LENGTH && target.decimal() != UNSPECIFIED_LENGTH {
-            if target.flen() < target.decimal() {
+        let target_shape =
+            native_decimal_target_shape(target.flen(), target.decimal(), UNSPECIFIED_LENGTH);
+        match target_shape {
+            NativeDecimalTargetShape::Unspecified => {}
+            NativeDecimalTargetShape::Invalid => {
                 return Err(DatumValueError::Comparison(
                     "For float(M,D), double(M,D) or decimal(M,D), M must be >= D".to_owned(),
                 ));
             }
-            let rounded = value.round_to_scale(target.decimal() as i32);
-            let fitted = rounded
-                .fit_precision_scale(target.flen().max(0) as u32, target.decimal().max(0) as u32);
-            let overflowed = fitted.is_none();
-            value = fitted.unwrap_or_else(|| {
-                Decimal::from_signed_literal(&format!(
-                    "{}{}",
-                    if rounded.is_negative() { "-" } else { "" },
-                    max_decimal_text(target.flen() as usize, target.decimal() as usize)
-                ))
-            });
-            if overflowed {
-                diagnostics.error(|| decimal_target_overflow(target));
-                event = event.or_else(|| Some(overflow_event(value.to_string(), target.code())));
-            } else if value != original {
-                diagnostics.warn(|| {
-                    ERR_TRUNCATED_WRONG_VALUE
-                        .generate(format!("Truncated incorrect DECIMAL value: '{original}'",))
+            NativeDecimalTargetShape::Bounded { precision, scale } => {
+                let rounded = value.round_to_scale(scale as i32);
+                let fitted = rounded.fit_precision_scale(precision, scale);
+                let overflowed = fitted.is_none();
+                value = fitted.unwrap_or_else(|| {
+                    Decimal::from_signed_literal(&format!(
+                        "{}{}",
+                        if rounded.is_negative() { "-" } else { "" },
+                        max_decimal_text(precision as usize, scale as usize)
+                    ))
                 });
-                event = event.or(Some(ScalarConversionEvent::RoundedToScale));
+                if overflowed {
+                    diagnostics.error(|| decimal_target_overflow(target));
+                    event =
+                        event.or_else(|| Some(overflow_event(value.to_string(), target.code())));
+                } else if value != original {
+                    diagnostics.warn(|| {
+                        ERR_TRUNCATED_WRONG_VALUE
+                            .generate(format!("Truncated incorrect DECIMAL value: '{original}'",))
+                    });
+                    event = event.or(Some(ScalarConversionEvent::RoundedToScale));
+                }
             }
         }
         if target.is_unsigned() && value.is_negative() {
@@ -588,7 +602,7 @@ impl Datum {
         // skipped when the target leaves either half unspecified, because a
         // `-1` written into Go's `uint32`/`uint16` fields is garbage no real
         // column produces: every DECIMAL column carries a resolved `(M, D)`.
-        if target.flen() != UNSPECIFIED_LENGTH && target.decimal() != UNSPECIFIED_LENGTH {
+        if matches!(target_shape, NativeDecimalTargetShape::Bounded { .. }) {
             value = value.with_declared_shape(target.flen(), target.decimal());
         }
         Ok(Converted {
@@ -3480,4 +3494,55 @@ fn shared_integer_diagnostic_policy_keeps_native_source_projection_shapes() {
     for datum in [Datum::Null, Datum::min_not_null(), Datum::max_value()] {
         assert_eq!(integer_diagnostic_source(&datum), Other);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn shared_decimal_target_controller_keeps_unbounded_invalid_bounded_overflow_and_text_events() {
+    let flags = ConversionFlags::default();
+    let unbounded = Datum::new_decimal(Decimal::from_signed_literal("12.345"))
+        .convert_to(&FieldType::new(FieldTypeCode::NewDecimal), flags)
+        .unwrap();
+    let Datum::Decimal(value) = unbounded.value else {
+        panic!("expected decimal")
+    };
+    assert_eq!(value.to_string(), "12.345");
+    assert_eq!(value.declared_shape(), None);
+
+    let invalid = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(2)
+        .with_decimal(3);
+    assert!(matches!(
+        Datum::Int(1).convert_to(&invalid, flags),
+        Err(DatumValueError::Comparison(message))
+            if message == "For float(M,D), double(M,D) or decimal(M,D), M must be >= D"
+    ));
+
+    let bounded = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(5)
+        .with_decimal(2);
+    let rounded = Datum::new_decimal(Decimal::from_signed_literal("12.345"))
+        .convert_to(&bounded, flags)
+        .unwrap();
+    let Datum::Decimal(value) = rounded.value else {
+        panic!("expected decimal")
+    };
+    assert_eq!(value.to_string(), "12.35");
+    assert_eq!(value.declared_shape(), Some((5, 2)));
+    assert_eq!(rounded.event, Some(ScalarConversionEvent::RoundedToScale));
+
+    let overflow = Datum::Int(123456).convert_to(&bounded, flags).unwrap();
+    let Datum::Decimal(value) = overflow.value else {
+        panic!("expected decimal")
+    };
+    assert_eq!(value.to_string(), "999.99");
+    assert!(matches!(
+        overflow.event,
+        Some(ScalarConversionEvent::Overflow(_))
+    ));
+
+    let text = Datum::new_string("1x")
+        .convert_to(&FieldType::new(FieldTypeCode::NewDecimal), flags)
+        .unwrap();
+    assert_eq!(text.event, Some(ScalarConversionEvent::Truncated));
 }

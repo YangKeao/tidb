@@ -50,6 +50,8 @@ R166 shares the [Datum string-target route selector](datum-string-route-checkpoi
 
 R167 shares the [Datum integer diagnostic-action policy](datum-integer-diagnostic-checkpoint.md): native signed/unsigned source-kind diagnostic matches are deleted; concrete typed errors/context writes stay native. This is policy progress only; no complete write lowering, family, whole-CAST/M2 or package credit is added.
 
+R168 shares the [Datum Decimal target controller](datum-decimal-target-checkpoint.md): native flen/decimal and source/event policy selectors are deleted; Decimal arithmetic and concrete typed context effects stay native. This is policy progress only; no complete write lowering, family, whole-CAST/M2 or package credit is added.
+
 The accepted synchronous/scoped evaluator design stays in place. No universal compiler rewrite or exhaustive performance project is required to make the next functional steps. Conversely, reaching90% does not erase the Plan's remaining core ownership/demand obligations.
 
 R91 adds a [Real/Float32→UNSIGNED CAST slice](cast-real-uint-checkpoint.md), **not a new family**. Its native rounding/wrapping/range/overflow algorithm now belongs to TiKV. Other CAST domains, outer NULL and UNION negative bypass remain; legacy wire conversion has a distinct unchanged policy. R92 [type deduplication](decimal-policy-checkpoint.md) subsequently moves the full native float-format policy and Decimal precision-cast body to TiKV. LowerExp and Ryu policies remain distinct through a shared layout renderer; CAST warning classification and source preparation are still caller-owned. This adds no C4 profile or family credit. R91–R92 added no family credit; R93 retains all226 prior objects and adds only bounded staleness.

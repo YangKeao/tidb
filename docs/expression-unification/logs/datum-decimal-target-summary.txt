@@ -1,0 +1,26 @@
+datum-decimal-target-162 / R168
+7 Cargo launches;5 final GREEN;2 compile RED from one shared defect;2 reruns;no test-execution failure,zero-match or interruption.
+Raw: /home/agent/tidb/expression-unification/logs/datum-decimal-target-{id}.log; GREEN SDK/full native use ids tikv-green/native-datatype-green.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv RED then tikv-green] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib decimal_target_controller -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype RED then native-datatype-green] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_decimal_target_controller_keeps_unbounded_invalid_bounded_overflow_and_text_events -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib source_convert_to_integer_float_string_decimal_rows -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib numeric_and_temporal_precision_surfaces -- --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv-green 1/0/0/542 5.09/0.00 0 d210deda2ff72478a4cff54ae8579c09077083d1bd09867e9ba89d59fed67350
+native-datatype-green 507/0/0/0 3.63/7.38 0 202cfc5e805b27343a8ae66d0086284e877dd930bac2318420f6f55f317d2d5e
+native-new 1/0/0/506 0.11/0.00 0 96f1f79bbf982088b4d9163278c4c4472b6f8eb0dab940fd068be6de510312f6
+native-existing 1/0/0/506 0.09/0.00 0 777ff1f4f6c1dbfa004e4c4bc3d9a45ac95df6d76f2fe4be7fd7d4afc77270e9
+session-sql 1/0/0/2269 26.68/0.04 0 0cee7c5a29af37af8ce956dd692bbd7c9c09a1b61c38859cf03f5ff1ebf9b6f3
+
+Retained RED: tikv exit101 sha256 057e48aed62f3f7e4fde51ca39d045a57712c7b437ebdc6d423dacc3489500be; native-datatype exit101 sha256 c6e95a92da39686a0a978bcdd03dd4f97527c8f4f9d306ee85db37bb1b3d7966. Shared SDK const fn used conditionally-const i64::max, E0658 on both pinned toolchains. Replaced only max(0) syntax with exact explicit conditional clamp; semantics unchanged; both reruns GREEN.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);9old SDK/33old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_eval_type owns Decimal target shape and input diagnostic action selection. Native flen/decimal controller and source/event diagnostic match are deleted; actual Decimal parse/round/fit, concrete typed errors and context writes remain native. Tests cover sentinel, invalid, negative clamp, bounded round/shape, overflow, text event, existing Decimal row and numeric SQL.
+Two fresh production agents wrote/froze non-overlapping files without commands; native agent interrupted only after complete diff and completion message; parent reviewed, appended tests, fixed const syntax, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Complete write lowering is not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype507, existing Decimal row1 and numeric SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
