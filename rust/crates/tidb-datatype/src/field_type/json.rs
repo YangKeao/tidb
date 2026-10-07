@@ -18,6 +18,7 @@ use std::fmt;
 
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use tidb_query_datatype::codec::native_field_value::{native_field_json_tag, NativeFieldJsonTag};
 
 use super::{FieldType, FieldTypeCode};
 use crate::go_runtime::{go_64_slice_decode_capacity, GoSharedSlice, GoSliceElementLayout};
@@ -65,24 +66,6 @@ struct JsonFieldType {
     ElemsIsBinaryLit: GoSharedSlice<bool>,
     #[serde(default)]
     Array: bool,
-}
-
-fn go_json_ascii_tag_matches(incoming: &str, tag: &str) -> bool {
-    if incoming == tag {
-        return true;
-    }
-    // Every jsonFieldType member name is ASCII. Go bytes.EqualFold has only
-    // two non-ASCII SimpleFold classes that can equal an ASCII rune: long-s
-    // with S/s and Kelvin sign with K/k.
-    incoming.chars().zip(tag.bytes()).all(|(left, right)| {
-        let left = match left {
-            'a'..='z' => left.to_ascii_uppercase(),
-            '\u{017f}' => 'S',
-            '\u{212a}' => 'K',
-            other => other,
-        };
-        left == (right as char).to_ascii_uppercase()
-    }) && incoming.chars().count() == tag.len()
 }
 
 struct SharedSliceSeed<'a, T> {
@@ -146,48 +129,59 @@ impl<'de> Deserialize<'de> for JsonFieldType {
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                 let mut value = JsonFieldType::default();
                 while let Some(key) = map.next_key::<String>()? {
-                    if go_json_ascii_tag_matches(&key, "Tp") {
-                        if let Some(next) = map.next_value::<Option<u8>>()? {
-                            value.Tp = next;
+                    match native_field_json_tag(&key) {
+                        NativeFieldJsonTag::Tp => {
+                            if let Some(next) = map.next_value::<Option<u8>>()? {
+                                value.Tp = next;
+                            }
                         }
-                    } else if go_json_ascii_tag_matches(&key, "Flag") {
-                        if let Some(next) = map.next_value::<Option<u64>>()? {
-                            value.Flag = next;
+                        NativeFieldJsonTag::Flag => {
+                            if let Some(next) = map.next_value::<Option<u64>>()? {
+                                value.Flag = next;
+                            }
                         }
-                    } else if go_json_ascii_tag_matches(&key, "Flen") {
-                        if let Some(next) = map.next_value::<Option<i64>>()? {
-                            value.Flen = next;
+                        NativeFieldJsonTag::Flen => {
+                            if let Some(next) = map.next_value::<Option<i64>>()? {
+                                value.Flen = next;
+                            }
                         }
-                    } else if go_json_ascii_tag_matches(&key, "Decimal") {
-                        if let Some(next) = map.next_value::<Option<i64>>()? {
-                            value.Decimal = next;
+                        NativeFieldJsonTag::Decimal => {
+                            if let Some(next) = map.next_value::<Option<i64>>()? {
+                                value.Decimal = next;
+                            }
                         }
-                    } else if go_json_ascii_tag_matches(&key, "Charset") {
-                        if let Some(next) = map.next_value::<Option<GoString>>()? {
-                            value.Charset = next;
+                        NativeFieldJsonTag::Charset => {
+                            if let Some(next) = map.next_value::<Option<GoString>>()? {
+                                value.Charset = next;
+                            }
                         }
-                    } else if go_json_ascii_tag_matches(&key, "Collate") {
-                        if let Some(next) = map.next_value::<Option<GoString>>()? {
-                            value.Collate = next;
+                        NativeFieldJsonTag::Collate => {
+                            if let Some(next) = map.next_value::<Option<GoString>>()? {
+                                value.Collate = next;
+                            }
                         }
-                    } else if go_json_ascii_tag_matches(&key, "Elems") {
-                        map.next_value_seed(SharedSliceSeed {
-                            destination: &mut value.Elems,
-                            element_size: 16,
-                            layout: GoSliceElementLayout::PointerBearing,
-                        })?;
-                    } else if go_json_ascii_tag_matches(&key, "ElemsIsBinaryLit") {
-                        map.next_value_seed(SharedSliceSeed {
-                            destination: &mut value.ElemsIsBinaryLit,
-                            element_size: 1,
-                            layout: GoSliceElementLayout::NoPointers,
-                        })?;
-                    } else if go_json_ascii_tag_matches(&key, "Array") {
-                        if let Some(next) = map.next_value::<Option<bool>>()? {
-                            value.Array = next;
+                        NativeFieldJsonTag::Elems => {
+                            map.next_value_seed(SharedSliceSeed {
+                                destination: &mut value.Elems,
+                                element_size: 16,
+                                layout: GoSliceElementLayout::PointerBearing,
+                            })?;
                         }
-                    } else {
-                        map.next_value::<IgnoredAny>()?;
+                        NativeFieldJsonTag::ElemsIsBinaryLit => {
+                            map.next_value_seed(SharedSliceSeed {
+                                destination: &mut value.ElemsIsBinaryLit,
+                                element_size: 1,
+                                layout: GoSliceElementLayout::NoPointers,
+                            })?;
+                        }
+                        NativeFieldJsonTag::Array => {
+                            if let Some(next) = map.next_value::<Option<bool>>()? {
+                                value.Array = next;
+                            }
+                        }
+                        NativeFieldJsonTag::Unknown => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
                     }
                 }
                 Ok(value)
@@ -519,5 +513,20 @@ mod tests {
         assert!(!decoded.is_binary_string());
         assert!(decoded.is_character_string());
         assert!(decoded.need_restored_data());
+    }
+
+    #[test]
+    fn shared_json_tags_keep_case_long_s_duplicate_order_and_unknown_skip() {
+        let decoded = FieldType::from_json(
+            r#"{"tp":3,"TP":8,"FLAG":5,"Charſet":"utf8","COLLATE":"binary","unknown":{"Tp":"wrong"}}"#
+                .as_bytes(),
+        )
+        .unwrap();
+        let encoded = String::from_utf8(decoded.to_json().unwrap()).unwrap();
+        assert!(encoded.contains(r#""Tp":8"#));
+        assert!(encoded.contains(r#""Flag":5"#));
+        assert!(encoded.contains(r#""Charset":"utf8""#));
+        assert!(encoded.contains(r#""Collate":"binary""#));
+        assert!(!encoded.contains("unknown"));
     }
 }

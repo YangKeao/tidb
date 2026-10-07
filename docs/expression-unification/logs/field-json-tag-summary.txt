@@ -1,0 +1,24 @@
+field-json-tag-167 / R173
+5 Cargo launches;5 GREEN;no compile/test failure,zero-match,interruption or retry.
+Raw: /home/agent/tidb/expression-unification/logs/field-json-tag-{id}.log
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_json_tag_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_json_tags_keep_case_long_s_duplicate_order_and_unknown_skip -- --test-threads=1
+[native-existing] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib slice_json_preserves_go_growth_duplicate_and_null_element_rules -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib tests_show_admin::show_create_table_renders_auto_increment_comments_and_enum_defaults -- --exact --test-threads=1
+
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/547 4.91/0.00 0 9810efd1f48984882881d8bd4212fe31208c9f5b9ce75ab79dd40b5537256ff5
+native-datatype 512/0/0/0 3.44/6.99 0 b9311ef214abbb0472bc857f15718359c02d9eea53eb6c98bc97e8aeccd22458
+native-new 1/0/0/511 0.09/0.00 0 01e2d0b0a95c3f04d1ad0b07cbcf986f37f1dffa50672b0fc6b746cb23d1a38b
+native-existing 1/0/0/511 0.09/0.00 0 768b68196e00b5b7743e56e5091abc65b1ba4ca59615fc4d3ee346c65b04e753
+session-sql 1/0/0/2269 25.43/0.04 0 6f51bc9dd08f42dd94c82a971b699fe3bc4be593d1076a3d14beb84e54fab37e
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);1old SDK/8old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_field_value owns nine FieldType JSON tag identities plus Go EqualFold classifier. Native matcher and repeated if chain are deleted; serde scalar/slice decode, GoSharedSlice storage and FieldType projection remain native. Tests cover all tags, case/long-s/Kelvin/unrelated Unicode, duplicate order, unknown skip, slice duplicate/null/growth and enum metadata SQL.
+Two fresh production agents completed/froze non-overlapping files without commands; parent reviewed, appended tests, formatted and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One runtime record only; prior type/partial CAST records unchanged. Whole JSON shape/type dedup and complete write lowering are not claimed; remaining typed/write SQL lowering, expression renderer andbroaderM2/root/liveDAG/final remain. Full native datatype512, existing slice JSON1 and enum metadata SQL1 passed. Full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.
