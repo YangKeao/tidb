@@ -1,0 +1,26 @@
+field-equality-policy-147 / R153
+6 matched Cargo launches:5 final GREEN plus1 retained command-target RED;no compile/test execution failure,zero-match or interruption. One corrected invocation.
+Raw: /home/agent/tidb/expression-unification/logs/field-equality-policy-{id}.log.
+
+Exact commands:
+Workdir /home/agent/tidb/expression-unification/tikv
+[tikv] ../tools/cargo-tikv test --locked -p tidb_query_datatype --lib field_type_equality_policy -- --test-threads=1
+Workdir /home/agent/tidb/expression-unification/tidb/rust
+[native-datatype] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib -- --test-threads=1
+[native-new] ../../tools/cargo-tidb test --locked -p tidb-datatype --lib shared_field_equality_policy_keeps_identity_lengths_and_partial_rules -- --test-threads=1
+[native-target-red] ../../tools/cargo-tidb test --locked -p tidb-datatype --test field_type_source parser_field_type_equal -- --test-threads=1
+[native-existing corrected] ../../tools/cargo-tidb test --locked -p tidb-datatype --test all parser_field_type_equal -- --test-threads=1
+[session-sql] ../../tools/cargo-tidb test --locked -p tidb-session --lib intersect_binds_tighter_than_union_in_execution -- --test-threads=1
+
+Final receipts: id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/524 4.76/0.00 0 3a2f2a04437ef62b4096649223d05f6d705c6bff6a8f2e58cc8901f95a4ceb23
+native-datatype 490/0/0/0 3.37/7.34 0 8c666efcce83024455c6ad5b7d52b4e89a46126c1ba74c132ef57801138175f8
+native-new 1/0/0/489 0.09/0.00 0 efb054dafab596dfedf184ebbd9b5ac6fafb1fcefafb90610e812f6dcfd6bcb1
+native-existing 1/0/0/93 1.63/0.00 0 812db0eb65ce0a0838f39dce75e3dd5f033ff70a795165d87f4b4a7c3345fe67
+session-sql 1/0/0/2269 26.74/0.01 0 4f7d864914dda3586145c900f58fde8a7529e0061f6b4610c78d52447b78b493
+Retained command-target RED: native-target-red exit101 sha256 237724f0c54a198dd1d3d8f09d75ffb8326b686eacb21bd0e6f00e83ecf81bd4. Cargo reported no test target named field_type_source before compilation/test execution; corrected to the package's generated `all` test target. Production/tests unchanged.
+
+SDK1/native1 Rust files;0 new Rustfiles.2new tests(SDK1/native1);3old SDK/25old native touched-file test bodies unchanged. Session/SQL files unchanged; no new SQL fixture/probe/cell credit.
+SDK native_string_type now owns Equal/PartialEqual composition over identity-preserving NativeTypeNameCode equality facts. Native projects actual code/eval/flen/decimal and charset/collation/unsigned/elements/not-null facts. A identified and prevented the initial projected-string-code collision design before native integration: Known Geometry/Null/etc cannot equal Unknown(raw). VARCHAR↔VARSTRING, left-eval flen/decimal rules, unsafe strings and not-null remain exact.
+Both production-only agents completed and froze exact single-file changes without tests or commands; parent adopted, formatted, appended tests and validated.
+fmt/diff passed. Functional238/245 strict0 remaining7 unchanged. One type record only; prior CAST records unchanged. Otherdatatype/typed/write/SQL lowering/renderer andbroaderM2/root/liveDAG/final remain. Full native datatype490, source parser equality1 and set-operation SQL1 passed; full expression/unistore/workspace/lint/dev/bazel/release/exhaustive/performance/physical memory/OOM/allocator/TiFlash/FIPS/dual-tzdata/whole-Go-package/PR readiness unverified. Historical R100 expression4/unistore1 failures and prior RED receipts retained. No Go/Bazel/Cargo.lock change; unrelated BUILD excluded. Goal active.

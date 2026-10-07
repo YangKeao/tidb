@@ -954,42 +954,37 @@ impl FieldType {
         self.code().as_shared_string_type().is_hybrid()
     }
 
+    fn shared_equality(
+        &self,
+        other: &Self,
+    ) -> tidb_query_datatype::codec::native_string_type::NativeFieldTypeEquality {
+        tidb_query_datatype::codec::native_string_type::NativeFieldTypeEquality::new(
+            self.code().as_shared_type_name_code(),
+            other.code().as_shared_type_name_code(),
+            self.eval_type(),
+            other.eval_type(),
+            self.flen,
+            other.flen,
+            self.decimal,
+            other.decimal,
+            self.charset_name == other.charset_name,
+            self.collation_name == other.collation_name,
+            self.is_unsigned() == other.is_unsigned(),
+            self.elems.snapshot() == other.elems.snapshot(),
+        )
+    }
+
     /// Mirrors the expression-oriented `FieldType.Equal` rules.
     pub fn equal(&self, other: &Self) -> bool {
-        let type_equal = self.code() == other.code()
-            || matches!(
-                (self.code(), other.code()),
-                (FieldTypeCode::Varchar, FieldTypeCode::VarString)
-                    | (FieldTypeCode::VarString, FieldTypeCode::Varchar)
-            );
-        let flen_equal = self.flen == other.flen
-            || (self.eval_type() == EvalType::Real && self.decimal == UNSPECIFIED_LENGTH)
-            || self.eval_type() == EvalType::Json;
-        let ignore_decimal = matches!(self.eval_type(), EvalType::Int | EvalType::String);
-        type_equal
-            && (ignore_decimal || self.decimal == other.decimal)
-            && self.charset_name == other.charset_name
-            && self.collation_name == other.collation_name
-            && flen_equal
-            && self.is_unsigned() == other.is_unsigned()
-            && self.elems.snapshot() == other.elems.snapshot()
+        self.shared_equality(other).equal()
     }
 
     /// Mirrors `FieldType.PartialEqual`, including NOT NULL semantics.
     pub fn partial_equal(&self, other: &Self, unsafe_string_length: bool) -> bool {
-        if self.has_flag(FieldTypeFlags::NOT_NULL) != other.has_flag(FieldTypeFlags::NOT_NULL) {
-            return false;
-        }
-        if !unsafe_string_length
-            || self.eval_type() != EvalType::String
-            || other.eval_type() != EvalType::String
-        {
-            return self.equal(other);
-        }
-        self.charset_name == other.charset_name
-            && self.collation_name == other.collation_name
-            && self.is_unsigned() == other.is_unsigned()
-            && self.elems.snapshot() == other.elems.snapshot()
+        self.shared_equality(other).partial_equal(
+            self.has_flag(FieldTypeFlags::NOT_NULL) == other.has_flag(FieldTypeFlags::NOT_NULL),
+            unsafe_string_length,
+        )
     }
 
     /// Mirrors `FieldType.HasCharset`.
@@ -2360,5 +2355,55 @@ mod tests {
         let utf8_0900 =
             FieldType::new(FieldTypeCode::String).with_collation_name("utf8mb4_0900_bin");
         assert!(!utf8_0900.need_restored_data());
+    }
+
+    #[test]
+    fn shared_field_equality_policy_keeps_identity_lengths_and_partial_rules() {
+        let varchar = FieldType::new(FieldTypeCode::Varchar)
+            .with_flen(8)
+            .with_decimal(0);
+        let var_string = FieldType::new(FieldTypeCode::VarString)
+            .with_flen(8)
+            .with_decimal(9);
+        assert!(varchar.equal(&var_string));
+        let unknown_varchar =
+            FieldType::new(FieldTypeCode::Unknown(FieldTypeCode::Varchar.mysql_type()))
+                .with_flen(8)
+                .with_decimal(0);
+        assert!(!varchar.equal(&unknown_varchar));
+        let geometry = FieldType::new(FieldTypeCode::Geometry);
+        let unknown_geometry =
+            FieldType::new(FieldTypeCode::Unknown(FieldTypeCode::Geometry.mysql_type()));
+        assert!(!geometry.equal(&unknown_geometry));
+
+        let real_left = FieldType::new(FieldTypeCode::Double)
+            .with_flen(8)
+            .with_decimal(UNSPECIFIED_LENGTH);
+        let real_right = real_left.clone().with_flen(99);
+        assert!(real_left.equal(&real_right));
+        let json_left = FieldType::new(FieldTypeCode::Json).with_flen(8);
+        let json_right = json_left.clone().with_flen(99);
+        assert!(json_left.equal(&json_right));
+        let decimal_left = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(1);
+        let decimal_right = decimal_left.clone().with_decimal(9);
+        assert!(!decimal_left.equal(&decimal_right));
+
+        let string = FieldType::new(FieldTypeCode::String)
+            .with_charset_name("utf8mb4")
+            .with_collation_name("utf8mb4_bin")
+            .with_flen(8)
+            .with_decimal(1);
+        let blob = FieldType::new(FieldTypeCode::Blob)
+            .with_charset_name("utf8mb4")
+            .with_collation_name("utf8mb4_bin")
+            .with_flen(99)
+            .with_decimal(9);
+        assert!(!string.equal(&blob));
+        assert!(string.partial_equal(&blob, true));
+        assert!(!string.partial_equal(&blob, false));
+        let not_null = blob.clone().with_added_flags(FieldTypeFlags::NOT_NULL);
+        assert!(!string.partial_equal(&not_null, true));
+        let elems = blob.with_elems(["x"]);
+        assert!(!string.partial_equal(&elems, true));
     }
 }
