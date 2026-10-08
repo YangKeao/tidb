@@ -201,6 +201,7 @@ Hard requirements remain in the repository root `AGENTS.md`.
 - Session/Variables -> Executor for user-visible runtime behavior.
 - DDL -> Infoschema/Meta -> Domain for schema lifecycle.
 - Store/KV/DistSQL -> Executor for distributed execution behavior.
+- Unistore DAG expression lifecycle: `rust/crates/tidb-unistore/src/cophandler.rs::build_dag` creates the server-local evaluated-ASCII epoch; `cophandler/eval_context.rs::RequestEvalContext` exposes it through `Columns` and closes it when the request context drops. Standalone `RequestEvalContext::new` remains ownerless.
 
 ## Notes and Runbooks
 - Planner notes: `docs/agents/planner/rule/rule_ai_notes.md`

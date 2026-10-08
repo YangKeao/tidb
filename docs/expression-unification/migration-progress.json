@@ -1,7 +1,8 @@
 {
-  "checkpoint_id": "request-owner-matrix-189",
+  "checkpoint_id": "dag-request-owner-190",
+  "remote_unistore_dag_server_local_owner_complete": true,
   "local_session_planner_legacy_owner_matrix_verified": true,
-  "remote_unistore_dag_owner_requires_server_local_lifecycle": true,
+  "remote_unistore_dag_owner_requires_server_local_lifecycle": false,
   "m6_crypto_aes_sha1_dependency_bans_resolved": true,
   "m6_vitess_nonsecurity_des_wrapper_explicit": true,
   "m6_full_clippy_blocked_by_grpc_cpp_toolchain": true,

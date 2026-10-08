@@ -16,16 +16,29 @@
 
 use std::sync::{Arc, Mutex};
 use tidb_datatype::{Datum, SessionTimeZone};
-use tidb_expr::{Columns, ErrorLevel};
+use tidb_expr::{AsciiExecution, AsciiPoolOwner, AsciiPoolPolicy, Columns, ErrorLevel};
 use tidb_model::flags::*;
 
-#[derive(Debug)]
 pub(super) struct RequestEvalContext {
     pub(super) zone: SessionTimeZone,
     pub(super) division_precision: u32,
     pub(super) flags: u64,
     pub(super) column_types: Vec<tidb_datatype::FieldType>,
     warnings: Mutex<Vec<(u16, String)>>,
+    ascii_execution: Option<AsciiExecution>,
+}
+
+impl std::fmt::Debug for RequestEvalContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestEvalContext")
+            .field("zone", &self.zone)
+            .field("division_precision", &self.division_precision)
+            .field("flags", &self.flags)
+            .field("column_types", &self.column_types)
+            .field("warnings", &format_args!("<not inspected>"))
+            .field("has_ascii_execution", &self.ascii_execution.is_some())
+            .finish()
+    }
 }
 
 impl RequestEvalContext {
@@ -36,7 +49,27 @@ impl RequestEvalContext {
             flags,
             column_types: Vec::new(),
             warnings: Mutex::new(Vec::new()),
+            ascii_execution: None,
         }
+    }
+
+    pub(super) fn new_with_ascii_execution(
+        zone: SessionTimeZone,
+        division_precision: u32,
+        flags: u64,
+    ) -> Result<Self, String> {
+        let policy = AsciiPoolPolicy::checked(1, 1, 16 << 20, 4 << 20, 4 << 20, 64, 8, 4 << 20)
+            .map_err(|error| error.to_string())?;
+        let owner = AsciiPoolOwner::new(policy).map_err(|error| error.to_string())?;
+        let ascii_execution = owner.begin_execution().map_err(|error| error.to_string())?;
+        Ok(Self {
+            zone,
+            division_precision,
+            flags,
+            column_types: Vec::new(),
+            warnings: Mutex::new(Vec::new()),
+            ascii_execution: Some(ascii_execution),
+        })
     }
 
     pub(super) fn condition_value(&self, value: &Datum) -> Result<i128, String> {
@@ -61,7 +94,19 @@ impl RequestEvalContext {
     }
 }
 
+impl Drop for RequestEvalContext {
+    fn drop(&mut self) {
+        if let Some(execution) = self.ascii_execution.as_ref() {
+            execution.close();
+        }
+    }
+}
+
 impl Columns for RequestEvalContext {
+    fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+        self.ascii_execution.as_ref()
+    }
+
     fn get(&self, _: &[String]) -> Option<Datum> {
         None
     }
@@ -111,7 +156,7 @@ pub struct SharedExpression {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{RegionAggregator, TopNSpec, convert_expr_with_context, eval_datum};
+    use super::super::{convert_expr_with_context, eval_datum, RegionAggregator, TopNSpec};
     use super::*;
     use tidb_proto::tipb;
 
@@ -325,5 +370,25 @@ mod tests {
             }
             assert!(ctx.take_warnings().is_empty());
         }
+    }
+
+    #[test]
+    fn request_context_owns_ascii_execution_lifetime() {
+        let zone = SessionTimeZone::Named(chrono_tz::Asia::Shanghai);
+        let ownerless = RequestEvalContext::new(zone.clone(), 8, 0);
+        assert!(ownerless.evaluated_ascii_execution().is_none());
+
+        let owned = RequestEvalContext::new_with_ascii_execution(zone, 8, 0).unwrap();
+        assert!(owned.evaluated_ascii_execution().is_some());
+        let execution = owned.evaluated_ascii_execution().unwrap().clone();
+        drop(owned);
+
+        assert!(matches!(
+            execution
+                .scope()
+                .evaluate_value(&Datum::Bytes(b"ascii".to_vec())),
+            Err(tidb_expr::EvalError::ExpressionAdapterFailure(failure))
+                if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolClosed
+        ));
     }
 }

@@ -1542,11 +1542,11 @@ pub fn build_dag(req: &coprocessor::Request) -> Result<DagContext, String> {
         "System" => TimeZoneSpec::System,
         name => TimeZoneSpec::Named(name.to_owned()),
     };
-    let mut expression_context = RequestEvalContext::new(
+    let mut expression_context = RequestEvalContext::new_with_ascii_execution(
         time_zone.resolve()?,
         dag_req.div_precision_increment.unwrap_or(4),
         dag_req.flags.unwrap_or(0),
-    );
+    )?;
     let columns = dag_req.executors.first().and_then(|scan| {
         scan.tbl_scan
             .as_ref()

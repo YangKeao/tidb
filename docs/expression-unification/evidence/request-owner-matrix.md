@@ -6,4 +6,4 @@ GREEN filters: Session zero-slot 1, Session one-slot 1, planner 1, Unistore Shar
 
 R193's shared manifest change initially left TiDB `rust/Cargo.lock` stale; all four locked launches refused before compilation. The lock was synchronized and identical commands then passed.
 
-Remote Unistore DAG remains an explicit boundary: `DirectUnaryRequest` crosses process/API boundaries and carries no process-local execution token or server pool policy. `RequestEvalContext` and production `LegacyEvaluator::new` therefore remain ownerless. Adding a dead optional token or borrowing a Session epoch across remote transport would be unsafe. Closure requires a request-local server policy/owner with begin/close and remote/local separation across multiple crates.
+R196 closes the remote Unistore DAG boundary without transporting a Session token: production `build_dag` creates a server-local one-slot lazy epoch, `RequestEvalContext` exposes it through `Columns`, and final context drop closes it. Standalone construction remains ownerless. See [DAG receipts](../logs/dag-request-owner-summary.txt).
