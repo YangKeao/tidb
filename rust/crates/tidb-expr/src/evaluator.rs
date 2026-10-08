@@ -839,7 +839,7 @@ mod tests {
             let mut output = Chunk::new_with_capacity(&[longlong()], 1);
             suite.run(&NoColumns, &mut input, &mut output).unwrap();
             assert_eq!(output.get_row(0).get_int64(0), expected);
-            assert_eq!(suite.ready_value_cache.worker_count(), 1);
+            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 1);
         }
     }
 

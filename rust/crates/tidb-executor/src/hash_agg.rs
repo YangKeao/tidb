@@ -103,7 +103,7 @@ use tidb_datatype::{
 use tidb_expr::compare_datums;
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
-use tidb_expr::{Columns, SessionTimeZone};
+use tidb_expr::{Columns, ReadyValueCache, SessionTimeZone};
 use tidb_util::disk;
 use tidb_util::memory::{ActionOnExceed, ArcAction, Tracker};
 use tidb_util::selection::{select, Selectable};
@@ -3102,6 +3102,7 @@ pub struct HashAggExec<C: HashAggContext> {
     input_modes: Vec<AggInputMode>,
     child: Box<dyn Executor>,
     ctx: C,
+    ready_values: ReadyValueCache,
     child_chunk: Chunk,
     /// Go `HashAggExec.IsChildReturnEmpty`: whether the last run saw NO input
     /// row at all -- read back through [`Executor::agg_tree_input_empty`].
@@ -3236,6 +3237,7 @@ impl<C: HashAggContext> HashAggExec<C> {
             input_modes,
             child,
             ctx,
+            ready_values: ReadyValueCache::new(),
             child_chunk,
             child_returned_empty: true,
             groups: FastBytesMap::default(),
@@ -3279,8 +3281,10 @@ impl<C: HashAggContext> HashAggExec<C> {
     fn fold_chunk(&mut self, chunk: &Chunk, rows: usize) -> Result<Vec<usize>, ExecError> {
         let mut sel: Vec<usize> = Vec::new();
         debug_assert_eq!(rows, chunk.num_rows());
-        self.group_key_buffer
-            .prepare(&self.ctx, chunk, &self.group_by, self.output_group_keys)?;
+        self.ready_values.with_columns(&self.ctx, |ctx| {
+            self.group_key_buffer
+                .prepare(ctx, chunk, &self.group_by, self.output_group_keys)
+        })?;
         let inputs = input::bind_inputs(&self.input_modes, chunk);
         let mut state_memory_delta = 0;
         for r in 0..rows {
@@ -3323,13 +3327,15 @@ impl<C: HashAggContext> HashAggExec<C> {
                 }
             };
             let width = self.agg_funcs.len();
-            let delta = input::update_row(
-                &inputs,
-                &self.agg_funcs,
-                &self.ctx,
-                &mut self.ordered[idx * width..(idx + 1) * width],
-                row,
-            )?;
+            let delta = self.ready_values.with_columns(&self.ctx, |ctx| {
+                input::update_row(
+                    &inputs,
+                    &self.agg_funcs,
+                    ctx,
+                    &mut self.ordered[idx * width..(idx + 1) * width],
+                    row,
+                )
+            })?;
             state_memory_delta += delta;
         }
         // Go execute accounts aggregate-state growth once per input chunk;

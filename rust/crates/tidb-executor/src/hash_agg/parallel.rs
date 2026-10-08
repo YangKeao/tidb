@@ -105,6 +105,7 @@ use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tidb_codec::JoinKeyColumn;
+use tidb_expr::ReadyValueCache;
 use tidb_vardef::tidb_vars::{
     TIDB_ENABLE_PARALLEL_HASHAGG_SPILL, TIDB_TRACK_AGGREGATE_MEMORY_USAGE,
 };
@@ -1500,6 +1501,7 @@ struct PartialWorker<C: Columns + Send + Sync + Clone + 'static> {
     plan: Arc<PipelinePlan<C>>,
     tracker: Arc<Tracker>,
     memory: StatementMemory,
+    ready_values: ReadyValueCache,
     maps: Vec<PipelineMap>,
     keys: PipelineKeyBuffer,
     error: Option<ExecError>,
@@ -1541,22 +1543,30 @@ impl<C: Columns + Send + Sync + Clone + 'static> PartialWorker<C> {
         if self.error.is_none() && !self.abort.raised() {
             let fold = crate::sort_util::recover_worker_panic(|| {
                 let final_concurrency = self.maps.len();
-                fold_chunk(
-                    FoldInputs {
-                        ctx: &self.plan.ctx,
-                        memory: &self.memory,
-                        group_by: &self.plan.group_by,
-                        integer_columns: self.plan.integer_columns.as_deref(),
-                        agg_funcs: &self.plan.agg_funcs,
-                        input_modes: &self.plan.input_modes,
-                        collations: &self.plan.collations,
-                    },
-                    &mut self.maps,
-                    final_concurrency,
-                    &self.tracker,
-                    &self.current.chunk,
-                    &mut self.keys,
-                )
+                let plan = &self.plan;
+                let memory = &self.memory;
+                let maps = &mut self.maps;
+                let tracker = &self.tracker;
+                let chunk = &self.current.chunk;
+                let keys = &mut self.keys;
+                self.ready_values.with_columns(&plan.ctx, |ctx| {
+                    fold_chunk(
+                        FoldInputs {
+                            ctx,
+                            memory,
+                            group_by: &plan.group_by,
+                            integer_columns: plan.integer_columns.as_deref(),
+                            agg_funcs: &plan.agg_funcs,
+                            input_modes: &plan.input_modes,
+                            collations: &plan.collations,
+                        },
+                        maps,
+                        final_concurrency,
+                        tracker,
+                        chunk,
+                        keys,
+                    )
+                })
             });
             if let Err(fold_error) = fold {
                 self.error = Some(fold_error);
@@ -1751,6 +1761,7 @@ impl<C: Columns + Send + Sync + Clone + 'static> PipelineWorkers<C> {
                     .collect(),
                 tracker: Arc::clone(tracker),
                 memory: memory.clone(),
+                ready_values: ReadyValueCache::new(),
                 keys: PipelineKeyBuffer::new(Arc::clone(tracker)),
                 error: None,
                 #[cfg(test)]

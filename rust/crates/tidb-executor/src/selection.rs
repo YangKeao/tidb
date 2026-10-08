@@ -34,7 +34,7 @@ use tidb_datatype::{Datum, FieldType};
 use tidb_expr::evaluator::{vectorizable, vectorized_filter_consider_null};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
-use tidb_expr::{truthy_of, Columns};
+use tidb_expr::{truthy_of, Columns, ReadyValueCache};
 use tidb_util::memory::Tracker;
 
 use crate::StatementMemory;
@@ -47,6 +47,7 @@ pub struct SelectionExec<C: Columns> {
     batched: bool,
     child: Box<dyn Executor>,
     ctx: C,
+    ready_values: ReadyValueCache,
     child_chunk: Option<Chunk>,
     tracker: Arc<Tracker>,
     memory: StatementMemory,
@@ -96,6 +97,7 @@ impl<C: Columns> SelectionExec<C> {
             batched,
             child,
             ctx,
+            ready_values: ReadyValueCache::new(),
             child_chunk: None,
             tracker,
             memory,
@@ -108,19 +110,21 @@ impl<C: Columns> SelectionExec<C> {
     /// Whether a row satisfies every filter (all truthy). A false or NULL filter
     /// rejects the row.
     fn row_passes(&self, row: tidb_chunk::row::Row<'_>) -> Result<bool, ExecError> {
-        for (filter, fast_filter) in self.filters.iter().zip(&self.fast_filters) {
-            if let Some(fast_filter) = fast_filter {
-                if !fast_filter.matches(row) {
+        self.ready_values.with_columns(&self.ctx, |ctx| {
+            for (filter, fast_filter) in self.filters.iter().zip(&self.fast_filters) {
+                if let Some(fast_filter) = fast_filter {
+                    if !fast_filter.matches(row) {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                let value = filter.eval(ctx, row)?;
+                if truthy_of(&value)? != Some(true) {
                     return Ok(false);
                 }
-                continue;
             }
-            let value = filter.eval(&self.ctx, row)?;
-            if truthy_of(&value)? != Some(true) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+            Ok(true)
+        })
     }
 
     /// Evaluates all pure filters into the physical-row mask used by the
@@ -135,14 +139,16 @@ impl<C: Columns> SelectionExec<C> {
             .child_chunk
             .as_ref()
             .expect("selection child chunk exists while open");
-        let (selected, _) = vectorized_filter_consider_null(
-            &self.ctx,
-            true,
-            &self.filters,
-            child_chunk,
-            Vec::new(),
-            Vec::new(),
-        )?;
+        let (selected, _) = self.ready_values.with_columns(&self.ctx, |ctx| {
+            vectorized_filter_consider_null(
+                ctx,
+                true,
+                &self.filters,
+                child_chunk,
+                Vec::new(),
+                Vec::new(),
+            )
+        })?;
         self.selected = selected;
         Ok(())
     }
@@ -691,6 +697,41 @@ mod tests {
         sel.next(&mut req).unwrap();
         assert_eq!(req.num_rows(), 0);
         sel.close().unwrap();
+    }
+
+    #[test]
+    fn selection_lane_reuses_ready_value_worker() {
+        let mut schema_column = Column::new(1, string());
+        schema_column.index = 0;
+        let schema = Schema::new(vec![schema_column.clone()]);
+        let mut data = Chunk::new_with_capacity(&[string()], 3);
+        for value in [b"A".as_slice(), b"".as_slice(), b"B".as_slice()] {
+            data.append_bytes(0, value);
+        }
+        let source = OneChunkSource {
+            meta: ExecutorMeta::new(schema.clone(), 0, 3, 1024),
+            data: Some(data),
+        };
+        let filter = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("ascii"),
+            long(),
+            vec![Expression::Column(schema_column)],
+        ));
+        let mut selection = SelectionExec::new(
+            ExecutorMeta::new(schema, 1, 3, 1024),
+            vec![filter],
+            Box::new(source),
+            NoColumns,
+            StatementMemory::default(),
+        );
+        selection.open().unwrap();
+        let mut output = selection.new_chunk();
+        selection.next(&mut output).unwrap();
+        assert_eq!(output.num_rows(), 2);
+        assert_eq!(output.get_row(0).get_bytes(0), b"A");
+        assert_eq!(output.get_row(1).get_bytes(0), b"B");
+        assert_eq!(selection.ready_values.prepared_worker_count(), 1);
+        selection.close().unwrap();
     }
 
     #[test]

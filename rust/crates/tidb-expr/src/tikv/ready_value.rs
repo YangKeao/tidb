@@ -1236,8 +1236,9 @@ impl ReadyValueCache {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn worker_count(&self) -> usize {
+    /// Number of prepared operations retained by this lane.
+    #[must_use]
+    pub fn prepared_worker_count(&self) -> usize {
         self.workers.borrow().len()
     }
 }
@@ -2936,24 +2937,18 @@ fn route_prepared_args_in<T>(
     }
 
     let result = (|| {
-        // No capability: preserve frontend precedence even before pool creation.
+        // No lane capability: preserve frontend precedence, then use an affine
+        // one-shot cache. It owns exactly the demanded workers and drops them
+        // before returning; no session/shared pool is synthesized.
         let ready = prepare().map_err(ReadyValueBoundaryError::Frontend)?;
-        // One explicit experimental policy for all closed fixed-arity recipes.
-        // Retained/request allowances are not physical heap/factory-peak bounds.
-        // A worker's retained cap must not become a maximum SQL string length.
-        let policy =
-            ReadyValuePoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;
-        let owner = ReadyValuePoolOwner::new(policy)?;
-        let execution = OneShotReadyValueExecution(owner.begin_execution()?);
-        // The scope/guard drop before the owned closer, including on unwind.
-        let scope = execution.0.scope();
-        evaluate_scoped_args(
-            &scope,
+        let cache = ReadyValueCache::new();
+        evaluate_cached_args(
+            &cache,
             || Ok(ready),
-            |computed, scope| {
+            |computed| {
                 let columns = ScopedReadyValueColumns {
                     native: ctx,
-                    authority: ReadyValueAuthorityRef::Scope(scope),
+                    authority: ReadyValueAuthorityRef::Cache(&cache),
                 };
                 pack(computed, &columns)
             },
