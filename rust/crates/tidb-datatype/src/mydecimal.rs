@@ -117,6 +117,23 @@ impl MyDecimal {
         .map(Self::from_shared)
     }
 
+    pub(crate) fn from_decimal_parts_lossy(
+        negative: bool,
+        coefficient: &str,
+        storage_scale: u32,
+        result_frac: u32,
+        minimum_integer_digit: bool,
+    ) -> Result<MyDecimal, DecimalError> {
+        SharedMyDecimal::from_decimal_parts_lossy(
+            negative,
+            coefficient,
+            storage_scale,
+            result_frac,
+            minimum_integer_digit,
+        )
+        .map(|(value, _)| Self::from_shared(value))
+    }
+
     #[must_use]
     pub fn from_scaled_i128(
         value: i128,

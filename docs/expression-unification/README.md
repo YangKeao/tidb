@@ -1,7 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **decimal-assignment-fit-204**. Functional Demo: **240/245 (97.96%)**, strict **0**.
+Current paired checkpoint **decimal-chunk-projection-205**. Functional Demo: **240/245 (97.96%)**, strict **0**.
 
-TiKV now owns Decimal assignment round-first fitting and signed maximum clamping. TiDB deletes double rounding and maximum-text reparse while retaining concrete diagnostics and declared-shape stamping. Four focused gates are GREEN. [Evidence](evidence/decimal-assignment-fit-checkpoint.md) · [receipts](logs/decimal-assignment-fit-summary.txt).
+TiKV now directly projects Decimal coefficients into fixed nine-word chunk cells, preserving Go-compatible integer overflow, fraction truncation, visible scale and signed-zero behavior. TiDB's SQL-text fallback is deleted. Five focused gates are GREEN. [Evidence](evidence/decimal-chunk-projection-checkpoint.md) · [receipts](logs/decimal-chunk-projection-summary.txt).
 
-Broader M2 has one identified Decimal blocker left: chunk fixed-cell fallback. M6 final acceptance and PR readiness are not claimed.
+Broader M2 is complete for the planned Demo scope. Strict family audit, M3/M6 final acceptance, and PR readiness remain open.

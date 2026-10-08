@@ -426,42 +426,19 @@ impl Decimal {
     /// Go's `Datum` already owns a `MyDecimal`; `chunk.AppendDatum` and
     /// `MutRow.SetDatum` copy that value and do not introduce a new overflow
     /// panic. Rust's value-layer [`Decimal`] can temporarily carry more digits
-    /// than that fixed buffer, so an exact conversion error must be resolved
-    /// at this boundary by applying `MyDecimal.FromString`'s ordinary
-    /// truncation rules rather than aborting the statement.
+    /// than that fixed buffer, so the shared fixed-word projection applies
+    /// `MyDecimal.FromString`'s prefix/truncation rules directly to coefficient
+    /// bytes rather than formatting and reparsing a SQL literal.
     #[must_use]
     pub fn to_chunk_my_decimal_lossy(&self) -> MyDecimal {
-        if let Ok(value) = self.to_chunk_my_decimal() {
-            return value;
-        }
-
-        let mut text = self.digits().to_owned();
-        let storage_scale = self.storage_scale() as usize;
-        debug_assert!(storage_scale <= text.len());
-        if storage_scale > 0 {
-            // `from_decimal_parts(..., minimum_integer_digit = true)` gives
-            // values below one a leading zero in Go's chunk cell. Preserve
-            // that source shape before asking `MyDecimal.FromString` to
-            // apply its fixed-word truncation.
-            if storage_scale == text.len() {
-                text.insert(0, '0');
-            }
-            let split = text.len() - storage_scale;
-            text.insert(split, '.');
-        }
-        if self.is_negative() {
-            text.insert(0, '-');
-        }
-        let mut value = MyDecimal::from_string(text.as_bytes()).0;
-        // Go's `ToString` renders the clamped cell's `digitsFrac`, while a
-        // Rust chunk read-back (`Decimal::from_my_decimal`) renders
-        // `resultFrac`. Pin `resultFrac` to the kept fraction — never above
-        // this value's own visible scale — so the datum text a client sees
-        // matches Go's `ToString` of the same clamped cell. The exact path
-        // above already carries this convention (`resultFrac = scale`).
-        let kept = value.digits_frac().max(0) as u32;
-        value.set_result_frac(self.scale().min(kept) as i8);
-        value
+        MyDecimal::from_decimal_parts_lossy(
+            self.is_negative(),
+            self.digits(),
+            self.storage_scale(),
+            self.scale(),
+            true,
+        )
+        .expect("Decimal coefficient and scale are valid")
     }
 
     /// Parses the signed decimal strings accepted by datatype conversion.
