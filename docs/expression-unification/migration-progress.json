@@ -1,5 +1,7 @@
 {
-  "checkpoint_id": "dag-request-owner-190",
+  "checkpoint_id": "wrapper-owner-matrix-191",
+  "query_dml_filter_grouping_owner_matrix_verified": true,
+  "window_and_standalone_ddl_fold_owner_classification_pending": true,
   "remote_unistore_dag_server_local_owner_complete": true,
   "local_session_planner_legacy_owner_matrix_verified": true,
   "remote_unistore_dag_owner_requires_server_local_lifecycle": false,
