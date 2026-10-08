@@ -364,4 +364,30 @@ mod tests {
             Ok(Datum::Int(9))
         );
     }
+
+    #[test]
+    fn case_bridge_uses_iterative_demand_beyond_legacy_depth_limit() {
+        let conditions = Cell::new(0usize);
+        let values = Cell::new(0usize);
+        let selected = 1_023usize;
+        let result = eval_case_in(
+            &crate::NoColumns,
+            selected + 1,
+            false,
+            |_| Ok(()),
+            |index, _, _| {
+                assert_eq!(conditions.get(), index);
+                conditions.set(index + 1);
+                Ok(Some(index == selected))
+            },
+            |index, _| {
+                assert_eq!(index, selected);
+                values.set(values.get() + 1);
+                Ok(Datum::Int(index as i64))
+            },
+        );
+        assert_eq!(result, Ok(Datum::Int(selected as i64)));
+        assert_eq!(conditions.get(), selected + 1);
+        assert_eq!(values.get(), 1);
+    }
 }
