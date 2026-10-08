@@ -15,18 +15,23 @@
 //! `pkg/expression/evaluator.go`: evaluate a projection's calculated
 //! expressions before transferring any direct input-column owners.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
-use tidb_datatype::Datum;
+use tidb_datatype::{Datum, FieldType};
+use tidb_query_datatype::expr::EvalContext as TikvEvalContext;
+use tidb_query_expr::local::{CompileLimits, ExecutionLimits};
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
 
 // Private consumer checkpoint; the public suite still selects Native below.
 pub(crate) mod numeric_batch;
+
+use numeric_batch::{NumericSourceLimits, PreparedNumericBatch};
 
 /// Go `HasGetSetVarFunc`: whether an expression contains a user-variable read
 /// or assignment at any depth.
@@ -350,12 +355,21 @@ impl EvaluatorProgram {
     }
 }
 
-/// Go `EvaluatorSuite`: executes a projection program with an execution-local
-/// column ownership cache. Calculated expressions finish before owner moves,
-/// so an evaluation error cannot leave the input chunk half-consumed.
+/// Per-suite TiKV numeric state. `Unsupported` is decided once before any
+/// values or warnings are observed; a prepared worker is affine to this suite.
+enum NumericVectorLane {
+    Uninitialized,
+    Unsupported,
+    Prepared(PreparedNumericBatch),
+}
+
+/// Go `EvaluatorSuite`: executes a projection program with execution-lane-local
+/// column ownership and TiKV RPN caches. Calculated expressions finish before
+/// owner moves, so an evaluation error cannot leave the input half-consumed.
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
     column_swap_helper: Option<ColumnSwapHelper>,
+    numeric_vector_lane: RefCell<NumericVectorLane>,
 }
 
 // Minted only inside the real column-major/global-enabled/native-eligible
@@ -438,6 +452,7 @@ impl EvaluatorSuite {
         Self {
             program,
             column_swap_helper,
+            numeric_vector_lane: RefCell::new(NumericVectorLane::Uninitialized),
         }
     }
 
@@ -460,6 +475,44 @@ impl EvaluatorSuite {
         output: &mut Chunk,
     ) -> Result<(), EvaluatorError> {
         self.run_with_consumer(ctx, input, output, &mut NativeNumericConsumer)
+    }
+
+    /// Projection-lane entry for the checked signed-LongLong numeric seed.
+    /// Admission is cached before evaluation. Unsupported suites retain the
+    /// native route; admitted suites pass the real Chunk selection to TiKV's
+    /// eager RPN vector entry and never retry natively after an engine error.
+    pub fn run_with_tikv_numeric<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        row_schema: &[FieldType],
+    ) -> Result<(), EvaluatorError> {
+        let mut lane = self.numeric_vector_lane.borrow_mut();
+        if matches!(*lane, NumericVectorLane::Uninitialized) {
+            *lane = match PreparedNumericBatch::compile(
+                self,
+                row_schema,
+                true,
+                0,
+                NumericSourceLimits {
+                    tree: CompileLimits::default(),
+                    max_metadata_bytes: 1 << 20,
+                },
+                ExecutionLimits::default(),
+                8 << 20,
+            ) {
+                Ok(worker) => NumericVectorLane::Prepared(worker),
+                Err(_) => NumericVectorLane::Unsupported,
+            };
+        }
+        let NumericVectorLane::Prepared(worker) = &mut *lane else {
+            drop(lane);
+            return self.run(ctx, input, output);
+        };
+        let mut tikv_ctx = TikvEvalContext::default();
+        self.run_numeric_batch_raw(ctx, &mut tikv_ctx, worker, input, output, row_schema)
+            .map_err(numeric_batch::NumericBatchFailure::into_evaluator_error)
     }
 
     fn run_with_consumer<C: Columns, B: NumericBatchConsumer>(
@@ -571,6 +624,10 @@ mod tests {
 
     fn string() -> FieldType {
         FieldType::new(FieldTypeCode::VarString)
+    }
+
+    fn longlong() -> FieldType {
+        FieldType::new(FieldTypeCode::LongLong)
     }
 
     fn input_column(index: i64) -> Expression {
@@ -759,6 +816,55 @@ mod tests {
             }
             assert_eq!(output.num_rows(), 0);
         }
+    }
+
+    #[test]
+    fn tikv_numeric_lane_consumes_real_chunk_selection_and_reuses_worker() {
+        let field = longlong();
+        let mut left = Column::new(1, field.clone());
+        left.index = 0;
+        let mut right = Column::new(2, field.clone());
+        right.index = 1;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            field.clone(),
+            vec![Expression::Column(left), Expression::Column(right)],
+        ));
+        let suite = EvaluatorSuite::new(vec![expression], false);
+        let schema = vec![field.clone(), field.clone()];
+        let mut input = Chunk::new_with_capacity(&schema, 4);
+        for (left, right) in [(Some(1), Some(10)), (None, Some(20)), (Some(7), None)] {
+            input.append_datum(0, &left.map_or(Datum::Null, Datum::Int));
+            input.append_datum(1, &right.map_or(Datum::Null, Datum::Int));
+        }
+        input.set_sel(Some(vec![2, 0, 2, 1]));
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&field), 4);
+        suite
+            .run_with_tikv_numeric(&NoColumns, &mut input, &mut output, &schema)
+            .unwrap();
+        assert_eq!(output.num_rows(), 4);
+        assert!(output.get_row(0).is_null(0));
+        assert_eq!(output.get_row(1).get_int64(0), 11);
+        assert!(output.get_row(2).is_null(0));
+        assert!(output.get_row(3).is_null(0));
+        let first = match &*suite.numeric_vector_lane.borrow() {
+            NumericVectorLane::Prepared(worker) => worker as *const PreparedNumericBatch,
+            _ => panic!("checked numeric suite did not retain its TiKV worker"),
+        };
+
+        let mut next = Chunk::new_with_capacity(&schema, 1);
+        next.append_int64(0, 3);
+        next.append_int64(1, 4);
+        let mut next_output = Chunk::new_with_capacity(std::slice::from_ref(&field), 1);
+        suite
+            .run_with_tikv_numeric(&NoColumns, &mut next, &mut next_output, &schema)
+            .unwrap();
+        assert_eq!(next_output.get_row(0).get_int64(0), 7);
+        let second = match &*suite.numeric_vector_lane.borrow() {
+            NumericVectorLane::Prepared(worker) => worker as *const PreparedNumericBatch,
+            _ => panic!("checked numeric suite lost its TiKV worker"),
+        };
+        assert_eq!(first, second);
     }
 
     #[test]

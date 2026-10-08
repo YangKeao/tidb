@@ -76,6 +76,7 @@ impl ProjectionContext for crate::StmtContext {
 /// share the executor's `evaluatorSuit` and its evaluation context.
 struct ParallelProjectionShared<C> {
     program: Arc<EvaluatorProgram>,
+    input_schema: Arc<[FieldType]>,
     ctx: C,
 }
 
@@ -86,16 +87,18 @@ struct ParallelProjectionShared<C> {
 /// most that far ahead of the parent, as Go's `inputCh`/`outputCh` bound it.
 struct ParallelProjection<C> {
     shared: Arc<ParallelProjectionShared<C>>,
-    result_tx: Sender<(u64, Result<(Chunk, Chunk), ExecError>)>,
-    result_rx: Receiver<(u64, Result<(Chunk, Chunk), ExecError>)>,
-    /// Finished pairs waiting for their turn (`output.done` in fetch order).
-    reorder: BTreeMap<u64, (Chunk, Chunk)>,
+    result_tx: Sender<(u64, Result<(Chunk, Chunk, EvaluatorSuite), ExecError>)>,
+    result_rx: Receiver<(u64, Result<(Chunk, Chunk, EvaluatorSuite), ExecError>)>,
+    /// Finished lanes waiting for their turn (`output.done` in fetch order).
+    reorder: BTreeMap<u64, Result<(Chunk, Chunk, EvaluatorSuite), ExecError>>,
     /// Outputs released in order, not yet handed to the parent.
     ready: VecDeque<Chunk>,
     free_inputs: Vec<Chunk>,
     free_outputs: Vec<Chunk>,
+    free_suites: Vec<EvaluatorSuite>,
     inputs_allocated: usize,
     outputs_allocated: usize,
+    suites_allocated: usize,
     next_seq: u64,
     next_release: u64,
     in_flight: usize,
@@ -107,6 +110,7 @@ pub struct ProjectionExec<C: Columns> {
     meta: ExecutorMeta,
     evaluator_suite: EvaluatorSuite,
     program: Arc<EvaluatorProgram>,
+    input_schema: Arc<[FieldType]>,
     child: Box<dyn Executor>,
     ctx: C,
     child_chunk: Chunk,
@@ -136,6 +140,18 @@ impl<C: Columns> ProjectionExec<C> {
         ctx: C,
         avoid_column_evaluator: bool,
     ) -> Self {
+        let input_schema: Arc<[FieldType]> = child
+            .schema()
+            .columns
+            .iter()
+            .map(|column| {
+                column
+                    .ret_type
+                    .clone()
+                    .expect("projection child schema column has a type")
+            })
+            .collect::<Vec<_>>()
+            .into();
         let child_chunk = child.new_chunk();
         let program = Arc::new(EvaluatorProgram::new(exprs, avoid_column_evaluator));
         let evaluator_suite = EvaluatorSuite::from_program(Arc::clone(&program));
@@ -143,6 +159,7 @@ impl<C: Columns> ProjectionExec<C> {
             meta,
             evaluator_suite,
             program,
+            input_schema,
             child,
             ctx,
             child_chunk,
@@ -179,6 +196,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
             self.parallel = Some(ParallelProjection {
                 shared: Arc::new(ParallelProjectionShared {
                     program: Arc::clone(&self.program),
+                    input_schema: Arc::clone(&self.input_schema),
                     ctx: self.ctx.clone(),
                 }),
                 result_tx,
@@ -187,8 +205,10 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
                 ready: VecDeque::new(),
                 free_inputs: Vec::new(),
                 free_outputs: Vec::new(),
+                free_suites: Vec::new(),
                 inputs_allocated: 0,
                 outputs_allocated: 0,
+                suites_allocated: 0,
                 next_seq: 0,
                 next_release: 0,
                 in_flight: 0,
@@ -209,8 +229,8 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
                 return Ok(());
             }
             if !pipeline.child_done {
-                if let Some((input, output)) = self.take_parallel_chunks() {
-                    self.fetch_and_dispatch_parallel(input, output, req.required_rows())?;
+                if let Some((input, output, suite)) = self.take_parallel_chunks() {
+                    self.fetch_and_dispatch_parallel(input, output, suite, req.required_rows())?;
                     continue;
                 }
             }
@@ -230,35 +250,41 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
     /// A free input and a free output chunk, or `None` when Go's fetcher would
     /// block on `inputCh`/`outputCh`: all `numWorkers` of either are with a
     /// worker or waiting for the parent.
-    fn take_parallel_chunks(&mut self) -> Option<(Chunk, Chunk)> {
+    fn take_parallel_chunks(&mut self) -> Option<(Chunk, Chunk, EvaluatorSuite)> {
         let num_workers = self.num_workers.max(1);
         let pipeline = self.parallel.as_mut()?;
         let input = match pipeline.free_inputs.pop() {
-            Some(input) => Some(input),
+            Some(input) => input,
             None if pipeline.inputs_allocated < num_workers => {
                 pipeline.inputs_allocated += 1;
-                None
+                self.child.new_chunk()
             }
             None => return None,
         };
         let output = match pipeline.free_outputs.pop() {
-            Some(output) => Some(output),
+            Some(output) => output,
             None if pipeline.outputs_allocated < num_workers => {
                 pipeline.outputs_allocated += 1;
-                None
+                self.meta.new_chunk()
             }
             None => {
-                if let Some(input) = input {
-                    pipeline.free_inputs.push(input);
-                } else {
-                    pipeline.inputs_allocated -= 1;
-                }
+                pipeline.free_inputs.push(input);
                 return None;
             }
         };
-        let input = input.unwrap_or_else(|| self.child.new_chunk());
-        let output = output.unwrap_or_else(|| self.meta.new_chunk());
-        Some((input, output))
+        let suite = match pipeline.free_suites.pop() {
+            Some(suite) => suite,
+            None if pipeline.suites_allocated < num_workers => {
+                pipeline.suites_allocated += 1;
+                EvaluatorSuite::from_program(Arc::clone(&pipeline.shared.program))
+            }
+            None => {
+                pipeline.free_inputs.push(input);
+                pipeline.free_outputs.push(output);
+                return None;
+            }
+        };
+        Some((input, output, suite))
     }
 
     /// Go `projectionInputFetcher.run` for one chunk: pull it from the child
@@ -268,6 +294,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
         &mut self,
         mut input: Chunk,
         output: Chunk,
+        suite: EvaluatorSuite,
         required_rows: usize,
     ) -> Result<(), ExecError> {
         let max_chunk_size = self.meta.max_chunk_size();
@@ -285,6 +312,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
             pipeline.child_done = true;
             pipeline.free_inputs.push(input);
             pipeline.free_outputs.push(output);
+            pipeline.free_suites.push(suite);
             return Ok(());
         }
         let seq = pipeline.next_seq;
@@ -296,10 +324,14 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
             let mut input = input;
             let mut output = output;
             let result = crate::sort_util::recover_worker_panic(|| {
-                let suite = EvaluatorSuite::from_program(Arc::clone(&shared.program));
                 suite
-                    .run(&shared.ctx, &mut input, &mut output)
-                    .map(|()| (input, output))
+                    .run_with_tikv_numeric(
+                        &shared.ctx,
+                        &mut input,
+                        &mut output,
+                        &shared.input_schema,
+                    )
+                    .map(|()| (input, output, suite))
                     .map_err(Self::evaluator_error)
             });
             // A dropped receiver means the projection is already closed.
@@ -326,12 +358,14 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
                 break;
             };
             pipeline.in_flight = pipeline.in_flight.saturating_sub(1);
-            pipeline.reorder.insert(seq, result?);
+            pipeline.reorder.insert(seq, result);
         }
-        while let Some((mut input, output)) = pipeline.reorder.remove(&pipeline.next_release) {
+        while let Some(result) = pipeline.reorder.remove(&pipeline.next_release) {
             pipeline.next_release += 1;
+            let (mut input, output, suite) = result?;
             input.reset();
             pipeline.free_inputs.push(input);
+            pipeline.free_suites.push(suite);
             pipeline.ready.push_back(output);
         }
         Ok(())
@@ -379,7 +413,7 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
             return Ok(());
         }
         self.evaluator_suite
-            .run(&self.ctx, &mut self.child_chunk, req)
+            .run_with_tikv_numeric(&self.ctx, &mut self.child_chunk, req, &self.input_schema)
             .map_err(Self::evaluator_error)
     }
 
@@ -426,6 +460,10 @@ mod tests {
 
     fn long() -> FieldType {
         FieldType::new(FieldTypeCode::Long)
+    }
+
+    fn longlong() -> FieldType {
+        FieldType::new(FieldTypeCode::LongLong)
     }
 
     fn int_const(v: i64) -> Expression {
@@ -668,9 +706,9 @@ mod tests {
             chunk_rows: usize,
         ) -> (Box<Self>, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
             let required = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let mut first = Column::new(1, long());
+            let mut first = Column::new(1, longlong());
             first.index = 0;
-            let mut second = Column::new(2, long());
+            let mut second = Column::new(2, longlong());
             second.index = 1;
             let source = Box::new(NumberSource {
                 meta: ExecutorMeta::new(Schema::new(vec![first, second]), 7, chunk_rows, 1024),
@@ -729,13 +767,13 @@ mod tests {
         parent_required_rows: usize,
     ) -> (Vec<(i64, i64)>, Vec<usize>) {
         let (source, required) = NumberSource::new(total, chunk_rows);
-        let mut first = Column::new(1, long());
+        let mut first = Column::new(1, longlong());
         first.index = 0;
-        let mut second = Column::new(2, long());
+        let mut second = Column::new(2, longlong());
         second.index = 1;
         let plus = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("plus"),
-            long(),
+            longlong(),
             vec![
                 Expression::Column(first),
                 Expression::Column(second.clone()),
@@ -743,7 +781,7 @@ mod tests {
         ));
         let mut projection = ProjectionExec::new(
             ExecutorMeta::new(
-                Schema::new(vec![Column::new(3, long()), Column::new(4, long())]),
+                Schema::new(vec![Column::new(3, longlong()), Column::new(4, longlong())]),
                 8,
                 chunk_rows,
                 1024,

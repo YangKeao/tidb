@@ -110,7 +110,7 @@ impl ExpressionRuntimeFailure {
     /// This allocates one ordinary Arc on the error path. It does not promise
     /// allocation-failure recovery or inclusion in the worker/pool byte ledger.
     #[must_use]
-    pub(super) fn from_local_eval(
+    pub(crate) fn from_local_eval(
         cause: LocalError,
         phase: Option<ExpressionRuntimeFailurePhase>,
     ) -> Self {

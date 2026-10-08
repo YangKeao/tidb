@@ -33,12 +33,13 @@ use tidb_datatype::tikv_compat::value::{
     from_scalar, project_field_type, snapshot_field_type, to_scalar, BridgeError, ValueMetadata,
 };
 use tidb_datatype::{Datum, DatumKind, FieldType, FieldTypeCode, FieldTypeFlags};
+use tidb_query_datatype::codec::batch::LazyBatchColumnVec;
 use tidb_query_datatype::codec::data_type::{ChunkRef, ChunkedVec, ScalarValue, VectorValue};
 use tidb_query_datatype::expr::EvalContext;
 use tidb_query_datatype::EvalType;
 use tidb_query_expr::local::{
     compile_numeric_batch, CallMetadata, CompileLimits, ExecutionLimits, FunctionRef, InputRow,
-    LiteralKind, LocalCompileContext, LocalError, LocalExpr, LocalFailureSite,
+    LiteralKind, LocalBatch, LocalCompileContext, LocalError, LocalExpr, LocalFailureSite,
     LocalNumericBatchProgram, LocalResult, LocalRuntimeServices, NumericBatchFacts,
     OrdinaryCallSite, OrdinarySourceId, ReportedLocalFailure,
 };
@@ -121,6 +122,21 @@ impl NumericBatchFailure {
             FailureKind::Reported { failure, .. } => failure.into_error().into(),
             kind => Self { kind },
         }
+    }
+
+    pub(super) fn into_evaluator_error(self) -> EvaluatorError {
+        let local = match self.kind {
+            FailureKind::Native(error) => return error,
+            FailureKind::Local(error) => error,
+            FailureKind::Reported { failure, .. } => failure.into_error(),
+            FailureKind::Admission(message) => LocalError::InvalidSpec(message.into()),
+            FailureKind::Bridge(error) => LocalError::BindingContract(error.to_string()),
+        };
+        EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
+            local,
+            Some(crate::ExpressionRuntimeFailurePhase::Invoke),
+        ))
+        .into()
     }
 }
 impl From<LocalError> for NumericBatchFailure {
@@ -835,6 +851,51 @@ impl PreparedNumericBatch {
             Ok(())
         }
     }
+
+    fn decoded_columns(&self, input: &Chunk) -> LocalResult<LazyBatchColumnVec> {
+        let physical = input.physical_rows();
+        let mut retained = 0usize;
+        let mut columns = Vec::new();
+        reserve(&mut columns, self.source.schema.len())?;
+        for (slot, expected) in self.source.schema.iter().enumerate() {
+            let ordinal = *self
+                .source
+                .bindings
+                .get(slot)
+                .ok_or_else(|| binding("unknown numeric vector slot"))?;
+            let node = self
+                .source
+                .nodes
+                .get(ordinal)
+                .ok_or_else(|| binding("numeric vector slot has no source node"))?;
+            let SourceKind::Column { index, .. } = &node.kind else {
+                return Err(binding("numeric vector slot has no native column"));
+            };
+            if expected != &self.source.schema[slot] || *index >= input.num_cols() {
+                return Err(binding("numeric vector slot/type differs"));
+            }
+            let column = input.column(*index);
+            let mut values = VectorValue::with_capacity(physical, EvalType::Int);
+            for row in 0..physical {
+                values.push_int((!column.is_null(row)).then(|| column.get_int64(row)));
+            }
+            let VectorValue::Int(ints) = &values else {
+                unreachable!()
+            };
+            retained = retained
+                .checked_add(array_bytes::<i64>(ints.capacity())?)
+                .and_then(|bytes| {
+                    ints.get_bit_vec()
+                        .retained_heap_bytes()
+                        .and_then(|bitmap| bytes.checked_add(bitmap))
+                })
+                .ok_or_else(|| resource("numeric decoded-column size overflow"))?;
+            self.accept_retained(retained)?;
+            columns.push(values);
+        }
+        Ok(LazyBatchColumnVec::from(columns))
+    }
+
     fn materialize(&self, values: VectorValue, selection: &Vec<usize>) -> Result<Vec<Datum>> {
         if values.eval_type() != EvalType::Int || values.len() != selection.len() {
             return Err(binding("numeric result shape differs from computed boundary").into());
@@ -961,6 +1022,7 @@ struct Consumer<'a> {
     ctx: &'a mut EvalContext,
     row_schema: &'a [FieldType],
     selection: Vec<usize>,
+    vectorized: bool,
     #[cfg(test)]
     override_source: Option<&'a mut dyn NativeDatumSource>,
 }
@@ -995,6 +1057,19 @@ impl NumericBatchConsumer for Consumer<'_> {
         // Consume the native eligibility evidence without calling its value
         // worker. The actual suite/global decision minted it for THIS call.
         drop(invocation.candidate);
+        if self.vectorized {
+            let columns = self.worker.decoded_columns(invocation.input)?;
+            let values = self.worker.program.eval_decoded(
+                self.worker.limits,
+                self.ctx,
+                LocalBatch {
+                    columns: &columns,
+                    physical_rows: invocation.input.physical_rows(),
+                    selection: &self.selection,
+                },
+            )?;
+            return self.worker.materialize(values, &self.selection);
+        }
         let mut native = NativeChunk {
             source: &source,
             input: invocation.input,
@@ -1047,6 +1122,7 @@ impl EvaluatorSuite {
                 ctx,
                 row_schema,
                 selection: Vec::new(),
+                vectorized: false,
                 #[cfg(test)]
                 override_source: None,
             },
@@ -1061,8 +1137,21 @@ impl EvaluatorSuite {
         output: &mut Chunk,
         row_schema: &[FieldType],
     ) -> Result<()> {
-        self.run_numeric_batch_reported(native_ctx, ctx, worker, input, output, row_schema)
-            .map_err(NumericBatchFailure::into_raw)
+        self.run_with_consumer(
+            native_ctx,
+            input,
+            output,
+            &mut Consumer {
+                worker,
+                ctx,
+                row_schema,
+                selection: Vec::new(),
+                vectorized: true,
+                #[cfg(test)]
+                override_source: None,
+            },
+        )
+        .map_err(NumericBatchFailure::into_raw)
     }
 }
 

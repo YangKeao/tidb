@@ -232,6 +232,7 @@ fn run_raw(
             ctx,
             row_schema: schema,
             selection: Vec::new(),
+            vectorized: false,
             override_source: Some(source),
         },
     )
