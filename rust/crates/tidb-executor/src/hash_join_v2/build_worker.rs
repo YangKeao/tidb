@@ -23,6 +23,7 @@ use crossbeam_channel::{bounded, select_biased};
 use tidb_chunk::{chunk::Chunk, chunk_in_disk::DataInDiskByChunks};
 use tidb_codec::JoinKeyColumns;
 use tidb_datatype::FieldType;
+use tidb_expr::ReadyValueCache;
 
 use super::spill::HashJoinSpill;
 use super::HashJoinV2Exec;
@@ -255,6 +256,7 @@ impl HashJoinV2Exec {
                     let state = Arc::clone(state);
                     lane_pool
                         .submit(move || {
+                            let ready_values = ReadyValueCache::new();
                             let result = recover_worker_panic(|| {
                                 let mut build_context = owned_context.borrowed();
                                 loop {
@@ -274,6 +276,7 @@ impl HashJoinV2Exec {
                                         let (worker, row_tables) = &mut *state;
                                         worker
                                             .process_one_chunk(
+                                                &ready_values,
                                                 &chunk,
                                                 &mut build_context,
                                                 row_tables,
@@ -471,6 +474,7 @@ impl HashJoinV2Exec {
                     killed.clone(),
                 );
                 handles.push(scope.spawn(move || {
+                    let ready_values = ReadyValueCache::new();
                     let result = recover_worker_panic(|| {
                         let mut build_context = BuildContext::new(context.meta, context.partition, context.key_serializer);
                         build_context.build_filter = context.build_filter;
@@ -499,7 +503,7 @@ impl HashJoinV2Exec {
                                 if restored {
                                     worker.process_one_restored_chunk(build_chunk, &mut build_context, row_tables)
                                 } else {
-                                    worker.process_one_chunk(build_chunk, &mut build_context, row_tables)
+                                    worker.process_one_chunk(&ready_values, build_chunk, &mut build_context, row_tables)
                                 }.map_err(build_error)?;
                             }
                             memory.check()?;

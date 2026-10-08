@@ -224,6 +224,7 @@ impl<'a> BaseSemiJoin<'a> {
             return Ok(());
         }
         let (selected, nulls) = (condition.evaluate)(
+            &condition.ready_values,
             &condition.chunk,
             std::mem::take(self.base.selected_mut()),
             std::mem::take(&mut self.nulls),

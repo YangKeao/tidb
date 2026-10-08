@@ -581,12 +581,13 @@ impl BuildWorkerV2 {
     /// `builder` dereference.
     pub fn process_one_chunk(
         &mut self,
+        ready_values: &tidb_expr::ReadyValueCache,
         chunk: &Chunk,
         build_context: &mut BuildContext<'_>,
         row_tables: &mut [Option<RowTable>],
     ) -> Result<(), RowTableBuildError> {
         let builder = self.builder.as_mut().expect("builder created before use");
-        let segments = builder.process_one_chunk(chunk, build_context)?;
+        let segments = builder.process_one_chunk(ready_values, chunk, build_context)?;
         for (partition_id, segment) in segments.into_iter().enumerate() {
             append_row_segment(&mut row_tables[partition_id], segment);
         }
@@ -844,8 +845,14 @@ impl ProbeV2 for OuterJoinProbe<'_> {
             }
             if condition.chunk.num_rows() > 0 {
                 let selected = std::mem::take(self.base.selected_mut());
-                *self.base.selected_mut() =
-                    (condition.evaluate)(&condition.chunk, selected, Vec::new(), false)?.0;
+                *self.base.selected_mut() = (condition.evaluate)(
+                    &condition.ready_values,
+                    &condition.chunk,
+                    selected,
+                    Vec::new(),
+                    false,
+                )?
+                .0;
                 for index in 0..self.base.row_index_infos().len() {
                     if self.base.selected_mut()[index] {
                         let info = self.base.row_index_infos()[index];
@@ -1115,8 +1122,15 @@ fn collect_outer_join_candidates_mode<
 /// The scratch schema keeps original left columns followed by right columns.
 pub struct JoinOtherCondition<'a> {
     chunk: Chunk,
+    ready_values: tidb_expr::ReadyValueCache,
     evaluate: Box<
-        dyn Fn(&Chunk, Vec<bool>, Vec<bool>, bool) -> Result<(Vec<bool>, Vec<bool>), ProbeError>
+        dyn Fn(
+                &tidb_expr::ReadyValueCache,
+                &Chunk,
+                Vec<bool>,
+                Vec<bool>,
+                bool,
+            ) -> Result<(Vec<bool>, Vec<bool>), ProbeError>
             + 'a,
     >,
 }
@@ -1138,27 +1152,30 @@ impl<'a> JoinOtherCondition<'a> {
         chunk.set_incomplete_chunk(true);
         Self {
             chunk,
-            evaluate: Box::new(move |chunk, selected, nulls, consider_null| {
-                if consider_null {
-                    tidb_expr::evaluator::vec_eval_bool(
-                        &context,
-                        vectorized,
-                        &predicates,
-                        chunk,
-                        selected,
-                        nulls,
-                    )
-                } else {
-                    tidb_expr::evaluator::vectorized_filter_consider_null(
-                        &context,
-                        vectorized,
-                        &predicates,
-                        chunk,
-                        selected,
-                        nulls,
-                    )
-                }
-                .map_err(ProbeError::Expression)
+            ready_values: tidb_expr::ReadyValueCache::new(),
+            evaluate: Box::new(move |ready_values, chunk, selected, nulls, consider_null| {
+                ready_values.with_columns(&context, |context| {
+                    if consider_null {
+                        tidb_expr::evaluator::vec_eval_bool(
+                            context,
+                            vectorized,
+                            &predicates,
+                            chunk,
+                            selected,
+                            nulls,
+                        )
+                    } else {
+                        tidb_expr::evaluator::vectorized_filter_consider_null(
+                            context,
+                            vectorized,
+                            &predicates,
+                            chunk,
+                            selected,
+                            nulls,
+                        )
+                    }
+                    .map_err(ProbeError::Expression)
+                })
             }),
         }
     }
@@ -1259,8 +1276,14 @@ impl ProbeV2 for InnerJoinProbe<'_> {
             )?;
             if condition.chunk.num_rows() > 0 {
                 let selected = std::mem::take(self.base.selected_mut());
-                *self.base.selected_mut() =
-                    (condition.evaluate)(&condition.chunk, selected, Vec::new(), false)?.0;
+                *self.base.selected_mut() = (condition.evaluate)(
+                    &condition.ready_values,
+                    &condition.chunk,
+                    selected,
+                    Vec::new(),
+                    false,
+                )?
+                .0;
                 self.base.build_result_after_other_condition(
                     &self.ctx,
                     self.ctx.hash_table,
@@ -1473,7 +1496,9 @@ impl HashJoinV2Exec {
         build_context: &mut BuildContext<'_>,
     ) -> Result<(), HashJoinV2Error> {
         let consumed_before = build_context.consumed_memory;
+        let ready_values = tidb_expr::ReadyValueCache::new();
         let result = self.build_workers[worker_id].process_one_chunk(
+            &ready_values,
             chunk,
             build_context,
             &mut self.hash_table_context.row_tables[worker_id],

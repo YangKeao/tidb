@@ -54,6 +54,7 @@ use tidb_chunk::chunk::Chunk;
 use tidb_chunk::column::RawCells;
 use tidb_chunk::row::Row;
 use tidb_codec::{JoinKeyColumns, SerializedJoinKeys};
+use tidb_expr::ReadyValueCache;
 use tidb_util::serialization::{INT_LEN, UINT64_LEN};
 use tidb_util::{memory::Tracker, sqlkiller::SqlKiller};
 
@@ -401,6 +402,7 @@ impl RowTableBuilder {
     /// join key exceeds the 4-byte size prefix.
     pub fn process_one_chunk(
         &mut self,
+        ready_values: &ReadyValueCache,
         chunk: &Chunk,
         context: &mut BuildContext<'_>,
     ) -> Result<Vec<RowTableSegment>, RowTableBuildError> {
@@ -419,7 +421,11 @@ impl RowTableBuilder {
         if let Some(filter) = context.build_filter {
             self.filter_vector = Some(
                 filter
-                    .evaluate(chunk, self.filter_vector.take().unwrap_or_default())
+                    .evaluate(
+                        ready_values,
+                        chunk,
+                        self.filter_vector.take().unwrap_or_default(),
+                    )
                     .map_err(RowTableBuildError::Expression)?,
             );
         }

@@ -69,6 +69,7 @@ use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::{copy_selected_rows, copy_selected_rows_with_row_id_func};
 use tidb_chunk::column::Column;
 use tidb_codec::{JoinKeyColumns, SerializedJoinKeys};
+use tidb_expr::ReadyValueCache;
 
 use crate::hash_table_v2::{BuildRowLocation, HashTableV2, RowIter};
 use crate::join_row_table::{
@@ -243,7 +244,10 @@ impl BuildRowSource for RowBytesMap {
 /// borrows a whole chunk and returns the worker's reusable physical-row mask.
 pub struct JoinFilter<'a> {
     evaluate: Box<
-        dyn Fn(&Chunk, Vec<bool>) -> Result<Vec<bool>, tidb_expr::EvalError> + Send + Sync + 'a,
+        dyn Fn(&ReadyValueCache, &Chunk, Vec<bool>) -> Result<Vec<bool>, tidb_expr::EvalError>
+            + Send
+            + Sync
+            + 'a,
     >,
 }
 
@@ -254,24 +258,27 @@ impl<'a> JoinFilter<'a> {
         vectorized: bool,
     ) -> Self {
         Self {
-            evaluate: Box::new(move |chunk, selected| {
-                tidb_expr::evaluator::vectorized_filter(
-                    &context,
-                    vectorized,
-                    &predicates,
-                    chunk,
-                    selected,
-                )
+            evaluate: Box::new(move |ready_values, chunk, selected| {
+                ready_values.with_columns(&context, |context| {
+                    tidb_expr::evaluator::vectorized_filter(
+                        context,
+                        vectorized,
+                        &predicates,
+                        chunk,
+                        selected,
+                    )
+                })
             }),
         }
     }
 
     pub fn evaluate(
         &self,
+        ready_values: &ReadyValueCache,
         chunk: &Chunk,
         selected: Vec<bool>,
     ) -> Result<Vec<bool>, tidb_expr::EvalError> {
-        (self.evaluate)(chunk, selected)
+        (self.evaluate)(ready_values, chunk, selected)
     }
 }
 
@@ -350,6 +357,8 @@ pub struct BaseJoinProbe {
     matched_rows_hash_value: Vec<u64>,
     /// Go `serializedKeys`, indexed by logical row.
     serialized_keys: SerializedJoinKeys,
+    /// One operation cache owned by this probe evaluation lane.
+    ready_values: ReadyValueCache,
     /// Go `filterVector`, indexed by **physical** row.
     filter_vector: Option<Vec<bool>>,
     /// Go `nullKeyVector`, indexed by **physical** row.
@@ -647,7 +656,11 @@ impl BaseJoinProbe {
         if let Some(filter) = filter {
             self.filter_vector = Some(
                 filter
-                    .evaluate(&chunk, self.filter_vector.take().unwrap_or_default())
+                    .evaluate(
+                        &self.ready_values,
+                        &chunk,
+                        self.filter_vector.take().unwrap_or_default(),
+                    )
                     .map_err(ProbeError::Expression)?,
             );
         }
@@ -1750,6 +1763,7 @@ pub fn new_join_probe(
         matched_rows_headers: Vec::with_capacity(INITIAL_CAPACITY),
         matched_rows_hash_value: Vec::with_capacity(INITIAL_CAPACITY),
         serialized_keys: SerializedJoinKeys::default(),
+        ready_values: ReadyValueCache::new(),
         filter_vector: None,
         null_key_vector: None,
         hash_values: (0..ctx.partition_number)
@@ -1785,5 +1799,54 @@ pub fn new_join_probe(
         },
         probe_collision: 0,
         join_type,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tidb_ast::CiString;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+    use tidb_expr::column::Column as ExpressionColumn;
+    use tidb_expr::expression::{Expression, ScalarFunction};
+    use tidb_expr::NoColumns;
+
+    #[test]
+    fn join_filter_reuses_probe_lane_cache_and_preserves_physical_selection() {
+        let string = FieldType::new(FieldTypeCode::VarString);
+        let integer = FieldType::new(FieldTypeCode::Long);
+        let mut column = ExpressionColumn::new(1, string.clone());
+        column.index = 0;
+        let filter = JoinFilter::new(
+            NoColumns,
+            vec![Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("ascii"),
+                integer,
+                vec![Expression::Column(column)],
+            ))],
+            true,
+        );
+        let cache = ReadyValueCache::new();
+        for (values, selection, expected) in [
+            (
+                [b"".as_slice(), b"A".as_slice(), b"".as_slice()],
+                vec![2, 1, 2],
+                vec![false, true, false],
+            ),
+            (
+                [b"A".as_slice(), b"".as_slice(), b"B".as_slice()],
+                vec![2, 1, 0],
+                vec![true, false, true],
+            ),
+        ] {
+            let mut chunk = Chunk::new_with_capacity(std::slice::from_ref(&string), 3);
+            for value in values {
+                chunk.append_bytes(0, value);
+            }
+            chunk.set_sel(Some(selection));
+            let selected = filter.evaluate(&cache, &chunk, vec![true; 3]).unwrap();
+            assert_eq!(selected, expected);
+            assert_eq!(cache.prepared_worker_count(), 1);
+        }
     }
 }
