@@ -19672,3 +19672,25 @@ fn ready_value_window_arguments_borrow_the_statement_execution() {
     assert!(mysql.is_from_evaluation());
     assert!(session.warnings().is_empty());
 }
+
+#[test]
+fn ready_value_window_arguments_use_executor_lane_cache_without_session_pool() {
+    let mut session = Session::new();
+    session
+        .run("CREATE TABLE ascii_window_lane (id INT, v VARBINARY(8))")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_window_lane VALUES (1,X'41'),(2,X'42')")
+        .unwrap();
+
+    let output = session
+        .run_with_columns(
+            "SELECT SUM(ASCII(v)) OVER (ORDER BY id) FROM ascii_window_lane ORDER BY id",
+        )
+        .unwrap();
+    let StmtOutput::Rows { rows, .. } = output else {
+        panic!("expected window rows")
+    };
+    let decimal = |text: &str| Datum::Decimal(tidb_datatype::Decimal::parse_mysql(text).0);
+    assert_eq!(rows, vec![vec![decimal("65")], vec![decimal("131")]]);
+}

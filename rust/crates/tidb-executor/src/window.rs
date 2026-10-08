@@ -38,7 +38,7 @@ use tidb_chunk::chunk::Chunk;
 use tidb_chunk::row::Row;
 use tidb_datatype::{Datum, FieldType};
 use tidb_expr::expression::Expression;
-use tidb_expr::Columns;
+use tidb_expr::{Columns, ReadyValueCache};
 
 use crate::executor::{ExecError, Executor, ExecutorMeta};
 use crate::hash_agg::{AggFunc, WindowAggState};
@@ -123,6 +123,7 @@ pub struct WindowExec<C: Columns> {
     range_end: usize,
     child: Box<dyn Executor>,
     ctx: C,
+    ready_values: ReadyValueCache,
     /// Retained input ranges for the current partition, in child order.
     rows: WindowRows,
     /// Number of passthrough output columns; window results follow them.
@@ -177,12 +178,22 @@ impl<C: Columns> WindowExec<C> {
             range_end: 0,
             child,
             ctx,
+            ready_values: ReadyValueCache::new(),
             rows: WindowRows::default(),
             child_width,
             child_result,
             results: VecDeque::new(),
             executed: false,
         }
+    }
+
+    fn eval_expression(
+        &self,
+        expression: &Expression,
+        row: Row<'_>,
+    ) -> Result<Datum, tidb_expr::EvalError> {
+        self.ready_values
+            .with_columns(&self.ctx, |ctx| expression.eval(ctx, row))
     }
 
     /// Go fetchChild/copyChk: keep child chunks alive through their output
@@ -229,8 +240,10 @@ impl<C: Columns> WindowExec<C> {
                 self.executed = true;
                 return Ok(());
             }
-            self.group_checker
-                .split_into_groups(&self.ctx, &self.child_result)?;
+            self.ready_values.with_columns(&self.ctx, |ctx| {
+                self.group_checker
+                    .split_into_groups(ctx, &self.child_result)
+            })?;
         }
         let (begin, mut end) = self.group_checker.get_next_group();
         self.rows.push_range(&self.child_result, begin..end);
@@ -239,10 +252,10 @@ impl<C: Columns> WindowExec<C> {
                 self.executed = true;
                 break;
             }
-            if !self
-                .group_checker
-                .split_into_groups(&self.ctx, &self.child_result)?
-            {
+            if !self.ready_values.with_columns(&self.ctx, |ctx| {
+                self.group_checker
+                    .split_into_groups(ctx, &self.child_result)
+            })? {
                 break;
             }
             let (begin, next_end) = self.group_checker.get_next_group();
@@ -263,8 +276,8 @@ impl<C: Columns> WindowExec<C> {
         right: Row<'_>,
     ) -> Result<bool, ExecError> {
         for expression in keys {
-            let left_value = expression.eval(&self.ctx, left)?;
-            let right_value = expression.eval(&self.ctx, right)?;
+            let left_value = self.eval_expression(expression, left)?;
+            let right_value = self.eval_expression(expression, right)?;
             if tidb_expr::compare_datums_with_collation(
                 &left_value,
                 &right_value,
@@ -373,13 +386,16 @@ impl<C: Columns> WindowExec<C> {
                 // An exhausted cursor must not evaluate an unused boundary:
                 // doing so can raise an overflow absent from Go's execution.
                 let (value, target) = if is_end {
-                    let target = calculation.eval(&self.ctx, self.rows.get_row(current))?;
-                    (expr.eval(&self.ctx, self.rows.get_row(cursor))?, target)
+                    let target = self.eval_expression(calculation, self.rows.get_row(current))?;
+                    (
+                        self.eval_expression(expr, self.rows.get_row(cursor))?,
+                        target,
+                    )
                 } else {
-                    let value = expr.eval(&self.ctx, self.rows.get_row(cursor))?;
+                    let value = self.eval_expression(expr, self.rows.get_row(cursor))?;
                     (
                         value,
-                        calculation.eval(&self.ctx, self.rows.get_row(current))?,
+                        self.eval_expression(calculation, self.rows.get_row(current))?,
                     )
                 };
                 order = tidb_expr::compare_datums_with_collation(
@@ -577,7 +593,7 @@ impl<C: Columns> WindowExec<C> {
                         .and_then(|n| frame_start.checked_add(n))
                 };
                 match target.filter(|target| *target >= frame_start && *target < frame_end) {
-                    Some(target) => arg.eval(&self.ctx, self.rows.get_row(target))?,
+                    Some(target) => self.eval_expression(arg, self.rows.get_row(target))?,
                     None => Datum::Null,
                 }
             }
@@ -598,9 +614,9 @@ impl<C: Columns> WindowExec<C> {
                 .and_then(|target| usize::try_from(target).ok());
                 match target.filter(|target| *target >= partition_start && *target < partition_end)
                 {
-                    Some(target) => arg.eval(&self.ctx, self.rows.get_row(target))?,
+                    Some(target) => self.eval_expression(arg, self.rows.get_row(target))?,
                     None => match default {
-                        Some(default) => default.eval(&self.ctx, self.rows.get_row(index))?,
+                        Some(default) => self.eval_expression(default, self.rows.get_row(index))?,
                         None => Datum::Null,
                     },
                 }
