@@ -1,0 +1,84 @@
+round228 lane-cache stable width-one + real-batch performance receipt
+Date UTC: 2026-10-08
+checkpoint: lane-cache-real-batch-228
+
+Revisions
+- current TiDB HEAD at build: f5109ab113f75ebab762fef5e292efaa54542a73
+- current production runtime predecessor: c1072a8004c5650189420a939dc27f3d569126e0
+- frozen TiDB: 364aef2bab5cc633ecb76a775ae8f36f86a6687d
+- paired TiKV runtime source: 4787df8fcde696ac73d821b7fb54fbc8f0acd6ce
+- paired TiKV round228 plan commit: 93698087709d4a59b62ba6762f264af6170d59cc
+
+Final binaries
+- current libtest sha256: d0e51fc842086c8d5c3747d4ca9da723d9ff9543b82d61f63a013c1ad59e3ce8
+- frozen libtest sha256: c92a04c228f4992b725c4e85201c87905c41f3372929a890664de12ba552f543
+- current batch probe sha256: 61f99613b32531b98bc576cd688d5dbb97787f8da3390fa11cbc6e7786146055
+- current width-one probe sha256: 95b5de79c39e911028cc1e984e6df499d8b643c090514a8250af40a6f036dcbe
+- frozen batch probe sha256: ec5c6b2f1fdbf9ec0477339aa9fcca18d2373c7875305e2fd7b48780f257b832
+- frozen width-one probe sha256: 00b226adbf50e8c535d55fead892c188645e4a7a2b8dcbbc8b5cf933740f36f1
+
+Final collection
+- release profile; CPU2 pinned; one test thread
+- 5 independent current/frozen process pairs; odd order current->frozen, even order frozen->current
+- width-one: 2,000 warmups, 9 samples/cell, current one-shot/lane ABBA/BABA; frozen iteration multiplier 16
+- real batch: real column-backed Chunk, dense 1/8/64/256/1024; 7 samples/cell; calibrated target 75 ms/sample
+- selection/NULL cross-product for integer_add, integer_add_literal, integer_add_nested and strcmp: dense_null10, sparse_quarter, reverse, duplicate
+- 155 batch cells total; 3 hard-asserted route=tikv_numeric PLUS workloads and 12 hard-asserted route=production_fallback workloads
+- each size uses the deterministic 0..physical_rows prefix; input distributions are not matched across sizes, so 1/1024 is an observed dataset ratio rather than an isolated causal batch-size effect
+- timing includes output.reset + production evaluator call + materialization; setup/reference validation outside timing
+- all results checksum-checked against scalar reference; numeric cells additionally checked row-by-row against independent formulas
+- unit of inference: per-process sample median; version ratio formed within process pair; median over 5 ratios
+- paired bootstrap: fixed seed 2282026, 10,000 resamples, 95% interval retained per cell
+
+Environment/QC
+- host: AMD Ryzen 9 9900X, 12C/24T, 46 GiB, Linux 7.1.8-gentoo-dist-bin
+- governor/EPP performance; boost enabled; unprivileged run, CPU14 sibling not offlined
+- endpoint load1 before process: 1.18..2.12 (median 1.32)
+- endpoint CPU PSI avg10 max: 0.04
+- endpoint Tctl max: 86.0 C
+- CPU14 non-idle from endpoint /proc/stat delta, max per process: 4.68% (median 0.71%)
+- CPU migrations: 0 total; major faults: 0 total; measured task context switches: 0/s
+- process cycles/ref-cycles: 1.240..1.253
+- 40 calibration observations: 1.081..1.105 ns/iter; max within-process before/after drift 1.45%
+- final 20 processes all passed; no rejected final pair
+
+Width-one confirmation
+- AST lane/one-shot per-workload ratios: 0.523, 0.541, 0.556, 0.678, 0.608, 0.887; geometric mean 0.621
+- chunk lane/one-shot per-workload ratios: 0.558, 0.539, 0.530, 0.695, 0.617, 0.579; geometric mean 0.584
+- agrees with round227 geometric means 0.620/0.581
+
+Dense batch current ns/selected-row at batch 1 -> 1024 (observed prefix-dataset ratios, not matched-input causal effects)
+- integer_add (tikv_numeric): 2078.7 -> 265.9 (7.82x observed ratio)
+- integer_add_literal (tikv_numeric): 1900.5 -> 270.7 (7.02x)
+- integer_add_nested (tikv_numeric): 3329.2 -> 504.9 (6.59x)
+- 12 production_fallback workloads: 1.02x..1.18x observed ratio
+
+Dense current/frozen paired ratio
+- tikv_numeric route geometric mean: 22.466x (batch1), 16.362x (8), 13.451x (64), 12.685x (256), 12.852x (1024)
+- production_fallback route geometric mean: 9.427x, 10.521x, 10.831x, 10.933x, 10.893x
+- at batch1024: numeric range 12.311x..13.285x; fallback range 4.892x..42.902x
+
+Selection at physical_rows=1024, current ns/selected-row
+- integer_add: dense 265.9; null10 271.2; sparse 283.8; reverse 265.6; duplicate 266.6
+- integer_add_literal: 270.7; 263.6; 276.3; 259.1; 260.1
+- integer_add_nested: 504.9; 501.1; 525.0; 504.1; 501.4
+- strcmp: 1253.8; 1249.2; 1244.9; 1253.5; 1257.4
+
+Excluded failed candidate
+- current release length(s) failed before timing with ExpressionRuntimeFailure/InvalidSpecification/Prepare; no latency was recorded; upper(s) replaced it in the final common-function matrix
+
+Evidence hashes
+- raw logs and all perf sidecars are committed under docs/expression-unification/logs/lane-cache-performance-round228-raw/
+- final width-one raw log: 3b89825de37296cba4efaca1ac86a0ce6d3a0a0286d4442072e6536b7ee92409
+- final batch raw log: 2f5b5e448ea4acbc7b9eca4a5bae42745eed0b9130aba6a9114b71e4ce46fdaf
+- final environment raw log: 4eaa79042244fa89e413871477e85046d5d2c5db6b4ae5781855ef6d8f10791b
+- perf-stat sidecar manifest: 1ff5992db5d623fe6ecabacf3da9ccb924a1caef95a14708b1e5709e6c5a6574
+- machine-readable paired summary: 1eb27ba952b04f33d26e9dedbeaa44058df74f02ea2bc04f8a8ff16f3a09e3e1
+- environment summary: f2878c49d62ec4fb4709c6e59e6280a91de2d6db16a5726a5f8a01f6fc943426
+- collection runner: 671ad263b61ea626ff9c4f707469347c5199a92f3f77ebf8d974ea2872dcd99e
+- paired parser: 472e1988e2e6e8b77ea7e58525ffa72af5775e45131329b3242890fb508c770e
+- environment parser: e364adf110cbb79937094b3cac9dd46a338edd7a46580d1d80f5812d94064d3b
+
+Scope
+- This is stable local evaluator evidence for real Chunk batches and selections.
+- It is not server QPS, concurrent throughput, storage/RPC performance, or end-to-end SQL latency.

@@ -1,0 +1,504 @@
+SNAPSHOT label=session-start utc=2026-10-08T18:37:43Z
+loadavg 2.12 2.03 2.02 2/2163 2121318
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=612969497 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.07 avg300=0.18 total=900334884 full avg10=0.00 avg60=0.07 avg300=0.18 total=828629674 
+proc_stat cpu2 693530 385 98244 9235116 52441 8836 3915 0 1581 0
+proc_stat cpu14 530388 970 91154 9386488 39706 6920 2789 0 2541 0
+cpu_frequency cpu=2 khz=5528153
+cpu_frequency cpu=14 khz=5519567
+k10temp sensor=1 millidegree=60375
+k10temp sensor=3 millidegree=59125
+k10temp sensor=4 millidegree=44250
+SNAPSHOT label=width-one-current-1-before utc=2026-10-08T18:37:43Z
+loadavg 2.12 2.03 2.02 2/2163 2121330
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=612969497 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.07 avg300=0.18 total=900334884 full avg10=0.00 avg60=0.07 avg300=0.18 total=828629674 
+proc_stat cpu2 693530 385 98244 9235116 52441 8836 3915 0 1581 0
+proc_stat cpu14 530388 970 91154 9386488 39706 6920 2789 0 2541 0
+cpu_frequency cpu=2 khz=5535909
+cpu_frequency cpu=14 khz=5528035
+k10temp sensor=1 millidegree=60375
+k10temp sensor=3 millidegree=62000
+k10temp sensor=4 millidegree=46750
+SNAPSHOT label=width-one-current-1-after utc=2026-10-08T18:38:14Z
+loadavg 1.68 1.93 1.98 1/2167 2121406
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=612990123 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.04 avg300=0.16 total=900335408 full avg10=0.00 avg60=0.04 avg300=0.16 total=828630126 
+proc_stat cpu2 696666 385 98246 9235119 52441 8838 3916 0 1581 0
+proc_stat cpu14 530527 970 91160 9389464 39706 6921 2789 0 2541 0
+cpu_frequency cpu=2 khz=5533251
+cpu_frequency cpu=14 khz=3001551
+k10temp sensor=1 millidegree=80125
+k10temp sensor=3 millidegree=51375
+k10temp sensor=4 millidegree=41375
+SNAPSHOT label=width-one-frozen-1-before utc=2026-10-08T18:38:14Z
+loadavg 1.68 1.93 1.98 1/2167 2121417
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=612990123 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.04 avg300=0.16 total=900335408 full avg10=0.00 avg60=0.04 avg300=0.16 total=828630126 
+proc_stat cpu2 696666 385 98246 9235120 52441 8838 3916 0 1581 0
+proc_stat cpu14 530527 970 91160 9389465 39706 6921 2789 0 2541 0
+cpu_frequency cpu=2 khz=5535198
+cpu_frequency cpu=14 khz=5504183
+k10temp sensor=1 millidegree=80125
+k10temp sensor=3 millidegree=49875
+k10temp sensor=4 millidegree=41625
+SNAPSHOT label=width-one-frozen-1-after utc=2026-10-08T18:38:38Z
+loadavg 1.53 1.87 1.96 1/2132 2121443
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613019198 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.02 avg300=0.14 total=900335523 full avg10=0.00 avg60=0.02 avg300=0.14 total=828630241 
+proc_stat cpu2 699058 385 98269 9235121 52441 8839 3916 0 1581 0
+proc_stat cpu14 530530 970 91163 9391873 39706 6921 2789 0 2541 0
+cpu_frequency cpu=2 khz=5532574
+cpu_frequency cpu=14 khz=5532164
+k10temp sensor=1 millidegree=82625
+k10temp sensor=3 millidegree=51000
+k10temp sensor=4 millidegree=43000
+SNAPSHOT label=width-one-frozen-2-before utc=2026-10-08T18:38:38Z
+loadavg 1.53 1.87 1.96 2/2132 2121454
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613019198 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.02 avg300=0.14 total=900335523 full avg10=0.00 avg60=0.02 avg300=0.14 total=828630241 
+proc_stat cpu2 699058 385 98269 9235121 52441 8839 3916 0 1581 0
+proc_stat cpu14 530530 970 91163 9391873 39706 6921 2789 0 2541 0
+cpu_frequency cpu=2 khz=5527621
+cpu_frequency cpu=14 khz=5524884
+k10temp sensor=1 millidegree=82625
+k10temp sensor=3 millidegree=62875
+k10temp sensor=4 millidegree=41375
+SNAPSHOT label=width-one-frozen-2-after utc=2026-10-08T18:39:03Z
+loadavg 1.35 1.80 1.94 3/2171 2121537
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613050364 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.01 avg300=0.12 total=900335688 full avg10=0.00 avg60=0.01 avg300=0.12 total=828630375 
+proc_stat cpu2 701509 385 98269 9235122 52441 8840 3916 0 1581 0
+proc_stat cpu14 530631 970 91167 9394211 39706 6922 2789 0 2541 0
+cpu_frequency cpu=2 khz=5533029
+cpu_frequency cpu=14 khz=5492024
+k10temp sensor=1 millidegree=82125
+k10temp sensor=3 millidegree=53875
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=width-one-current-2-before utc=2026-10-08T18:39:03Z
+loadavg 1.35 1.80 1.94 1/2171 2121548
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613050364 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.01 avg300=0.12 total=900335688 full avg10=0.00 avg60=0.01 avg300=0.12 total=828630375 
+proc_stat cpu2 701509 385 98269 9235123 52441 8840 3916 0 1581 0
+proc_stat cpu14 530631 970 91167 9394212 39706 6922 2789 0 2541 0
+cpu_frequency cpu=2 khz=4643396
+cpu_frequency cpu=14 khz=5014524
+k10temp sensor=1 millidegree=82125
+k10temp sensor=3 millidegree=55625
+k10temp sensor=4 millidegree=41250
+SNAPSHOT label=width-one-current-2-after utc=2026-10-08T18:39:34Z
+loadavg 1.21 1.72 1.90 2/2179 2121606
+cpu_pressure some avg10=0.04 avg60=0.02 avg300=0.00 total=613121876 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.11 total=900342670 full avg10=0.00 avg60=0.00 avg300=0.11 total=828637210 
+proc_stat cpu2 704607 385 98269 9235124 52441 8842 3916 0 1581 0
+proc_stat cpu14 530662 970 91170 9397240 39706 6923 2789 0 2541 0
+cpu_frequency cpu=2 khz=5529529
+cpu_frequency cpu=14 khz=5520976
+k10temp sensor=1 millidegree=79375
+k10temp sensor=3 millidegree=62000
+k10temp sensor=4 millidegree=41250
+SNAPSHOT label=width-one-current-3-before utc=2026-10-08T18:39:34Z
+loadavg 1.21 1.72 1.90 1/2179 2121617
+cpu_pressure some avg10=0.04 avg60=0.02 avg300=0.00 total=613121876 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930623 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.11 total=900342670 full avg10=0.00 avg60=0.00 avg300=0.11 total=828637210 
+proc_stat cpu2 704607 385 98269 9235124 52441 8842 3916 0 1581 0
+proc_stat cpu14 530662 970 91170 9397240 39706 6923 2789 0 2541 0
+cpu_frequency cpu=2 khz=5533932
+cpu_frequency cpu=14 khz=5507037
+k10temp sensor=1 millidegree=79375
+k10temp sensor=3 millidegree=51000
+k10temp sensor=4 millidegree=43125
+SNAPSHOT label=width-one-current-3-after utc=2026-10-08T18:40:05Z
+loadavg 1.18 1.67 1.88 1/2166 2121697
+cpu_pressure some avg10=0.00 avg60=0.01 avg300=0.00 total=613163024 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.09 total=900355638 full avg10=0.00 avg60=0.00 avg300=0.09 total=828650020 
+proc_stat cpu2 707702 385 98272 9235125 52441 8844 3917 0 1581 0
+proc_stat cpu14 530723 970 91189 9400262 39706 6924 2789 0 2541 0
+cpu_frequency cpu=2 khz=5527436
+cpu_frequency cpu=14 khz=5507968
+k10temp sensor=1 millidegree=79250
+k10temp sensor=3 millidegree=54250
+k10temp sensor=4 millidegree=41250
+SNAPSHOT label=width-one-frozen-3-before utc=2026-10-08T18:40:05Z
+loadavg 1.18 1.67 1.88 1/2166 2121708
+cpu_pressure some avg10=0.00 avg60=0.01 avg300=0.00 total=613163024 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.09 total=900355638 full avg10=0.00 avg60=0.00 avg300=0.09 total=828650020 
+proc_stat cpu2 707702 385 98272 9235125 52441 8844 3917 0 1581 0
+proc_stat cpu14 530723 970 91189 9400263 39706 6924 2789 0 2541 0
+cpu_frequency cpu=2 khz=4357710
+cpu_frequency cpu=14 khz=4349167
+k10temp sensor=1 millidegree=79250
+k10temp sensor=3 millidegree=60500
+k10temp sensor=4 millidegree=43750
+SNAPSHOT label=width-one-frozen-3-after utc=2026-10-08T18:40:29Z
+loadavg 1.24 1.65 1.87 3/2170 2121799
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613201668 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.08 total=900356842 full avg10=0.00 avg60=0.00 avg300=0.08 total=828651145 
+proc_stat cpu2 710124 385 98272 9235126 52441 8845 3917 0 1581 0
+proc_stat cpu14 530737 970 91194 9402651 39706 6925 2789 0 2541 0
+cpu_frequency cpu=2 khz=5546909
+cpu_frequency cpu=14 khz=5546021
+k10temp sensor=1 millidegree=83500
+k10temp sensor=3 millidegree=56750
+k10temp sensor=4 millidegree=41250
+SNAPSHOT label=width-one-frozen-4-before utc=2026-10-08T18:40:29Z
+loadavg 1.24 1.65 1.87 1/2170 2121810
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613201668 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.08 total=900356842 full avg10=0.00 avg60=0.00 avg300=0.08 total=828651145 
+proc_stat cpu2 710124 385 98272 9235127 52441 8845 3917 0 1581 0
+proc_stat cpu14 530737 970 91194 9402652 39706 6925 2789 0 2541 0
+cpu_frequency cpu=2 khz=5536713
+cpu_frequency cpu=14 khz=5532319
+k10temp sensor=1 millidegree=83375
+k10temp sensor=3 millidegree=48500
+k10temp sensor=4 millidegree=44250
+SNAPSHOT label=width-one-frozen-4-after utc=2026-10-08T18:40:53Z
+loadavg 1.29 1.63 1.85 1/2166 2121941
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613225749 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.07 total=900357385 full avg10=0.00 avg60=0.00 avg300=0.07 total=828651656 
+proc_stat cpu2 712548 385 98272 9235128 52441 8846 3917 0 1581 0
+proc_stat cpu14 530759 970 91221 9405042 39706 6926 2789 0 2541 0
+cpu_frequency cpu=2 khz=5235734
+cpu_frequency cpu=14 khz=5530183
+k10temp sensor=1 millidegree=82375
+k10temp sensor=3 millidegree=52250
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=width-one-current-4-before utc=2026-10-08T18:40:53Z
+loadavg 1.29 1.63 1.85 1/2166 2121952
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613225749 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.07 total=900357385 full avg10=0.00 avg60=0.00 avg300=0.07 total=828651656 
+proc_stat cpu2 712548 385 98272 9235128 52441 8846 3917 0 1581 0
+proc_stat cpu14 530759 970 91221 9405043 39706 6926 2789 0 2541 0
+cpu_frequency cpu=2 khz=3427775
+cpu_frequency cpu=14 khz=5530183
+k10temp sensor=1 millidegree=82375
+k10temp sensor=3 millidegree=47875
+k10temp sensor=4 millidegree=44500
+SNAPSHOT label=width-one-current-4-after utc=2026-10-08T18:41:24Z
+loadavg 1.29 1.60 1.84 4/2203 2122258
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613263745 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.06 total=900361221 full avg10=0.00 avg60=0.00 avg300=0.06 total=828655440 
+proc_stat cpu2 715601 385 98295 9235130 52441 8848 3918 0 1581 0
+proc_stat cpu14 530767 970 91222 9408097 39706 6928 2789 0 2541 0
+cpu_frequency cpu=2 khz=5519177
+cpu_frequency cpu=14 khz=5530114
+k10temp sensor=1 millidegree=79375
+k10temp sensor=3 millidegree=53250
+k10temp sensor=4 millidegree=41250
+SNAPSHOT label=width-one-current-5-before utc=2026-10-08T18:41:24Z
+loadavg 1.29 1.60 1.84 1/2203 2122269
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613263745 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.06 total=900361221 full avg10=0.00 avg60=0.00 avg300=0.06 total=828655440 
+proc_stat cpu2 715601 385 98295 9235130 52441 8848 3918 0 1581 0
+proc_stat cpu14 530767 970 91222 9408097 39706 6928 2789 0 2541 0
+cpu_frequency cpu=2 khz=5506754
+cpu_frequency cpu=14 khz=5538463
+k10temp sensor=1 millidegree=79375
+k10temp sensor=3 millidegree=49875
+k10temp sensor=4 millidegree=45625
+SNAPSHOT label=width-one-current-5-after utc=2026-10-08T18:41:55Z
+loadavg 1.23 1.55 1.81 1/2166 2122353
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613318479 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.05 total=900361916 full avg10=0.00 avg60=0.00 avg300=0.05 total=828656086 
+proc_stat cpu2 718643 385 98322 9235131 52441 8849 3918 0 1581 0
+proc_stat cpu14 530770 970 91224 9411153 39706 6928 2790 0 2541 0
+cpu_frequency cpu=2 khz=5517286
+cpu_frequency cpu=14 khz=5524328
+k10temp sensor=1 millidegree=79875
+k10temp sensor=3 millidegree=59500
+k10temp sensor=4 millidegree=40250
+SNAPSHOT label=width-one-frozen-5-before utc=2026-10-08T18:41:55Z
+loadavg 1.23 1.55 1.81 1/2166 2122364
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613318479 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.05 total=900361916 full avg10=0.00 avg60=0.00 avg300=0.05 total=828656086 
+proc_stat cpu2 718643 385 98322 9235132 52441 8849 3918 0 1581 0
+proc_stat cpu14 530770 970 91224 9411154 39706 6928 2790 0 2541 0
+cpu_frequency cpu=2 khz=5503734
+cpu_frequency cpu=14 khz=5525500
+k10temp sensor=1 millidegree=79875
+k10temp sensor=3 millidegree=53250
+k10temp sensor=4 millidegree=44625
+SNAPSHOT label=width-one-frozen-5-after utc=2026-10-08T18:42:19Z
+loadavg 1.23 1.52 1.80 1/2162 2122504
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613374458 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.05 total=900362215 full avg10=0.00 avg60=0.00 avg300=0.05 total=828656362 
+proc_stat cpu2 721052 385 98325 9235133 52441 8851 3918 0 1581 0
+proc_stat cpu14 530791 970 91224 9413531 39706 6929 2790 0 2541 0
+cpu_frequency cpu=2 khz=4560546
+cpu_frequency cpu=14 khz=5523347
+k10temp sensor=1 millidegree=82375
+k10temp sensor=3 millidegree=51750
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=batch-current-1-before utc=2026-10-08T18:42:19Z
+loadavg 1.23 1.52 1.80 2/2162 2122516
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613374458 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.05 total=900362215 full avg10=0.00 avg60=0.00 avg300=0.05 total=828656362 
+proc_stat cpu2 721052 385 98325 9235134 52441 8851 3918 0 1581 0
+proc_stat cpu14 530791 970 91224 9413531 39706 6929 2790 0 2541 0
+cpu_frequency cpu=2 khz=5109346
+cpu_frequency cpu=14 khz=5399356
+k10temp sensor=1 millidegree=82375
+k10temp sensor=3 millidegree=54375
+k10temp sensor=4 millidegree=44500
+SNAPSHOT label=batch-current-1-after utc=2026-10-08T18:43:41Z
+loadavg 1.26 1.47 1.76 2/2164 2123292
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613528802 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.03 total=900370110 full avg10=0.00 avg60=0.00 avg300=0.03 total=828663771 
+proc_stat cpu2 729230 385 98376 9235135 52441 8855 3919 0 1581 0
+proc_stat cpu14 530835 970 91234 9421651 39706 6933 2790 0 2541 0
+cpu_frequency cpu=2 khz=5524319
+cpu_frequency cpu=14 khz=5506219
+k10temp sensor=1 millidegree=78500
+k10temp sensor=3 millidegree=59500
+k10temp sensor=4 millidegree=42750
+SNAPSHOT label=batch-frozen-1-before utc=2026-10-08T18:43:41Z
+loadavg 1.26 1.47 1.76 1/2164 2123303
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613528802 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.03 total=900370110 full avg10=0.00 avg60=0.00 avg300=0.03 total=828663771 
+proc_stat cpu2 729230 385 98376 9235136 52441 8855 3919 0 1581 0
+proc_stat cpu14 530835 970 91234 9421651 39706 6933 2790 0 2541 0
+cpu_frequency cpu=2 khz=4013230
+cpu_frequency cpu=14 khz=4016586
+k10temp sensor=1 millidegree=78500
+k10temp sensor=3 millidegree=49375
+k10temp sensor=4 millidegree=45000
+SNAPSHOT label=batch-frozen-1-after utc=2026-10-08T18:45:00Z
+loadavg 1.27 1.42 1.71 2/2192 2123606
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613660583 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.01 total=900372284 full avg10=0.00 avg60=0.00 avg300=0.01 total=828665662 
+proc_stat cpu2 737059 385 98386 9235137 52441 8860 3920 0 1581 0
+proc_stat cpu14 530861 970 91242 9429398 39708 6936 2791 0 2541 0
+cpu_frequency cpu=2 khz=5536654
+cpu_frequency cpu=14 khz=5518232
+k10temp sensor=1 millidegree=81000
+k10temp sensor=3 millidegree=52375
+k10temp sensor=4 millidegree=45375
+SNAPSHOT label=batch-frozen-2-before utc=2026-10-08T18:45:00Z
+loadavg 1.27 1.42 1.71 1/2192 2123617
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613660583 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.01 total=900372284 full avg10=0.00 avg60=0.00 avg300=0.01 total=828665662 
+proc_stat cpu2 737059 385 98386 9235137 52441 8860 3920 0 1581 0
+proc_stat cpu14 530861 970 91242 9429398 39708 6936 2791 0 2541 0
+cpu_frequency cpu=2 khz=5541710
+cpu_frequency cpu=14 khz=5518232
+k10temp sensor=1 millidegree=81000
+k10temp sensor=3 millidegree=55250
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=batch-frozen-2-after utc=2026-10-08T18:46:20Z
+loadavg 1.31 1.39 1.68 1/2129 2123693
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613727316 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900375077 full avg10=0.00 avg60=0.00 avg300=0.00 total=828668404 
+proc_stat cpu2 745005 385 98409 9235138 52441 8863 3921 0 1581 0
+proc_stat cpu14 530893 970 91245 9437324 39708 6939 2791 0 2541 0
+cpu_frequency cpu=2 khz=5528648
+cpu_frequency cpu=14 khz=5515083
+k10temp sensor=1 millidegree=81000
+k10temp sensor=3 millidegree=53750
+k10temp sensor=4 millidegree=42250
+SNAPSHOT label=batch-current-2-before utc=2026-10-08T18:46:20Z
+loadavg 1.31 1.39 1.68 2/2128 2123704
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613727316 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900375077 full avg10=0.00 avg60=0.00 avg300=0.00 total=828668404 
+proc_stat cpu2 745005 385 98409 9235139 52441 8863 3921 0 1581 0
+proc_stat cpu14 530893 970 91245 9437325 39708 6939 2791 0 2541 0
+cpu_frequency cpu=2 khz=5533293
+cpu_frequency cpu=14 khz=5526304
+k10temp sensor=1 millidegree=80875
+k10temp sensor=3 millidegree=60000
+k10temp sensor=4 millidegree=45875
+SNAPSHOT label=batch-current-2-after utc=2026-10-08T18:47:42Z
+loadavg 1.45 1.40 1.65 1/2157 2124058
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613837936 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900377518 full avg10=0.00 avg60=0.00 avg300=0.00 total=828670658 
+proc_stat cpu2 753267 385 98412 9235140 52441 8867 3922 0 1581 0
+proc_stat cpu14 530926 970 91248 9445526 39708 6942 2791 0 2541 0
+cpu_frequency cpu=2 khz=5539954
+cpu_frequency cpu=14 khz=5535858
+k10temp sensor=1 millidegree=78750
+k10temp sensor=3 millidegree=50250
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=batch-current-3-before utc=2026-10-08T18:47:42Z
+loadavg 1.45 1.40 1.65 1/2157 2124069
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613837936 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900377518 full avg10=0.00 avg60=0.00 avg300=0.00 total=828670658 
+proc_stat cpu2 753267 385 98412 9235140 52441 8867 3922 0 1581 0
+proc_stat cpu14 530926 970 91248 9445527 39708 6942 2791 0 2541 0
+cpu_frequency cpu=2 khz=5532205
+cpu_frequency cpu=14 khz=5517845
+k10temp sensor=1 millidegree=78750
+k10temp sensor=3 millidegree=48000
+k10temp sensor=4 millidegree=44500
+SNAPSHOT label=batch-current-3-after utc=2026-10-08T18:49:05Z
+loadavg 1.59 1.43 1.64 2/2162 2124241
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613943846 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900402509 full avg10=0.00 avg60=0.00 avg300=0.00 total=828695151 
+proc_stat cpu2 761519 385 98428 9235141 52441 8872 3922 0 1581 0
+proc_stat cpu14 530946 970 91278 9453753 39708 6945 2792 0 2541 0
+cpu_frequency cpu=2 khz=5535742
+cpu_frequency cpu=14 khz=5528623
+k10temp sensor=1 millidegree=80625
+k10temp sensor=3 millidegree=60625
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=batch-frozen-3-before utc=2026-10-08T18:49:05Z
+loadavg 1.59 1.43 1.64 1/2162 2124252
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=613943846 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900402509 full avg10=0.00 avg60=0.00 avg300=0.00 total=828695151 
+proc_stat cpu2 761519 385 98428 9235141 52441 8872 3922 0 1581 0
+proc_stat cpu14 530946 970 91278 9453753 39708 6945 2792 0 2541 0
+cpu_frequency cpu=2 khz=5531572
+cpu_frequency cpu=14 khz=5543370
+k10temp sensor=1 millidegree=80625
+k10temp sensor=3 millidegree=51875
+k10temp sensor=4 millidegree=45500
+SNAPSHOT label=batch-frozen-3-after utc=2026-10-08T18:50:25Z
+loadavg 1.73 1.49 1.64 3/2149 2124610
+cpu_pressure some avg10=0.02 avg60=0.02 avg300=0.00 total=614060437 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900404435 full avg10=0.00 avg60=0.00 avg300=0.00 total=828696903 
+proc_stat cpu2 769478 385 98441 9235142 52441 8876 3923 0 1581 0
+proc_stat cpu14 530992 970 91286 9461664 39708 6948 2792 0 2541 0
+cpu_frequency cpu=2 khz=5540331
+cpu_frequency cpu=14 khz=5512689
+k10temp sensor=1 millidegree=81000
+k10temp sensor=3 millidegree=61500
+k10temp sensor=4 millidegree=41375
+SNAPSHOT label=batch-frozen-4-before utc=2026-10-08T18:50:25Z
+loadavg 1.73 1.49 1.64 3/2149 2124621
+cpu_pressure some avg10=0.02 avg60=0.02 avg300=0.00 total=614060437 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900404435 full avg10=0.00 avg60=0.00 avg300=0.00 total=828696903 
+proc_stat cpu2 769478 385 98441 9235143 52441 8876 3923 0 1581 0
+proc_stat cpu14 530992 970 91286 9461664 39708 6948 2792 0 2541 0
+cpu_frequency cpu=2 khz=5522514
+cpu_frequency cpu=14 khz=5521964
+k10temp sensor=1 millidegree=81000
+k10temp sensor=3 millidegree=53250
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=batch-frozen-4-after utc=2026-10-08T18:51:45Z
+loadavg 1.66 1.51 1.64 2/2185 2124793
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614135154 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900404946 full avg10=0.00 avg60=0.00 avg300=0.00 total=828697331 
+proc_stat cpu2 777450 385 98454 9235143 52441 8880 3924 0 1581 0
+proc_stat cpu14 530996 970 91286 9469615 39708 6950 2792 0 2541 0
+cpu_frequency cpu=2 khz=5550457
+cpu_frequency cpu=14 khz=5554006
+k10temp sensor=1 millidegree=80375
+k10temp sensor=3 millidegree=62875
+k10temp sensor=4 millidegree=42250
+SNAPSHOT label=batch-current-4-before utc=2026-10-08T18:51:45Z
+loadavg 1.66 1.51 1.64 1/2185 2124804
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614135154 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900404946 full avg10=0.00 avg60=0.00 avg300=0.00 total=828697331 
+proc_stat cpu2 777450 385 98454 9235144 52441 8880 3924 0 1581 0
+proc_stat cpu14 530996 970 91286 9469615 39708 6950 2792 0 2541 0
+cpu_frequency cpu=2 khz=5490544
+cpu_frequency cpu=14 khz=5536092
+k10temp sensor=1 millidegree=80375
+k10temp sensor=3 millidegree=55250
+k10temp sensor=4 millidegree=40750
+SNAPSHOT label=batch-current-4-after utc=2026-10-08T18:53:07Z
+loadavg 1.39 1.45 1.60 2/2194 2125617
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614224502 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900410381 full avg10=0.00 avg60=0.00 avg300=0.00 total=828702552 
+proc_stat cpu2 785705 385 98463 9235145 52441 8884 3925 0 1581 0
+proc_stat cpu14 531069 970 91295 9477752 39708 6953 2792 0 2541 0
+cpu_frequency cpu=2 khz=5531784
+cpu_frequency cpu=14 khz=5502566
+k10temp sensor=1 millidegree=80125
+k10temp sensor=3 millidegree=53375
+k10temp sensor=4 millidegree=42750
+SNAPSHOT label=batch-current-5-before utc=2026-10-08T18:53:07Z
+loadavg 1.39 1.45 1.60 1/2194 2125628
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614224502 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900410381 full avg10=0.00 avg60=0.00 avg300=0.00 total=828702552 
+proc_stat cpu2 785705 385 98463 9235145 52441 8884 3925 0 1581 0
+proc_stat cpu14 531069 970 91295 9477752 39708 6953 2792 0 2541 0
+cpu_frequency cpu=2 khz=4869383
+cpu_frequency cpu=14 khz=5537656
+k10temp sensor=1 millidegree=80125
+k10temp sensor=3 millidegree=47875
+k10temp sensor=4 millidegree=42750
+SNAPSHOT label=batch-current-5-after utc=2026-10-08T18:54:30Z
+loadavg 1.33 1.43 1.59 2/2131 2125933
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614318293 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900416883 full avg10=0.00 avg60=0.00 avg300=0.00 total=828708905 
+proc_stat cpu2 793916 385 98482 9235146 52441 8888 3926 0 1581 0
+proc_stat cpu14 531111 970 91305 9485916 39708 6955 2792 0 2541 0
+cpu_frequency cpu=2 khz=5275429
+cpu_frequency cpu=14 khz=3001551
+k10temp sensor=1 millidegree=79375
+k10temp sensor=3 millidegree=52875
+k10temp sensor=4 millidegree=41250
+SNAPSHOT label=batch-frozen-5-before utc=2026-10-08T18:54:30Z
+loadavg 1.33 1.43 1.59 1/2131 2125944
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614318293 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900416883 full avg10=0.00 avg60=0.00 avg300=0.00 total=828708905 
+proc_stat cpu2 793916 385 98482 9235147 52441 8888 3926 0 1581 0
+proc_stat cpu14 531111 970 91305 9485917 39708 6955 2792 0 2541 0
+cpu_frequency cpu=2 khz=5521217
+cpu_frequency cpu=14 khz=3001551
+k10temp sensor=1 millidegree=79375
+k10temp sensor=3 millidegree=47625
+k10temp sensor=4 millidegree=41750
+SNAPSHOT label=batch-frozen-5-after utc=2026-10-08T18:55:50Z
+loadavg 1.82 1.50 1.59 1/2174 2127862
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614399769 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900436715 full avg10=0.00 avg60=0.00 avg300=0.00 total=828728016 
+proc_stat cpu2 801878 385 98490 9235148 52441 8892 3927 0 1581 0
+proc_stat cpu14 531203 970 91311 9493763 39709 6959 2793 0 2541 0
+cpu_frequency cpu=2 khz=5520960
+cpu_frequency cpu=14 khz=5448647
+k10temp sensor=1 millidegree=86000
+k10temp sensor=3 millidegree=50000
+k10temp sensor=4 millidegree=41625
+SNAPSHOT label=session-end utc=2026-10-08T18:55:50Z
+loadavg 1.82 1.50 1.59 2/2174 2127873
+cpu_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=614399769 full avg10=0.00 avg60=0.00 avg300=0.00 total=0 
+memory_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=44930624 full avg10=0.00 avg60=0.00 avg300=0.00 total=44180038 
+io_pressure some avg10=0.00 avg60=0.00 avg300=0.00 total=900436715 full avg10=0.00 avg60=0.00 avg300=0.00 total=828728016 
+proc_stat cpu2 801878 385 98490 9235148 52441 8892 3927 0 1581 0
+proc_stat cpu14 531203 970 91311 9493764 39709 6959 2793 0 2541 0
+cpu_frequency cpu=2 khz=5527928
+cpu_frequency cpu=14 khz=5524470
+k10temp sensor=1 millidegree=86000
+k10temp sensor=3 millidegree=62625
+k10temp sensor=4 millidegree=43125

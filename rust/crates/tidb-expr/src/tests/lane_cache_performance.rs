@@ -84,6 +84,30 @@ fn iteration_divisor() -> usize {
         .unwrap_or(1)
 }
 
+fn iteration_multiplier() -> usize {
+    std::env::var("EXPR_LANE_PERF_ITERATION_MULTIPLIER")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+}
+
+fn cpu_calibration(stage: &str) {
+    let start = Instant::now();
+    let mut value = 0x9e3779b97f4a7c15_u64;
+    for index in 0..20_000_000_u64 {
+        value ^= index.wrapping_add(value.rotate_left(13));
+        value = value.wrapping_mul(0xbf58476d1ce4e5b9);
+        black_box(value);
+    }
+    let elapsed = start.elapsed().as_nanos();
+    println!(
+        "EXPR_LANE_CALIBRATION stage={stage} iterations=20000000 elapsed_ns={elapsed} \
+         ns_per_iter={:.3} checksum={value}",
+        elapsed as f64 / 20_000_000.0
+    );
+}
+
 fn parse_ast(sql: &str) -> tidb_ast::Expr {
     let stmt = tidb_parser::parse(&format!("select {sql}")).expect("benchmark expression parses");
     let Stmt::Query(query) = stmt else {
@@ -129,7 +153,12 @@ fn sample(
     sample: usize,
     eval: &mut impl FnMut() -> Result<Datum, EvalError>,
 ) {
-    let iterations = (workload.iterations / iteration_divisor()).max(1);
+    let iterations = workload
+        .iterations
+        .saturating_mul(iteration_multiplier())
+        .checked_div(iteration_divisor())
+        .unwrap_or(0)
+        .max(1);
     let start = Instant::now();
     let mut last = Datum::Null;
     for _ in 0..iterations {
@@ -228,9 +257,13 @@ fn run_chunk() {
 fn lane_cache_release_performance_probe() {
     println!(
         "EXPR_LANE_PERF_CONFIG warmups={WARMUPS} samples={SAMPLES} iteration_divisor={} \
-         order=balanced-abba md5=excluded-known-release-prepare-failure",
-        iteration_divisor()
+         iteration_multiplier={} order=balanced-abba \
+         md5=excluded-known-release-prepare-failure",
+        iteration_divisor(),
+        iteration_multiplier()
     );
+    cpu_calibration("before");
     run_ast();
     run_chunk();
+    cpu_calibration("after");
 }

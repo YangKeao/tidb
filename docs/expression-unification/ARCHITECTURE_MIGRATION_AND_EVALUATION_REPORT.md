@@ -373,7 +373,9 @@ current build 的 Rust/C++ transitive closure 明显更大，这与引入 TiKV d
 
 显式复用 execution 很重要，但还不足以消除固定成本。integer add、lazy IF、STRCMP、Decimal add、JSON_TYPE、REGEXP_LIKE 从默认 one-shot 的约 2,260、4,334、2,873、4,007、2,172、12,099 ns/eval 降到 pooled 的约 1,284、3,361、1,670、2,818、1,394、10,696 ns/eval，说明实验 pool/execution policy 有能力避免每次新建 owner 的一部分开销；当前 Session 默认尚未安装该 policy。即便显式启用后，operation/shape 检查、typed carrier 建立、worker lease/guard、width-one `VectorValue` materialization 和 TiDB `Datum` 回投仍形成较大的每调用固定成本。
 
-这些数字只代表 AST/value、width-one、warm execution 路径。它们不包含 SQL parser/planner/storage/network，也没有测 typed batch 或真实 server；不能直接换算为 TiDB QPS。相反，它们适合作为一个明确的优化信号：当前架构实现了唯一 owner 和兼容边界，但 hot-path glue 仍未达到生产性能要求。更复杂表达式能够摊薄固定成本，而简单 arithmetic/control 是最需要减少层次和临时 vector 的场景。
+上述 round218 pooled 数字只代表 AST/value、width-one、warm execution 路径。它们不包含 SQL parser/planner/storage/network，也没有测 typed batch 或真实 server；不能直接换算为 TiDB QPS。相反，它们适合作为一个明确的优化信号：当前架构实现了唯一 owner 和兼容边界，但 hot-path glue 仍未达到生产性能要求。更复杂表达式能够摊薄固定成本，而简单 arithmetic/control 是最需要减少层次和临时 vector 的场景。
+
+round228 已用 5 个独立进程对补测真实 column-backed `Chunk`：15 个常见 workload、dense batch 1/8/64/256/1024，以及四个代表 workload 的 NULL/sparse/reverse/duplicate selection，共 155 cells。三个硬断言进入 TiKV numeric route 的 PLUS workload 在 batch 1/1024 上观察到 6.59×–7.82× per-row 比值；12 个明确标记为 production fallback 的 workload 为 1.02×–1.18×。各 size 使用 deterministic prefix 而非 matched input distribution，因此这不是隔离 batch size 的因果效应。在 batch 1024，numeric route 仍为冻结 native 的 12.31×–13.29×，fallback 为 4.89×–42.90×。这补上了 evaluator batch scaling 证据，但仍不包含 server、storage/RPC 或并发 QPS；完整方法、paired bootstrap 和环境 QC 见 `LANE_CACHE_PERFORMANCE_REPORT.md`。
 
 MD5 的 release-only failure 更优先于性能优化。current debug-profile 的同名测试仍通过，但 current release path 在 Prepare 阶段返回 `InvalidSpecification`；根因尚未定位，应先建立 release regression 并完成 root-cause analysis，不能提前归因于 admission、metadata 或其他具体组件。
 

@@ -1,0 +1,335 @@
+{
+  "processes": [
+    {
+      "process": "batch-current-1",
+      "load1_before": 1.23,
+      "load1_after": 1.26,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 82.375,
+      "cpu2_frequency_mhz_range": [
+        5109.346,
+        5524.319
+      ],
+      "cpu14_nonidle_percent": 0.7092198581560284,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2495359034668034
+    },
+    {
+      "process": "batch-current-2",
+      "load1_before": 1.31,
+      "load1_after": 1.45,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 80.875,
+      "cpu2_frequency_mhz_range": [
+        5533.293,
+        5539.954
+      ],
+      "cpu14_nonidle_percent": 0.4733009708737864,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2508564736469467
+    },
+    {
+      "process": "batch-current-3",
+      "load1_before": 1.45,
+      "load1_after": 1.59,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 80.625,
+      "cpu2_frequency_mhz_range": [
+        5532.205,
+        5535.742
+      ],
+      "cpu14_nonidle_percent": 0.6521739130434783,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2507065773228265
+    },
+    {
+      "process": "batch-current-4",
+      "load1_before": 1.66,
+      "load1_after": 1.39,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 80.375,
+      "cpu2_frequency_mhz_range": [
+        5490.544,
+        5531.784
+      ],
+      "cpu14_nonidle_percent": 1.0338117246412064,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2489886692487258
+    },
+    {
+      "process": "batch-current-5",
+      "load1_before": 1.39,
+      "load1_after": 1.33,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 80.125,
+      "cpu2_frequency_mhz_range": [
+        4869.383,
+        5275.429
+      ],
+      "cpu14_nonidle_percent": 0.657094183499635,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.249405698329228
+    },
+    {
+      "process": "batch-frozen-1",
+      "load1_before": 1.26,
+      "load1_after": 1.27,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 81.0,
+      "cpu2_frequency_mhz_range": [
+        4013.23,
+        5536.654
+      ],
+      "cpu14_nonidle_percent": 0.48799280852703225,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2428573442920483
+    },
+    {
+      "process": "batch-frozen-2",
+      "load1_before": 1.27,
+      "load1_after": 1.31,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 81.0,
+      "cpu2_frequency_mhz_range": [
+        5541.71,
+        5528.648
+      ],
+      "cpu14_nonidle_percent": 0.47714716223003517,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2437317992553716
+    },
+    {
+      "process": "batch-frozen-3",
+      "load1_before": 1.59,
+      "load1_after": 1.73,
+      "cpu_pressure_avg10_max": 0.02,
+      "temperature_c_max": 81.0,
+      "cpu2_frequency_mhz_range": [
+        5531.572,
+        5540.331
+      ],
+      "cpu14_nonidle_percent": 0.7153614457831325,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2425812180487381
+    },
+    {
+      "process": "batch-frozen-4",
+      "load1_before": 1.73,
+      "load1_after": 1.66,
+      "cpu_pressure_avg10_max": 0.02,
+      "temperature_c_max": 81.0,
+      "cpu2_frequency_mhz_range": [
+        5522.514,
+        5550.457
+      ],
+      "cpu14_nonidle_percent": 0.07540530350634661,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2444301614369055
+    },
+    {
+      "process": "batch-frozen-5",
+      "load1_before": 1.33,
+      "load1_after": 1.82,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 86.0,
+      "cpu2_frequency_mhz_range": [
+        5521.217,
+        5520.96
+      ],
+      "cpu14_nonidle_percent": 1.2955974842767295,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2404803395738977
+    },
+    {
+      "process": "width-one-current-1",
+      "load1_before": 2.12,
+      "load1_after": 1.68,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 80.125,
+      "cpu2_frequency_mhz_range": [
+        5535.909,
+        5533.251
+      ],
+      "cpu14_nonidle_percent": 4.6764894298526585,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.248839542483239
+    },
+    {
+      "process": "width-one-current-2",
+      "load1_before": 1.35,
+      "load1_after": 1.21,
+      "cpu_pressure_avg10_max": 0.04,
+      "temperature_c_max": 82.125,
+      "cpu2_frequency_mhz_range": [
+        4643.396,
+        5529.529
+      ],
+      "cpu14_nonidle_percent": 1.1426705843943845,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2500101461700142
+    },
+    {
+      "process": "width-one-current-3",
+      "load1_before": 1.21,
+      "load1_after": 1.18,
+      "cpu_pressure_avg10_max": 0.04,
+      "temperature_c_max": 79.375,
+      "cpu2_frequency_mhz_range": [
+        5533.932,
+        5527.436
+      ],
+      "cpu14_nonidle_percent": 2.6103770544634224,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.250807284125548
+    },
+    {
+      "process": "width-one-current-4",
+      "load1_before": 1.29,
+      "load1_after": 1.29,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 82.375,
+      "cpu2_frequency_mhz_range": [
+        3427.775,
+        5519.177
+      ],
+      "cpu14_nonidle_percent": 0.35889070146818924,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2500838961268605
+    },
+    {
+      "process": "width-one-current-5",
+      "load1_before": 1.29,
+      "load1_after": 1.23,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 79.875,
+      "cpu2_frequency_mhz_range": [
+        5506.754,
+        5517.286
+      ],
+      "cpu14_nonidle_percent": 0.1959503592423253,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2506513004476143
+    },
+    {
+      "process": "width-one-frozen-1",
+      "load1_before": 1.68,
+      "load1_after": 1.53,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 82.625,
+      "cpu2_frequency_mhz_range": [
+        5535.198,
+        5532.574
+      ],
+      "cpu14_nonidle_percent": 0.24855012427506215,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2525385945905392
+    },
+    {
+      "process": "width-one-frozen-2",
+      "load1_before": 1.53,
+      "load1_after": 1.35,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 82.625,
+      "cpu2_frequency_mhz_range": [
+        5527.621,
+        5533.029
+      ],
+      "cpu14_nonidle_percent": 4.337152209492635,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.251932281104347
+    },
+    {
+      "process": "width-one-frozen-3",
+      "load1_before": 1.18,
+      "load1_after": 1.24,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 83.5,
+      "cpu2_frequency_mhz_range": [
+        4357.71,
+        5546.909
+      ],
+      "cpu14_nonidle_percent": 0.8305647840531561,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2520075858955915
+    },
+    {
+      "process": "width-one-frozen-4",
+      "load1_before": 1.24,
+      "load1_after": 1.29,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 83.375,
+      "cpu2_frequency_mhz_range": [
+        5536.713,
+        5235.734
+      ],
+      "cpu14_nonidle_percent": 2.0491803278688523,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2525356676657222
+    },
+    {
+      "process": "width-one-frozen-5",
+      "load1_before": 1.23,
+      "load1_after": 1.23,
+      "cpu_pressure_avg10_max": 0.0,
+      "temperature_c_max": 82.375,
+      "cpu2_frequency_mhz_range": [
+        5503.734,
+        4560.546
+      ],
+      "cpu14_nonidle_percent": 0.9170487703209671,
+      "context_switches_per_second": 0.0,
+      "cpu_migrations": 0.0,
+      "major_faults": 0.0,
+      "cycles_per_ref_cycle": 1.2529878426463952
+    }
+  ],
+  "max_load1": 2.12,
+  "max_cpu_pressure_avg10": 0.04,
+  "max_temperature_c": 86.0,
+  "max_cpu14_nonidle_percent": 4.6764894298526585,
+  "max_context_switches_per_second": 0.0,
+  "total_cpu_migrations": 0.0,
+  "total_major_faults": 0.0,
+  "cycles_per_ref_cycle_range": [
+    1.2404803395738977,
+    1.2529878426463952
+  ]
+}

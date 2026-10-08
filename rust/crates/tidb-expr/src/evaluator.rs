@@ -465,6 +465,14 @@ impl EvaluatorSuite {
         self.program.vectorizable
     }
 
+    #[cfg(test)]
+    pub(crate) fn tikv_numeric_lane_prepared_for_test(&self) -> bool {
+        matches!(
+            &*self.numeric_vector_lane.borrow(),
+            NumericVectorLane::Prepared(_)
+        )
+    }
+
     /// Go `EvaluatorSuite.Run`.
     ///
     /// Safe expressions are evaluated column by column. Expressions with
