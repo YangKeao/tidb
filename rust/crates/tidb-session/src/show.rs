@@ -491,20 +491,9 @@ const SHOW_STATUS_VARS: &[(&str, &str, bool)] = &[
 struct ShowRowResolver<'a> {
     columns: &'a [&'a str],
     row: &'a [Datum],
-    ctx: &'a dyn tidb_executor::Columns,
 }
 
 impl tidb_executor::Columns for ShowRowResolver<'_> {
-    // Preserve SHOW's existing resolver defaults; only the worker capability
-    // follows the statement into predicates such as WHERE name LIKE pattern.
-    fn ready_value_scope(&self) -> Option<&tidb_executor::ReadyValueScope> {
-        self.ctx.ready_value_scope()
-    }
-
-    fn ready_value_execution(&self) -> Option<&tidb_executor::ReadyValueExecution> {
-        self.ctx.ready_value_execution()
-    }
-
     fn get(&self, path: &[String]) -> Option<Datum> {
         let name = path.last()?;
         let index = self
@@ -520,7 +509,7 @@ fn show_row_matches(
     predicate: &tidb_ast::Expr,
     columns: &[&str],
     row: &[Datum],
-    ctx: &dyn tidb_executor::Columns,
+    _ctx: &dyn tidb_executor::Columns,
 ) -> Result<bool, DriverError> {
     // go's SHOW WHERE resolves names against the statement's OWN output
     // columns; a name outside that list is ErrBadField with the 'where
@@ -533,7 +522,7 @@ fn show_row_matches(
             clause: "where clause".to_owned(),
         });
     }
-    let resolver = ShowRowResolver { columns, row, ctx };
+    let resolver = ShowRowResolver { columns, row };
     let value = tidb_executor::eval_in(predicate, &resolver)
         .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
     let truthy = tidb_executor::truthy_of(&value)

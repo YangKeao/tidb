@@ -1145,9 +1145,6 @@ impl Session {
     }
 
     pub fn execute_statement(&mut self, sql: &str) -> Result<StmtOutput, DriverError> {
-        // This public body entry can bypass the ordinary native boundary.
-        // Join an existing lexical caller, or own only the ready-value lifetime here.
-        let _runtime = self.enter_ready_value_statement()?;
         let stmt = self.parse_at_statement_boundary(sql)?;
         self.execute_parsed_statement(sql, stmt, None)
     }
@@ -1255,10 +1252,9 @@ impl Session {
         prepared: &crate::PreparedAst,
     ) -> Result<crate::OpenedStatement, DriverError> {
         self.begin_statement_execution(prepared.sql())?;
-        let mut runtime = self.enter_ready_value_statement()?;
         let result =
             self.prepare_bound_execution(prepared.sql(), stmt, prepared.privilege_requests());
-        self.return_opened_record_set(result, &mut runtime)
+        self.return_opened_record_set(result)
     }
 
     /// Executes the subset Go serves through a prepared `PointGetPlan`. The
@@ -1273,7 +1269,6 @@ impl Session {
         sql: &str,
     ) -> Result<Option<crate::OpenedStatement>, DriverError> {
         self.begin_statement_execution(sql)?;
-        let mut runtime = self.enter_ready_value_statement()?;
         let result = (|| {
             self.set_statement_arbitration_key(sql);
             let cache_hit = execution.cache_hit();
@@ -1327,12 +1322,8 @@ impl Session {
             // No native finish is owed for fallback; the local outer closer
             // still ends this attempt, while a nested attempt owns no closer.
             Ok(None) => Ok(None),
-            Ok(Some(execution)) => self
-                .return_opened_record_set(Ok(execution), &mut runtime)
-                .map(Some),
-            Err(error) => self
-                .return_opened_record_set(Err(error), &mut runtime)
-                .map(Some),
+            Ok(Some(execution)) => self.return_opened_record_set(Ok(execution)).map(Some),
+            Err(error) => self.return_opened_record_set(Err(error)).map(Some),
         }
     }
 
@@ -1392,13 +1383,12 @@ impl Session {
         prepared: &crate::PreparedAst,
     ) -> Result<crate::OpenedStatement, DriverError> {
         self.begin_statement_execution(prepared.sql())?;
-        let mut runtime = self.enter_ready_value_statement()?;
         let result = self.prepare_cached_select_execution(
             execution,
             prepared.sql(),
             prepared.privilege_requests(),
         );
-        self.return_opened_record_set(result, &mut runtime)
+        self.return_opened_record_set(result)
     }
 
     pub(crate) fn prepare_cached_select_execution(
@@ -1776,11 +1766,10 @@ impl Session {
         sql: &str,
     ) -> Result<crate::OpenedStatement, DriverError> {
         self.begin_statement_execution(sql)?;
-        let mut runtime = self.enter_ready_value_statement()?;
         self.begin_text_statement_boundary(&stmt);
         let result =
             self.prepare_parsed_statement_with_optional_physical_plan(sql, stmt, None, None, None);
-        self.return_opened_record_set(result, &mut runtime)
+        self.return_opened_record_set(result)
     }
 
     fn prepare_parsed_statement_with_optional_physical_plan(
