@@ -3161,20 +3161,9 @@ impl LegacyEvaluator<'_> {
                 Some(Datum::Real(value)) => Some(*value),
                 _ => None,
             },
-            // Go `ConvertJSONToReal`: numbers pass, strings take the numeric
-            // prefix, other codes answer 0 under the folded error.
             SimpleExpr::Func(SimpleSig::CastJsonAsReal, children) => {
                 let value = legacy_some!(self.eval_json(children.first())?);
-                if let Some(real) = value.as_f64() {
-                    Some(real)
-                } else if let Some(text) = value.as_string() {
-                    let text = String::from_utf8_lossy(text);
-                    let prefix = tidb_expr::eval_legacy_numeric_prefix(text.trim_start(), true)
-                        .unwrap_or_default();
-                    Some(prefix.parse::<f64>().unwrap_or(0.0))
-                } else {
-                    Some(0.0)
-                }
+                Some(tidb_expr::eval_legacy_cast_json_real(&value))
             }
             SimpleExpr::Func(
                 sig @ (SimpleSig::PlusReal
@@ -4847,29 +4836,10 @@ impl LegacyEvaluator<'_> {
                         )?
                     }
                     SimpleSig::CastJsonAsInt => {
-                        // Go `ConvertJSONToInt64`: numbers truncate, strings
-                        // take the integer prefix, other codes answer 0
-                        // under the folded error. The `json.Number` literal
-                        // code folds to 0 here (no text accessor on the
-                        // trimmed build).
                         let Some(value) = self.eval_json(children.first())? else {
                             return Ok(None);
                         };
-                        if let Some(signed) = value.as_i64() {
-                            Some(i128::from(signed))
-                        } else if let Some(unsigned) = value.as_u64() {
-                            Some(i128::from(unsigned))
-                        } else if let Some(real) = value.as_f64() {
-                            Some(real as i128)
-                        } else if let Some(text) = value.as_string() {
-                            let text = String::from_utf8_lossy(text);
-                            let prefix =
-                                tidb_expr::eval_legacy_numeric_prefix(text.trim_start(), false)
-                                    .unwrap_or_default();
-                            Some(prefix.parse::<i64>().unwrap_or(0) as i128)
-                        } else {
-                            Some(0)
-                        }
+                        Some(tidb_expr::eval_legacy_cast_json_integer(&value))
                     }
                     SimpleSig::CastIntAsJson
                     | SimpleSig::CastRealAsJson

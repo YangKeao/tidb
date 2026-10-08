@@ -1,0 +1,6 @@
+legacy-json-scalar-cast-180 / R186
+id passed/failed/ignored/filtered exit sha256
+tikv 1/0/0/556 0 ad91091cdcc939ce765b90939dd6d593af839b87f1309e694525fe9d4cb925d8
+bridge 1/0/0/1751 0 411037aa66278e18f8d42ffa337e9a535b847a24cf7e7faabb7e3a74b38ae8be
+unistore 1/0/0/239 0 bd5066b7c6082584dcf78d8417496574d26d3caa805a3b45eb5dce6918fc0f83
+All locked exact-filter single-thread; no failures/retries. TiKV1/TiDB4 Rust,0 new files. Functional239/245 strict0 remaining6; R100/broad gates retained.

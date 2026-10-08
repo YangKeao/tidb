@@ -24,6 +24,22 @@ pub fn eval_legacy_cast_json_datum(value: &Datum) -> Option<BinaryJSON> {
     .map(|(type_code, bytes)| BinaryJSON::from_encoded_parts(type_code, bytes))
 }
 
+/// Evaluates a legacy JSON-to-real cast through the shared native implementation.
+pub fn eval_legacy_cast_json_real(value: &BinaryJSON) -> f64 {
+    tidb_query_datatype::codec::native_mysql_json::native_legacy_json_to_real(
+        value.type_code(),
+        value.value(),
+    )
+}
+
+/// Evaluates a legacy JSON-to-integer cast through the shared native implementation.
+pub fn eval_legacy_cast_json_integer(value: &BinaryJSON) -> i128 {
+    tidb_query_datatype::codec::native_mysql_json::native_legacy_json_to_integer(
+        value.type_code(),
+        value.value(),
+    )
+}
+
 #[cfg(test)]
 #[test]
 fn legacy_json_cast_bridge_projects_shared_encoded_values_and_folded_errors() {
@@ -40,4 +56,10 @@ fn legacy_json_cast_bridge_projects_shared_encoded_values_and_folded_errors() {
         Ok(1)
     );
     assert!(eval_legacy_cast_json_datum(&Datum::Real(f64::INFINITY)).is_none());
+    let integer = BinaryJSON::parse("7").unwrap();
+    let real = BinaryJSON::parse("2.5").unwrap();
+    let text = BinaryJSON::parse(r#""12tail""#).unwrap();
+    assert_eq!(eval_legacy_cast_json_integer(&integer), 7);
+    assert_eq!(eval_legacy_cast_json_real(&real), 2.5);
+    assert_eq!(eval_legacy_cast_json_integer(&text), 12);
 }
