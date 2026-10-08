@@ -197,6 +197,7 @@ Hard requirements remain in the repository root `AGENTS.md`.
 4. Confirm neighboring modules only if call chain crosses boundaries.
 
 ## Common Cross-Module Paths
+- Charset name classification: TiKV `tidb_query_datatype::def::field_type::Charset` owns canonical names, ASCII-case-insensitive lookup and `utf8mb3`; TiDB `rust/crates/tidb-datatype/src/charset.rs` only projects into its public enum.
 - Decimal fixed binary storage: TiKV `tidb_query_datatype::codec::mysql::native_decimal_codec` owns size/write/decode and raw-word-to-coefficient algorithms; TiDB `rust/crates/tidb-datatype/src/decimal/codec.rs` retains concrete `Decimal`/failure construction and TiDB-only JSON persistence policy.
 - Planner -> Executor -> Expression for query semantics.
 - Outer-join null-rejection proofs: `rust/crates/tidb-expr/src/expression.rs::is_null_rejected_in` folds nullified constants against the caller's `Columns`; `rust/crates/tidb-planner/src/logical/{rule_outer_to_inner_join.rs,join.rs}` supply `RuleContext::eval_context` or the function builder's fold context.

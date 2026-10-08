@@ -159,24 +159,17 @@ impl Charset {
     /// evaluation path (`ScalarFunction::derived_collation`), where Go reads
     /// an enum field and this used to build a lowered `String` per call.
     pub fn from_name(name: &str) -> Option<Self> {
-        let eq = |canonical: &str| name.eq_ignore_ascii_case(canonical);
-        if eq("binary") {
-            Some(Self::Binary)
-        } else if eq("ascii") {
-            Some(Self::Ascii)
-        } else if eq("latin1") {
-            Some(Self::Latin1)
-        } else if eq("utf8") || eq("utf8mb3") {
-            Some(Self::Utf8)
-        } else if eq("utf8mb4") {
-            Some(Self::Utf8Mb4)
-        } else if eq("gbk") {
-            Some(Self::Gbk)
-        } else if eq("gb18030") {
-            Some(Self::Gb18030)
-        } else {
-            None
-        }
+        use tidb_query_datatype::Charset as SharedCharset;
+
+        Some(match SharedCharset::native_from_name(name)? {
+            SharedCharset::Binary => Self::Binary,
+            SharedCharset::Ascii => Self::Ascii,
+            SharedCharset::Latin1 => Self::Latin1,
+            SharedCharset::Utf8 => Self::Utf8,
+            SharedCharset::Utf8Mb4 => Self::Utf8Mb4,
+            SharedCharset::Gbk => Self::Gbk,
+            SharedCharset::Gb18030 => Self::Gb18030,
+        })
     }
 
     /// Returns the charset's maximum bytes per character, which is what turns
