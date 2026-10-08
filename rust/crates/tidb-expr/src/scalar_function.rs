@@ -316,6 +316,7 @@ pub struct ScalarFunction {
     /// the ordinary evaluation path so casts, warnings and errors are not
     /// skipped.
     in_string_hash_set: Option<std::collections::HashSet<Vec<u8>>>,
+    in_string_hash_set_prepared: bool,
     in_string_non_const_args: Vec<usize>,
     in_string_has_null: bool,
     json_schema_cache: crate::builtin_ext::JsonSchemaCache,
@@ -721,6 +722,7 @@ impl ScalarFunction {
     pub fn invalidate_cached_arguments(&mut self) {
         self.hashcode.clear();
         self.in_string_hash_set = None;
+        self.in_string_hash_set_prepared = false;
         self.in_string_non_const_args.clear();
         self.in_string_has_null = false;
         self.json_schema_cache = Default::default();
@@ -1134,6 +1136,10 @@ impl ScalarFunction {
     /// context. Other constant families remain in the row path because their
     /// implicit casts can raise warnings or errors.
     pub(crate) fn prepare_in_string_hash_set(&mut self) {
+        if self.in_string_hash_set_prepared {
+            return;
+        }
+        self.in_string_hash_set_prepared = true;
         use tidb_query_expr::{
             NativeInCacheArg, NativeInCacheValue, NativeInControlEvalType as Shared,
         };
@@ -5530,6 +5536,27 @@ mod tests {
             function.eval(&crate::NoColumns, chunk.get_row(0)).unwrap(),
             Datum::Int(1)
         );
+    }
+
+    #[test]
+    fn string_in_metadata_prepares_once_until_argument_rebind() {
+        let string_type = text_ft();
+        let string = |value: &str| {
+            Expression::Constant(Constant::new(Datum::new_string(value), string_type.clone()))
+        };
+        let mut function = ScalarFunction::new(
+            CiString::new("in"),
+            text_ft(),
+            vec![string("probe"), string("a"), string("b")],
+        );
+        function.prepare_in_string_hash_set();
+        let first = function.in_string_hash_set.clone();
+        function.args[1] = string("replacement");
+        function.prepare_in_string_hash_set();
+        assert_eq!(function.in_string_hash_set, first);
+        function.invalidate_cached_arguments();
+        function.prepare_in_string_hash_set();
+        assert_ne!(function.in_string_hash_set, first);
     }
 
     #[test]

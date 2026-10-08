@@ -453,6 +453,16 @@ fn is_unfoldable_call(name: &str, arg_count: usize) -> bool {
     if name == "last_insert_id" {
         return arg_count == 0;
     }
+    // A constant REGEXP child may sit under a lazy IF/IFNULL/CASE/COALESCE
+    // branch. Bottom-up folding has not seen that parent demand yet, so even a
+    // swallowed malformed-pattern error would compile and warm its cache too
+    // early. The runtime kernel still memoizes demanded constant patterns.
+    if matches!(
+        name,
+        "regexp" | "rlike" | "regexp_like" | "regexp_substr" | "regexp_instr" | "regexp_replace"
+    ) {
+        return true;
+    }
     is_unfoldable(name)
 }
 
@@ -703,6 +713,30 @@ mod deferred_function_tests {
         assert!(
             matches!(expr, Expression::ScalarFunction(_)),
             "mixed-domain IN was folded before runtime warning ownership"
+        );
+    }
+
+    #[test]
+    fn constant_regexp_stays_runtime_bound_for_lazy_parent_demand() {
+        let string_type = FieldType::new(tidb_datatype::FieldTypeCode::VarString);
+        let mut expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("regexp_like"),
+            FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+            vec![
+                Expression::Constant(crate::constant::Constant::new(
+                    Datum::new_string("x"),
+                    string_type.clone(),
+                )),
+                Expression::Constant(crate::constant::Constant::new(
+                    Datum::new_string("("),
+                    string_type,
+                )),
+            ],
+        ));
+        fold_constant_in_mode(&mut expr, &NoColumns, ConstantFoldMode::Normal);
+        assert!(
+            matches!(expr, Expression::ScalarFunction(_)),
+            "constant regexp compiled before its parent selected the branch"
         );
     }
 

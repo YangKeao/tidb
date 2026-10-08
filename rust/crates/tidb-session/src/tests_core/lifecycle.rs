@@ -8981,6 +8981,41 @@ fn evaluated_ascii_regexp_sql_values_metadata_and_demand_order() {
 }
 
 #[test]
+fn invalid_constant_regexp_is_compiled_only_in_a_demanded_control_branch() {
+    let mut session = Session::new();
+    session.run("SET NAMES utf8mb4").unwrap();
+    let StmtOutput::Rows { rows, .. } = session
+        .run_with_columns(
+            "SELECT IF(1,7,REGEXP_LIKE('x','(')),\
+             CASE WHEN 1 THEN 8 ELSE REGEXP_LIKE('x','(') END,\
+             COALESCE(9,REGEXP_LIKE('x','(')),\
+             IFNULL(10,REGEXP_LIKE('x','('))",
+        )
+        .unwrap()
+    else {
+        panic!("expected one strict-control row")
+    };
+    assert_eq!(
+        rows,
+        vec![vec![
+            Datum::Int(7),
+            Datum::Int(8),
+            Datum::Int(9),
+            Datum::Int(10)
+        ]]
+    );
+    let error = session
+        .run_with_columns("SELECT IF(0,7,REGEXP_LIKE('x','('))")
+        .expect_err("demanded invalid constant pattern must fail");
+    assert!(
+        matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::Unsupported(message)
+        )) if *message == "invalid regular expression pattern"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
