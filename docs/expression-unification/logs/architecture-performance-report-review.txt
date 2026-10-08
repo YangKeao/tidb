@@ -1,0 +1,13 @@
+independent report review: APPROVED after corrections
+reviewer: 329776b3-06e3-45ca-a67d-e72a33e34a7b
+initial verdict: NOT APPROVED
+required corrections applied:
+1. Reclassified explicit pooled execution as an experimental best-case/design path; Session policy defaults to None and default AST/value calls are one-shot. Added a new 3-process pinned ABBA default-path measurement as the primary result.
+2. Expanded TiDB glue definition to include child demand, SQL coercion, typed staged-host orchestration, context/effect projection and representation conversion while prohibiting final-kernel duplication/native fallback.
+3. Described M0-M6 as conceptual dependency workstreams with interleaved actual checkpoints, not a serial commit sequence.
+4. Renamed compatibility coverage to representative/targeted dimensions and stated it is not a 240-family-by-entry matrix; strict final audit remains zero.
+5. Scoped release failure to the MD5 path and stated named test/row-table continuity without claiming byte-identical helpers/binaries or other crypto-family failure.
+6. Added 3 independent process replicates, correlated within-process samples, boost/scaling enabled, no confidence interval/significance, asymmetric pooled comparison, and revision-wide attribution caveats. Build wall/RSS is separated from Cargo compile marker.
+7. Corrected wire/local sharing: overlapping PB signatures share prepare_selected_call/RPN metadata/kernel; local-only operations use closed local selectors and do not expand wire admission.
+8. Softened the conclusion to targeted covered-domain evidence, not complete SQL-host semantic preservation or per-family proof.
+final reviewer verdict: APPROVED; updated receipts/arithmetic and all accuracy corrections check out.
