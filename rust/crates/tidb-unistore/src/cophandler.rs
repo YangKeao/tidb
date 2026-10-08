@@ -1200,52 +1200,6 @@ fn go_float_display(value: f64) -> String {
     }
 }
 
-/// Go's `getValidFloatPrefix`: the longest leading prefix that scans as an
-/// optional-signed integer, decimal or exponent form. `None` when the
-/// prefix carries no digit at all (Go answers 0 with a truncation warning).
-fn numeric_prefix(text: &str, allow_float: bool) -> Option<String> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut end = 0;
-    if end < chars.len() && (chars[end] == '+' || chars[end] == '-') {
-        end += 1;
-    }
-    let mut digits = 0;
-    while end < chars.len() && chars[end].is_ascii_digit() {
-        end += 1;
-        digits += 1;
-    }
-    let mut fraction = 0;
-    if allow_float && end < chars.len() && chars[end] == '.' {
-        let mut peek = end + 1;
-        while peek < chars.len() && chars[peek].is_ascii_digit() {
-            peek += 1;
-            fraction += 1;
-        }
-        if fraction > 0 {
-            end = peek;
-            digits += fraction;
-        }
-    }
-    if digits == 0 {
-        return None;
-    }
-    if allow_float && end < chars.len() && (chars[end] == 'e' || chars[end] == 'E') {
-        let mut exp_end = end + 1;
-        if exp_end < chars.len() && (chars[exp_end] == '+' || chars[exp_end] == '-') {
-            exp_end += 1;
-        }
-        let mut exp_digits = 0;
-        while exp_end < chars.len() && chars[exp_end].is_ascii_digit() {
-            exp_end += 1;
-            exp_digits += 1;
-        }
-        if exp_digits > 0 {
-            end = exp_end;
-        }
-    }
-    Some(chars[..end].iter().collect())
-}
-
 /// Only the SQL branch may be folded at a legacy NULL boundary. Keep actual
 /// runtime/adapter causes typed until the public request boundary.
 #[derive(Debug)]
@@ -3215,7 +3169,8 @@ impl LegacyEvaluator<'_> {
                     Some(real)
                 } else if let Some(text) = value.as_string() {
                     let text = String::from_utf8_lossy(text);
-                    let prefix = numeric_prefix(text.trim_start(), true).unwrap_or_default();
+                    let prefix = tidb_expr::eval_legacy_numeric_prefix(text.trim_start(), true)
+                        .unwrap_or_default();
                     Some(prefix.parse::<f64>().unwrap_or(0.0))
                 } else {
                     Some(0.0)
@@ -4375,7 +4330,9 @@ impl LegacyEvaluator<'_> {
                             return Ok(None);
                         };
                         let text = String::from_utf8_lossy(&raw);
-                        let numeric = numeric_prefix(text.trim_start(), true).unwrap_or_default();
+                        let numeric =
+                            tidb_expr::eval_legacy_numeric_prefix(text.trim_start(), true)
+                                .unwrap_or_default();
                         let value: f64 = numeric.parse().unwrap_or(0.0);
                         Some(i128::from(value != 0.0))
                     }
@@ -4907,7 +4864,8 @@ impl LegacyEvaluator<'_> {
                         } else if let Some(text) = value.as_string() {
                             let text = String::from_utf8_lossy(text);
                             let prefix =
-                                numeric_prefix(text.trim_start(), false).unwrap_or_default();
+                                tidb_expr::eval_legacy_numeric_prefix(text.trim_start(), false)
+                                    .unwrap_or_default();
                             Some(prefix.parse::<i64>().unwrap_or(0) as i128)
                         } else {
                             Some(0)

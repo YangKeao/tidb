@@ -1,0 +1,7 @@
+legacy-numeric-prefix-179 / R185
+id passed/failed/ignored/filtered compile_seconds/test_seconds exit sha256
+tikv 1/0/0/555 2.69/0.00 0 2e6ea190146506d45bcf3cf80482ae3f9a7e239e4ef16b1473a24129d0d54023
+json-real 1/0/0/239 3.05/0.00 0 ece6017f4c731cc0dc217bf139ba77b7dff495bba57a200f3a2a6851e12ec0c7
+string-int 1/0/0/239 0.12/0.00 0 b781f9425ee285a61ea4bfa1a7c6103e1938bc06cfbd9be80ffd04db0292b003
+string-truth 1/0/0/239 0.12/0.00 0 41e807db10beea1e036c39ad8444621662c789d8704554bdc14497437dc3fccc
+Retained native-dependency RED exit101 sha256 a7981ccc31ab9368dd4093c67e8e4de889a4ef3a80066b412a2414b1f250c96e: Unistore cannot directly name transitive tidb_query_datatype; narrow tidb-expr bridge added, scanner unchanged. All final commands locked exact-filter single-thread. Functional239/245 strict0 remaining6; broad gates/R100 retained.

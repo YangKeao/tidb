@@ -232,6 +232,10 @@ fn input(value: &Datum) -> Input<'_> {
     }
 }
 
+pub fn eval_legacy_numeric_prefix(text: &str, allow_float: bool) -> Option<String> {
+    tidb_query_datatype::codec::native_float_parse::native_legacy_numeric_prefix(text, allow_float)
+}
+
 pub fn eval_legacy_cast_real_integer(value: i128) -> f64 {
     tidb_query_datatype::codec::native_scalar_convert::native_legacy_cast_real_integer(value)
 }

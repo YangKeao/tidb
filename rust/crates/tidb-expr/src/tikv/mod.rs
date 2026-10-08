@@ -47,7 +47,9 @@ mod cast_float;
 #[cfg(test)]
 mod closed_float_tests;
 pub(crate) use cast_float::{eval_cast_double_in, eval_cast_float_in, eval_cast_float_value};
-pub use cast_float::{eval_legacy_cast_real_datum, eval_legacy_cast_real_integer};
+pub use cast_float::{
+    eval_legacy_cast_real_datum, eval_legacy_cast_real_integer, eval_legacy_numeric_prefix,
+};
 mod cast_integer;
 pub(crate) use cast_integer::eval_cast_arg_as_int_in;
 pub use cast_integer::{eval_legacy_cast_integer_datum, LegacyCastIntegerResult};
