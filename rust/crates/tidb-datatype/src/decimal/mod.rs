@@ -659,23 +659,15 @@ impl Decimal {
     /// at `DECIMAL(10, 4)` still reports `(4, 2)` for `11.99`, matching Go.
     /// Storage codecs want [`Decimal::storage_shape`] instead.
     pub fn precision_and_frac(&self) -> (i32, i32) {
-        let digits = self.digits();
-        let split = digits.len() - self.storage_scale() as usize;
-        let integer_digits = digits[..split].trim_start_matches('0').len() as i32;
-        let fraction = self.storage_scale() as i32;
-        ((integer_digits + fraction).max(1), fraction)
+        self.as_shared_parse().natural_precision_and_frac()
     }
 
     /// Source `MyDecimal.ToHashKey`: numerically equal decimals with different
     /// written scales produce the same key.
     pub fn to_hash_key(&self) -> Result<(Vec<u8>, Option<DecimalCodecWarning>), DecimalCodecError> {
-        let digits = self.digits();
-        let split = digits.len() - self.storage_scale() as usize;
-        let integer_digits = digits[..split].trim_start_matches('0').len() as i32;
-        let significant_fraction = digits[split..].trim_end_matches('0').len() as i32;
-        let precision = (integer_digits + significant_fraction).max(1);
-        let (mut key, warning) = self.to_bin(precision, significant_fraction)?;
-        key.push(significant_fraction as u8);
+        let (precision, fraction) = self.as_shared_parse().hash_precision_and_frac();
+        let (mut key, warning) = self.to_bin(precision, fraction)?;
+        key.push(fraction as u8);
         Ok((
             key,
             if warning == Some(DecimalCodecWarning::Truncated) {
@@ -688,12 +680,8 @@ impl Decimal {
 
     /// Source `MyDecimal.HashKeySize`.
     pub fn hash_key_size(&self) -> Result<usize, DecimalCodecError> {
-        let digits = self.digits();
-        let split = digits.len() - self.storage_scale() as usize;
-        let integer_digits = digits[..split].trim_start_matches('0').len() as i32;
-        let significant_fraction = digits[split..].trim_end_matches('0').len() as i32;
-        let precision = (integer_digits + significant_fraction).max(1);
-        decimal_bin_size(precision, significant_fraction).map(|size| size + 1)
+        let (precision, fraction) = self.as_shared_parse().hash_precision_and_frac();
+        decimal_bin_size(precision, fraction).map(|size| size + 1)
     }
 
     /// Returns whether this value is numerically zero.

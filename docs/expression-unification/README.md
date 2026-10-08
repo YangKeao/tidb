@@ -1,7 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **decimal-avg-division-202**. Functional Demo: **240/245 (97.96%)**, strict **0**.
+Current paired checkpoint **decimal-hash-shape-203**. Functional Demo: **240/245 (97.96%)**, strict **0**.
 
-AVG finalization now delegates SUM/COUNT division to TiKV shared MySQL decimal math, and TiDB's remaining schoolbook digit-division body is deleted. Six focused consumer gates are GREEN; one broader `tidb-exec` target remains compile-blocked and is not counted. [Evidence](evidence/decimal-avg-division-checkpoint.md) · [receipts](logs/decimal-avg-division-summary.txt).
+TiKV now uniquely owns Decimal natural and hash-key shape normalization. TiDB deletes three repeated shape bodies and retains only binary-codec/warning projection. Four focused filters are GREEN; one zero-match filter is excluded. [Evidence](evidence/decimal-hash-shape-checkpoint.md) · [receipts](logs/decimal-hash-shape-summary.txt).
 
-Broader M2 remains active for hash normalization, assignment fitting, natural codec shape and chunk fallback. M6 final acceptance and PR readiness are not claimed.
+Broader M2 remains active for assignment fit/clamp and chunk fixed-cell fallback. M6 final acceptance and PR readiness are not claimed.
