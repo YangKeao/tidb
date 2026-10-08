@@ -33,12 +33,7 @@ use super::{pad_scale, Decimal, DecimalDigits, INLINE_DECIMAL_DIGITS};
 // payload rather than accepting an arbitrary-precision compatibility branch.
 
 pub(super) const DIGITS_PER_WORD: usize = 9;
-const CODEC_WORD_SIZE: usize = 4;
 pub(super) const CODEC_WORD_BUF_LEN: usize = 9;
-/// Largest value one 1e9 word holds (Go `wordMax` = `wordBase - 1`).
-const CODEC_WORD_MAX: i32 = 999_999_999;
-/// Bytes needed to store `k` decimal digits packed into one partial word.
-const DIG2BYTES: [usize; 10] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 4];
 /// `10^k` for `k` in `0..=9` (all fit in `i32`; `10^9 < i32::MAX`).
 pub(super) const CODEC_POWERS10: [i32; 10] = [
     1,
@@ -82,50 +77,6 @@ pub use tidb_query_datatype::codec::mysql::NativeDecimalCodecWarning as DecimalC
 /// Go `digitsToWords`: number of 1e9 words needed for `digits` decimal digits.
 pub(super) fn digits_to_words(digits: usize) -> usize {
     digits.div_ceil(DIGITS_PER_WORD)
-}
-
-/// Go `fixWordCntError`: clamp a word count to the nine-word buffer, reporting
-/// the overflow/truncation Go would.
-pub(super) fn fix_word_cnt_error(
-    words_int: usize,
-    words_frac: usize,
-) -> (usize, usize, Option<DecimalCodecWarning>) {
-    if words_int + words_frac > CODEC_WORD_BUF_LEN {
-        if words_int > CODEC_WORD_BUF_LEN {
-            return (CODEC_WORD_BUF_LEN, 0, Some(DecimalCodecWarning::Overflow));
-        }
-        return (
-            words_int,
-            CODEC_WORD_BUF_LEN - words_int,
-            Some(DecimalCodecWarning::Truncated),
-        );
-    }
-    (words_int, words_frac, None)
-}
-
-/// Go `readWord`: sign-extending big-endian load of a `size`-byte word.
-fn read_word(b: &[u8], size: usize) -> i32 {
-    match size {
-        1 => i32::from(b[0] as i8),
-        2 => (i32::from(b[0] as i8) << 8) + i32::from(b[1]),
-        3 => {
-            if b[0] & 128 > 0 {
-                (0xFF00_0000u32
-                    | (u32::from(b[0]) << 16)
-                    | (u32::from(b[1]) << 8)
-                    | u32::from(b[2])) as i32
-            } else {
-                ((u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2])) as i32
-            }
-        }
-        4 => {
-            i32::from(b[3])
-                + (i32::from(b[2]) << 8)
-                + (i32::from(b[1]) << 16)
-                + (i32::from(b[0] as i8) << 24)
-        }
-        _ => 0,
-    }
 }
 
 /// Go `DecimalBinSize`: byte length of the fixed-length binary for
@@ -310,143 +261,20 @@ impl Decimal {
         precision: i32,
         frac: i32,
     ) -> Result<(Decimal, usize, Option<DecimalCodecWarning>), DecimalCodecFailure> {
-        let zero = || DecimalCodecFailure {
-            value: Decimal::from_literal("0"),
-            consumed: 0,
-            error: DecimalCodecError::BadNumber,
+        let decoded =
+            tidb_query_datatype::codec::mysql::native_decimal_decode_bin(bin, precision, frac)
+                .map_err(|failure| DecimalCodecFailure {
+                    value: Decimal::from_literal("0"),
+                    consumed: failure.consumed,
+                    error: failure.error,
+                })?;
+        let words = MyDecimalWords {
+            negative: decoded.negative,
+            digits_int: decoded.digits_int,
+            digits_frac: decoded.digits_frac,
+            word_buf: decoded.words,
         };
-        if bin.is_empty() {
-            return Err(zero());
-        }
-        let digits_int = precision - frac;
-        let words_int = digits_int / DIGITS_PER_WORD as i32;
-        let leading_digits = digits_int - words_int * DIGITS_PER_WORD as i32;
-        let mut words_frac = frac / DIGITS_PER_WORD as i32;
-        let mut trailing_digits = frac - words_frac * DIGITS_PER_WORD as i32;
-        let mut words_int_to = words_int;
-        if leading_digits > 0 {
-            words_int_to += 1;
-        }
-        let mut words_frac_to = words_frac;
-        if trailing_digits > 0 {
-            words_frac_to += 1;
-        }
-
-        // Sign lives in the top bit of the first byte (0 => negative).
-        let mask: i32 = if bin[0] & 0x80 > 0 { 0 } else { -1 };
-        let bin_size = decimal_bin_size(precision, frac)
-            .map_err(|error| DecimalCodecFailure { error, ..zero() })?;
-        if bin_size > 40 {
-            return Err(DecimalCodecFailure {
-                value: Decimal::from_literal("0"),
-                consumed: 0,
-                error: DecimalCodecError::BadNumber,
-            });
-        }
-
-        // Private copy with the sign bit restored (Go pads to 40 then slices;
-        // only [0..bin_size] is ever read). Keep this fixed-size buffer on the
-        // stack: DecodeDecimal is on the hot row-response path and the Go
-        // MyDecimal decoder does not allocate a payload-sized buffer.
-        let mut buf = [0u8; 40];
-        let n = bin.len().min(bin_size);
-        buf[..n].copy_from_slice(&bin[..n]);
-        buf[0] ^= 0x80;
-
-        let mut bin_idx = 0usize;
-        let mut warning: Option<DecimalCodecWarning> = None;
-        let old_words_int_to = words_int_to;
-        let (fixed_int, fixed_frac, warn) =
-            fix_word_cnt_error(words_int_to as usize, words_frac_to as usize);
-        words_int_to = fixed_int as i32;
-        words_frac_to = fixed_frac as i32;
-        if warn.is_some() {
-            warning = warn;
-            if words_int_to < old_words_int_to {
-                bin_idx += DIG2BYTES[leading_digits as usize]
-                    + (words_int - words_int_to) as usize * CODEC_WORD_SIZE;
-            } else {
-                trailing_digits = 0;
-                words_frac = words_frac_to;
-            }
-        }
-
-        let mut w = MyDecimalWords {
-            negative: mask != 0,
-            digits_int: words_int * DIGITS_PER_WORD as i32 + leading_digits,
-            digits_frac: words_frac * DIGITS_PER_WORD as i32 + trailing_digits,
-            word_buf: [0i32; CODEC_WORD_BUF_LEN],
-        };
-
-        let mut word_idx = 0usize;
-        if leading_digits > 0 {
-            let i = DIG2BYTES[leading_digits as usize];
-            let x = read_word(&buf[bin_idx..], i);
-            bin_idx += i;
-            w.word_buf[word_idx] = x ^ mask;
-            if u64::from(w.word_buf[word_idx] as u32)
-                >= u64::from(CODEC_POWERS10[leading_digits as usize + 1] as u32)
-            {
-                return Err(DecimalCodecFailure {
-                    value: Decimal::from_literal("0"),
-                    consumed: bin_size,
-                    error: DecimalCodecError::BadNumber,
-                });
-            }
-            if word_idx > 0 || w.word_buf[word_idx] != 0 {
-                word_idx += 1;
-            } else {
-                w.digits_int -= leading_digits;
-            }
-        }
-
-        let stop = bin_idx + words_int as usize * CODEC_WORD_SIZE;
-        while bin_idx < stop {
-            w.word_buf[word_idx] = read_word(&buf[bin_idx..], CODEC_WORD_SIZE) ^ mask;
-            if w.word_buf[word_idx] as u32 > CODEC_WORD_MAX as u32 {
-                return Err(DecimalCodecFailure {
-                    value: Decimal::from_literal("0"),
-                    consumed: bin_size,
-                    error: DecimalCodecError::BadNumber,
-                });
-            }
-            if word_idx > 0 || w.word_buf[word_idx] != 0 {
-                word_idx += 1;
-            } else {
-                w.digits_int -= DIGITS_PER_WORD as i32;
-            }
-            bin_idx += CODEC_WORD_SIZE;
-        }
-
-        let stop = bin_idx + words_frac as usize * CODEC_WORD_SIZE;
-        while bin_idx < stop {
-            w.word_buf[word_idx] = read_word(&buf[bin_idx..], CODEC_WORD_SIZE) ^ mask;
-            if w.word_buf[word_idx] as u32 > CODEC_WORD_MAX as u32 {
-                return Err(DecimalCodecFailure {
-                    value: Decimal::from_literal("0"),
-                    consumed: bin_size,
-                    error: DecimalCodecError::BadNumber,
-                });
-            }
-            word_idx += 1;
-            bin_idx += CODEC_WORD_SIZE;
-        }
-
-        if trailing_digits > 0 {
-            let i = DIG2BYTES[trailing_digits as usize];
-            let x = read_word(&buf[bin_idx..], i);
-            w.word_buf[word_idx] =
-                (x ^ mask) * CODEC_POWERS10[DIGITS_PER_WORD - trailing_digits as usize];
-            if w.word_buf[word_idx] as u32 > CODEC_WORD_MAX as u32 {
-                return Err(DecimalCodecFailure {
-                    value: Decimal::from_literal("0"),
-                    consumed: bin_size,
-                    error: DecimalCodecError::BadNumber,
-                });
-            }
-        }
-
-        Ok((w.to_decimal(), bin_size, warning))
+        Ok((words.to_decimal(), decoded.consumed, decoded.warning))
     }
 
     /// Go `MyDecimal.MarshalJSON`'s exact persistence object.

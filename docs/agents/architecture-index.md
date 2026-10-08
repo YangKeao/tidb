@@ -197,6 +197,7 @@ Hard requirements remain in the repository root `AGENTS.md`.
 4. Confirm neighboring modules only if call chain crosses boundaries.
 
 ## Common Cross-Module Paths
+- Decimal fixed binary storage: TiKV `tidb_query_datatype::codec::mysql::native_decimal_codec` owns size/write/decode word algorithms; TiDB `rust/crates/tidb-datatype/src/decimal/codec.rs` retains the concrete `Decimal`/failure projection.
 - Planner -> Executor -> Expression for query semantics.
 - Outer-join null-rejection proofs: `rust/crates/tidb-expr/src/expression.rs::is_null_rejected_in` folds nullified constants against the caller's `Columns`; `rust/crates/tidb-planner/src/logical/{rule_outer_to_inner_join.rs,join.rs}` supply `RuleContext::eval_context` or the function builder's fold context.
 - Session/Variables -> Executor for user-visible runtime behavior.
