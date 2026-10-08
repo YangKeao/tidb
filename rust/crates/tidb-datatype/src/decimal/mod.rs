@@ -33,11 +33,10 @@ use tidb_query_datatype::codec::mysql::{
 // SmallVec's spill path, so this does not change the supported precision.
 const INLINE_DECIMAL_DIGITS: usize = 24;
 
-/// The unsigned coefficient behind [`Decimal`]. Go's `MyDecimal` keeps its
-/// base-1e9 words in the value itself, so ordinary chunk reads and datum
-/// copies do not allocate. Keeping the common coefficient size inline gives
-/// this value layer the same property while the `SmallVec` spill path retains
-/// the complete DECIMAL precision range.
+/// Private construction/math adapter for SDK-owned coefficient storage.
+/// `Decimal` itself owns `NativeDecimalParseValue`; this helper only preserves
+/// the native inline width while local public-API adapters build intermediate
+/// coefficients.
 #[derive(Clone, Debug)]
 struct DecimalDigits(SmallVec<[u8; INLINE_DECIMAL_DIGITS]>);
 
@@ -907,18 +906,13 @@ impl Decimal {
     /// `target_scale` fractional digits — `AVG`'s `SUM / COUNT`, where MySQL
     /// grows the result scale by the caller's `div_precision_increment`
     /// rather than dividing
-    /// exactly. Computes one extra digit of precision via the same unsigned
-    /// long division `div_rem` uses, then rounds that spare digit away
-    /// (ties away from zero, matching every other decimal-to-integer rounding
-    /// rule this crate implements) — unlike `div_rem`, which truncates.
+    /// exactly. Delegates to the shared MySQL decimal division owner with the
+    /// increment implied by `target_scale`; unlike integer `DIV`, this rounds.
     /// `target_scale` must be `>= self.scale` (always true for `AVG`, which
     /// only grows scale).
     pub fn div_round(&self, divisor: i64, target_scale: u32) -> Decimal {
-        let increment = target_scale - self.scale();
-        let storage_scale = word_scale(self.storage_scale() + increment);
-        let numerator = pad_scale(self.digits(), self.storage_scale(), storage_scale);
-        let (quotient, _) = digit_divmod(&numerator, &divisor.to_string());
-        Decimal::new_with_storage(self.is_negative(), quotient, target_scale, storage_scale)
+        self.true_div(&Decimal::from_int(divisor), target_scale)
+            .expect("AVG divisor is positive")
     }
 
     /// True (rounding) division by an arbitrary `Decimal` divisor — MySQL's
@@ -1290,24 +1284,6 @@ fn strip_leading_zeros(s: &str) -> String {
     }
 }
 
-/// Unsigned schoolbook long division: `a` divided by `b` (`b` assumed
-/// nonzero), producing the truncated integer quotient and the remainder —
-/// one digit of `a` at a time, finding each quotient digit (0-9) by repeated
-/// subtraction (never more than 9 iterations per digit).
-fn digit_divmod(a: &str, b: &str) -> (String, String) {
-    let mut quotient = String::with_capacity(a.len());
-    let mut rem = "0".to_string();
-    for ch in a.bytes() {
-        rem = strip_leading_zeros(&format!("{rem}{}", ch as char));
-        let mut count = 0u8;
-        while digit_cmp(&rem, b) != Ordering::Less {
-            rem = strip_leading_zeros(&digit_sub(&rem, b));
-            count += 1;
-        }
-        quotient.push((b'0' + count) as char);
-    }
-    (strip_leading_zeros(&quotient), rem)
-}
 pub(crate) mod codec;
 
 use codec::{MyDecimalWords, CODEC_POWERS10, CODEC_WORD_BUF_LEN, DIGITS_PER_WORD};
