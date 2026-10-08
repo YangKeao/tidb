@@ -1,5 +1,6 @@
 {
-  "checkpoint_id": "legacy-cast-duration-181",
+  "checkpoint_id": "cast-remaining-matrix-182",
+  "remaining_cast_matrix_frozen": true,
   "legacy_duration_cast_shared": true,
   "legacy_json_scalar_cast_shared": true,
   "legacy_numeric_prefix_shared": true,

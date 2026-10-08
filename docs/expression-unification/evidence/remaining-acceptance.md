@@ -74,6 +74,8 @@ R178 removes the seven native source-specific UNION CAST policy bodies; see [UNI
 
 R179 deletes six legacy `SimpleSig::*AsDecimal` conversion bodies; see [legacy DECIMAL CAST](legacy-cast-decimal-checkpoint.md). Other direct legacy CAST targets still block whole-family credit. Functional239/245, strict0 and remaining6 stay unchanged.
 
+R188 freezes the exact remaining direct CAST surface and compatibility blockers; see [remaining CAST matrix](cast-remaining-matrix.md). It intentionally claims no family credit and prevents generic time conversion from hiding lost metadata/`now` semantics.
+
 R183 deletes three legacy Real/Decimal/String-to-integer bodies; see [legacy integer CAST](legacy-cast-integer-checkpoint.md). Whole CAST remains blocked; 239/245 strict0 remaining6.
 
 R182 deletes six legacy `SimpleSig::*AsString` conversion bodies; see [legacy STRING CAST](legacy-cast-string-checkpoint.md). Other direct legacy CAST targets still block whole-family credit. Functional239/245, strict0 and remaining6 stay unchanged.
