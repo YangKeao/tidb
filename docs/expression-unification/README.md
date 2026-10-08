@@ -1,7 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **cast-complete-184**. Functional **240/245 (97.96%)**, strict **0**, remaining **5**.
+Current paired checkpoint **final-five-exceptions-185**. Functional **240/245 (97.96%)**, strict **0**.
 
-Frozen family `cast` is functionally TiKV-only across implemented AST/typed/PB/vector/helper/Unistore routes. Native retains only child/NULL/Datum/error/context effects and full-width i128 identity projection. Explicit unsupported exceptions are documented without fallback. [Evidence](evidence/cast-complete-checkpoint.md) · [receipts](logs/cast-complete-summary.txt).
+The 90% functional target is met. The final five frozen families are individually deferred without credit or hidden fallback: JSON schema validation, two plan decoders, SQL digest normalization, and password-strength policy. [Exception contracts](evidence/final-five-exceptions.md).
 
-Two focused gates GREEN. R100, M2/root/live-DAG and broad final gates remain. Goal active.
+This checkpoint is a five-agent read-only audit and changes no production code; no Cargo tests were run. M6 lint, broad gates, lifecycle/type acceptance and PR readiness remain active.
