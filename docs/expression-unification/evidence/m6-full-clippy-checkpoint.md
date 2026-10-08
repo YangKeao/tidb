@@ -2,7 +2,7 @@
 
 `m6-full-clippy-213` closes the workspace gate without editing vendored dependencies.
 
-The reproducible compatibility environment uses GCC 14, force-includes `cstdint`, and wraps CMake 4 so only configure invocations receive `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`. This lets old c-ares, RocksDB and Abseil build while retaining the pinned Rust toolchain. Full repository `make clippy` then exits 0 after all policy gates and workspace targets.
+The reproducible compatibility environment uses GCC 14, force-includes `cstdint`, and wraps CMake 4 so only configure invocations receive `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`. This lets old c-ares, RocksDB and Abseil build while retaining the pinned Rust toolchain. The wrapper dispatches `--build`, `--install`, `--version`, and `-E` unchanged; other calls execute `/usr/bin/cmake "$@" -DCMAKE_POLICY_VERSION_MINIMUM=3.5`. The root command sets `CARGO_TARGET_DIR=<experiment>/target-tikv-gcc14 CC=gcc-14 CXX=g++-14 CXXFLAGS='-include cstdint' CMAKE=<wrapper>` plus the pinned `CARGO_HOME`/`RUSTUP_HOME`, then runs `make clippy`. Full repository clippy exits 0 after all policy gates and workspace targets.
 
 The first complete Rust lint exposed migration-owned debt rather than an environment error. Test-only crate attributes preserve compatibility fixture bodies that intentionally assert only success/error class; production targets retain the repository deny. Function-local allows preserve the exact Go EXP/LOG10 constants instead of replacing them with different rounded Rust constants.
 
