@@ -297,16 +297,27 @@ const NULL_REJECT_REJECT_NULL_TESTS: &[(&str, NullRejectTestMode)] = &[
 /// also tries Go's nullify-then-fold bridge for constant subtrees.
 #[must_use]
 pub fn is_null_rejected(inner_column_ids: &[i64], predicate: &Expression) -> bool {
-    prove_null_rejected(inner_column_ids, predicate, true).non_true
+    is_null_rejected_in(inner_column_ids, predicate, &crate::NoColumns)
+}
+
+/// Context-aware null-rejection proof for planner paths with a live statement.
+#[must_use]
+pub fn is_null_rejected_in(
+    inner_column_ids: &[i64],
+    predicate: &Expression,
+    ctx: &dyn crate::Columns,
+) -> bool {
+    prove_null_rejected(inner_column_ids, predicate, true, ctx).non_true
 }
 
 fn prove_null_rejected(
     inner_column_ids: &[i64],
     expression: &Expression,
     allow_nullified_fold: bool,
+    ctx: &dyn crate::Columns,
 ) -> NullRejectProof {
     if allow_nullified_fold {
-        if let Some(constant) = try_fold_nullified_constant(inner_column_ids, expression) {
+        if let Some(constant) = try_fold_nullified_constant(inner_column_ids, expression, ctx) {
             return proof_from_constant(&constant);
         }
     }
@@ -321,13 +332,13 @@ fn prove_null_rejected(
         Expression::Constant(constant) => {
             if constant.param_marker.is_none() {
                 if let Some(deferred) = constant.deferred_expr.as_deref() {
-                    return prove_null_rejected(inner_column_ids, deferred, false);
+                    return prove_null_rejected(inner_column_ids, deferred, false, ctx);
                 }
             }
             proof_from_constant(constant)
         }
         Expression::ScalarFunction(function) => {
-            prove_null_rejected_function(inner_column_ids, function, allow_nullified_fold)
+            prove_null_rejected_function(inner_column_ids, function, allow_nullified_fold, ctx)
         }
         Expression::Column(_) | Expression::CorrelatedColumn(_) => NullRejectProof::default(),
     }
@@ -337,10 +348,11 @@ fn prove_null_rejected_function(
     inner_column_ids: &[i64],
     function: &ScalarFunction,
     allow_nullified_fold: bool,
+    ctx: &dyn crate::Columns,
 ) -> NullRejectProof {
     let name = function.func_name.lowercase();
     let prove = |argument: &Expression| {
-        prove_null_rejected(inner_column_ids, argument, allow_nullified_fold)
+        prove_null_rejected(inner_column_ids, argument, allow_nullified_fold, ctx)
     };
     match (name, function.args.as_slice()) {
         ("and", [left, right]) => {
@@ -430,6 +442,7 @@ fn prove_null_rejected_function(
 fn try_fold_nullified_constant(
     inner_column_ids: &[i64],
     expression: &Expression,
+    ctx: &dyn crate::Columns,
 ) -> Option<Constant> {
     match expression {
         Expression::Column(column) if inner_column_ids.contains(&column.unique_id) => Some(
@@ -441,7 +454,7 @@ fn try_fold_nullified_constant(
             Some(constant.clone())
         }
         Expression::ScalarFunction(function) => {
-            try_fold_nullified_function(inner_column_ids, function)
+            try_fold_nullified_function(inner_column_ids, function, ctx)
         }
         Expression::Column(_) | Expression::Constant(_) | Expression::CorrelatedColumn(_) => None,
     }
@@ -450,6 +463,7 @@ fn try_fold_nullified_constant(
 fn try_fold_nullified_function(
     inner_column_ids: &[i64],
     function: &ScalarFunction,
+    ctx: &dyn crate::Columns,
 ) -> Option<Constant> {
     let name = function.func_name.lowercase();
     let result_type = function.get_static_type()?.clone();
@@ -457,7 +471,7 @@ fn try_fold_nullified_function(
         // Keep this proof helper's existing variadic domain, including malformed
         // calls, while sharing the runtime worker's pure nullable choice rule.
         for argument in &function.args {
-            let constant = try_fold_nullified_constant(inner_column_ids, argument)?;
+            let constant = try_fold_nullified_constant(inner_column_ids, argument, ctx)?;
             let actual_first = match &constant.value {
                 Datum::Null => None,
                 _ => Some(constant),
@@ -471,7 +485,7 @@ fn try_fold_nullified_function(
     }
     if name == "coalesce" {
         for argument in &function.args {
-            let constant = try_fold_nullified_constant(inner_column_ids, argument)?;
+            let constant = try_fold_nullified_constant(inner_column_ids, argument, ctx)?;
             let actual_candidate = match &constant.value {
                 Datum::Null => None,
                 _ => Some(constant),
@@ -487,14 +501,14 @@ fn try_fold_nullified_function(
         let [condition, when_true, when_false] = function.args.as_slice() else {
             return None;
         };
-        let condition = try_fold_nullified_constant(inner_column_ids, condition)?;
+        let condition = try_fold_nullified_constant(inner_column_ids, condition, ctx)?;
         // A truth coercion error still makes the proof unknown, not ELSE.
         let truth = crate::truthy_of(&condition.value).ok()?;
         let selected = match tidb_query_expr::native_if_choose_branch(truth) {
             tidb_query_expr::NativeIfBranch::Then => when_true,
             tidb_query_expr::NativeIfBranch::Else => when_false,
         };
-        return try_fold_nullified_constant(inner_column_ids, selected);
+        return try_fold_nullified_constant(inner_column_ids, selected, ctx);
     }
     if name == "truncate"
         && result_type.eval_type() == tidb_datatype::EvalType::Int
@@ -507,13 +521,13 @@ fn try_fold_nullified_function(
         // Both Go integer TRUNCATE signatures inspect an unsigned scale's
         // FieldType before evaluating its value. Even a nullable unsigned
         // scale therefore returns X unchanged instead of propagating NULL.
-        return try_fold_nullified_constant(inner_column_ids, function.args.first()?);
+        return try_fold_nullified_constant(inner_column_ids, function.args.first()?, ctx);
     }
 
     let arguments = function
         .args
         .iter()
-        .map(|argument| try_fold_nullified_constant(inner_column_ids, argument))
+        .map(|argument| try_fold_nullified_constant(inner_column_ids, argument, ctx))
         .collect::<Option<Vec<_>>>()?;
     if NULL_REJECT_NULL_PRESERVING_FUNCTIONS.contains(&name)
         && arguments.iter().any(|argument| argument.value.is_null())
@@ -525,7 +539,7 @@ fn try_fold_nullified_function(
         result_type.clone(),
         arguments.into_iter().map(Expression::Constant).collect(),
     ));
-    let value = crate::eval_expression_once(&folded, &crate::NoColumns).ok()?;
+    let value = crate::eval_expression_once(&folded, ctx).ok()?;
     Some(Constant::new(value, result_type))
 }
 
@@ -984,6 +998,35 @@ mod tests {
                 "NULL test {name} is absent from the Go registry"
             );
         }
+    }
+
+    #[test]
+    fn null_rejection_fold_uses_the_live_statement_context() {
+        struct SessionColumns;
+        impl crate::Columns for SessionColumns {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn connection_id(&self) -> Option<u64> {
+                Some(42)
+            }
+        }
+
+        let int_type = FieldType::new(FieldTypeCode::LongLong);
+        let predicate = null_reject_function(
+            "if",
+            int_type.clone().with_unsigned(true),
+            vec![
+                null_reject_predicate("isnull", vec![null_reject_column(1, int_type)]),
+                null_reject_function(
+                    "connection_id",
+                    FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+                    vec![],
+                ),
+                null_reject_uint(0),
+            ],
+        );
+        assert!(!is_null_rejected_in(&[1], &predicate, &SessionColumns));
     }
 
     #[test]

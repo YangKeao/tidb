@@ -198,6 +198,7 @@ Hard requirements remain in the repository root `AGENTS.md`.
 
 ## Common Cross-Module Paths
 - Planner -> Executor -> Expression for query semantics.
+- Outer-join null-rejection proofs: `rust/crates/tidb-expr/src/expression.rs::is_null_rejected_in` folds nullified constants against the caller's `Columns`; `rust/crates/tidb-planner/src/logical/{rule_outer_to_inner_join.rs,join.rs}` supply `RuleContext::eval_context` or the function builder's fold context.
 - Session/Variables -> Executor for user-visible runtime behavior.
 - DDL -> Infoschema/Meta -> Domain for schema lifecycle.
 - Store/KV/DistSQL -> Executor for distributed execution behavior.

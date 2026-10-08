@@ -16,7 +16,7 @@
 //! operator overrides of `ConvertOuterToInnerJoin`.
 
 use tidb_expr::expr_util::substitute::SubstituteOptions;
-use tidb_expr::expression::{is_null_rejected, Expression};
+use tidb_expr::expression::{is_null_rejected_in, Expression};
 
 use crate::find_best_task::LogicalJoinType;
 
@@ -76,7 +76,7 @@ fn convert_join(
             .collect();
         if predicates
             .iter()
-            .any(|predicate| is_null_rejected(&inner_ids, predicate))
+            .any(|predicate| is_null_rejected_in(&inner_ids, predicate, context.eval_context))
         {
             join.join_type = LogicalJoinType::Inner;
         }

@@ -8,4 +8,6 @@ R198 classifies window runtime: `build_window` retains `StmtContext` in `WindowE
 
 R199 closes prepared window integer extraction: `get_uint64_from_constant` resolves `ParamMarker` through the existing `Columns::param_value` channel. Both a focused unit and real `PREPARE NTILE(?)` SQL pass after the retained RED. [R199 receipt](../logs/window-param-marker-summary.txt).
 
-One real context gap remains: null-rejection folding drops available planner `Columns`. A suspected storage-class UTC/default-zone mismatch was not reproduced by the attempted accepted expression, so no fix or claim was made. [R198 receipt](../logs/wrapper-classification-summary.txt).
+R200 closes the final known wrapper-context gap: null-rejection proof and nullified folding now carry explicit `Columns`; outer-to-inner rules use `RuleContext::eval_context`, while join simplification/derivation uses the builder fold context. The compatibility API alone remains intentionally ownerless. A `CONNECTION_ID()` regression moved from retained RED to GREEN and existing planner transformations remain GREEN. [R200 receipt](../logs/null-rejection-context-summary.txt).
+
+A suspected storage-class UTC/default-zone mismatch was not reproduced by the attempted accepted expression, so no fix or claim was made. [R198 receipt](../logs/wrapper-classification-summary.txt).

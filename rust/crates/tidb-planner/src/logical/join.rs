@@ -47,7 +47,7 @@ use tidb_expr::expr_util::normal_form::{
 use tidb_expr::expr_util::predicates::is_mutable_effects_expr;
 use tidb_expr::expr_util::push_not::push_down_not;
 use tidb_expr::expr_util::substitute::{build_not_null_expr, SubstituteOptions};
-use tidb_expr::expression::{is_null_rejected, CorrelatedColumn, Expression};
+use tidb_expr::expression::{is_null_rejected_in, CorrelatedColumn, Expression};
 use tidb_expr::scalar_function::ScalarFunction;
 use tidb_expr::schema::Schema;
 use tidb_expr::simple_expr::{extract_columns, extract_cor_columns};
@@ -646,7 +646,9 @@ impl LogicalJoin {
             }
             // Go `util.IsNullRejected` normalizes every NOT down first.
             let normalized = push_down_not(predicate, builder);
-            if is_null_rejected(&inner_ids, &normalized) {
+            let fallback = tidb_expr::NoColumns;
+            let eval_context = builder.fold_context().unwrap_or(&fallback);
+            if is_null_rejected_in(&inner_ids, &normalized, eval_context) {
                 join.join_type = LogicalJoinType::Inner;
                 return;
             }
@@ -1142,9 +1144,7 @@ impl LogicalJoin {
         let stats = match self.join_type {
             LogicalJoinType::AntiSemi if self.preserved_side_unscaled => StatsInfo::new(
                 left.row_count(),
-                left.col_ndvs()
-                    .iter()
-                    .map(|(id, ndv)| (*id, *ndv)),
+                left.col_ndvs().iter().map(|(id, ndv)| (*id, *ndv)),
             ),
             LogicalJoinType::Semi | LogicalJoinType::AntiSemi => StatsInfo::new(
                 left.row_count() * SELECTION_FACTOR,
@@ -1311,7 +1311,9 @@ fn derive_not_null(
     opts: &SubstituteOptions<'_>,
 ) -> Option<Expression> {
     let inner_ids: Vec<i64> = schema.columns.iter().map(|c| c.unique_id).collect();
-    if !is_null_rejected(&inner_ids, predicate) {
+    let fallback = tidb_expr::NoColumns;
+    let eval_context = opts.builder.fold_context().unwrap_or(&fallback);
+    if !is_null_rejected_in(&inner_ids, predicate, eval_context) {
         return None;
     }
     let already_not_null = column
