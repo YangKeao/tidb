@@ -4503,8 +4503,8 @@ mod tests {
             chunk.append_datum(0, &Datum::Int(7));
         }
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -5992,8 +5992,8 @@ fn coalesce_keeps_typed_temporal_projection_raw_fsp_and_late_string_cast() {
         ];
         ScalarFunction::new(CiString::new("coalesce"), ret_type, args).eval(columns, empty.to_row())
     };
-    let owner = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(
+    let owner = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
             1,
             1,
             16 * 1024 * 1024,

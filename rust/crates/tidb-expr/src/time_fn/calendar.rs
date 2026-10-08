@@ -970,8 +970,8 @@ fn timestamp_diff_entries_keep_cast_order_and_protobuf_null_demand() {
         function.eval(columns, empty.to_row())
     };
     let owner = |slots| {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -1213,8 +1213,8 @@ fn str_to_date_entries_keep_lazy_modes_warnings_and_duration_null_cast() {
         .eval(columns, row.to_row())
     };
     let owner = |slots| {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -1626,8 +1626,8 @@ fn date_arithmetic_entries_preserve_operand_order_and_context_profiles() {
         assert!(evaluate(entry, "DAY", 1, false, &ctx, &ctx).is_err());
         assert_eq!(*ctx.events.borrow(), children(entry));
     }
-    let owner = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(
+    let owner = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,

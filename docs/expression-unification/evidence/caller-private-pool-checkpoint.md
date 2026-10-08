@@ -4,7 +4,7 @@ This validates private foundations, not SQL activation or a complete migrated fa
 
 ## Included changes
 
-- Private `tikv/evaluated_ascii.rs` and its tests: real C4 workers, root-stable bounded reservation ledger, explicit scopes and63 existing Columns forwarders. No general evaluator hook, native fallback, capability discovery or native ASCII deletion.
+- Private `tikv/ready_value.rs` and its tests: real C4 workers, root-stable bounded reservation ledger, explicit scopes and63 existing Columns forwarders. No general evaluator hook, native fallback, capability discovery or native ASCII deletion.
 - Two independently identified correctness defects, both actually RED before the repair: inconsistent epoch/debt observation and cached reuse after an accounting-mutex poison that had not yet reached the separate atomic flag. Parent changed only `check_epoch` for the repair; subsequent source edits only clarified two accounting comments.
 - Private `tikv/runtime_failure.rs`: original LocalError moved into opaque Arc, identity equality, native-only fixed six-class diagnostics and explicitly optional phase. No public EvalError/SQL renderer wiring; pool/bridge/frontend errors retain separate origins.
 - Source-only GNU allocation observer and bounded Python runner. Rust's unsafe-code prohibition and inherited allocator remain unchanged.

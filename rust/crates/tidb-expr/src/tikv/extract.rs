@@ -293,7 +293,7 @@ mod tests {
 
     use super::super::LocalError;
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn extract_bridge_keeps_six_profiles_and_guarded_continuation_lifetimes() {
@@ -333,9 +333,18 @@ mod tests {
             panic_warning: Cell::new(false),
         };
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };

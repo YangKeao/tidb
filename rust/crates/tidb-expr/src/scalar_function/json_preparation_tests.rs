@@ -210,8 +210,9 @@ fn json_source_preparation_preserves_actual_metadata_and_row_batch_admission() {
             panic!("row/column test must not escape through AST lookup: {name:?}")
         }
     }
-    let owner = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(4, 4, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16).unwrap(),
+    let owner = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(4, 4, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+            .unwrap(),
     )
     .unwrap();
     let execution = owner.begin_execution().unwrap();

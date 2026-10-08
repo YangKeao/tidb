@@ -18,7 +18,7 @@ assert not os.environ.get('LD_PRELOAD') and not os.environ.get('LD_AUDIT')
 binary = args.binary.resolve(strict=True)
 observer = args.observer.resolve(strict=True)
 args.output.mkdir(parents=True, exist_ok=True)
-fixture = 'tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture'
+fixture = 'tikv::ready_value::tests::parent_external_observer_actual_pool_owner_arc_new_fixture'
 control = 'tikv::runtime_failure::tests::six_outer_variants_keep_distinct_classes_and_fixed_messages'
 
 def digest(path):

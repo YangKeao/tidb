@@ -117,7 +117,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn if_null_bridge_keeps_raw_identity_lazy_children_and_stage_authority() {
@@ -163,10 +163,18 @@ mod tests {
             Datum::VectorFloat32(vector),
         ];
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 20)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 20,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&crate::NoColumns, |bound| {
@@ -176,10 +184,7 @@ mod tests {
                     let result = eval_if_null_in(
                         bound,
                         |original| {
-                            assert!(std::ptr::eq(
-                                original.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
+                            assert!(std::ptr::eq(original.ready_value_scope().unwrap(), &scope));
                             first_calls.set(first_calls.get() + 1);
                             Ok(value.clone())
                         },
@@ -188,10 +193,7 @@ mod tests {
                                 matches!(value, Datum::Null),
                                 "a present first value must not demand its second child"
                             );
-                            assert!(std::ptr::eq(
-                                selected.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
+                            assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                             second_calls.set(second_calls.get() + 1);
                             Ok(Datum::Null)
                         },
@@ -219,7 +221,7 @@ mod tests {
                             |selected| {
                                 second_calls.set(second_calls.get() + 1);
                                 assert!(std::ptr::eq(
-                                    selected.evaluated_ascii_scope().unwrap(),
+                                    selected.ready_value_scope().unwrap(),
                                     &scope
                                 ));
                                 // Intervening actual C4 work replaces the parked head
@@ -282,11 +284,11 @@ mod tests {
             eval_if_null_in(
                 &crate::NoColumns,
                 |original| {
-                    assert!(original.evaluated_ascii_scope().is_none());
+                    assert!(original.ready_value_scope().is_none());
                     Ok(Datum::Null)
                 },
                 |selected| {
-                    assert!(selected.evaluated_ascii_scope().is_some());
+                    assert!(selected.ready_value_scope().is_some());
                     Ok(Datum::Int(7))
                 },
             ),

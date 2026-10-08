@@ -36,7 +36,7 @@ fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
     match error {
         tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
         tidb_query_expr::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit("native INTERVAL frame allocation or size failed".into()),
                 None,
             ))
@@ -215,7 +215,7 @@ mod tests {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn interval_bridge_keeps_selected_scope_lazy_demand_and_original_coercion_callbacks() {
@@ -241,9 +241,18 @@ mod tests {
             panic_truncate: Cell::new(false),
         };
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };

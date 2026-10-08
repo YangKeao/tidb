@@ -479,8 +479,8 @@ fn update_and_delete_through_the_session() {
 // Explicit test limits, not production defaults. The activation regressions
 // below exercise real SQL columns; the remaining lifecycle probes also use the
 // already-evaluated value API. Neither is whole-family migration evidence.
-fn ascii_session_policy(workers: usize) -> tidb_executor::AsciiPoolPolicy {
-    tidb_executor::AsciiPoolPolicy::checked(
+fn ready_value_session_policy(workers: usize) -> tidb_executor::ReadyValuePoolPolicy {
+    tidb_executor::ReadyValuePoolPolicy::checked(
         workers,
         workers.min(1),
         1 << 24,
@@ -493,11 +493,13 @@ fn ascii_session_policy(workers: usize) -> tidb_executor::AsciiPoolPolicy {
     .unwrap()
 }
 
-fn ascii_session_execution(context: &tidb_executor::StmtContext) -> tidb_executor::AsciiExecution {
-    context.evaluated_ascii_execution().unwrap().clone()
+fn ready_value_session_execution(
+    context: &tidb_executor::StmtContext,
+) -> tidb_executor::ReadyValueExecution {
+    context.ready_value_execution().unwrap().clone()
 }
 
-fn ascii_session_rows(session: &mut Session, sql: &str) -> StatementRecordSet {
+fn ready_value_session_rows(session: &mut Session, sql: &str) -> StatementRecordSet {
     let statement = session.parse_statement(sql).unwrap();
     match session.open_record_set_parsed(statement, sql).unwrap() {
         OpenedStatement::Rows(rows) => rows,
@@ -505,13 +507,13 @@ fn ascii_session_rows(session: &mut Session, sql: &str) -> StatementRecordSet {
     }
 }
 
-fn assert_ascii_session_failure(
-    execution: &tidb_executor::AsciiExecution,
+fn assert_ready_value_session_failure(
+    execution: &tidb_executor::ReadyValueExecution,
     expected: tidb_executor::ExpressionAdapterFailureClass,
 ) {
     // Never probe an old held worker for staleness: doing so would actively
     // dispose of its cached worker and invalidate the late-debt experiment.
-    match execution.scope().evaluate_value(&Datum::Null) {
+    match execution.scope().evaluate_ascii_value(&Datum::Null) {
         Err(tidb_executor::EvalError::ExpressionAdapterFailure(failure)) => {
             assert_eq!(failure.class(), expected);
             assert_eq!(
@@ -523,20 +525,23 @@ fn assert_ascii_session_failure(
     }
 }
 
-fn assert_ascii_session_live(execution: &tidb_executor::AsciiExecution) {
+fn assert_ready_value_session_live(execution: &tidb_executor::ReadyValueExecution) {
     assert_eq!(
-        execution.scope().evaluate_value(&Datum::Null).unwrap(),
+        execution
+            .scope()
+            .evaluate_ascii_value(&Datum::Null)
+            .unwrap(),
         Datum::Null
     );
 }
 
 #[test]
-fn evaluated_ascii_session_installation_is_busy_safe_and_zero_slots_reject_sql() {
+fn ready_value_session_installation_is_busy_safe_and_zero_slots_reject_sql() {
     let mut session = Session::new();
     for is_dml in [false, true] {
         assert!(session
             .statement_context(is_dml)
-            .evaluated_ascii_execution()
+            .ready_value_execution()
             .is_none());
     }
     session
@@ -551,25 +556,25 @@ fn evaluated_ascii_session_installation_is_busy_safe_and_zero_slots_reject_sql()
     session
         .run_with_columns_using("SELECT 1", false, |session| {
             assert!(!session
-                .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+                .try_install_ready_value_policy(ready_value_session_policy(0))
                 .unwrap());
             for is_dml in [false, true] {
                 assert!(session
                     .statement_context(is_dml)
-                    .evaluated_ascii_execution()
+                    .ready_value_execution()
                     .is_none());
             }
             session.execute_statement("SELECT 1")
         })
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     assert!(!session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     assert!(session
-        .evaluated_ascii_runtime
+        .ready_value_runtime
         .latest_execution_for_test()
         .is_none());
 
@@ -605,11 +610,11 @@ fn evaluated_ascii_session_installation_is_busy_safe_and_zero_slots_reject_sql()
     }
     assert!(session
         .statement_context(false)
-        .evaluated_ascii_execution()
+        .ready_value_execution()
         .is_none());
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
@@ -617,7 +622,7 @@ fn evaluated_ascii_session_installation_is_busy_safe_and_zero_slots_reject_sql()
 }
 
 #[test]
-fn evaluated_ascii_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
+fn ready_value_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
     let mut session = Session::new();
     // One serial executor worker fits the explicit one-slot test policy; this
     // is not a claim that one pool slot supports arbitrary operator parallelism.
@@ -631,7 +636,7 @@ fn evaluated_ascii_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
         .run("INSERT INTO ascii_one_slot VALUES (1,NULL),(2,X''),(3,X'FF'),(4,X'C3A9'),(5,X'E4B8AD'),(6,X'41')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // v is a stored column, not a foldable literal. Multibyte values answer the
@@ -658,10 +663,10 @@ fn evaluated_ascii_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
 }
 
 #[test]
-fn evaluated_ascii_session_contexts_and_cow_borrow_one_live_execution() {
+fn ready_value_session_contexts_and_cow_borrow_one_live_execution() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let mut saved = Vec::new();
     session
@@ -673,28 +678,37 @@ fn evaluated_ascii_session_contexts_and_cow_borrow_one_live_execution() {
             let configured = query.clone().configure(|context| {
                 let _ = context.with_max_allowed_packet(128);
             });
-            let held = query.evaluated_ascii_execution().unwrap().scope();
+            let held = query.ready_value_execution().unwrap().scope();
             assert_eq!(
-                held.evaluate_value(&Datum::Bytes(b"A".to_vec())).unwrap(),
+                held.evaluate_ascii_value(&Datum::Bytes(b"A".to_vec()))
+                    .unwrap(),
                 Datum::Int(65)
             );
             let repeated = session.statement_context(false);
             drop(session.statement_context(true));
-            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            assert_eq!(
+                held.evaluate_ascii_value(&Datum::Null).unwrap(),
+                Datum::Null
+            );
             drop(held);
             assert_eq!(query.executor_chunk_sizes(), original_sizes);
             assert_eq!(cow.executor_chunk_sizes(), (7, 23));
             for context in [query.clone(), query, dml, cow, configured, repeated] {
                 let columns: &dyn tidb_executor::Columns = &context;
-                assert!(columns.evaluated_ascii_scope().is_none());
+                assert!(columns.ready_value_scope().is_none());
                 assert!(std::ptr::eq(
-                    columns.evaluated_ascii_execution().unwrap(),
-                    context.evaluated_ascii_execution().unwrap()
+                    columns.ready_value_execution().unwrap(),
+                    context.ready_value_execution().unwrap()
                 ));
-                let scope = context.evaluated_ascii_execution().unwrap().scope();
-                assert_eq!(scope.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+                let scope = context.ready_value_execution().unwrap().scope();
                 assert_eq!(
-                    scope.evaluate_value(&Datum::Bytes(vec![255])).unwrap(),
+                    scope.evaluate_ascii_value(&Datum::Null).unwrap(),
+                    Datum::Null
+                );
+                assert_eq!(
+                    scope
+                        .evaluate_ascii_value(&Datum::Bytes(vec![255]))
+                        .unwrap(),
                     Datum::Int(255)
                 );
                 saved.push(context);
@@ -703,15 +717,15 @@ fn evaluated_ascii_session_contexts_and_cow_borrow_one_live_execution() {
         })
         .unwrap();
     for context in saved {
-        assert_ascii_session_failure(
-            context.evaluated_ascii_execution().unwrap(),
+        assert_ready_value_session_failure(
+            context.ready_value_execution().unwrap(),
             tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
         );
     }
 }
 
 #[test]
-fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
+fn ready_value_real_execute_and_import_borrow_the_outer_execution() {
     let mut session = Session::new();
     session
         .run("CREATE TABLE ascii_updates (id INT PRIMARY KEY, v INT)")
@@ -729,7 +743,7 @@ fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
     session.run("EXECUTE ascii_update USING @v,@id").unwrap();
     session.run("SET @v=22, @id=2").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for (sql, affected) in [
         ("EXECUTE ascii_update USING @v,@id", 1),
@@ -741,9 +755,12 @@ fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
         let mut captured = None;
         let (output, _) = session
             .run_with_columns_using(sql, false, |session| {
-                let execution = ascii_session_execution(&session.statement_context(false));
+                let execution = ready_value_session_execution(&session.statement_context(false));
                 let held = execution.scope();
-                assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+                assert_eq!(
+                    held.evaluate_ascii_value(&Datum::Null).unwrap(),
+                    Datum::Null
+                );
                 let output = session.execute_statement(sql)?;
                 if sql.starts_with("EXECUTE") {
                     assert!(
@@ -752,9 +769,10 @@ fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
                     );
                 }
                 // IMPORT executes both its COUNT precheck and INSERT SELECT through
-                // self.run; none of those inner reset/finish calls owns this epoch.
+                // self.run; none of those inner reset/finish calls owns this execution.
                 assert_eq!(
-                    held.evaluate_value(&Datum::Bytes(b"Z".to_vec())).unwrap(),
+                    held.evaluate_ascii_value(&Datum::Bytes(b"Z".to_vec()))
+                        .unwrap(),
                     Datum::Int(90)
                 );
                 captured = Some(execution);
@@ -762,7 +780,7 @@ fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
             })
             .unwrap();
         assert!(matches!(output, StmtOutput::Affected(count) if count == affected));
-        assert_ascii_session_failure(
+        assert_ready_value_session_failure(
             &captured.unwrap(),
             tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
         );
@@ -774,20 +792,20 @@ fn evaluated_ascii_real_execute_and_import_borrow_the_outer_epoch() {
 }
 
 #[test]
-fn evaluated_ascii_stream_next_eof_and_cancellation_do_not_close() {
+fn ready_value_stream_next_eof_and_cancellation_do_not_close() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
-    let mut rows = ascii_session_rows(&mut session, "SELECT 1");
-    let execution = ascii_session_execution(rows.context_for_test());
+    let mut rows = ready_value_session_rows(&mut session, "SELECT 1");
+    let execution = ready_value_session_execution(rows.context_for_test());
     let mut chunk = rows.new_chunk();
     rows.next(&mut session, &mut chunk).unwrap();
     assert_eq!(chunk.num_rows(), 1);
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     rows.next(&mut session, &mut chunk).unwrap();
     assert_eq!(chunk.num_rows(), 0);
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     let cancellation = session.begin_query_cancellation();
     cancellation.cancel();
     // The record set is NOT finished: this is the real native cancellation
@@ -799,10 +817,10 @@ fn evaluated_ascii_stream_next_eof_and_cancellation_do_not_close() {
             .code,
         1317
     );
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     drop(cancellation);
     rows.finish(&mut session).unwrap();
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
@@ -812,7 +830,7 @@ fn evaluated_ascii_stream_next_eof_and_cancellation_do_not_close() {
 }
 
 #[test]
-fn evaluated_ascii_retain_and_finish_native_errors_still_close() {
+fn ready_value_retain_and_finish_native_errors_still_close() {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     let mut session = Session::new();
     session
@@ -822,11 +840,11 @@ fn evaluated_ascii_retain_and_finish_native_errors_still_close() {
         .run("INSERT INTO ascii_finish_error VALUES (1)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
-    let mut rows = ascii_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
-    let execution = ascii_session_execution(rows.context_for_test());
-    assert_ascii_session_live(&execution);
+    let mut rows = ready_value_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
+    let execution = ready_value_session_execution(rows.context_for_test());
+    assert_ready_value_session_live(&execution);
     let cancellation = session.begin_query_cancellation();
     cancellation.cancel();
     assert_eq!(
@@ -836,16 +854,16 @@ fn evaluated_ascii_retain_and_finish_native_errors_still_close() {
             .code,
         1317
     );
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
     drop(cancellation);
     rows.close(&mut session).unwrap();
 
-    let mut rows = ascii_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
-    let execution = ascii_session_execution(rows.context_for_test());
-    assert_ascii_session_live(&execution);
+    let mut rows = ready_value_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
+    let execution = ready_value_session_execution(rows.context_for_test());
+    assert_ready_value_session_live(&execution);
     // A real native transaction-finish error, not a substituted RS or C4
     // factory: AutocommitRead cannot acquire this deliberately poisoned catalog.
     let catalog = session.shared_catalog();
@@ -858,7 +876,7 @@ fn evaluated_ascii_retain_and_finish_native_errors_still_close() {
         rows.finish(&mut session),
         Err(DriverError::CatalogPoisoned)
     ));
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
@@ -867,82 +885,99 @@ fn evaluated_ascii_retain_and_finish_native_errors_still_close() {
 }
 
 #[test]
-fn evaluated_ascii_detached_old_close_preserves_new_epoch_and_late_worker_debt() {
+fn ready_value_detached_executions_close_in_isolation_and_preserve_late_worker_debt() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
-    let mut old_rows = ascii_session_rows(&mut session, "SELECT 1");
-    let old_execution = ascii_session_execution(old_rows.context_for_test());
+    let mut old_rows = ready_value_session_rows(&mut session, "SELECT 1");
+    let old_execution = ready_value_session_execution(old_rows.context_for_test());
     let held = old_execution.scope();
-    assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
-    let mut new_rows = ascii_session_rows(&mut session, "SELECT 2");
-    let new_execution = ascii_session_execution(new_rows.context_for_test());
-    assert_ascii_session_failure(
-        &old_execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    assert_eq!(
+        held.evaluate_ascii_value(&Datum::Null).unwrap(),
+        Datum::Null
     );
-    assert_ascii_session_failure(
+    let mut new_rows = ready_value_session_rows(&mut session, "SELECT 2");
+    let new_execution = ready_value_session_execution(new_rows.context_for_test());
+    assert_eq!(
+        held.evaluate_ascii_value(&Datum::Null).unwrap(),
+        Datum::Null
+    );
+    assert_ready_value_session_failure(
         &new_execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolResource,
     );
     old_rows.close(&mut session).unwrap();
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
+        &old_execution,
+        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+    );
+    assert_ready_value_session_failure(
         &new_execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolResource,
     );
     // Closing E1 cannot release a worker still owned by a late affine scope.
     drop(held);
-    assert_ascii_session_live(&new_execution);
+    assert_ready_value_session_live(&new_execution);
     drop(old_rows);
-    assert_ascii_session_live(&new_execution);
+    assert_ready_value_session_live(&new_execution);
     new_rows.close(&mut session).unwrap();
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &new_execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
 }
 
 #[test]
-fn evaluated_ascii_attached_detached_and_session_drop_close_captured_epochs() {
+fn ready_value_attached_detached_and_session_drop_close_all_captured_executions() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(2))
         .unwrap());
-    let rows = ascii_session_rows(&mut session, "SELECT 1");
-    let execution = ascii_session_execution(rows.context_for_test());
-    assert_ascii_session_live(&execution);
+    let rows = ready_value_session_rows(&mut session, "SELECT 1");
+    let execution = ready_value_session_execution(rows.context_for_test());
+    assert_ready_value_session_live(&execution);
     drop(OpenedStatement::Rows(rows).attach(&mut session));
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
-    let rows = ascii_session_rows(&mut session, "SELECT 2");
-    let execution = ascii_session_execution(rows.context_for_test());
-    assert_ascii_session_live(&execution);
+    let rows = ready_value_session_rows(&mut session, "SELECT 2");
+    let execution = ready_value_session_execution(rows.context_for_test());
+    assert_ready_value_session_live(&execution);
     drop(rows);
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
-    let rows = ascii_session_rows(&mut session, "SELECT 3");
-    let context = rows.context_for_test().clone();
-    let execution = ascii_session_execution(&context);
-    assert_ascii_session_live(&execution);
+    let first_rows = ready_value_session_rows(&mut session, "SELECT 3");
+    let first_context = first_rows.context_for_test().clone();
+    let first_execution = ready_value_session_execution(&first_context);
+    assert_ready_value_session_live(&first_execution);
+    let second_rows = ready_value_session_rows(&mut session, "SELECT 4");
+    let second_context = second_rows.context_for_test().clone();
+    let second_execution = ready_value_session_execution(&second_context);
+    assert_ready_value_session_live(&second_execution);
+    assert_ready_value_session_live(&first_execution);
     drop(session);
-    assert_ascii_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    assert_ascii_session_failure(
-        context.evaluated_ascii_execution().unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    drop(rows);
+    for execution in [&first_execution, &second_execution] {
+        assert_ready_value_session_failure(
+            execution,
+            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+        );
+    }
+    for context in [&first_context, &second_context] {
+        assert_ready_value_session_failure(
+            context.ready_value_execution().unwrap(),
+            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
+        );
+    }
+    drop(first_rows);
+    drop(second_rows);
 }
 
 #[test]
-fn evaluated_ascii_real_point_get_none_fallback_closes_its_attempt() {
+fn ready_value_real_point_get_none_fallback_closes_its_attempt() {
     let mut session = Session::new();
     session
         .run("CREATE TABLE ascii_point (id INT PRIMARY KEY, v INT)")
@@ -958,15 +993,15 @@ fn evaluated_ascii_real_point_get_none_fallback_closes_its_attempt() {
         .run("ALTER TABLE ascii_point ADD COLUMN added INT")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     assert!(session
         .open_prepared_point_get(execution, prepared.statement(), sql)
         .unwrap()
         .is_none());
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
@@ -976,9 +1011,9 @@ fn evaluated_ascii_real_point_get_none_fallback_closes_its_attempt() {
         panic!("expected fallback rows")
     };
     assert_eq!(rows, vec![vec![Datum::Int(9)]]);
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
@@ -986,14 +1021,14 @@ fn evaluated_ascii_real_point_get_none_fallback_closes_its_attempt() {
 }
 
 #[test]
-fn evaluated_ascii_pre_admission_rejections_preserve_detached_epoch() {
+fn ready_value_admission_rejections_preserve_detached_execution() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
-    let rows = ascii_session_rows(&mut session, "SELECT 1");
-    let execution = ascii_session_execution(rows.context_for_test());
-    assert_ascii_session_live(&execution);
+    let rows = ready_value_session_rows(&mut session, "SELECT 1");
+    let execution = ready_value_session_execution(rows.context_for_test());
+    assert_ready_value_session_live(&execution);
     let metadata_statement = session.parse_statement("SELECT 9").unwrap();
     assert_eq!(
         session
@@ -1002,24 +1037,21 @@ fn evaluated_ascii_pre_admission_rejections_preserve_detached_epoch() {
             .len(),
         1
     );
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     assert!(session.run_with_params("SELECT ?", &[]).is_err());
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     session.enable_sandbox_mode();
     assert_eq!(
         session.run("SELECT 1").unwrap_err().to_mysql_error().code,
         1820
     );
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     // Syntax parsing is post-admission (sandbox lets syntax errors through).
     assert!(session.run("SELECT (").is_err());
-    assert_ascii_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    assert_ascii_session_failure(
+    assert_ready_value_session_live(&execution);
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
@@ -1028,56 +1060,56 @@ fn evaluated_ascii_pre_admission_rejections_preserve_detached_epoch() {
 }
 
 #[test]
-fn evaluated_ascii_materialization_closes_live_epoch_before_retained_replay() {
+fn ready_value_materialization_closes_live_execution_before_retained_replay() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
-    let mut old_rows = ascii_session_rows(&mut session, "SELECT 7");
-    let execution = ascii_session_execution(old_rows.context_for_test());
+    let mut old_rows = ready_value_session_rows(&mut session, "SELECT 7");
+    let execution = ready_value_session_execution(old_rows.context_for_test());
     let authority = session.result_materialization_authority();
-    assert_ascii_session_live(&execution);
+    assert_ready_value_session_live(&execution);
     old_rows.retain_chunks(&mut session).unwrap();
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &execution,
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
-    let mut new_rows = ascii_session_rows(&mut session, "SELECT 8");
-    let new_execution = ascii_session_execution(new_rows.context_for_test());
+    let mut new_rows = ready_value_session_rows(&mut session, "SELECT 8");
+    let new_execution = ready_value_session_execution(new_rows.context_for_test());
     let mut chunk = old_rows.new_chunk();
     old_rows.next(&mut session, &mut chunk).unwrap();
     assert_eq!(chunk.num_rows(), 1);
     old_rows.next(&mut session, &mut chunk).unwrap();
     assert_eq!(chunk.num_rows(), 0);
-    assert_ascii_session_live(&new_execution);
+    assert_ready_value_session_live(&new_execution);
     old_rows.close(&mut session).unwrap();
     drop(old_rows);
     drop(authority);
-    assert_ascii_session_live(&new_execution);
+    assert_ready_value_session_live(&new_execution);
     new_rows.close(&mut session).unwrap();
 }
 
 #[test]
-fn evaluated_ascii_native_epilogue_unwinds_close_live_owning_results() {
+fn ready_value_native_epilogue_unwinds_close_live_owning_results() {
     use crate::record_set::{set_native_epilogue_for_test, NativeEpilogue};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for phase in [
         NativeEpilogue::Next,
         NativeEpilogue::Finish,
         NativeEpilogue::Retain,
     ] {
-        let mut rows = ascii_session_rows(&mut session, "SELECT 1");
-        let execution = ascii_session_execution(rows.context_for_test());
-        assert_ascii_session_live(&execution);
+        let mut rows = ready_value_session_rows(&mut session, "SELECT 1");
+        let execution = ready_value_session_execution(rows.context_for_test());
+        assert_ready_value_session_live(&execution);
         let probe = execution.clone();
         set_native_epilogue_for_test(phase, move || {
             // The real native operation has returned; its epilogue can still
             // use the live C4 capability before unwinding through our guard.
-            assert_ascii_session_live(&probe);
+            assert_ready_value_session_live(&probe);
             panic!("ASCII native epilogue");
         });
         let outcome = catch_unwind(AssertUnwindSafe(|| match phase {
@@ -1098,7 +1130,7 @@ fn evaluated_ascii_native_epilogue_unwinds_close_live_owning_results() {
             Some("ASCII native epilogue")
         );
         // The result object is deliberately still alive after the catcher.
-        assert_ascii_session_failure(
+        assert_ready_value_session_failure(
             &execution,
             tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
         );
@@ -1108,20 +1140,23 @@ fn evaluated_ascii_native_epilogue_unwinds_close_live_owning_results() {
 }
 
 #[test]
-fn evaluated_ascii_borrowed_result_panic_and_close_do_not_own_outer_epoch() {
+fn ready_value_borrowed_result_panic_and_close_do_not_own_outer_execution() {
     use crate::record_set::{set_native_epilogue_for_test, NativeEpilogue};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let mut captured = None;
     session
         .run_with_columns_using("SELECT 1", false, |session| {
-            let execution = ascii_session_execution(&session.statement_context(false));
+            let execution = ready_value_session_execution(&session.statement_context(false));
             let held = execution.scope();
-            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
-            let mut rows = ascii_session_rows(session, "SELECT 1");
+            assert_eq!(
+                held.evaluate_ascii_value(&Datum::Null).unwrap(),
+                Datum::Null
+            );
+            let mut rows = ready_value_session_rows(session, "SELECT 1");
             set_native_epilogue_for_test(NativeEpilogue::Next, || {
                 panic!("borrowed native epilogue")
             });
@@ -1134,29 +1169,35 @@ fn evaluated_ascii_borrowed_result_panic_and_close_do_not_own_outer_epoch() {
                 payload.downcast_ref::<&str>().copied(),
                 Some("borrowed native epilogue")
             );
-            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            assert_eq!(
+                held.evaluate_ascii_value(&Datum::Null).unwrap(),
+                Datum::Null
+            );
             rows.finish(session).unwrap();
             rows.close(session).unwrap();
             drop(rows);
-            assert_eq!(held.evaluate_value(&Datum::Null).unwrap(), Datum::Null);
+            assert_eq!(
+                held.evaluate_ascii_value(&Datum::Null).unwrap(),
+                Datum::Null
+            );
             captured = Some(execution);
             Ok(StmtOutput::Done(true))
         })
         .unwrap();
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         &captured.unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
 }
 
 #[test]
-fn evaluated_ascii_outer_unwind_resets_marker_and_session_roots_are_isolated() {
+fn ready_value_outer_unwind_resets_marker_and_session_roots_are_isolated() {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     let mut session = Session::new();
     let payload = catch_unwind(AssertUnwindSafe(|| {
         let _ = session.run_with_columns_using("SELECT 1", false, |session| {
             assert!(!session
-                .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+                .try_install_ready_value_policy(ready_value_session_policy(1))
                 .unwrap());
             panic!("unconfigured lexical unwind");
         });
@@ -1167,23 +1208,25 @@ fn evaluated_ascii_outer_unwind_resets_marker_and_session_roots_are_isolated() {
         Some("unconfigured lexical unwind")
     );
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Independent sessions must not share a root even with identical policy.
     let mut peer = Session::new();
     assert!(peer
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
-    let peer_rows = ascii_session_rows(&mut peer, "SELECT 2");
-    let peer_execution = ascii_session_execution(peer_rows.context_for_test());
+    let peer_rows = ready_value_session_rows(&mut peer, "SELECT 2");
+    let peer_execution = ready_value_session_execution(peer_rows.context_for_test());
     let peer_scope = peer_execution.scope();
     assert_eq!(
-        peer_scope.evaluate_value(&Datum::Null).unwrap(),
+        peer_scope.evaluate_ascii_value(&Datum::Null).unwrap(),
         Datum::Null
     );
     let payload = catch_unwind(AssertUnwindSafe(|| {
         let _ = session.run_with_columns_using("SELECT 1", false, |session| {
-            assert_ascii_session_live(&ascii_session_execution(&session.statement_context(false)));
+            assert_ready_value_session_live(&ready_value_session_execution(
+                &session.statement_context(false),
+            ));
             panic!("configured lexical unwind");
         });
     }))
@@ -1192,20 +1235,20 @@ fn evaluated_ascii_outer_unwind_resets_marker_and_session_roots_are_isolated() {
         payload.downcast_ref::<&str>().copied(),
         Some("configured lexical unwind")
     );
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
-    let rows = ascii_session_rows(&mut session, "SELECT 3");
-    let execution = ascii_session_execution(rows.context_for_test());
-    assert_ascii_session_live(&execution); // stale true marker would borrow the closed epoch
+    let rows = ready_value_session_rows(&mut session, "SELECT 3");
+    let execution = ready_value_session_execution(rows.context_for_test());
+    assert_ready_value_session_live(&execution); // stale true marker would borrow the closed execution
     drop(rows);
     drop(session);
     assert_eq!(
-        peer_scope.evaluate_value(&Datum::Null).unwrap(),
+        peer_scope.evaluate_ascii_value(&Datum::Null).unwrap(),
         Datum::Null
     );
     drop(peer_scope);
@@ -1213,26 +1256,26 @@ fn evaluated_ascii_outer_unwind_resets_marker_and_session_roots_are_isolated() {
 }
 
 #[test]
-fn evaluated_ascii_unwrapped_public_execute_statement_owns_its_epoch() {
+fn ready_value_unwrapped_public_execute_statement_owns_its_execution() {
     let mut session = Session::new();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     assert!(matches!(
         session.execute_statement("SELECT 1").unwrap(),
         StmtOutput::Rows { .. }
     ));
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
     );
     assert!(session.execute_statement("SELECT (").is_err());
-    assert_ascii_session_failure(
+    assert_ready_value_session_failure(
         session
-            .evaluated_ascii_runtime
+            .ready_value_runtime
             .latest_execution_for_test()
             .unwrap(),
         tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
@@ -1240,7 +1283,7 @@ fn evaluated_ascii_unwrapped_public_execute_statement_owns_its_epoch() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_mixed_string_ops_on_sql_columns() {
+fn ready_value_shared_pool_mixed_string_ops_on_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1257,7 +1300,7 @@ fn evaluated_ascii_shared_pool_mixed_string_ops_on_sql_columns() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Stored columns prevent constant folding. Alternating integer/byte results
@@ -1332,7 +1375,7 @@ fn evaluated_ascii_shared_pool_mixed_string_ops_on_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_all_string_op_columns() {
+fn ready_value_shared_pool_zero_slots_reject_all_string_op_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1344,7 +1387,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_all_string_op_columns() {
         .run("INSERT INTO shared_string_zero VALUES (1,NULL,NULL),(2,X'20FF20','F')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // NULL and non-NULL column calls must both reach the installed pool; neither
@@ -1384,7 +1427,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_all_string_op_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_crc_reverse_char_length_quote_sql_values() {
+fn ready_value_shared_pool_crc_reverse_char_length_quote_sql_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1404,7 +1447,7 @@ fn evaluated_ascii_shared_pool_crc_reverse_char_length_quote_sql_values() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Dynamic stored columns distinguish binary byte reversal/counting from
@@ -1462,7 +1505,7 @@ fn evaluated_ascii_shared_pool_crc_reverse_char_length_quote_sql_values() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_crc_reverse_char_length_quote() {
+fn ready_value_shared_pool_zero_slots_reject_crc_reverse_char_length_quote() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1478,7 +1521,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_crc_reverse_char_length_quote()
         .run("INSERT INTO shared_text_zero VALUES (1,NULL,NULL),(2,X'C3A9E4B8AD','é中')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     for (function, column) in [
@@ -1517,7 +1560,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_crc_reverse_char_length_quote()
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_hex_bin_left_right_replace_sql_values() {
+fn ready_value_shared_pool_hex_bin_left_right_replace_sql_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1541,7 +1584,7 @@ fn evaluated_ascii_shared_pool_hex_bin_left_right_replace_sql_values() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Every expression consumes a stored column. One slot switches between
@@ -1609,7 +1652,7 @@ fn evaluated_ascii_shared_pool_hex_bin_left_right_replace_sql_values() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
+fn ready_value_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1630,7 +1673,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Do not wrap LEFT/RIGHT/REPLACE in HEX here: HEX's own refusal must not
@@ -1674,7 +1717,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_bitwise_sql_values_and_original_metadata() {
+fn ready_value_shared_pool_bitwise_sql_values_and_original_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1691,7 +1734,7 @@ fn evaluated_ascii_shared_pool_bitwise_sql_values_and_original_metadata() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Actual operator syntax plus the named BIT_COUNT call, all on columns.
@@ -1776,7 +1819,7 @@ fn evaluated_ascii_shared_pool_bitwise_sql_values_and_original_metadata() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_bitwise_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_bitwise_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1788,7 +1831,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_bitwise_sql_columns() {
         .run("INSERT INTO shared_bit_zero VALUES (1,NULL,NULL,NULL),(2,9223372036854775808,-1,63)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct expressions, with no migrated outer function that could conceal
@@ -1830,7 +1873,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_bitwise_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_predicate_sql_values_and_null_truth_table() {
+fn ready_value_shared_pool_predicate_sql_values_and_null_truth_table() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1842,7 +1885,7 @@ fn evaluated_ascii_shared_pool_predicate_sql_values_and_null_truth_table() {
         .run("INSERT INTO shared_pred_ops VALUES (1,NULL),(2,0),(3,2),(4,-3)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // IS [NOT] UNKNOWN is already parsed as IS [NOT] NULL. The internal
@@ -1897,7 +1940,7 @@ fn evaluated_ascii_shared_pool_predicate_sql_values_and_null_truth_table() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_predicate_sql_columns_and_filters() {
+fn ready_value_shared_pool_zero_slots_reject_predicate_sql_columns_and_filters() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1909,7 +1952,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_predicate_sql_columns_and_filte
         .run("INSERT INTO shared_pred_zero VALUES (1,NULL),(2,2)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     let mut statements = Vec::new();
@@ -1966,7 +2009,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_predicate_sql_columns_and_filte
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
+fn ready_value_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1986,7 +2029,7 @@ fn evaluated_ascii_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let output = session
@@ -2056,7 +2099,7 @@ fn evaluated_ascii_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2072,7 +2115,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
         .run("INSERT INTO shared_hash_zero VALUES (1,NULL,NULL),(2,X'FF','é中')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct calls on both declared input kinds, not HEX(hash(...)) or another
@@ -2105,7 +2148,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_logical_sql_full_three_valued_table() {
+fn ready_value_shared_pool_logical_sql_full_three_valued_table() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2122,7 +2165,7 @@ fn evaluated_ascii_shared_pool_logical_sql_full_three_valued_table() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Stored nullable operands keep the complete 3x3 truth table live at
@@ -2155,7 +2198,7 @@ fn evaluated_ascii_shared_pool_logical_sql_full_three_valued_table() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_logical_sql_left_states() {
+fn ready_value_shared_pool_zero_slots_reject_logical_sql_left_states() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2167,7 +2210,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_logical_sql_left_states() {
         .run("INSERT INTO shared_logic_zero VALUES (1,NULL,-3),(2,0,-3),(3,2,-3)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Each operation gets NULL, zero and nonzero left columns. In particular,
@@ -2201,7 +2244,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_logical_sql_left_states() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_inet_sql_nullable_text_integer_and_binary_values() {
+fn ready_value_shared_pool_inet_sql_nullable_text_integer_and_binary_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2226,7 +2269,7 @@ fn evaluated_ascii_shared_pool_inet_sql_nullable_text_integer_and_binary_values(
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let output = session
@@ -2310,7 +2353,7 @@ fn evaluated_ascii_shared_pool_inet_sql_nullable_text_integer_and_binary_values(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_all_inet_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_all_inet_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2328,7 +2371,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_all_inet_sql_columns() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct stored-column calls keep every target visible to the pool; no
@@ -2366,7 +2409,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_all_inet_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_math_real_sql_analytical_values_and_metadata() {
+fn ready_value_shared_pool_math_real_sql_analytical_values_and_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2386,7 +2429,7 @@ fn evaluated_ascii_shared_pool_math_real_sql_analytical_values_and_metadata() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Every target reads a stored nullable column, including the angle inputs.
@@ -2491,7 +2534,7 @@ fn evaluated_ascii_shared_pool_math_real_sql_analytical_values_and_metadata() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_six_math_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_six_math_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2503,7 +2546,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_six_math_sql_columns() {
         .run("INSERT INTO shared_math_zero VALUES (1,NULL),(2,1)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // NULL and non-NULL direct calls must each reach the installed pool;
@@ -2536,7 +2579,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_six_math_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
+fn ready_value_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2560,7 +2603,7 @@ fn evaluated_ascii_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let output = session
@@ -2614,7 +2657,7 @@ fn evaluated_ascii_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2632,7 +2675,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns()
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct nullable-column calls only. PI is deliberately absent: a legal
@@ -2670,7 +2713,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns()
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_packet_string_sql_values_metadata_and_warnings() {
+fn ready_value_shared_pool_packet_string_sql_values_metadata_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2711,7 +2754,7 @@ fn evaluated_ascii_shared_pool_packet_string_sql_values_metadata_and_warnings() 
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let output = session
@@ -2806,7 +2849,7 @@ fn evaluated_ascii_shared_pool_packet_string_sql_values_metadata_and_warnings() 
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_packet_string_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_packet_string_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2831,7 +2874,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_packet_string_sql_columns() {
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Eight direct NULL/non-NULL calls, plus one warning-before-refusal case.
@@ -2888,7 +2931,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_packet_string_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_case_sha2_ord_sql_values_and_metadata() {
+fn ready_value_shared_pool_case_sha2_ord_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2932,7 +2975,7 @@ fn evaluated_ascii_shared_pool_case_sha2_ord_sql_values_and_metadata() {
     assert_eq!(input_rows[2][2].to_bytes().unwrap(), vec![0xc3, 0xa9]);
     assert_eq!(input_rows[3][2].to_bytes().unwrap(), vec![0xe2, 0x82, b'A']);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
@@ -3038,7 +3081,7 @@ fn evaluated_ascii_shared_pool_case_sha2_ord_sql_values_and_metadata() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -3056,7 +3099,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     for expression in ["LOWER(t)", "UPPER(t)", "SHA2(b,bits)", "ORD(t)"] {
@@ -3091,7 +3134,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_trim_split_pad_sql_values_metadata_and_packet_policy() {
+fn ready_value_shared_pool_trim_split_pad_sql_values_metadata_and_packet_policy() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3121,7 +3164,7 @@ fn evaluated_ascii_shared_pool_trim_split_pad_sql_values_metadata_and_packet_pol
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
@@ -3275,7 +3318,7 @@ fn evaluated_ascii_shared_pool_trim_split_pad_sql_values_metadata_and_packet_pol
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -3299,7 +3342,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Eight direct NULL/non-NULL calls; then a NULL length with non-NULL
@@ -3356,7 +3399,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_log_pow_length_insert_sql_values_metadata_and_warnings() {
+fn ready_value_shared_pool_log_pow_length_insert_sql_values_metadata_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3400,7 +3443,7 @@ fn evaluated_ascii_shared_pool_log_pow_length_insert_sql_values_metadata_and_war
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
@@ -3619,7 +3662,7 @@ fn evaluated_ascii_shared_pool_log_pow_length_insert_sql_values_metadata_and_war
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_log_pow_length_insert_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_log_pow_length_insert_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3648,7 +3691,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_log_pow_length_insert_sql_colum
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Six families, NULL/non-NULL, with both LOG arities represented. The
@@ -3718,7 +3761,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_log_pow_length_insert_sql_colum
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_substring_dispatch_sql_values_metadata_and_diagnostics() {
+fn ready_value_shared_pool_substring_dispatch_sql_values_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3748,7 +3791,7 @@ fn evaluated_ascii_shared_pool_substring_dispatch_sql_values_metadata_and_diagno
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let assert_text = |value: &Datum, expected: Option<&str>| match expected {
@@ -3908,7 +3951,7 @@ fn evaluated_ascii_shared_pool_substring_dispatch_sql_values_metadata_and_diagno
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_substring_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_substring_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -3928,7 +3971,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_substring_dispatch_sql_columns(
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Existing legal NULL, empty, ordinary and overflow-empty results must
@@ -3984,7 +4027,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_substring_dispatch_sql_columns(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_collated_search_set_dispatch_sql_values_metadata_and_cache() {
+fn ready_value_shared_pool_collated_search_set_dispatch_sql_values_metadata_and_cache() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4011,7 +4054,7 @@ fn evaluated_ascii_shared_pool_collated_search_set_dispatch_sql_values_metadata_
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // One shared root, column-driven calls: no constant folding of a family.
@@ -4080,7 +4123,7 @@ fn evaluated_ascii_shared_pool_collated_search_set_dispatch_sql_values_metadata_
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_collated_search_set_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_collated_search_set_dispatch_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4103,7 +4146,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_collated_search_set_dispatch_sq
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Every family is called directly on NULL, ordinary, and empty columns;
@@ -4151,7 +4194,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_collated_search_set_dispatch_sq
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata() {
+fn ready_value_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4174,7 +4217,7 @@ fn evaluated_ascii_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Six actual CONCAT/CONCAT_WS arguments and six ELT candidates, with a
@@ -4275,7 +4318,7 @@ fn evaluated_ascii_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4297,7 +4340,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_c
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Calls are direct and column-driven. Legal NULL and empty results still
@@ -4348,7 +4391,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_c
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_field_make_export_dispatch_sql_values_and_metadata() {
+fn ready_value_shared_pool_field_make_export_dispatch_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4371,7 +4414,7 @@ fn evaluated_ascii_shared_pool_field_make_export_dispatch_sql_values_and_metadat
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // FIELD has five/six candidates and MAKE_SET has six, never the old
@@ -4491,7 +4534,7 @@ fn evaluated_ascii_shared_pool_field_make_export_dispatch_sql_values_and_metadat
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4511,7 +4554,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct calls, not another expression masking an unmigrated family.
@@ -4567,7 +4610,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_and_overflow() {
+fn ready_value_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_and_overflow() {
     use tidb_datatype::FieldTypeCode::{Double, LongLong, NewDecimal};
 
     let mut session = Session::new();
@@ -4591,7 +4634,7 @@ fn evaluated_ascii_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_an
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // The MIN row is reserved for the separate ABS diagnostic below. Small
@@ -4731,7 +4774,7 @@ fn evaluated_ascii_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_an
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -4749,7 +4792,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // All are direct calls whose old SQL result is genuinely NULL. The last
@@ -4802,7 +4845,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostics() {
+fn ready_value_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4826,7 +4869,7 @@ fn evaluated_ascii_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagno
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Stored bases prevent folding the nine-byte binary literal. CONV must
@@ -4972,7 +5015,7 @@ fn evaluated_ascii_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagno
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4993,7 +5036,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns(
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct calls only: CHAR's all-NULL list is a genuine empty string;
@@ -5044,7 +5087,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow() {
+fn ready_value_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5059,7 +5102,7 @@ fn evaluated_ascii_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow()
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Three copied sin/cos/tan vectors from math_fn/go_trig.rs's existing
@@ -5160,7 +5203,7 @@ fn evaluated_ascii_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow()
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5172,7 +5215,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() 
         .run("INSERT INTO shared_go_trig_zero VALUES (1,NULL,1e0),(2,-1e0,1e0),(3,0.5e0,NULL)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Every native spelling, including both ATAN arities and ATAN2, must
@@ -5223,7 +5266,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() 
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnostics() {
+fn ready_value_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnostics() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5242,7 +5285,7 @@ fn evaluated_ascii_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnost
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
@@ -5329,7 +5372,7 @@ fn evaluated_ascii_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnost
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_exp_log10_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_exp_log10_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5341,7 +5384,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_exp_log10_dispatch_sql_columns(
         .run("INSERT INTO shared_exp_log10_zero VALUES (1,NULL,NULL),(2,'1.5',100e0),(3,'2020-01-01',0e0)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Coercion and LOG10's domain warning precede pool admission. Preserve
@@ -5402,7 +5445,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_exp_log10_dispatch_sql_columns(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_and_diagnostics() {
+fn ready_value_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5432,7 +5475,7 @@ fn evaluated_ascii_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_a
         ))
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { rows, .. } = session
@@ -5516,7 +5559,7 @@ fn evaluated_ascii_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_a
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_compress_uncompress_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_compress_uncompress_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5537,7 +5580,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_compress_uncompress_dispatch_sq
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Do not use HEX or a roundtrip to mask a missed admission. Even NULL,
@@ -5579,7 +5622,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_compress_uncompress_dispatch_sq
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_json_report_dispatch_sql_values_metadata_and_errors() {
+fn ready_value_shared_pool_json_report_dispatch_sql_values_metadata_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5601,7 +5644,7 @@ fn evaluated_ascii_shared_pool_json_report_dispatch_sql_values_metadata_and_erro
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Native document parsing retains the signed i64 maximum and duplicate
@@ -5713,7 +5756,7 @@ fn evaluated_ascii_shared_pool_json_report_dispatch_sql_values_metadata_and_erro
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_json_report_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_json_report_dispatch_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5732,7 +5775,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_json_report_dispatch_sql_column
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // NULL and ordinary text in all three forms, then malformed VALID/DEPTH
@@ -5777,7 +5820,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_json_report_dispatch_sql_column
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_json_storage_quote_dispatch_sql_values_metadata_and_errors() {
+fn ready_value_shared_pool_json_storage_quote_dispatch_sql_values_metadata_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5798,7 +5841,7 @@ fn evaluated_ascii_shared_pool_json_storage_quote_dispatch_sql_values_metadata_a
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
@@ -5898,7 +5941,7 @@ fn evaluated_ascii_shared_pool_json_storage_quote_dispatch_sql_values_metadata_a
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql_columns() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5917,7 +5960,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Direct calls only: all NULLs still need the worker, and malformed/empty
@@ -5958,7 +6001,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_date_fields_dispatch_sql_values_metadata_and_coercion() {
+fn ready_value_shared_pool_date_fields_dispatch_sql_values_metadata_and_coercion() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
@@ -6001,7 +6044,7 @@ fn evaluated_ascii_shared_pool_date_fields_dispatch_sql_values_metadata_and_coer
     // warnings are manually drained or suppressed after installing the policy.
     assert!(warnings_of(&session).is_empty());
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
@@ -6096,7 +6139,7 @@ fn evaluated_ascii_shared_pool_date_fields_dispatch_sql_values_metadata_and_coer
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_date_fields_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_date_fields_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
@@ -6117,7 +6160,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_date_fields_dispatch_sql_column
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // All four field operations use real nullable DATETIME columns. The last
@@ -6172,7 +6215,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_date_fields_dispatch_sql_column
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_policy() {
+fn ready_value_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_policy() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6193,7 +6236,7 @@ fn evaluated_ascii_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_
         .unwrap();
     assert!(warnings_of(&session).is_empty());
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Original native text rules, not an ETDuration cast or the legacy nanos
@@ -6257,7 +6300,7 @@ fn evaluated_ascii_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6269,7 +6312,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
         .run("INSERT INTO shared_hms_zero VALUES (1,NULL),(2,'10:30:45'),(3,'not a time')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     // Parse-to-NULL is a computed result, not a pre-admission escape hatch.
@@ -6311,7 +6354,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_monthname_time_to_sec_sql_values_metadata_and_warnings() {
+fn ready_value_shared_pool_monthname_time_to_sec_sql_values_metadata_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -6327,7 +6370,7 @@ fn evaluated_ascii_shared_pool_monthname_time_to_sec_sql_values_metadata_and_war
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Original independent parsers: month-zero is not a raw MONTH lookup;
     // duration overflow is NULL, junk/empty are zero, and fractions never round.
@@ -6393,7 +6436,7 @@ fn evaluated_ascii_shared_pool_monthname_time_to_sec_sql_values_metadata_and_war
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6406,7 +6449,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_colum
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // MONTHNAME's pre-cast warning survives refusal; TIME_TO_SEC's would-be
     // zero is still a computed result and must not bypass the worker.
@@ -6458,7 +6501,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_colum
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_period_get_format_sql_values_metadata_and_errors() {
+fn ready_value_shared_pool_period_get_format_sql_values_metadata_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -6479,7 +6522,7 @@ fn evaluated_ascii_shared_pool_period_get_format_sql_values_metadata_and_errors(
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // All arithmetic answers are fixed old period vectors. In row one, a
     // NULL companion must win over invalid period zero in either position.
@@ -6557,7 +6600,7 @@ fn evaluated_ascii_shared_pool_period_get_format_sql_values_metadata_and_errors(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_period_get_format_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_period_get_format_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6575,7 +6618,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_period_get_format_sql_columns()
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // NULL+invalid, ordinary values, and invalid/unknown all require a real
     // lease. Neither a would-be NULL nor period 1210 may precede admission.
@@ -6616,7 +6659,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_period_get_format_sql_columns()
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero() {
+fn ready_value_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -6632,7 +6675,7 @@ fn evaluated_ascii_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Preserve the existing ETDatetime cast. Its legal year zero is not a
     // zero date; zero month/day survive the read cast but fail full validation.
@@ -6723,7 +6766,7 @@ fn evaluated_ascii_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6738,7 +6781,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Each invalid text cast keeps its original 1292 before resource refusal;
     // its resulting NULL must still enter the same worker as an ordinary date.
@@ -6794,7 +6837,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_date_serial_tso_logical_sql_values_and_metadata() {
+fn ready_value_shared_pool_date_serial_tso_logical_sql_values_and_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6816,7 +6859,7 @@ fn evaluated_ascii_shared_pool_date_serial_tso_logical_sql_values_and_metadata()
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Text DATEDIFF is civil-date arithmetic and ignores the clock. TO_DAYS
     // and TO_SECONDS use strict datetime parsing and MySQL's day-number epoch;
@@ -6870,7 +6913,7 @@ fn evaluated_ascii_shared_pool_date_serial_tso_logical_sql_values_and_metadata()
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6889,7 +6932,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_col
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // DATEDIFF's NULL lhs must not suppress the rhs cast warning. All NULL
     // terminals, including a non-positive logical TSO, still require a lease.
@@ -6947,7 +6990,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_col
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_week_modes_sql_values_metadata_and_probe_order() {
+fn ready_value_shared_pool_week_modes_sql_values_metadata_and_probe_order() {
     let mut session = Session::new();
     session
         .run(
@@ -6966,7 +7009,7 @@ fn evaluated_ascii_shared_pool_week_modes_sql_values_metadata_and_probe_order() 
     // One slot is sufficient only if the first probe lease is released before
     // mode preparation and the final week worker. Invalid dates never read m.
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -7031,7 +7074,7 @@ fn evaluated_ascii_shared_pool_week_modes_sql_values_metadata_and_probe_order() 
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_password_sm3_sql_values_metadata_and_deprecation() {
+fn ready_value_shared_pool_password_sm3_sql_values_metadata_and_deprecation() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -7044,7 +7087,7 @@ fn evaluated_ascii_shared_pool_password_sm3_sql_values_metadata_and_deprecation(
         .run("INSERT INTO shared_password_sm3 VALUES (1,NULL),(2,''),(3,'abc')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT PASSWORD(v),SM3(v) FROM shared_password_sm3 ORDER BY id")
@@ -7099,7 +7142,7 @@ fn evaluated_ascii_shared_pool_password_sm3_sql_values_metadata_and_deprecation(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_week_password_sm3_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_week_password_sm3_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -7112,7 +7155,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_week_password_sm3_sql_columns()
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     let date_warning = Some((1292, "Incorrect datetime value: 'not-a-date'"));
     let password_warning = Some((
@@ -7176,7 +7219,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_week_password_sm3_sql_columns()
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_make_date_from_days_sql_typed_dates_and_metadata() {
+fn ready_value_shared_pool_make_date_from_days_sql_typed_dates_and_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -7193,7 +7236,7 @@ fn evaluated_ascii_shared_pool_make_date_from_days_sql_typed_dates_and_metadata(
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -7237,7 +7280,7 @@ fn evaluated_ascii_shared_pool_make_date_from_days_sql_typed_dates_and_metadata(
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_make_time_sec_to_time_sql_typed_durations_and_warnings() {
+fn ready_value_shared_pool_make_time_sec_to_time_sql_typed_durations_and_warnings() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -7262,7 +7305,7 @@ fn evaluated_ascii_shared_pool_make_time_sec_to_time_sql_typed_durations_and_war
     // MAKETIME's total-seconds call must release the one slot before its
     // independent FSP/formatter call; all outputs still pass the old TIME cast.
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -7351,7 +7394,7 @@ fn evaluated_ascii_shared_pool_make_time_sec_to_time_sql_typed_durations_and_war
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_zero_slots_reject_temporal_constructors_sql_columns() {
+fn ready_value_shared_pool_zero_slots_reject_temporal_constructors_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -7368,7 +7411,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_temporal_constructors_sql_colum
          (4,NULL,1,0,NULL,0,'abc',x'FF')",
     ).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     let bad_number = Some("Truncated incorrect DOUBLE value: 'abc'");
     for (expression, id, warning) in [
@@ -7429,7 +7472,7 @@ fn evaluated_ascii_shared_pool_zero_slots_reject_temporal_constructors_sql_colum
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_date_format_sql_values_context_and_refusals() {
+fn ready_value_shared_pool_date_format_sql_values_context_and_refusals() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -7445,7 +7488,7 @@ fn evaluated_ascii_shared_pool_date_format_sql_values_context_and_refusals() {
     session.run(create).unwrap();
     session.run(insert).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id<=5 ORDER BY id")
@@ -7544,7 +7587,7 @@ fn evaluated_ascii_shared_pool_date_format_sql_values_context_and_refusals() {
     session.run(create).unwrap();
     session.run(insert).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for (id, warning) in [
         (1, None),
@@ -7595,7 +7638,7 @@ fn evaluated_ascii_shared_pool_date_format_sql_values_context_and_refusals() {
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_time_format_sql_probe_order_metadata_and_refusals() {
+fn ready_value_shared_pool_time_format_sql_probe_order_metadata_and_refusals() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -7613,7 +7656,7 @@ fn evaluated_ascii_shared_pool_time_format_sql_probe_order_metadata_and_refusals
     // The probe must release its lease before the final formatter takes the
     // only slot. Invalid/NULL durations must never decode the format column.
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id<=6 ORDER BY id")
@@ -7690,7 +7733,7 @@ fn evaluated_ascii_shared_pool_time_format_sql_probe_order_metadata_and_refusals
     session.run(create).unwrap();
     session.run(insert).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Includes NULL, invalid, empty-format and valid-plus-invalid-UTF8-format:
     // even a NULL probe result must acquire the real pool before returning.
@@ -7721,7 +7764,7 @@ fn evaluated_ascii_shared_pool_time_format_sql_probe_order_metadata_and_refusals
 }
 
 #[test]
-fn evaluated_ascii_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() {
+fn ready_value_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -7735,7 +7778,7 @@ fn evaluated_ascii_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() 
     session.run(create).unwrap();
     session.run(insert).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT LAST_DAY(d) FROM shared_last_day WHERE id<=5 ORDER BY id")
@@ -7803,7 +7846,7 @@ fn evaluated_ascii_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() 
     session.run(create).unwrap();
     session.run(insert).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for (id, warning) in [
         (1, None),
@@ -7854,7 +7897,7 @@ fn evaluated_ascii_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() 
 }
 
 #[test]
-fn evaluated_ascii_uuid_translate_uuid_values_metadata_and_diagnostics() {
+fn ready_value_uuid_translate_uuid_values_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -7875,7 +7918,7 @@ fn evaluated_ascii_uuid_translate_uuid_values_metadata_and_diagnostics() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session.run_with_columns(
         "SELECT IS_UUID(u),UUID_VERSION(u),UUID_TIMESTAMP(u) FROM shared_uuid_values WHERE id<=6 ORDER BY id",
@@ -8032,7 +8075,7 @@ fn evaluated_ascii_uuid_translate_uuid_values_metadata_and_diagnostics() {
 }
 
 #[test]
-fn evaluated_ascii_uuid_translate_byte_rune_results_and_null_demand() {
+fn ready_value_uuid_translate_byte_rune_results_and_null_demand() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8052,7 +8095,7 @@ fn evaluated_ascii_uuid_translate_byte_rune_results_and_null_demand() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session.run_with_columns(
         "SELECT TRANSLATE(s,f,t),TRANSLATE(s,bf,t),TRANSLATE(bs,f,bt) FROM shared_translate_values ORDER BY id",
@@ -8116,7 +8159,7 @@ fn evaluated_ascii_uuid_translate_byte_rune_results_and_null_demand() {
 }
 
 #[test]
-fn evaluated_ascii_uuid_translate_zero_slots_preserve_resources_and_flag_warnings() {
+fn ready_value_uuid_translate_zero_slots_preserve_resources_and_flag_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8132,7 +8175,7 @@ fn evaluated_ascii_uuid_translate_zero_slots_preserve_resources_and_flag_warning
          (2,NULL,NULL,'a',NULL,'ab','xy',0xFF)",
     ).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for (expression, id, warned) in [
         ("IS_UUID(u)", 1, false),
@@ -8198,7 +8241,7 @@ fn evaluated_ascii_uuid_translate_zero_slots_preserve_resources_and_flag_warning
 }
 
 #[test]
-fn evaluated_ascii_crypt_hash_format_stream_direction_values_and_metadata() {
+fn ready_value_crypt_hash_format_stream_direction_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8213,7 +8256,7 @@ fn evaluated_ascii_crypt_hash_format_stream_direction_values_and_metadata() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT ENCODE(c,p),DECODE(d,p) FROM shared_crypt_stream ORDER BY id")
@@ -8257,7 +8300,7 @@ fn evaluated_ascii_crypt_hash_format_stream_direction_values_and_metadata() {
 }
 
 #[test]
-fn evaluated_ascii_crypt_hash_format_numeric_values_metadata_and_coercion() {
+fn ready_value_crypt_hash_format_numeric_values_metadata_and_coercion() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8280,7 +8323,7 @@ fn evaluated_ascii_crypt_hash_format_numeric_values_metadata_and_coercion() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -8446,7 +8489,7 @@ fn evaluated_ascii_crypt_hash_format_numeric_values_metadata_and_coercion() {
 }
 
 #[test]
-fn evaluated_ascii_crypt_hash_format_zero_slots_preserve_resources_and_warnings() {
+fn ready_value_crypt_hash_format_zero_slots_preserve_resources_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8466,7 +8509,7 @@ fn evaluated_ascii_crypt_hash_format_zero_slots_preserve_resources_and_warnings(
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for (expression, id, warning) in [
         ("ENCODE(c,p)", 1, None),
@@ -8536,7 +8579,7 @@ fn evaluated_ascii_crypt_hash_format_zero_slots_preserve_resources_and_warnings(
 }
 
 #[test]
-fn evaluated_ascii_vector_stored_values_metadata_and_native_formatting() {
+fn ready_value_vector_stored_values_metadata_and_native_formatting() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8551,7 +8594,7 @@ fn evaluated_ascii_vector_stored_values_metadata_and_native_formatting() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { columns, rows } = session.run_with_columns(
         "SELECT VEC_AS_TEXT(a),VEC_FROM_TEXT(t),VEC_DIMS(a),VEC_L1_DISTANCE(a,b),\
@@ -8681,7 +8724,7 @@ fn evaluated_ascii_vector_stored_values_metadata_and_native_formatting() {
 }
 
 #[test]
-fn evaluated_ascii_vector_sql_errors_preserve_left_first_demand() {
+fn ready_value_vector_sql_errors_preserve_left_first_demand() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8695,7 +8738,7 @@ fn evaluated_ascii_vector_sql_errors_preserve_left_first_demand() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let StmtOutput::Rows { rows, .. } = session
         .run_with_columns(
@@ -8760,7 +8803,7 @@ fn evaluated_ascii_vector_sql_errors_preserve_left_first_demand() {
 }
 
 #[test]
-fn evaluated_ascii_vector_zero_slots_reject_all_eight_families_and_nulls() {
+fn ready_value_vector_zero_slots_reject_all_eight_families_and_nulls() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8776,7 +8819,7 @@ fn evaluated_ascii_vector_zero_slots_reject_all_eight_families_and_nulls() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Eight non-NULL inputs and eight actual NULL paths. The FROM_TEXT and
     // L2 non-NULL cases deliberately make errors that belong to the worker:
@@ -8825,7 +8868,7 @@ fn evaluated_ascii_vector_zero_slots_reject_all_eight_families_and_nulls() {
 }
 
 #[test]
-fn evaluated_ascii_regexp_sql_values_metadata_and_demand_order() {
+fn ready_value_regexp_sql_values_metadata_and_demand_order() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -8844,7 +8887,7 @@ fn evaluated_ascii_regexp_sql_values_metadata_and_demand_order() {
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Literal and per-row column patterns share one pool, not one regex cache.
     let StmtOutput::Rows { columns, rows } = session
@@ -9016,7 +9059,7 @@ fn invalid_constant_regexp_is_compiled_only_in_a_demanded_control_branch() {
 }
 
 #[test]
-fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
+fn ready_value_regexp_zero_slots_reject_named_calls_and_null_paths() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -9027,7 +9070,7 @@ fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
         .run("INSERT INTO shared_regexp_zero VALUES (1,'abc abd','ab.','X')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for expression in [
         "REGEXP_LIKE(s,p)",
@@ -9068,7 +9111,7 @@ fn evaluated_ascii_regexp_zero_slots_reject_named_calls_and_null_paths() {
 }
 
 #[test]
-fn evaluated_ascii_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
+fn ready_value_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -9079,7 +9122,7 @@ fn evaluated_ascii_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
         .unwrap();
     session.run("INSERT INTO shared_like_sql VALUES (1,'ABC','a%'),(2,'ü','Ü'),(3,'%','A%'),(4,NULL,'a%'),(5,'a',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Dynamic patterns and context-cached literal patterns use the same actual
     // statement pool. ILIKE only lowers ASCII; collated LIKE also folds ü/Ü.
@@ -9136,7 +9179,7 @@ fn evaluated_ascii_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
 }
 
 #[test]
-fn evaluated_ascii_like_ilike_zero_slots_reject_columns_cache_and_nulls() {
+fn ready_value_like_ilike_zero_slots_reject_columns_cache_and_nulls() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -9149,7 +9192,7 @@ fn evaluated_ascii_like_ilike_zero_slots_reject_columns_cache_and_nulls() {
         .run("INSERT INTO shared_like_zero VALUES (1,'ABC','a%'),(2,NULL,'a%'),(3,'a',NULL)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // SHOW has a real candidate; empty metadata cannot establish admission.
     let mut queries = vec![
@@ -9197,7 +9240,7 @@ fn evaluated_ascii_like_ilike_zero_slots_reject_columns_cache_and_nulls() {
 }
 
 #[test]
-fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() {
+fn ready_value_unary_sql_preserves_identity_negation_and_overflow_domains() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -9218,7 +9261,7 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Original rewriter unary-plus is the argument itself. Minus keeps each
@@ -9352,7 +9395,7 @@ fn evaluated_ascii_unary_sql_preserves_identity_negation_and_overflow_domains() 
     zero.run("INSERT INTO shared_unary_zero VALUES (2,3,1.25,1.5e0,'2.5',NULL)")
         .unwrap();
     assert!(zero
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // SQL plus is eliminated even for strings/NULL, not a fabricated runtime
     // worker call. Do not demand PoolResource or a plus trace for this identity.
@@ -9405,7 +9448,7 @@ fn shared_scalar_datum_preserves_json_float_and_hybrid_numeric_consumers() {
         .run("INSERT INTO shared_scalar_datum_sql VALUES ('2.5','word','a,c',b'0011')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9450,7 +9493,7 @@ fn shared_decimal_context_preserves_temporal_arguments_and_fractional_projection
         .unwrap();
     session.run("INSERT INTO shared_decimal_context_sql VALUES ('2024-02-03 04:05:06.125','11:22:33.125',1.0000)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9496,7 +9539,7 @@ fn shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rule
         .run("INSERT INTO shared_arg_integer_sql VALUES ('3.5','word','a,c',1.0)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9532,7 +9575,7 @@ fn shared_decimal_datum_preserves_unsigned_hybrid_bit_and_json_consumers() {
     session.run("CREATE TABLE shared_decimal_datum_sql (e ENUM('other','word'), s SET('a','b','c'), b BIT(64), j JSON)").unwrap();
     session.run("INSERT INTO shared_decimal_datum_sql VALUES ('word','a,c',x'ffffffffffffffff','18446744073709551615')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9570,7 +9613,7 @@ fn shared_argument_string_preserves_binary_names_float_display_and_widths() {
         .run("INSERT INTO shared_arg_string_sql VALUES (b'11111111','word',1e30,1.20,x'ff00')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9609,7 +9652,7 @@ fn shared_datetime_controller_preserves_source_parsers_date_clock_and_diagnostic
     session.run("CREATE TABLE shared_datetime_control_sql (s VARCHAR(64), n DECIMAL(12,4), u BIGINT UNSIGNED, bad VARCHAR(16), edge VARCHAR(64))").unwrap();
     session.run("INSERT INTO shared_datetime_control_sql VALUES ('2024-02-29 12:34:56.123456',121212.1111,18446744073709551615,'bad','2011-03-13 01:59:59.9999999')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9666,7 +9709,7 @@ fn shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback() {
     session.run("CREATE TABLE shared_year_control_sql (d TIME(3), date_text VARCHAR(32), prefix_text VARCHAR(32), u BIGINT UNSIGNED)").unwrap();
     session.run("INSERT INTO shared_year_control_sql VALUES ('00:20:12.250','2024-01-02','42tail',18446744073709551615)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9709,7 +9752,7 @@ fn native_signed_datum_preserves_hybrid_ordinals_and_temporal_carry_in_sql() {
     session.run("CREATE TABLE native_signed_datum_sql (e ENUM('other','word'), s SET('a','b','c'), t DATETIME(6), d TIME(6))").unwrap();
     session.run("INSERT INTO native_signed_datum_sql VALUES ('word','a,c','2011-03-13 01:59:59.999999','11:59:59.999999')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -9770,7 +9813,7 @@ fn native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_bounda
         .run("CREATE TABLE native_temporal_gap_sql (ts TIMESTAMP)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // The actual SET timestamp API fixes 2021-01-01 00:00:00 UTC. YEAR uses
     // the normal false-concat mode; DATETIME's existing duration controller
@@ -9972,7 +10015,7 @@ fn native_duration_control_preserves_sql_source_rounding_overflow_and_storage() 
         ]
     );
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     type Cell = Option<(i64, &'static str)>;
     let cases: [(&str, &[Cell], &[(u16, &str)]); 4] = [
@@ -10101,7 +10144,7 @@ fn native_json_source_policy_preserves_year_unsigned_and_hybrid_name_modes() {
         .run(r#"INSERT INTO native_json_source_sql VALUES (2024,18446744073709551615,'1','true','bad','1','true','1,true','1','"1"','"bad"','"1,true"')"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let expected_json: &[(u8, &[u8])] = &[
         (0x0a, &[0xe8, 7, 0, 0, 0, 0, 0, 0]),
@@ -10224,7 +10267,7 @@ fn native_json_coercion_preserves_sql_boolean_bit_document_and_value_policies() 
         .run(r#"INSERT INTO native_json_coercion_sql VALUES (1,1,0.1,1.25,'2024-01-02 03:04:05.006','00:00:01.250','ab','ab',b'101','1','"1"','null','{}','1',NULL)"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     type JsonCell = Option<(u8, &'static [u8])>;
     let cases: [(&str, &[JsonCell]); 4] = [
@@ -10386,7 +10429,7 @@ fn native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary
         .run(r#"INSERT INTO native_json_parse_sql VALUES ('"\\ud800"','"\\ud800"','"\\udc00"','"\\udc00"','"\\ud83d\\ude00"','"\\ud83d\\ude00"','{"z":[1,1.25,null],"a":"\\ud800"}')"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     enum Expected {
         Text(&'static str),
@@ -10569,7 +10612,7 @@ fn native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coerci
         .run(r#"INSERT INTO native_json_construction_sql VALUES ('ab','ab',1,1.25,'2024-01-02 03:04:05.006','00:00:01.250','1','"1"','null',NULL,'1','not-json')"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     type JsonCell = Option<(u8, &'static [u8], &'static str)>;
     let cases: [(&str, &[JsonCell]); 3] = [
@@ -10715,7 +10758,7 @@ fn native_vector_cast_policy_preserves_stored_domains_dimensions_and_typed_error
         .run("INSERT INTO native_vector_cast_policy_sql VALUES ('[1,2.5]',0x5B312C322E355D,'[3,4]',NULL,NULL,0xFF,'not-a-vector',7)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let cases: [(&str, &[Option<&[f32]>], &[i64]); 2] = [
         (
@@ -10843,7 +10886,7 @@ fn native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads()
         .run(r#"INSERT INTO native_datum_string_sql VALUES (1e-7,1e20,0.1,12.3400,'2024-02-29','2024-02-29 01:02:03.120000','-26:07:08.125','"x"','[1,2]','null',NULL,'你好\0x',0xFF0041)"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let cases: [(&str, &[Option<&[u8]>], &[bool]); 4] = [
         (
@@ -10956,7 +10999,7 @@ fn native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_pa
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     type Cell = (C, i64, &'static str, &'static str, Option<Vec<u8>>);
     let cases: [(&str, Vec<Cell>, &[(u16, &str)]); 5] = [
@@ -11097,7 +11140,7 @@ fn native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_ord
         .run(r#"INSERT INTO native_float_cast_policy_sql VALUES (0.1,0.1,12.50,'0.1',1e300,NULL,' 12.5tail ','5e','\0 12','',0x31FF,'12.5','"12.5"','true','null','1e999x','1e300x')"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Ordinary DOUBLE/FLOAT policy, not a new runtime Head or admission gate.
     // Each ScalarFunction completes its own typed finish before its parent
@@ -11243,7 +11286,7 @@ fn native_integer_cast_policy_preserves_sql_domains_complements_and_warning_orde
         .run("INSERT INTO native_integer_cast_policy_sql VALUES (-5,18446744073709551615,2.5,2.5,2.5,'18446744073709551615','-5','-5x','18446744073709551615x',-1.5,-1.5,-0.4,'2024-01-31 23:59:59.500000','11:59:59.500000','12.5','[]',NULL)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // The integer cast control policy is native/shared; the already-admitted
     // REAL-to-UNSIGNED worker remains its own unchanged child. These normal
@@ -11346,7 +11389,7 @@ fn native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order() {
         .run(r#"INSERT INTO native_decimal_cast_policy_sql VALUES (-7,18446744073709551615,0.1,0.1,'12.5','"7.50tail"','null',NULL,'1e300',1.25)"#)
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Ordinary DECIMAL cast policy only: no new Head, zero-slot, PB, UNION,
     // or whole-CAST credit. The previous digit-parser test separately guards
@@ -11463,7 +11506,7 @@ fn native_decimal_digit_parsing_preserves_sql_cast_diagnostics_scale_and_storage
         .unwrap();
     assert!(warnings_of(&session).is_empty());
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // String CAST sources call Decimal::parse_mysql for their diagnostic
     // and value, then retain the existing precision/scale production policy.
@@ -11599,7 +11642,7 @@ fn native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths()
         "SQL row IN is deliberately equality/OR rewrite coverage: {plan}"
     );
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // This pure control-plane migration keeps the original Eq workers and
     // facade demand. A strict string-cache hit can require no Eq worker at
@@ -11714,7 +11757,7 @@ fn native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths()
 }
 
 #[test]
-fn evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals() {
+fn ready_value_typed_in_preserves_sql_domains_eager_casts_and_root_refusals() {
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 
     let create = "CREATE TABLE shared_in_typed_sql (dt DATETIME(3), dt_hit DATETIME(3), dt_miss DATETIME(3), dt_null DATETIME(3), ts TIMESTAMP(3), ts_hit TIMESTAMP(3), ts_miss TIMESTAMP(3), tm TIME(3), tm_hit TIME(3), tm_miss TIME(3), tm_null TIME(3), j_num JSON, j_string JSON, j_jsonnull JSON, j_sqlnull JSON, j_two JSON, s_one VARCHAR(32), s_two VARCHAR(32), s_null VARCHAR(32), bad_text VARCHAR(32))";
@@ -11772,7 +11815,7 @@ fn evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals(
             );
         }
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         if slots == 1 {
             for vectorized in [0, 1] {
@@ -11879,7 +11922,7 @@ fn evaluated_ascii_typed_in_preserves_sql_domains_eager_casts_and_root_refusals(
 }
 
 #[test]
-fn evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes() {
+fn ready_value_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes() {
     use tidb_datatype::FieldTypeCode;
 
     let create = "CREATE TABLE shared_date_arithmetic_sql (d DATE, dt DATETIME(3), tm TIME(3), n BIGINT, s VARCHAR(40), one BIGINT, half DECIMAL(4,1), hm VARCHAR(16), sm VARCHAR(16), bad_date VARCHAR(32), dirty_amount VARCHAR(16), hi DATETIME(6), null_date DATE, null_amount BIGINT)";
@@ -12025,7 +12068,7 @@ fn evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_r
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -12121,7 +12164,7 @@ fn evaluated_ascii_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_r
 }
 
 #[test]
-fn evaluated_ascii_interval_preserves_nullable_search_demand_and_head_pool_refusals() {
+fn ready_value_interval_preserves_nullable_search_demand_and_head_pool_refusals() {
     use tidb_datatype::FieldTypeCode;
 
     let create = "CREATE TABLE shared_interval_runtime_sql (i BIGINT NOT NULL, lo BIGINT NOT NULL, hi BIGINT NOT NULL, neg BIGINT NOT NULL, u BIGINT UNSIGNED NOT NULL, uhi BIGINT UNSIGNED NOT NULL, ni BIGINT, null_i BIGINT, r DOUBLE NOT NULL, rhi DOUBLE NOT NULL, bad_nn VARCHAR(8) NOT NULL, nr DOUBLE, nrlo DOUBLE, nrhi DOUBLE, null_r DOUBLE, bad_nullable VARCHAR(8))";
@@ -12155,7 +12198,7 @@ fn evaluated_ascii_interval_preserves_nullable_search_demand_and_head_pool_refus
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -12227,7 +12270,7 @@ fn evaluated_ascii_interval_preserves_nullable_search_demand_and_head_pool_refus
 }
 
 #[test]
-fn evaluated_ascii_extremum_preserves_five_domains_and_global_head_pool_demand() {
+fn ready_value_extremum_preserves_five_domains_and_global_head_pool_demand() {
     use tidb_datatype::{FieldTypeCode, VectorFloat32};
 
     let create = "CREATE TABLE shared_extremum_runtime_sql (i BIGINT, d DECIMAL(10,3), dt DATETIME, calendar_date DATE, s VARCHAR(8) COLLATE utf8mb4_general_ci, t VARCHAR(8) COLLATE utf8mb4_general_ci, good_text VARCHAR(32) COLLATE utf8mb4_bin, bad_text VARCHAR(32) COLLATE utf8mb4_bin, null_text VARCHAR(32) COLLATE utf8mb4_bin, v VECTOR, w VECTOR)";
@@ -12310,7 +12353,7 @@ fn evaluated_ascii_extremum_preserves_five_domains_and_global_head_pool_demand()
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -12431,7 +12474,7 @@ fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_nu
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -12518,7 +12561,7 @@ fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_nu
 }
 
 #[test]
-fn evaluated_ascii_extract_preserves_stored_source_policy_and_selector_root_demand() {
+fn ready_value_extract_preserves_stored_source_policy_and_selector_root_demand() {
     use tidb_datatype::FieldTypeCode;
 
     let create = "CREATE TABLE shared_extract_runtime_sql (negative_time TIME(6), typed_datetime DATETIME, day_text VARCHAR(32), datetime_text VARCHAR(32), null_time TIME(6), bad_text VARCHAR(32))";
@@ -12546,7 +12589,7 @@ fn evaluated_ascii_extract_preserves_stored_source_policy_and_selector_root_dema
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -12651,7 +12694,7 @@ fn native_duration_helpers_preserve_stored_cast_and_extract_source_policy() {
         .run("INSERT INTO native_duration_helpers_sql VALUES ('12:59:59.9876',126060,'-25:03:04.123456','1 02:03:04','2024-03-15 02:03:04','2024-03-15 02:03:04')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for vectorized in [0, 1] {
         session
@@ -12741,7 +12784,7 @@ fn json_sum_crc32_sql_array_refusal_precedes_child_evaluation_and_pool_admission
             .run("INSERT INTO json_crc32_array_refusal VALUES ('not-a-date')")
             .unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -12776,7 +12819,7 @@ fn json_sum_crc32_sql_array_refusal_precedes_child_evaluation_and_pool_admission
 }
 
 #[test]
-fn evaluated_ascii_str_to_date_preserves_stored_formats_modes_and_distinct_pool_paths() {
+fn ready_value_str_to_date_preserves_stored_formats_modes_and_distinct_pool_paths() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     let create = "CREATE TABLE shared_str_to_date_sql (punct_text VARCHAR(32), datetime_text VARCHAR(40), fraction_time VARCHAR(32), plain_time VARCHAR(32), bad_month VARCHAR(32), year_only VARCHAR(32), null_text VARCHAR(32), time_format VARCHAR(32))";
@@ -12875,7 +12918,7 @@ fn evaluated_ascii_str_to_date_preserves_stored_formats_modes_and_distinct_pool_
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -13003,7 +13046,7 @@ fn evaluated_ascii_str_to_date_preserves_stored_formats_modes_and_distinct_pool_
 }
 
 #[test]
-fn evaluated_ascii_convert_using_preserves_charset_bytes_and_distinct_null_pool_paths() {
+fn ready_value_convert_using_preserves_charset_bytes_and_distinct_null_pool_paths() {
     use tidb_datatype::{Collation, FieldTypeCode};
 
     let create = "CREATE TABLE shared_convert_using_sql (s_one VARCHAR(8) CHARACTER SET utf8mb4, s_pair VARCHAR(8) CHARACTER SET utf8mb4, s_emoji VARCHAR(8) CHARACTER SET utf8mb4, b_gbk VARBINARY(8), b_utf8 VARBINARY(8), b_bad VARBINARY(8), s_null VARCHAR(8) CHARACTER SET utf8mb4, gbk_col VARCHAR(8) CHARACTER SET gbk)";
@@ -13045,7 +13088,7 @@ fn evaluated_ascii_convert_using_preserves_charset_bytes_and_distinct_null_pool_
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -13165,7 +13208,7 @@ fn evaluated_ascii_convert_using_preserves_charset_bytes_and_distinct_null_pool_
 }
 
 #[test]
-fn evaluated_ascii_timestampdiff_preserves_stored_calendar_text_and_runtime_root_demand() {
+fn ready_value_timestampdiff_preserves_stored_calendar_text_and_runtime_root_demand() {
     use tidb_datatype::FieldTypeCode;
 
     // Dedicated TimestampDiff AST syntax supplies the unit, not a stored
@@ -13196,7 +13239,7 @@ fn evaluated_ascii_timestampdiff_preserves_stored_calendar_text_and_runtime_root
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -13275,7 +13318,7 @@ fn evaluated_ascii_timestampdiff_preserves_stored_calendar_text_and_runtime_root
 }
 
 #[test]
-fn evaluated_ascii_bounded_staleness_preserves_sql_lower_bounds_and_distinct_pool_paths() {
+fn ready_value_bounded_staleness_preserves_sql_lower_bounds_and_distinct_pool_paths() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     // SQL's production Columns implementation currently leaves SafeTS absent.
@@ -13305,7 +13348,7 @@ fn evaluated_ascii_bounded_staleness_preserves_sql_lower_bounds_and_distinct_poo
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -13427,7 +13470,7 @@ fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
         .run("INSERT INTO native_type_helpers_sql VALUES (123456,-123456,9.995,0,1.5,123.45,2.5,-1.5,1e300)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // cast.rs applies cast_to_precision and then report_decimal_production:
     // overflow suppresses truncation, whose text otherwise retains the
@@ -13553,7 +13596,7 @@ fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
 }
 
 #[test]
-fn evaluated_ascii_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool_refusals() {
+fn ready_value_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool_refusals() {
     use tidb_datatype::FieldTypeCode;
 
     // Partial Real/Float32 -> UNSIGNED slice ONLY. This grants no whole-CAST
@@ -13598,7 +13641,7 @@ fn evaluated_ascii_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -13702,7 +13745,7 @@ fn evaluated_ascii_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool
 }
 
 #[test]
-fn evaluated_ascii_nullif_preserves_eager_sql_values_and_comparison_pool_refusals() {
+fn ready_value_nullif_preserves_eager_sql_values_and_comparison_pool_refusals() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     // SQL's existing Expr::Func rewrite constructs ScalarFunction directly;
@@ -13770,7 +13813,7 @@ fn evaluated_ascii_nullif_preserves_eager_sql_values_and_comparison_pool_refusal
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(comparison_slots))
+            .try_install_ready_value_policy(ready_value_session_policy(comparison_slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -13880,7 +13923,7 @@ fn evaluated_ascii_nullif_preserves_eager_sql_values_and_comparison_pool_refusal
 }
 
 #[test]
-fn evaluated_ascii_case_preserves_sql_branch_casts_lazy_selection_and_runtime_roots() {
+fn ready_value_case_preserves_sql_branch_casts_lazy_selection_and_runtime_roots() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     let create = "CREATE TABLE shared_case_sql (c_true BIGINT, c_other_true BIGINT, c_false BIGINT, c_null BIGINT, base_value BIGINT, when_first BIGINT, when_late BIGINT, i_first BIGINT, i_late BIGINT, i_else BIGINT, n_int BIGINT, d_first DECIMAL(8,1), d_late DECIMAL(10,3), s_first VARCHAR(8), s_late VARCHAR(12), t_first DATETIME, t_late DATETIME(3), j_first JSON, j_late JSON, subject VARCHAR(8), bad_pattern VARCHAR(8))";
@@ -13990,7 +14033,7 @@ fn evaluated_ascii_case_preserves_sql_branch_casts_lazy_selection_and_runtime_ro
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -14114,7 +14157,7 @@ fn evaluated_ascii_case_preserves_sql_branch_casts_lazy_selection_and_runtime_ro
 }
 
 #[test]
-fn evaluated_ascii_coalesce_preserves_iterative_selection_temporal_stamps_and_runtime_roots() {
+fn ready_value_coalesce_preserves_iterative_selection_temporal_stamps_and_runtime_roots() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     let create = "CREATE TABLE shared_coalesce_sql (i_first BIGINT, i_late BIGINT, i_null BIGINT, i_null2 BIGINT, i_null3 BIGINT, d_first DECIMAL(8,1), d_late DECIMAL(10,3), d_null DECIMAL(10,3), s_first VARCHAR(8), s_late VARCHAR(12), s_null VARCHAR(12), t_first DATETIME, t_late DATETIME(3), t_null DATETIME(3), j_first JSON, j_late JSON, j_null JSON, date_first DATE, subject VARCHAR(8), bad_pattern VARCHAR(8))";
@@ -14226,7 +14269,7 @@ fn evaluated_ascii_coalesce_preserves_iterative_selection_temporal_stamps_and_ru
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -14346,7 +14389,7 @@ fn evaluated_ascii_coalesce_preserves_iterative_selection_temporal_stamps_and_ru
 }
 
 #[test]
-fn evaluated_ascii_if_preserves_stored_conditions_branch_frames_and_runtime_root_demand() {
+fn ready_value_if_preserves_stored_conditions_branch_frames_and_runtime_root_demand() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     // All three condition states are stored in one row, so each zero-slot
@@ -14458,7 +14501,7 @@ fn evaluated_ascii_if_preserves_stored_conditions_branch_frames_and_runtime_root
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -14586,7 +14629,7 @@ fn evaluated_ascii_if_preserves_stored_conditions_branch_frames_and_runtime_root
 }
 
 #[test]
-fn evaluated_ascii_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_demand() {
+fn ready_value_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_demand() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     // Two rows per table have distinct payloads. The five value families
@@ -14664,7 +14707,7 @@ fn evaluated_ascii_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_d
                 .unwrap();
         }
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -14808,7 +14851,7 @@ fn evaluated_ascii_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_d
 }
 
 #[test]
-fn evaluated_ascii_temporal_literal_rewrite_uses_the_executing_session_pool() {
+fn ready_value_temporal_literal_rewrite_uses_the_executing_session_pool() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     // Session execution owns a pool before table-query planning starts.
@@ -14853,7 +14896,7 @@ fn evaluated_ascii_temporal_literal_rewrite_uses_the_executing_session_pool() {
             .run("INSERT INTO shared_literal_rewrite_scope VALUES (7)")
             .unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -14934,7 +14977,7 @@ fn evaluated_ascii_temporal_literal_rewrite_uses_the_executing_session_pool() {
 }
 
 #[test]
-fn evaluated_ascii_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runtime_roots() {
+fn ready_value_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runtime_roots() {
     use tidb_datatype::{Collation, FieldTypeCode, TimeType};
 
     let create = "CREATE TABLE shared_from_unixtime_sql (integer_seconds BIGINT, decimal_seconds DECIMAL(20,7), bad_text VARCHAR(64), overflow_text VARCHAR(64), unsigned_seconds BIGINT UNSIGNED, negative_real DOUBLE, prefix_text VARCHAR(64), carry_text VARCHAR(64), format_text VARCHAR(8), null_format VARCHAR(8))";
@@ -15035,7 +15078,7 @@ fn evaluated_ascii_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runti
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -15135,7 +15178,7 @@ fn evaluated_ascii_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runti
 }
 
 #[test]
-fn evaluated_ascii_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime_roots() {
+fn ready_value_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime_roots() {
     use tidb_datatype::FieldTypeCode;
 
     let create = "CREATE TABLE shared_unix_timestamp_sql (epoch_dt DATETIME(3), epoch_text VARCHAR(64), packed_num DECIMAL(9,1), packed_text VARCHAR(32), whole_zero VARCHAR(64), partial_zero VARCHAR(64), null_text VARCHAR(64), bad_text VARCHAR(64), epoch_whole DATETIME, gap_dt DATETIME)";
@@ -15240,7 +15283,7 @@ fn evaluated_ascii_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -15340,7 +15383,7 @@ fn evaluated_ascii_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime
 }
 
 #[test]
-fn evaluated_ascii_timestamp_preserves_source_kinds_staged_roots_and_declared_fsp() {
+fn ready_value_timestamp_preserves_source_kinds_staged_roots_and_declared_fsp() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     let create = "CREATE TABLE shared_timestamp_sql (packed_num DECIMAL(9,1), packed_str VARCHAR(32), base_dt DATETIME(3), negative_duration TIME(1), base_text VARCHAR(32), day_duration VARCHAR(32), date_duration VARCHAR(32), null_text VARCHAR(32), bad_text VARCHAR(32), zero_year VARCHAR(32), one_year VARCHAR(32), long_duration VARCHAR(32))";
@@ -15411,7 +15454,7 @@ fn evaluated_ascii_timestamp_preserves_source_kinds_staged_roots_and_declared_fs
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -15492,7 +15535,7 @@ fn evaluated_ascii_timestamp_preserves_source_kinds_staged_roots_and_declared_fs
 }
 
 #[test]
-fn evaluated_ascii_convert_tz_preserves_typed_sql_values_and_runtime_root_demand() {
+fn ready_value_convert_tz_preserves_typed_sql_values_and_runtime_root_demand() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     // All three arguments are stored STRING columns, not folded literals.
@@ -15554,7 +15597,7 @@ fn evaluated_ascii_convert_tz_preserves_typed_sql_values_and_runtime_root_demand
         session.run(create).unwrap();
         session.run(insert).unwrap();
         assert!(session
-            .try_install_evaluated_ascii_policy(ascii_session_policy(slots))
+            .try_install_ready_value_policy(ready_value_session_policy(slots))
             .unwrap());
         for vectorized in [0, 1] {
             session
@@ -15644,7 +15687,7 @@ fn evaluated_ascii_convert_tz_preserves_typed_sql_values_and_runtime_root_demand
 }
 
 #[test]
-fn evaluated_ascii_temporal_literals_preserve_rewrite_folding_types_modes_and_zones() {
+fn ready_value_temporal_literals_preserve_rewrite_folding_types_modes_and_zones() {
     use tidb_datatype::{FieldTypeCode, TimeType};
 
     let mut session = Session::new();
@@ -15849,7 +15892,7 @@ fn evaluated_ascii_temporal_literals_preserve_rewrite_folding_types_modes_and_zo
 }
 
 #[test]
-fn evaluated_ascii_json_search_preserves_native_patterns_paths_and_string_results() {
+fn ready_value_json_search_preserves_native_patterns_paths_and_string_results() {
     use tidb_datatype::{Collation, FieldTypeCode};
 
     let mut session = Session::new();
@@ -15865,7 +15908,7 @@ fn evaluated_ascii_json_search_preserves_native_patterns_paths_and_string_result
     // backslashes explicit, without a CHAR/CAST/function child in any probe.
     session.run(r#"INSERT INTO shared_json_search_sql VALUES ('["abc", [{"k":"10"}, "def"], {"x":"abc"}, {"y":"bcd"}]','["abc", [{"k":"10"}, "def"], {"x":"ab%d"}, {"y":"abcd"}]','{"*":"x","a":{"a":"x","b":"x"},"n":7,"t":true}','["é中","É中"]','["\\x"]','OnE','AlL','wrong','abc','ab\%d','ab中%d','é_','x','\','ghi','中','',NULL,'$."*"','$.*','$**.a','$.a','$[0].a','$','not_a_path',NULL)"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Fixed native search.rs / original TestJSONSearch values. These are JSON
     // path TEXT cells, not Datum::Json and not another evaluator as an oracle.
@@ -15959,7 +16002,7 @@ fn evaluated_ascii_json_search_preserves_native_patterns_paths_and_string_result
 }
 
 #[test]
-fn evaluated_ascii_json_search_zero_slots_require_hits_no_hits_and_actual_nulls() {
+fn ready_value_json_search_zero_slots_require_hits_no_hits_and_actual_nulls() {
     let mut session = Session::new();
     session.run("SET sql_mode='NO_BACKSLASH_ESCAPES'").unwrap();
     session
@@ -15968,7 +16011,7 @@ fn evaluated_ascii_json_search_zero_slots_require_hits_no_hits_and_actual_nulls(
     session.run("CREATE TABLE shared_json_search_zero (doc_main VARCHAR(256), doc_keys VARCHAR(256), mode_one VARCHAR(8), mode_all VARCHAR(8), pattern_text VARCHAR(16), pattern_x VARCHAR(4), pattern_miss VARCHAR(8), null_text VARCHAR(64), esc_null VARCHAR(4), path_array VARCHAR(32))").unwrap();
     session.run(r#"INSERT INTO shared_json_search_zero VALUES ('["abc", [{"k":"10"}, "def"], {"x":"abc"}, {"y":"bcd"}]','{"*":"x","a":{"a":"x","b":"x"},"n":7,"t":true}','OnE','AlL','abc','x','ghi',NULL,NULL,'$[0].a')"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // The no-hit nullable byte result is distinct from actual-NULL preparation.
     // Both must acquire a worker, with plain columns and no child function,
@@ -16014,7 +16057,7 @@ fn evaluated_ascii_json_search_zero_slots_require_hits_no_hits_and_actual_nulls(
 }
 
 #[test]
-fn evaluated_ascii_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() {
+fn ready_value_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() {
     use tidb_datatype::{Collation, FieldTypeCode};
 
     let mut session = Session::new();
@@ -16029,7 +16072,7 @@ fn evaluated_ascii_timestampadd_preserves_calendar_rounding_nulls_and_diagnostic
     session.run("CREATE TABLE shared_timestampadd_sql (one BIGINT, tiny_amount DECIMAL(12,10), half_amount DECIMAL(2,1), null_amount BIGINT, jan DATETIME, leap_day DATETIME, base DATETIME, zero_date DATETIME, max_date DATETIME)").unwrap();
     session.run("INSERT INTO shared_timestampadd_sql VALUES (1,0.0000099999,1.5,NULL,'2024-01-31 00:00:00','2020-02-29 00:00:00','1995-05-01 00:00:00','0000-00-00 00:00:00','9999-12-31 23:59:59')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Bare units are syntax, not column expressions. Already-typed DATETIME
     // operands pass through the argument cast layer, preserving the leaf's
@@ -16105,7 +16148,7 @@ fn evaluated_ascii_timestampadd_preserves_calendar_rounding_nulls_and_diagnostic
 }
 
 #[test]
-fn evaluated_ascii_timestampadd_zero_slots_require_values_prefix_null_and_date_roots() {
+fn ready_value_timestampadd_zero_slots_require_values_prefix_null_and_date_roots() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();
     session.run("SET sql_mode=''").unwrap();
@@ -16115,7 +16158,7 @@ fn evaluated_ascii_timestampadd_zero_slots_require_values_prefix_null_and_date_r
     session.run("CREATE TABLE shared_timestampadd_zero (one BIGINT, tiny_amount DECIMAL(12,10), half_amount DECIMAL(2,1), null_amount BIGINT, jan DATETIME, leap_day DATETIME, base DATETIME, null_date DATETIME, zero_date DATETIME)").unwrap();
     session.run("INSERT INTO shared_timestampadd_zero VALUES (1,0.0000099999,1.5,NULL,'2024-01-31 00:00:00','2020-02-29 00:00:00','1995-05-01 00:00:00',NULL,'0000-00-00 00:00:00')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // The amount-NULL carrier concerns only the leaf's preparation. Outer
     // evaluation still reads all children and applies wrap_datetime_args;
@@ -16161,7 +16204,7 @@ fn evaluated_ascii_timestampadd_zero_slots_require_values_prefix_null_and_date_r
 }
 
 #[test]
-fn evaluated_ascii_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split() {
+fn ready_value_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split() {
     use tidb_datatype::{Collation, FieldTypeCode, MySqlDuration, Time, TimeType};
 
     let mut session = Session::new();
@@ -16175,7 +16218,7 @@ fn evaluated_ascii_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_sp
     session.run("CREATE TABLE shared_add_sub_time_sql (dt DATETIME(3), date_val DATE, delta TIME(6), dur TIME(6), delta_text VARCHAR(40), dur_delta VARCHAR(40), s_dur VARCHAR(40), s_delta VARCHAR(40), s_dt VARCHAR(40), bad VARCHAR(40), n VARCHAR(40))").unwrap();
     session.run("INSERT INTO shared_add_sub_time_sql VALUES ('2024-11-01 00:00:00.000','2024-11-01','12:00:01.341300','03:00:00.999999','12:00:01.341300','02:00:00.999998','01:00:00.000001','02:00:00.000001','2020-01-01 10:00:00','xxcvadfgasd',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let text = |value: &str| Datum::new_collation_string(value, Collation::Utf8Mb4Bin);
     // DATETIME + DURATION's column body preserves the left value FSP (3),
@@ -16322,7 +16365,7 @@ fn evaluated_ascii_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_sp
 }
 
 #[test]
-fn evaluated_ascii_addtime_subtime_zero_slots_require_values_nulls_and_parse_errors() {
+fn ready_value_addtime_subtime_zero_slots_require_values_nulls_and_parse_errors() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();
     session
@@ -16331,7 +16374,7 @@ fn evaluated_ascii_addtime_subtime_zero_slots_require_values_nulls_and_parse_err
     session.run("CREATE TABLE shared_add_sub_time_zero (dt DATETIME(3), delta TIME(6), s_dur VARCHAR(40), s_delta VARCHAR(40), bad VARCHAR(40), n VARCHAR(40))").unwrap();
     session.run("INSERT INTO shared_add_sub_time_zero VALUES ('2024-11-01 00:00:00.000','12:00:01.341300','01:00:00.000001','02:00:00.000001','xxcvadfgasd',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Success, true NULL, statically-selected NULL and parser failure must
     // each acquire the function's worker. No child CAST/function/filter/sort
@@ -16379,7 +16422,7 @@ fn evaluated_ascii_addtime_subtime_zero_slots_require_values_nulls_and_parse_err
 }
 
 #[test]
-fn evaluated_ascii_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnostics() {
+fn ready_value_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnostics() {
     use tidb_datatype::{FieldTypeCode, MySqlDuration};
 
     let mut session = Session::new();
@@ -16390,7 +16433,7 @@ fn evaluated_ascii_time_microsecond_preserve_sql_duration_shapes_and_parse_diagn
     session.run("CREATE TABLE shared_time_microsecond_sql (good_time TIME(6), negative_time TIME(6), day_text VARCHAR(40), compact_text VARCHAR(40), bad_text VARCHAR(40), tail_text VARCHAR(40), over_text VARCHAR(40), null_text VARCHAR(40))").unwrap();
     session.run("INSERT INTO shared_time_microsecond_sql VALUES ('12:34:56.123456','-00:00:00.123456','1 12:34:56.123456','20171231235959.9999999','2011-11-11 10:10:10.11.12','12:34:56tail','839:00:00',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // TIME's native leaf returns text, but the SQL scalar boundary converts it
@@ -16492,7 +16535,7 @@ fn evaluated_ascii_time_microsecond_preserve_sql_duration_shapes_and_parse_diagn
 }
 
 #[test]
-fn evaluated_ascii_time_microsecond_zero_slots_require_valid_invalid_and_null_roots() {
+fn ready_value_time_microsecond_zero_slots_require_valid_invalid_and_null_roots() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();
     session
@@ -16501,7 +16544,7 @@ fn evaluated_ascii_time_microsecond_zero_slots_require_valid_invalid_and_null_ro
     session.run("CREATE TABLE shared_time_microsecond_zero (good_time TIME(6), bad_text VARCHAR(40), over_text VARCHAR(40), null_text VARCHAR(40))").unwrap();
     session.run("INSERT INTO shared_time_microsecond_zero VALUES ('12:34:56.123456','2011-11-11 10:10:10.11.12','839:00:00',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Direct columns only: neither a CAST child nor another function can stand
     // in for the root. Even invalid TIME must acquire its worker before native
@@ -16549,7 +16592,7 @@ fn evaluated_ascii_time_microsecond_zero_slots_require_valid_invalid_and_null_ro
 }
 
 #[test]
-fn evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
+fn ready_value_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
@@ -16561,7 +16604,7 @@ fn evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values()
     session.run("CREATE TABLE shared_decimal_div_sql (f DECIMAL(10,2), fd DECIMAL(10,2), b DECIMAL(20,4), bd DECIMAL(20,4), u DECIMAL(22,2) UNSIGNED, ud DECIMAL(22,2), neg DECIMAL(10,2), eleven DECIMAL(10,2), small_neg DECIMAL(10,2), ueleven DECIMAL(10,2) UNSIGNED, n DECIMAL(10,2), z DECIMAL(10,2))").unwrap();
     session.run("INSERT INTO shared_decimal_div_sql VALUES (11.01,1.10,0.3000,0.1000,18446744073709551615.00,1.50,-13.00,11.00,-1.00,11.00,NULL,0.00)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Matching storage scales 2 fit the existing i128 fast policy. Scale 4
@@ -16613,7 +16656,7 @@ fn evaluated_ascii_decimal_div_preserves_fast_bounded_unsigned_and_null_values()
 }
 
 #[test]
-fn evaluated_ascii_decimal_div_zero_slots_require_fast_bounded_and_null_roots() {
+fn ready_value_decimal_div_zero_slots_require_fast_bounded_and_null_roots() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
@@ -16625,7 +16668,7 @@ fn evaluated_ascii_decimal_div_zero_slots_require_fast_bounded_and_null_roots() 
     session.run("CREATE TABLE shared_decimal_div_zero (f DECIMAL(10,2), fd DECIMAL(10,2), b DECIMAL(20,4), bd DECIMAL(20,4), u DECIMAL(22,2) UNSIGNED, ud DECIMAL(22,2), n DECIMAL(10,2), z DECIMAL(10,2))").unwrap();
     session.run("INSERT INTO shared_decimal_div_zero VALUES (11.01,1.10,0.3000,0.1000,18446744073709551615.00,1.50,NULL,0.00)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Six scalar roots and two vector routes. All operands are direct typed
     // columns; no CAST, other function, unary minus, WHERE or ORDER BY can
@@ -16672,7 +16715,7 @@ fn evaluated_ascii_decimal_div_zero_slots_require_fast_bounded_and_null_roots() 
 }
 
 #[test]
-fn evaluated_ascii_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
+fn ready_value_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
@@ -16683,7 +16726,7 @@ fn evaluated_ascii_integer_div_preserves_signedness_nulls_and_query_diagnostics(
     session.run("CREATE TABLE shared_integer_div_sql (a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, umax BIGINT UNSIGNED, uone BIGINT UNSIGNED, neg BIGINT, neg_one BIGINT, neg_two BIGINT, n BIGINT, z BIGINT, min_i BIGINT)").unwrap();
     session.run("INSERT INTO shared_integer_div_sql VALUES (13,11,13,11,18446744073709551615,1,-13,-1,-2,NULL,0,-9223372036854775808)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Only the existing integer DIV slice: SS/US/SU/UU, including present
@@ -16752,7 +16795,7 @@ fn evaluated_ascii_integer_div_preserves_signedness_nulls_and_query_diagnostics(
 }
 
 #[test]
-fn evaluated_ascii_integer_div_zero_slots_require_signed_pairs_and_null_routes() {
+fn ready_value_integer_div_zero_slots_require_signed_pairs_and_null_routes() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
@@ -16763,7 +16806,7 @@ fn evaluated_ascii_integer_div_zero_slots_require_signed_pairs_and_null_routes()
     session.run("CREATE TABLE shared_integer_div_zero (a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, umax BIGINT UNSIGNED, uone BIGINT UNSIGNED, n BIGINT, z BIGINT)").unwrap();
     session.run("INSERT INTO shared_integer_div_zero VALUES (13,11,13,11,18446744073709551615,1,NULL,0)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Seven scalar roots plus the vector integer-NULL route. Plain columns
     // cannot hide the root behind CAST, arithmetic children, WHERE or ORDER BY.
@@ -16810,7 +16853,7 @@ fn evaluated_ascii_integer_div_zero_slots_require_signed_pairs_and_null_routes()
 }
 
 #[test]
-fn evaluated_ascii_tso_timediff_preserve_native_values_metadata_and_zone() {
+fn ready_value_tso_timediff_preserve_native_values_metadata_and_zone() {
     use tidb_datatype::{FieldTypeCode, MySqlDuration, Time, TimeType};
 
     let mut session = Session::new();
@@ -16821,7 +16864,7 @@ fn evaluated_ascii_tso_timediff_preserve_native_values_metadata_and_zone() {
     session.run("CREATE TABLE shared_tso_timediff_sql (tso BIGINT, tso_text VARCHAR(30), one_tso BIGINT, zero_tso BIGINT, negative_tso BIGINT, null_tso BIGINT, a DATETIME(3), b DATETIME(3), x TIME, y TIME, nd DATETIME(3))").unwrap();
     session.run("INSERT INTO shared_tso_timediff_sql VALUES (404411537129996288,'404411537129996288',1,0,-1,NULL,'2024-01-02 00:00:00.123','2024-01-01 23:59:59.120','10:10:10','10:09:00',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Original tidb_parse_tso_source integration pins: the SQL return type is
@@ -16905,7 +16948,7 @@ fn evaluated_ascii_tso_timediff_preserve_native_values_metadata_and_zone() {
 }
 
 #[test]
-fn evaluated_ascii_tso_timediff_zero_slots_require_direct_roots() {
+fn ready_value_tso_timediff_zero_slots_require_direct_roots() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();
     session
@@ -16914,7 +16957,7 @@ fn evaluated_ascii_tso_timediff_zero_slots_require_direct_roots() {
     session.run("CREATE TABLE shared_tso_timediff_zero (tso BIGINT, one_tso BIGINT, zero_tso BIGINT, negative_tso BIGINT, null_tso BIGINT, a DATETIME(3), b DATETIME(3), x TIME, y TIME, nd DATETIME(3))").unwrap();
     session.run("INSERT INTO shared_tso_timediff_zero VALUES (404411537129996288,1,0,-1,NULL,'2024-01-02 00:00:00.123','2024-01-01 23:59:59.120','10:10:10','10:09:00',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // TSO's ETInt wrapper passes Int/NULL through; TIMEDIFF has no argument
     // cast wrapper. Its existing typed Duration post-cast runs only after the
@@ -16957,7 +17000,7 @@ fn evaluated_ascii_tso_timediff_zero_slots_require_direct_roots() {
 }
 
 #[test]
-fn evaluated_ascii_identity_values_preserve_types_labels_and_name_const_gate() {
+fn ready_value_identity_values_preserve_types_labels_and_name_const_gate() {
     use tidb_datatype::{
         BinaryJSON, BinaryLiteral, Collation, Decimal, FieldTypeCode, MySqlDuration, MysqlEnum,
         MysqlSet, Time, TimeType,
@@ -16974,7 +17017,7 @@ fn evaluated_ascii_identity_values_preserve_types_labels_and_name_const_gate() {
     session.run("CREATE TABLE shared_identity_sql (i BIGINT, u BIGINT UNSIGNED, r DOUBLE, f FLOAT, dec_value DECIMAL(8,3), s VARCHAR(8) COLLATE utf8mb4_general_ci, b VARBINARY(3), dt DATETIME(6), tm TIME(6), j JSON, en ENUM('a','b') COLLATE utf8mb4_bin, st SET('a','b') COLLATE utf8mb4_bin, bits BIT(8), nullable_value INT)").unwrap();
     session.run("INSERT INTO shared_identity_sql VALUES (-153,18446744073709551615,3.1415926,1.5,123.123,'TiDB',X'00ff80','2024-01-02 03:04:05.600000','12:34:56.700000','{\"a\":1}','b','a,b',b'00000001',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
 
     // Fixed identity vectors, not answers obtained from another evaluator.
@@ -17116,7 +17159,7 @@ fn evaluated_ascii_identity_values_preserve_types_labels_and_name_const_gate() {
 }
 
 #[test]
-fn evaluated_ascii_identity_zero_slots_require_each_root() {
+fn ready_value_identity_zero_slots_require_each_root() {
     let mut session = Session::new();
     session
         .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
@@ -17128,7 +17171,7 @@ fn evaluated_ascii_identity_zero_slots_require_each_root() {
     session.run("CREATE TABLE shared_identity_zero (i BIGINT, dec_value DECIMAL(8,3), s VARCHAR(8), b VARBINARY(3), dt DATETIME(6), j JSON, en ENUM('a','b'), nullable_value INT)").unwrap();
     session.run("INSERT INTO shared_identity_zero VALUES (-153,123.123,'TiDB',X'00ff80','2024-01-02 03:04:05.600000','{\"a\":1}','b',NULL)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Eight genuine typed operands, including SQL NULL, for each fixed worker
     // profile. Unary plus creates no child worker; there are no CAST, HEX,
@@ -17174,7 +17217,7 @@ fn evaluated_ascii_identity_zero_slots_require_each_root() {
 }
 
 #[test]
-fn evaluated_ascii_weight_string_format_preserve_typed_columns_padding_locales_and_warnings() {
+fn ready_value_weight_string_format_preserve_typed_columns_padding_locales_and_warnings() {
     // Chunk string cells carry their declared collation; inspect the payload
     // directly, including invalid UTF-8 binary prefixes, without HEX or a
     // collation/key provider used to manufacture the expected answer.
@@ -17196,7 +17239,7 @@ fn evaluated_ascii_weight_string_format_preserve_typed_columns_padding_locales_a
     session.run("CREATE TABLE shared_weight_format_sql (s VARCHAR(8) COLLATE utf8mb4_bin, npad VARCHAR(8) COLLATE utf8mb4_0900_bin, ci VARCHAR(8) COLLATE utf8mb4_general_ci, uni VARCHAR(8) COLLATE utf8mb4_bin, ns VARCHAR(8), i INT, n DECIMAL(20,3), p INT, de VARCHAR(16), india VARCHAR(16), unknown_locale VARCHAR(16), null_locale VARCHAR(16), nn DECIMAL(20,3), pn INT, neg DECIMAL(2,1), zp INT)").unwrap();
     session.run("INSERT INTO shared_weight_format_sql VALUES ('ab','ab','A','中文',NULL,7,1234567.891,2,'de_DE','en_IN','not_REAL',NULL,NULL,NULL,-2.5,0)").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Literal byte vectors from the original WEIGHT_STRING source tests.
     // Typed numeric AS BINARY overrides the numeric NULL signature; the AST
@@ -17291,7 +17334,7 @@ fn evaluated_ascii_weight_string_format_preserve_typed_columns_padding_locales_a
 }
 
 #[test]
-fn evaluated_ascii_weight_string_format_zero_slots_require_direct_roots() {
+fn ready_value_weight_string_format_zero_slots_require_direct_roots() {
     let mut session = Session::new();
     session
         .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
@@ -17302,7 +17345,7 @@ fn evaluated_ascii_weight_string_format_zero_slots_require_direct_roots() {
     session.run("CREATE TABLE shared_weight_format_zero (s VARCHAR(8), empty_s VARCHAR(8), ns VARCHAR(8), i INT, n DECIMAL(20,3), p INT, de VARCHAR(16), nn DECIMAL(20,3), pn INT, null_locale VARCHAR(16), unknown_locale VARCHAR(16))").unwrap();
     session.run("INSERT INTO shared_weight_format_zero VALUES ('ab','',NULL,7,1234567.891,2,'de_DE',NULL,NULL,NULL,'not_REAL')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Eight WEIGHT_STRING roots, four ordinary FORMAT roots and two locale
     // timing witnesses. No HEX, CAST, key expression, WHERE or ORDER BY can
@@ -17354,7 +17397,7 @@ fn evaluated_ascii_weight_string_format_zero_slots_require_direct_roots() {
 }
 
 #[test]
-fn evaluated_ascii_date_preserves_typed_casts_zero_modes_and_metadata() {
+fn ready_value_date_preserves_typed_casts_zero_modes_and_metadata() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();
     session.run("SET sql_mode=''").unwrap();
@@ -17364,7 +17407,7 @@ fn evaluated_ascii_date_preserves_typed_casts_zero_modes_and_metadata() {
     session.run("CREATE TABLE shared_date_sql (dt DATETIME(6), d DATE, ts TIMESTAMP(6), txt VARCHAR(40), num BIGINT, nd DATETIME, z DATETIME, p DATETIME)").unwrap();
     session.run("INSERT INTO shared_date_sql VALUES ('2024-03-05 14:30:45.123456','2024-02-29','2024-03-04 23:30:00','2024-02-29 23:59:59.654321',20240315123045,NULL,'0000-00-00 00:00:00','2024-00-05 12:34:56')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // DATE's original ETDatetime adaptation passes temporal/NULL values
     // through; VARCHAR and BIGINT exercise its existing implicit casts.
@@ -17427,7 +17470,7 @@ fn evaluated_ascii_date_preserves_typed_casts_zero_modes_and_metadata() {
 }
 
 #[test]
-fn evaluated_ascii_date_zero_slots_require_direct_temporal_inputs() {
+fn ready_value_date_zero_slots_require_direct_temporal_inputs() {
     let mut session = Session::new();
     session.run("SET time_zone='+00:00'").unwrap();
     session.run("SET sql_mode=''").unwrap();
@@ -17437,7 +17480,7 @@ fn evaluated_ascii_date_zero_slots_require_direct_temporal_inputs() {
     session.run("CREATE TABLE shared_date_zero (dt DATETIME(6), d DATE, ts TIMESTAMP(6), nd DATETIME, z DATETIME, p DATETIME)").unwrap();
     session.run("INSERT INTO shared_date_zero VALUES ('2024-03-05 14:30:45.123456','2024-02-29','2024-03-04 23:30:00',NULL,'0000-00-00 00:00:00','2024-00-05 12:34:56')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Exactly six direct roots. cast_arg_as_datetime passes Datum::Time and
     // Datum::Null through, so no cast worker can supply this refusal. The
@@ -17469,7 +17512,7 @@ fn evaluated_ascii_date_zero_slots_require_direct_temporal_inputs() {
 }
 
 #[test]
-fn evaluated_ascii_clock_now_date_sysdate_preserves_pinned_context_and_types() {
+fn ready_value_clock_now_date_sysdate_preserves_pinned_context_and_types() {
     use tidb_datatype::FieldTypeCode::{Date, Datetime};
 
     let mut session = Session::new();
@@ -17480,7 +17523,7 @@ fn evaluated_ascii_clock_now_date_sysdate_preserves_pinned_context_and_types() {
     session.run("SET timestamp=1700000000.654321").unwrap();
     session.run("SET tidb_sysdate_is_now=ON").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // The source f64 timestamp split gives 654320955ns. NOW and aliased
     // SYSDATE truncate to .654320, not UTC_TIMESTAMP's .654321 rounding.
@@ -17556,7 +17599,7 @@ fn evaluated_ascii_clock_now_date_sysdate_preserves_pinned_context_and_types() {
 }
 
 #[test]
-fn evaluated_ascii_clock_now_date_sysdate_zero_slots_cover_aliases_and_live_mode() {
+fn ready_value_clock_now_date_sysdate_zero_slots_cover_aliases_and_live_mode() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -17564,7 +17607,7 @@ fn evaluated_ascii_clock_now_date_sysdate_zero_slots_cover_aliases_and_live_mode
     session.run("SET time_zone='+08:00'").unwrap();
     session.run("SET timestamp=1700000000.654321").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Ten direct calls under ON exercise NOW/CURDATE and their aliases;
     // three additional OFF calls must reach the real SYSDATE worker. No
@@ -17620,7 +17663,7 @@ fn evaluated_ascii_clock_now_date_sysdate_zero_slots_cover_aliases_and_live_mode
 }
 
 #[test]
-fn evaluated_ascii_json_merge_preserves_order_null_domains_errors_and_warning() {
+fn ready_value_json_merge_preserves_order_null_domains_errors_and_warning() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -17629,7 +17672,7 @@ fn evaluated_ascii_json_merge_preserves_order_null_domains_errors_and_warning() 
     session.run("CREATE TABLE shared_json_merge_sql (a JSON, patch_doc JSON, last_doc JSON, arr1 JSON, arr2 JSON, jnull JSON, nil JSON, obj JSON, bad VARCHAR(16), num INT)").unwrap();
     session.run(r#"INSERT INTO shared_json_merge_sql VALUES ('{"a":1,"b":2}','{"a":null}','{"a":3}','[1,2]','[3]','null',NULL,'{"c":4}','nope',3)"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let json = |text: &str| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
     // One stored row, twelve literal output pins. SQL NULL truncation is not
@@ -17716,7 +17759,7 @@ fn evaluated_ascii_json_merge_preserves_order_null_domains_errors_and_warning() 
 }
 
 #[test]
-fn evaluated_ascii_json_merge_zero_slots_require_each_root() {
+fn ready_value_json_merge_zero_slots_require_each_root() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -17725,7 +17768,7 @@ fn evaluated_ascii_json_merge_zero_slots_require_each_root() {
     session.run("CREATE TABLE shared_json_merge_zero (a JSON, last_doc JSON, arr1 JSON, arr2 JSON, nil JSON, obj JSON, jnull JSON)").unwrap();
     session.run(r#"INSERT INTO shared_json_merge_zero VALUES ('{"a":1,"b":2}','{"a":3}','[1,2]','[3]',NULL,'{"c":4}','null')"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Thirteen direct-column calls, without CAST/EXTRACT/WHERE/ORDER or any
     // other worker. Malformed text/type preparation errors are not part of
@@ -17772,7 +17815,7 @@ fn evaluated_ascii_json_merge_zero_slots_require_each_root() {
 }
 
 #[test]
-fn evaluated_ascii_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
+fn ready_value_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -17780,7 +17823,7 @@ fn evaluated_ascii_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() 
     session.run("SET time_zone='+08:00'").unwrap();
     session.run("SET timestamp=1700000000.654321").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // SET timestamp's source f64 split gives 654320955 nanoseconds. The two
     // duration families first truncate to microseconds before explicit-FSP
@@ -17869,7 +17912,7 @@ fn evaluated_ascii_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() 
 }
 
 #[test]
-fn evaluated_ascii_clock_context_zero_slots_require_each_family() {
+fn ready_value_clock_context_zero_slots_require_each_family() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -17877,7 +17920,7 @@ fn evaluated_ascii_clock_context_zero_slots_require_each_family() {
     session.run("SET time_zone='+08:00'").unwrap();
     session.run("SET timestamp=1700000000.654321").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Eleven direct calls cover exactly four families and their six SQL-value
     // profiles, including CURRENT_TIME. The seventh NULL profile is unit-only.
@@ -17921,7 +17964,7 @@ fn evaluated_ascii_clock_context_zero_slots_require_each_family() {
 }
 
 #[test]
-fn evaluated_ascii_json_unquote_preserves_stored_text_and_json_policies() {
+fn ready_value_json_unquote_preserves_stored_text_and_json_policies() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -17935,7 +17978,7 @@ fn evaluated_ascii_json_unquote_preserves_stored_text_and_json_policies() {
         .run("UPDATE shared_json_unquote_sql SET jpayload=encoded_doc")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Both quoted_text and jpayload's decoded string carry 22 5c 6e 22.
     // Native SQL text parses the escape once; native typed JSON returns its
@@ -17974,7 +18017,7 @@ fn evaluated_ascii_json_unquote_preserves_stored_text_and_json_policies() {
 }
 
 #[test]
-fn evaluated_ascii_json_unquote_zero_slots_require_direct_input_workers() {
+fn ready_value_json_unquote_zero_slots_require_direct_input_workers() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -17986,7 +18029,7 @@ fn evaluated_ascii_json_unquote_zero_slots_require_direct_input_workers() {
         .run("UPDATE shared_json_unquote_zero SET jpayload=encoded_doc")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Exactly nine direct, single-column probes. No CAST, QUOTE, EXTRACT,
     // WHERE or ORDER BY can contribute an unrelated worker failure. Strict
@@ -18028,7 +18071,7 @@ fn evaluated_ascii_json_unquote_zero_slots_require_direct_input_workers() {
 }
 
 #[test]
-fn evaluated_ascii_json_paths_preserve_native_selection_mutation_and_errors() {
+fn ready_value_json_paths_preserve_native_selection_mutation_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18037,7 +18080,7 @@ fn evaluated_ascii_json_paths_preserve_native_selection_mutation_and_errors() {
     session.run("CREATE TABLE shared_json_paths_sql (d JSON, arr JSON, scalar_doc JSON, child_doc JSON, nd JSON, pa VARCHAR(32), pn VARCHAR(32), deep_path VARCHAR(32), missing VARCHAR(32), pzero VARCHAR(32), pone VARCHAR(32), np VARCHAR(32), badpath VARCHAR(32), wild VARCHAR(32), rootpath VARCHAR(32), txt VARCHAR(16), vb VARBINARY(8), v INT, w INT, nv INT)").unwrap();
     session.run(r#"INSERT INTO shared_json_paths_sql VALUES ('{"a":1,"b":[2,3]}','[1,2,3]','1','{"x":1}',NULL,'$.a','$.new','$.absent.child','$.absent','$[0]','$[1]',NULL,'bad path','$.*','$','[9]','ab',9,8,NULL)"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Literal goldens follow tests_json::json_mutation_functions and the native
     // JSON source vectors. These assert native policies, NOT legacy APPEND's
@@ -18095,7 +18138,7 @@ fn evaluated_ascii_json_paths_preserve_native_selection_mutation_and_errors() {
 }
 
 #[test]
-fn evaluated_ascii_json_paths_zero_slots_cover_dynamic_cached_null_and_noop_inputs() {
+fn ready_value_json_paths_zero_slots_cover_dynamic_cached_null_and_noop_inputs() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18104,7 +18147,7 @@ fn evaluated_ascii_json_paths_zero_slots_cover_dynamic_cached_null_and_noop_inpu
     session.run("CREATE TABLE shared_json_paths_zero (d JSON, arr JSON, nd JSON, pa VARCHAR(32), pzero VARCHAR(32), missing VARCHAR(32), deep_path VARCHAR(32), np VARCHAR(32), v INT, nv INT)").unwrap();
     session.run(r#"INSERT INTO shared_json_paths_zero VALUES ('{"a":1}','[1,2]',NULL,'$.a','$[0]','$.absent','$.absent.child',NULL,9,NULL)"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // No WHERE, ORDER BY, CAST or unrelated worker can mask the root family.
     // Constant paths exercise the context cache with real stored documents.
@@ -18166,7 +18209,7 @@ fn evaluated_ascii_json_paths_zero_slots_cover_dynamic_cached_null_and_noop_inpu
 }
 
 #[test]
-fn evaluated_ascii_json_values_preserve_constructors_keys_pretty_and_types() {
+fn ready_value_json_values_preserve_constructors_keys_pretty_and_types() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18175,7 +18218,7 @@ fn evaluated_ascii_json_values_preserve_constructors_keys_pretty_and_types() {
     session.run("CREATE TABLE shared_json_values_sql (ival INT, other INT, vb VARBINARY(8), fb BINARY(3), bl BLOB, doc JSON, s VARCHAR(32), n INT, nj JSON, jnull JSON, p VARCHAR(32), missing VARCHAR(32), wild VARCHAR(32), badpath VARCHAR(32), np VARCHAR(32), ka VARCHAR(8), kb VARCHAR(8), firstval INT, lastval INT, emptyarr JSON, emptyobj JSON, floats JSON, badtext VARCHAR(8))").unwrap();
     session.run(r#"INSERT INTO shared_json_values_sql VALUES (1,2,'ab','ab','ab','{"a":{"z":1,"A":2},"b":[1,2]}','[1]',NULL,NULL,'null','$.a','$.missing','$.*','bad path',NULL,'z','A',1,3,'[]','{}','[1.0,1e15,1e-16,0.000000000000001]','nope')"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // These are literal fixtures, not another provider used as an oracle.
     // Constructor/opaque/key vectors come from the immutable native JSON
@@ -18234,7 +18277,7 @@ fn evaluated_ascii_json_values_preserve_constructors_keys_pretty_and_types() {
 }
 
 #[test]
-fn evaluated_ascii_json_values_zero_slots_require_constructor_keys_pretty_workers() {
+fn ready_value_json_values_zero_slots_require_constructor_keys_pretty_workers() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18243,7 +18286,7 @@ fn evaluated_ascii_json_values_zero_slots_require_constructor_keys_pretty_worker
     session.run("CREATE TABLE shared_json_values_zero (d JSON, nj JSON, jnull JSON, emptyobj JSON, emptyarr JSON, p VARCHAR(32), missing VARCHAR(32), np VARCHAR(32), k VARCHAR(8), s VARCHAR(8), vb VARBINARY(8), n INT)").unwrap();
     session.run(r#"INSERT INTO shared_json_values_zero VALUES ('{"a":{"z":1}}',NULL,'null','{}','[]','$.a','$.missing',NULL,'key','[1]','ab',NULL)"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     // Each SELECT names only the family under test over stored inputs, with
     // no WHERE, ORDER BY, CAST, or other worker that could mask its entry.
@@ -18298,7 +18341,7 @@ fn evaluated_ascii_json_values_zero_slots_require_constructor_keys_pretty_worker
 }
 
 #[test]
-fn evaluated_ascii_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
+fn ready_value_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18307,7 +18350,7 @@ fn evaluated_ascii_json_predicates_and_nulleq_preserve_fixed_values_and_errors()
     session.run("CREATE TABLE shared_json_predicate_sql (id INT PRIMARY KEY, d JSON, arr JSON, overlap_doc JSON, candidate VARCHAR(32), p VARCHAR(32), missing VARCHAR(32), badp VARCHAR(32), wild VARCHAR(32), mode VARCHAR(8), badmode VARCHAR(8), bad_doc VARCHAR(32), target BIGINT, n BIGINT, np VARCHAR(32))").unwrap();
     session.run(r#"INSERT INTO shared_json_predicate_sql VALUES (1,'{"a":[1,2],"n":null}','[1,2]','{"n":null}','2','$.a','$.missing','bad path','$.*','one','bad','nope',2,NULL,NULL),(2,'[1,3]','[1,3]','[2,4]','2','$[0]','$.missing','bad path','$.*','one','bad','nope',2,NULL,NULL),(3,NULL,NULL,NULL,NULL,NULL,'$.missing','bad path','$.*',NULL,'bad','nope',NULL,NULL,NULL)"#).unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Fixed literals from the established JSON source/SQL tables: containment,
     // shallow overlap, value-vs-document MEMBER semantics, and scalar length.
@@ -18411,7 +18454,7 @@ fn evaluated_ascii_json_predicates_and_nulleq_preserve_fixed_values_and_errors()
 }
 
 #[test]
-fn evaluated_ascii_json_predicates_and_nulleq_zero_slots_require_actual_workers() {
+fn ready_value_json_predicates_and_nulleq_zero_slots_require_actual_workers() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18450,7 +18493,7 @@ fn evaluated_ascii_json_predicates_and_nulleq_zero_slots_require_actual_workers(
             .unwrap();
     }
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     let mut queries = [
         "JSON_CONTAINS(d,c)",
@@ -18510,7 +18553,7 @@ fn evaluated_ascii_json_predicates_and_nulleq_zero_slots_require_actual_workers(
 }
 
 #[test]
-fn evaluated_ascii_comparison_sql_values_typed_filters_and_row_tuples() {
+fn ready_value_comparison_sql_values_typed_filters_and_row_tuples() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18519,7 +18562,7 @@ fn evaluated_ascii_comparison_sql_values_typed_filters_and_row_tuples() {
     session.run("CREATE TABLE shared_comparison_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, r DOUBLE, t DOUBLE, d DECIMAL(30,2), e DECIMAL(30,2), s VARCHAR(8) COLLATE utf8mb4_general_ci, q VARCHAR(8) COLLATE utf8mb4_general_ci, x VARBINARY(8), y VARBINARY(8), j JSON, k JSON, vec VECTOR, other VECTOR, dt DATETIME(6), later DATETIME(6), tm TIME(6), endtm TIME(6))").unwrap();
     session.run("INSERT INTO shared_comparison_sql VALUES (1,-1,1,18446744073709551615,1,1.5e0,2e0,9007199254740993.25,9007199254740993.26,'A ','a',X'41',X'61','[1,2]','[1,3]','[1,2]','[1,3]','2024-01-01 00:00:00.000001','2024-01-01 00:00:00.000002','-01:00:00','01:00:00'),(2,1,1,1,1,2e0,2e0,1.25,1.25,'a','a',X'61',X'61','[1,3]','[1,3]','[1,3]','[1,3]','2024-01-01 00:00:00.000002','2024-01-01 00:00:00.000002','01:00:00','01:00:00'),(3,NULL,1,NULL,1,NULL,2e0,NULL,1.25,NULL,'a',NULL,X'61',NULL,'[1,3]',NULL,'[1,3]',NULL,'2024-01-01 00:00:00.000002',NULL,'01:00:00')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Fixed truth tables: less, greater, equal, then SQL NULL. Expected values
     // are literals, never another comparison implementation used as an oracle.
@@ -18591,7 +18634,7 @@ fn evaluated_ascii_comparison_sql_values_typed_filters_and_row_tuples() {
 }
 
 #[test]
-fn evaluated_ascii_comparison_zero_slots_reject_direct_columns_and_filters() {
+fn ready_value_comparison_zero_slots_reject_direct_columns_and_filters() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18630,7 +18673,7 @@ fn evaluated_ascii_comparison_zero_slots_reject_direct_columns_and_filters() {
             .unwrap();
     }
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for index in 0..domains.len() {
         for op in ["=", "!=", "<", "<=", ">", ">="] {
@@ -18681,7 +18724,7 @@ fn evaluated_ascii_comparison_zero_slots_reject_direct_columns_and_filters() {
 }
 
 #[test]
-fn evaluated_ascii_between_sql_fixed_domains_and_existing_grouping_rollup() {
+fn ready_value_between_sql_fixed_domains_and_existing_grouping_rollup() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18729,7 +18772,7 @@ fn evaluated_ascii_between_sql_fixed_domains_and_existing_grouping_rollup() {
         .run("INSERT INTO shared_grouping_sql VALUES (1)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for index in 0..domains.len() {
         // Every operand is stored. These fixed answers cover inclusive bounds,
@@ -18772,7 +18815,7 @@ fn evaluated_ascii_between_sql_fixed_domains_and_existing_grouping_rollup() {
 }
 
 #[test]
-fn evaluated_ascii_between_zero_slots_reject_only_direct_family_work() {
+fn ready_value_between_zero_slots_reject_only_direct_family_work() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18807,7 +18850,7 @@ fn evaluated_ascii_between_zero_slots_reject_only_direct_family_work() {
         .run("INSERT INTO shared_grouping_zero VALUES (1)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     let mut queries = Vec::new();
     for index in 0..domains.len() {
@@ -18853,7 +18896,7 @@ fn evaluated_ascii_between_zero_slots_reject_only_direct_family_work() {
 }
 
 #[test]
-fn evaluated_ascii_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
+fn ready_value_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -18885,7 +18928,7 @@ fn evaluated_ascii_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics(
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for (id, (mode, ciphertext)) in vectors.iter().enumerate() {
         session
@@ -19033,7 +19076,7 @@ fn evaluated_ascii_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics(
 }
 
 #[test]
-fn evaluated_ascii_aes_zero_slots_reject_all_modes_and_actual_column_presence() {
+fn ready_value_aes_zero_slots_reject_all_modes_and_actual_column_presence() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -19041,7 +19084,7 @@ fn evaluated_ascii_aes_zero_slots_reject_all_modes_and_actual_column_presence() 
     session.run("CREATE TABLE shared_aes_zero (p VARBINARY(32), k VARBINARY(32), iv VARBINARY(32), n VARBINARY(32), empty VARBINARY(1), bad VARBINARY(32), w VARCHAR(8))").unwrap();
     session.run("INSERT INTO shared_aes_zero VALUES ('pingcap','1234567890123456','1234567890123456',NULL,X'','not-16-bytes','123x')").unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for mode in [
         "aes-128-ecb",
@@ -19124,7 +19167,7 @@ fn evaluated_ascii_aes_zero_slots_reject_all_modes_and_actual_column_presence() 
 }
 
 #[test]
-fn evaluated_ascii_true_division_sql_preserves_precision_demand_and_diagnostics() {
+fn ready_value_true_division_sql_preserves_precision_demand_and_diagnostics() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -19136,7 +19179,7 @@ fn evaluated_ascii_true_division_sql_preserves_precision_demand_and_diagnostics(
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     for (precision, expected) in [(0, "1.1429"), (4, "1.1429"), (10, "1.1428571429")] {
         session
@@ -19241,7 +19284,7 @@ fn evaluated_ascii_true_division_sql_preserves_precision_demand_and_diagnostics(
 }
 
 #[test]
-fn evaluated_ascii_true_division_zero_slots_reject_columns_nulls_and_zero() {
+fn ready_value_true_division_zero_slots_reject_columns_nulls_and_zero() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -19251,7 +19294,7 @@ fn evaluated_ascii_true_division_zero_slots_reject_columns_nulls_and_zero() {
         .run("INSERT INTO shared_div_zero VALUES (7,2,0,NULL,7.5e0,2e0,0e0,NULL,7.5,2,0,NULL)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for expression in [
         "a/b", "a/z", "n/b", "a/n", "n/z", "r/t", "r/rz", "rn/t", "r/rn", "rn/rz", "d/e", "d/dz",
@@ -19286,7 +19329,7 @@ fn evaluated_ascii_true_division_zero_slots_reject_columns_nulls_and_zero() {
 }
 
 #[test]
-fn evaluated_ascii_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
+fn ready_value_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -19298,7 +19341,7 @@ fn evaluated_ascii_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     let decimal = |text: &str| Datum::Decimal(tidb_datatype::Decimal::parse_mysql(text).0);
     let StmtOutput::Rows { rows, .. } = session
@@ -19390,7 +19433,7 @@ fn evaluated_ascii_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
 }
 
 #[test]
-fn evaluated_ascii_modulo_zero_slots_reject_values_nulls_and_zero_divisors() {
+fn ready_value_modulo_zero_slots_reject_values_nulls_and_zero_divisors() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -19400,7 +19443,7 @@ fn evaluated_ascii_modulo_zero_slots_reject_values_nulls_and_zero_divisors() {
         .run("INSERT INTO shared_mod_zero VALUES (7,2,0,NULL,7.5e0,2e0,0e0,NULL,7.5,2,0,NULL)")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for expression in [
         "a%b",
@@ -19445,7 +19488,7 @@ fn evaluated_ascii_modulo_zero_slots_reject_values_nulls_and_zero_divisors() {
 }
 
 #[test]
-fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() {
+fn ready_value_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -19464,7 +19507,7 @@ fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() 
         )
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(1))
+        .try_install_ready_value_policy(ready_value_session_policy(1))
         .unwrap());
     // Existing infer_arithmetic_type selects VectorFloat32 as soon as either
     // operand is vector; ops' old signatures are elementwise for all three.
@@ -19560,7 +19603,7 @@ fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() 
     zero.run("INSERT INTO shared_binary_zero VALUES (2,1,NULL)")
         .unwrap();
     assert!(zero
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
     for expression in ["a+b", "a-b", "a*b", "a+n", "n-b", "a*n"] {
         let sql = format!("SELECT {expression} FROM shared_binary_zero");
@@ -19591,7 +19634,7 @@ fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() 
 }
 
 #[test]
-fn evaluated_ascii_window_arguments_borrow_the_statement_execution() {
+fn ready_value_window_arguments_borrow_the_statement_execution() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -19603,7 +19646,7 @@ fn evaluated_ascii_window_arguments_borrow_the_statement_execution() {
         .run("INSERT INTO ascii_window_owner VALUES (1,X'41'),(2,X'42')")
         .unwrap();
     assert!(session
-        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .try_install_ready_value_policy(ready_value_session_policy(0))
         .unwrap());
 
     let sql = "SELECT SUM(ASCII(v)) OVER (ORDER BY id) FROM ascii_window_owner";

@@ -37,7 +37,7 @@ fn invalid_frame() -> EvalError {
 }
 
 fn capacity_error(message: String) -> EvalError {
-    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
         LocalError::ResourceLimit(message.into()),
         None,
     ))

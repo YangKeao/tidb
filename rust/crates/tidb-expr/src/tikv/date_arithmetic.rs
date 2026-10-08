@@ -35,7 +35,7 @@ fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
     match error {
         tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
         tidb_query_expr::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit(
                     "native date arithmetic frame allocation or size failed".into(),
                 ),
@@ -218,9 +218,7 @@ fn evaluate(
         },
         |computed, selected| {
             if default_policy {
-                let scope = selected
-                    .evaluated_ascii_scope()
-                    .ok_or_else(invalid_report)?;
+                let scope = selected.ready_value_scope().ok_or_else(invalid_report)?;
                 // AST DATE_ADD formerly passed NoColumns into its entire body.
                 // Keep that semantic policy while borrowing the actual authority.
                 scope.with_columns(&crate::NoColumns, |defaults| {
@@ -290,7 +288,7 @@ mod tests {
     use tidb_datatype::{DateModes, MySqlDuration, SessionTimeZone};
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn date_arithmetic_bridge_keeps_default_policy_actual_scope_and_late_statement_callbacks() {
@@ -338,9 +336,18 @@ mod tests {
             panic_level: Cell::new(false),
         };
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };

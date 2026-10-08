@@ -93,7 +93,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn if_bridge_keeps_nullable_choice_raw_identity_and_selected_scope() {
@@ -139,10 +139,18 @@ mod tests {
             Datum::VectorFloat32(vector),
         ];
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 20)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 20,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&crate::NoColumns, |bound| {
@@ -152,13 +160,10 @@ mod tests {
                         let thens = Cell::new(0);
                         let elses = Cell::new(0);
                         let selected_value = |selected: &dyn Columns| {
+                            assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                             assert!(std::ptr::eq(
-                                selected.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
-                            assert!(std::ptr::eq(
-                                selected.evaluated_ascii_execution().unwrap(),
-                                bound.evaluated_ascii_execution().unwrap()
+                                selected.ready_value_execution().unwrap(),
+                                bound.ready_value_execution().unwrap()
                             ));
                             // The selected branch performs real C4 work between
                             // head and finish while the same one-slot scope lives.
@@ -173,7 +178,7 @@ mod tests {
                             bound,
                             |original| {
                                 assert!(std::ptr::eq(
-                                    original.evaluated_ascii_scope().unwrap(),
+                                    original.ready_value_scope().unwrap(),
                                     &scope
                                 ));
                                 conditions.set(conditions.get() + 1);
@@ -277,12 +282,12 @@ mod tests {
             eval_if_in(
                 &crate::NoColumns,
                 |original| {
-                    assert!(original.evaluated_ascii_scope().is_none());
+                    assert!(original.ready_value_scope().is_none());
                     Ok(None)
                 },
                 |_| panic!("NULL must not choose then"),
                 |selected| {
-                    assert!(selected.evaluated_ascii_scope().is_some());
+                    assert!(selected.ready_value_scope().is_some());
                     Ok(Datum::Int(7))
                 },
             ),

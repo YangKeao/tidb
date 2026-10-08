@@ -1,0 +1,242 @@
+warning: unused macro definition: `word_cnt`
+   --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:548:14
+    |
+548 | macro_rules! word_cnt {
+    |              ^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `try_div_round_exact` and `try_from_literal` are never used
+    --> components/tidb_query_datatype/src/codec/mysql/decimal.rs:3578:8
+     |
+2019 | impl Decimal {
+     | ------------ associated items in this implementation
+...
+3578 |     fn try_div_round_exact(&self, count: i64, result_scale: u32) -> Result<Option<Self>> {
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+4619 |     fn try_from_literal(text: &str) -> Result<Self> {
+     |        ^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tidb_query_datatype` (lib) generated 2 warnings
+   Compiling tidb_query_expr v0.0.1 (/home/agent/tidb/expression-unification/tikv/components/tidb_query_expr)
+warning: unused import: `Expr`
+  --> components/tidb_query_expr/src/impl_compare_in.rs:20:12
+   |
+20 | use tipb::{Expr, ExprType, FieldType};
+   |            ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary parentheses around index expression
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:997:46
+    |
+997 |                 let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+    |                                              ^                         ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+997 -                 let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+997 +                 let hh = &mut self.hash_head[hash as usize & HASH_MASK];
+    |
+
+warning: unnecessary parentheses around index expression
+    --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:1037:54
+     |
+1037 |                         let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+     |                                                      ^                         ^
+     |
+help: remove these parentheses
+     |
+1037 -                         let hh = &mut self.hash_head[(hash as usize & HASH_MASK)];
+1037 +                         let hh = &mut self.hash_head[hash as usize & HASH_MASK];
+     |
+
+warning: variable `n` is assigned to, but never used
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:432:13
+    |
+432 |         let mut n = self.out.len();
+    |             ^^^^^
+    |
+    = note: consider using `_n` instead
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `n` is never read
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:442:13
+    |
+442 |             n += 1;
+    |             ^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `compile_evaluated_ascii` is never used
+   --> components/tidb_query_expr/src/local/compile.rs:660:15
+    |
+660 | pub(super) fn compile_evaluated_ascii(cx: LocalCompileContext) -> LocalResult<LocalProgram> {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `output_bytes` is never used
+   --> components/tidb_query_expr/src/local/runtime.rs:217:19
+    |
+172 | impl EvalBudget {
+    | --------------- method in this implementation
+...
+217 |     pub(crate) fn output_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^^
+
+warning: variant `ReadyBytes` is never constructed
+   --> components/tidb_query_expr/src/types/expr_eval.rs:279:5
+    |
+274 | pub(crate) enum EvalInput<'data, 'services> {
+    |                 --------- variant in this enum
+...
+279 |     ReadyBytes {
+    |     ^^^^^^^^^^
+
+warning: methods `eval_with_ready_ascii` and `eval_with_ready_bytes` are never used
+    --> components/tidb_query_expr/src/types/expr_eval.rs:4003:19
+     |
+3770 | impl RpnExpression {
+     | ------------------ methods in this implementation
+...
+4003 |     pub(crate) fn eval_with_ready_ascii<'a, 'data: 'a>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+4027 |     pub(crate) fn eval_with_ready_bytes<'a, 'data: 'a>(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `bit_count` is never read
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:184:5
+    |
+182 | struct HuffmanEncoder {
+    |        -------------- field in this struct
+183 |     codes: Vec<Hcode>,
+184 |     bit_count: [i32; 17],
+    |     ^^^^^^^^^
+
+warning: field `level` is never read
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:359:5
+    |
+358 | struct LevelInfo {
+    |        --------- field in this struct
+359 |     level: i32,
+    |     ^^^^^
+    |
+    = note: `LevelInfo` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: constant `BUFFER_FLUSH_SIZE` is never used
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:412:7
+    |
+412 | const BUFFER_FLUSH_SIZE: usize = 240;
+    |       ^^^^^^^^^^^^^^^^^
+
+warning: fields `fast_skip_hashing` and `scratch` are never read
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:777:5
+    |
+770 | struct Compressor {
+    |        ---------- fields in this struct
+...
+777 |     fast_skip_hashing: i32,
+    |     ^^^^^^^^^^^^^^^^^
+...
+792 |     scratch: Vec<LiteralNode>,
+    |     ^^^^^^^
+
+warning: constant `HASH_MATCH_LEN` is never used
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:795:7
+    |
+795 | const HASH_MATCH_LEN: usize = MAX_MATCH_LENGTH - 1;
+    |       ^^^^^^^^^^^^^^
+
+warning: method `fill_window` is never used
+   --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:880:8
+    |
+797 | impl Compressor {
+    | --------------- method in this implementation
+...
+880 |     fn fill_window(&mut self, b: &[u8]) {
+    |        ^^^^^^^^^^^
+
+warning: function `bulk_hash4` is never used
+    --> components/tidb_query_expr/src/impl_encryption/native_go_flate.rs:1089:4
+     |
+1089 | fn bulk_hash4(b: &[u8], dst: &mut [u32]) {
+     |    ^^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> components/tidb_query_expr/src/impl_string.rs:2736:30
+     |
+2736 | fn find_in_set_entries(list: BytesRef) -> impl Iterator<Item = BytesRef<'_>> {
+     |                              ^^^^^^^^ the lifetime is hidden here       ^^ the same lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+     = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: consistently use `'_`
+     |
+2736 | fn find_in_set_entries(list: BytesRef<'_>) -> impl Iterator<Item = BytesRef<'_>> {
+     |                                      ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> components/tidb_query_expr/src/impl_string.rs:2742:11
+     |
+2742 |     list: BytesRef,
+     |           ^^^^^^^^ the lifetime is hidden here
+2743 |     policy: NativeCollation,
+2744 | ) -> impl Iterator<Item = Result<Bytes>> + '_ {
+     |                                            ^^ the same lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'_`
+     |
+2742 |     list: BytesRef<'_>,
+     |                   ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> components/tidb_query_expr/src/impl_string.rs:3530:33
+     |
+3530 | fn legacy_substring_view(input: BytesRef, utf8: bool) -> SubstringView<'_> {
+     |                                 ^^^^^^^^ the lifetime is hidden here   ^^ the same lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'_`
+     |
+3530 | fn legacy_substring_view(input: BytesRef<'_>, utf8: bool) -> SubstringView<'_> {
+     |                                         ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> components/tidb_query_expr/src/impl_time.rs:747:35
+    |
+747 | fn decode_native_time_text(bytes: BytesRef) -> Result<&str> {
+    |                                   ^^^^^^^^            ^^^^ the same lifetime is elided here
+    |                                   |
+    |                                   the lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+747 | fn decode_native_time_text(bytes: BytesRef<'_>) -> Result<&str> {
+    |                                           ++++
+
+warning: `tidb_query_expr` (lib) generated 20 warnings (run `cargo fix --lib -p tidb_query_expr` to apply 7 suggestions)
+    Finished `release` profile [optimized] target(s) in 2m 48s
+warning: the following packages contain code that will be rejected by a future version of Rust: nom v2.2.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+     Running tests/worker_prepare_probe.rs (/home/agent/tidb/expression-unification/target-tikv/release/deps/worker_prepare_probe-91bfdbb553b062d2)
+
+running 1 test
+test measure_prepared_worker_construction ... WORKER_PREPARE name=ascii median_ns=543.153 min_ns=539.806 max_ns=544.024 iterations=20000 samples=11
+WORKER_PREPARE name=integer_add median_ns=687.988 min_ns=686.950 max_ns=695.065 iterations=20000 samples=11
+WORKER_PREPARE name=strcmp median_ns=844.112 min_ns=842.857 max_ns=854.526 iterations=20000 samples=11
+WORKER_PREPARE name=decimal_add median_ns=851.984 min_ns=850.536 max_ns=881.954 iterations=20000 samples=11
+WORKER_PREPARE name=json_type median_ns=530.752 min_ns=525.982 max_ns=556.141 iterations=20000 samples=11
+WORKER_PREPARE name=regexp_like median_ns=851.114 min_ns=842.361 max_ns=853.710 iterations=20000 samples=11
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+

@@ -83,7 +83,7 @@ mod tests {
     use tidb_datatype::{CoreTime, TimeType};
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn legacy_unix_timestamp_keeps_explicit_zone_raw_time_and_nullable_admission() {
@@ -127,10 +127,18 @@ mod tests {
         let zero = Time::from_raw_parts(CoreTime::from_raw(0), TimeType::DateTime, 255);
 
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 16,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&columns, |bound| {

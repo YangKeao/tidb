@@ -62,7 +62,7 @@ impl AsciiComputedValue for ComputedValue {
 // callback, and no cfg(test) field in the production PoolCore payload. The
 // callback is removed and the RefCell borrow released before it can block.
 std::thread_local! {
-    static AFTER_EPOCH_READ_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+    static AFTER_EXECUTION_READ_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
     static EVAL_ONE_OBSERVATION: RefCell<Option<EvalOneObservation>> =
         const { RefCell::new(None) };
@@ -119,19 +119,19 @@ pub(super) fn after_eval_one_for_test(actual_kernel_invocations: u64) {
     });
 }
 
-fn set_after_epoch_read_hook(hook: impl FnOnce() + 'static) {
-    AFTER_EPOCH_READ_HOOK.with(|slot| {
+fn set_after_execution_read_hook(hook: impl FnOnce() + 'static) {
+    AFTER_EXECUTION_READ_HOOK.with(|slot| {
         let mut slot = slot.borrow_mut();
         assert!(
             slot.is_none(),
-            "epoch-read hook is one-shot per test thread"
+            "execution-read hook is one-shot per test thread"
         );
         *slot = Some(Box::new(hook));
     });
 }
 
-pub(super) fn after_epoch_read_for_test() {
-    let hook = AFTER_EPOCH_READ_HOOK.with(|slot| slot.borrow_mut().take());
+pub(super) fn after_execution_read_for_test() {
+    let hook = AFTER_EXECUTION_READ_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(hook) = hook {
         hook();
     }
@@ -144,8 +144,8 @@ const TEST_CREATION_RESERVATION: usize = 2 << 20;
 const TEST_POOL_BYTES: usize = 16 << 20;
 const TEST_CALL_BYTES: usize = 1 << 16;
 
-fn test_policy(max_workers: usize, max_creating: usize) -> AsciiPoolPolicy {
-    AsciiPoolPolicy::checked(
+fn test_policy(max_workers: usize, max_creating: usize) -> ReadyValuePoolPolicy {
+    ReadyValuePoolPolicy::checked(
         max_workers,
         max_creating,
         TEST_POOL_BYTES,
@@ -225,8 +225,7 @@ const COLUMNS_FORWARDED_METHODS: [&str; 63] = [
 ];
 
 // Intentional overrides, NOT two more forwarded native methods.
-const COLUMNS_CAPABILITY_METHODS: [&str; 2] =
-    ["evaluated_ascii_scope", "evaluated_ascii_execution"];
+const COLUMNS_CAPABILITY_METHODS: [&str; 2] = ["ready_value_scope", "ready_value_execution"];
 
 // A deliberately small source drift check, not a Rust parser. These specific
 // source blocks have unindented closing braces and one method per declaration.
@@ -273,8 +272,8 @@ fn columns_method_sets_have_no_unreviewed_forwarding_drift() {
     for (source, marker) in [
         (include_str!("../context.rs"), "pub trait Columns"),
         (
-            include_str!("evaluated_ascii.rs"),
-            "Columns for ScopedAsciiColumns",
+            include_str!("ready_value.rs"),
+            "Columns for ScopedReadyValueColumns",
         ),
     ] {
         let methods = declared_methods(source, marker);
@@ -288,7 +287,7 @@ fn columns_method_sets_have_no_unreviewed_forwarding_drift() {
     // The ordinary-method sentinel deliberately inherits default-None
     // capabilities. Separate runtime tests below observe both overrides.
     let sentinel = declared_methods(
-        include_str!("evaluated_ascii_tests.rs"),
+        include_str!("ready_value_tests.rs"),
         "impl Columns for ForwardingSentinel<'_>",
     );
     assert_eq!(sentinel.len(), 63);
@@ -954,7 +953,7 @@ fn exercise_columns(columns: &dyn Columns, input: &NativeInputs) -> Vec<(&'stati
 #[test]
 fn ordinary_columns_forward_all_63_methods_through_nested_wrappers() {
     let input = NativeInputs::new();
-    let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(2, 2)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let outer = execution.scope();
     let inner = execution.scope();
@@ -1005,7 +1004,7 @@ fn ordinary_columns_forward_all_63_methods_through_nested_wrappers() {
 
 // The pointer is an identity witness for the unique Box body, not an allocation
 // size measurement. Storage below is the actual C4 nonmutating observation.
-fn scope_worker_observation(scope: &AsciiScope) -> (usize, u64, usize, usize, usize) {
+fn scope_worker_observation(scope: &ReadyValueScope) -> (usize, u64, usize, usize, usize) {
     let parked = scope.lease.borrow();
     let worker = parked.as_ref().unwrap().worker.as_ref().unwrap();
     let storage = worker.retained_storage().unwrap();
@@ -1022,21 +1021,21 @@ fn scope_worker_observation(scope: &AsciiScope) -> (usize, u64, usize, usize, us
 // Borrowing, non-Send/non-Sync native context: no 'static requirement and no
 // substitute backend. Its advertised execution intentionally may disagree
 // with its active scope; the scoped wrapper must resolve that disagreement.
-struct AdvertisedAsciiColumns<'a> {
-    scope: Option<&'a crate::AsciiScope>,
-    execution: &'a crate::AsciiExecution,
+struct AdvertisedReadyValueColumns<'a> {
+    scope: Option<&'a crate::ReadyValueScope>,
+    execution: &'a crate::ReadyValueExecution,
 }
 
-impl Columns for AdvertisedAsciiColumns<'_> {
+impl Columns for AdvertisedReadyValueColumns<'_> {
     fn get(&self, _: &[String]) -> Option<Datum> {
         None
     }
 
-    fn evaluated_ascii_scope(&self) -> Option<&crate::AsciiScope> {
+    fn ready_value_scope(&self) -> Option<&crate::ReadyValueScope> {
         self.scope
     }
 
-    fn evaluated_ascii_execution(&self) -> Option<&crate::AsciiExecution> {
+    fn ready_value_execution(&self) -> Option<&crate::ReadyValueExecution> {
         Some(self.execution)
     }
 }
@@ -1045,9 +1044,9 @@ impl Columns for AdvertisedAsciiColumns<'_> {
 // calling shape, not a new production dispatcher or dyn-only replacement.
 fn value_through_sized_columns<C: Columns>(columns: &C, value: &Datum) -> Result<Datum, EvalError> {
     columns
-        .evaluated_ascii_scope()
+        .ready_value_scope()
         .expect("this operation explicitly bound its scope")
-        .evaluate_value(value)
+        .evaluate_ascii_value(value)
 }
 
 fn dispatch_bytes_family(
@@ -1919,7 +1918,7 @@ fn binary_arithmetic_dispatch_distinguishes_fast_outcomes_and_infra() {
         storage_scale: 0,
         scale: 0,
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -1971,7 +1970,7 @@ fn binary_arithmetic_dispatch_distinguishes_fast_outcomes_and_infra() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -2020,7 +2019,7 @@ fn binary_arithmetic_dispatch_keeps_profiles_and_legacy_presence() {
         forced: Cell::new(false),
         reads: Cell::new(0),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&mode, |columns| {
@@ -2108,7 +2107,7 @@ fn json_merge_sdk_preserves_nullable_documents_and_raw_codec_results() {
     use tidb_datatype::BinaryJSON;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -2199,7 +2198,7 @@ fn json_merge_sdk_preserves_nullable_documents_and_raw_codec_results() {
 fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -2242,7 +2241,7 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -2269,7 +2268,7 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     // The old empty native PATCH indexes its empty list. Keep that real panic,
@@ -2295,7 +2294,7 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
     let disposed = owner.snapshot().unwrap();
     assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
     assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
-    assert!(matches!(scope.evaluate_value(&Datum::Null),
+    assert!(matches!(scope.evaluate_ascii_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
@@ -2305,8 +2304,8 @@ fn json_merge_sdk_rejects_bad_frames_and_preserves_empty_patch_panic() {
 #[test]
 fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
     struct Authority<'a> {
-        scope: Option<&'a AsciiScope>,
-        execution: &'a AsciiExecution,
+        scope: Option<&'a ReadyValueScope>,
+        execution: &'a ReadyValueExecution,
         scope_reads: Cell<usize>,
         execution_reads: Cell<usize>,
     }
@@ -2314,7 +2313,7 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
         fn get(&self, _: &[String]) -> Option<Datum> {
             Some(Datum::Int(77))
         }
-        fn evaluated_ascii_scope(&self) -> Option<&AsciiScope> {
+        fn ready_value_scope(&self) -> Option<&ReadyValueScope> {
             let reads = self.scope_reads.replace(self.scope_reads.get() + 1);
             assert_eq!(
                 reads, 0,
@@ -2322,7 +2321,7 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
             );
             self.scope
         }
-        fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+        fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
             let reads = self.execution_reads.replace(self.execution_reads.get() + 1);
             assert_eq!(
                 reads, 0,
@@ -2333,13 +2332,13 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
     }
     // Each route gets the same one-slot, actual computed-bytes pipeline.
     // Actions cover success, a nested frontend Err, callback unwind and an
-    // epoch closed by the callback before its second-stage admission.
+    // execution closed by the callback before its second-stage admission.
     for route in 0..3 {
         for action in 0..4 {
-            let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+            let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
-            let decoy_owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+            let decoy_owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
             let decoy_execution = decoy_owner.begin_execution().unwrap();
             let authority = Authority {
                 scope: (route == 1).then_some(&scope),
@@ -2356,7 +2355,7 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
             } else {
                 &authority
             };
-            let seen_execution = RefCell::new(None::<AsciiExecution>);
+            let seen_execution = RefCell::new(None::<ReadyValueExecution>);
             let prepares = Cell::new(0);
             let packs = Cell::new(0);
             let frontend = EvalError::Unsupported("nested frontend sentinel");
@@ -2375,16 +2374,19 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
                         packs.set(packs.get() + 1);
                         let head = computed.into_bytes()?;
                         assert_eq!(head.as_deref(), Some(b"cba".as_slice()));
-                        let selected = bound.evaluated_ascii_scope().unwrap();
-                        let selected_execution = bound.evaluated_ascii_execution().unwrap();
+                        let selected = bound.ready_value_scope().unwrap();
+                        let selected_execution = bound.ready_value_execution().unwrap();
                         assert!(Arc::ptr_eq(
                             &selected.execution.core,
                             &selected_execution.core
                         ));
-                        assert_eq!(selected.execution.epoch, selected_execution.epoch);
+                        assert!(Arc::ptr_eq(
+                            &selected.execution.state,
+                            &selected_execution.state
+                        ));
                         if route != 0 {
                             assert!(Arc::ptr_eq(&selected_execution.core, &execution.core));
-                            assert_eq!(selected_execution.epoch, execution.epoch);
+                            assert!(Arc::ptr_eq(&selected_execution.state, &execution.state));
                         }
                         if route == 1 {
                             assert!(std::ptr::eq(selected, &scope));
@@ -2408,19 +2410,19 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
                                     || Ok((EvaluatedBytesOp::Reverse, EvaluatedArgs::Bytes(head))),
                                     |computed, nested| {
                                         assert!(std::ptr::eq(
-                                            nested.evaluated_ascii_scope().unwrap(),
+                                            nested.ready_value_scope().unwrap(),
                                             selected
                                         ));
                                         let nested_execution =
-                                            nested.evaluated_ascii_execution().unwrap();
+                                            nested.ready_value_execution().unwrap();
                                         assert!(Arc::ptr_eq(
                                             &nested_execution.core,
                                             &selected_execution.core
                                         ));
-                                        assert_eq!(
-                                            nested_execution.epoch,
-                                            selected_execution.epoch
-                                        );
+                                        assert!(Arc::ptr_eq(
+                                            &nested_execution.state,
+                                            &selected_execution.state
+                                        ));
                                         computed.into_bytes()
                                     },
                                 )?;
@@ -2480,14 +2482,14 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
                 _ => unreachable!(),
             }
             let selected_execution = seen_execution.into_inner().unwrap();
-            let selected_owner = AsciiPoolOwner {
+            let selected_owner = ReadyValuePoolOwner {
                 core: Arc::clone(&selected_execution.core),
             };
             assert_eq!(selected_owner.snapshot().unwrap().factory_successes, 1);
             assert_eq!(
                 selected_execution
                     .core
-                    .check_epoch(selected_execution.epoch)
+                    .check_execution(&selected_execution.state)
                     .is_ok(),
                 route != 0 && action != 3
             );
@@ -2551,7 +2553,7 @@ fn scoped_prepared_gateway_keeps_authority_through_nested_pack_and_cleanup() {
 fn temporal_literal_gateway_keeps_zone_binding_business_reports_and_refusals() {
     use tidb_datatype::{CoreTime, SessionTimeZone, TimeType};
     use tidb_query_expr::{decode_native_temporal_literal_result, NativeTemporalLiteralResult};
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -2688,7 +2690,7 @@ fn temporal_literal_gateway_keeps_zone_binding_business_reports_and_refusals() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -2715,7 +2717,7 @@ fn temporal_literal_gateway_keeps_zone_binding_business_reports_and_refusals() {
 #[test]
 fn legacy_microsecond_sdk_preserves_nullable_nanos_fsp_inertness_and_refusals() {
     for max_workers in [1, 0] {
-        let owner = AsciiPoolOwner::new(test_policy(max_workers, max_workers)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(max_workers, max_workers)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         scope.with_columns(&crate::NoColumns, |columns| {
@@ -2785,7 +2787,7 @@ fn decimal_integer_div_sdk_captures_raw_precision_and_preserves_legacy_zero_orde
             Ok(())
         }
     }
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     for (left, right, unsigned, raw, reads, expected) in [
@@ -2953,7 +2955,7 @@ fn decimal_integer_div_sdk_refuses_false_presence_budget_and_invalid_reports() {
         reads: Cell::new(0),
         diagnostics: Cell::new(0),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&ctx, |columns| {
@@ -2983,7 +2985,7 @@ fn decimal_integer_div_sdk_refuses_false_presence_budget_and_invalid_reports() {
 
     for policy in [
         test_policy(0, 0),
-        AsciiPoolPolicy::checked(
+        ReadyValuePoolPolicy::checked(
             1,
             1,
             TEST_POOL_BYTES,
@@ -2996,7 +2998,7 @@ fn decimal_integer_div_sdk_refuses_false_presence_budget_and_invalid_reports() {
         .unwrap(),
     ] {
         let no_slots = policy.max_workers == 0;
-        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let owner = ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         scope.with_columns(&ctx, |columns| {
@@ -3032,7 +3034,7 @@ fn decimal_integer_div_sdk_refuses_false_presence_budget_and_invalid_reports() {
 
     // Raw RHS UTF-8 is demanded by the original zero predicate before any
     // precision read, admission or worker call, under the native scope guard.
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     arm_eval_one_observation();
@@ -3061,7 +3063,7 @@ fn decimal_integer_div_sdk_refuses_false_presence_budget_and_invalid_reports() {
 #[test]
 fn integer_div_sdk_preserves_signed_pair_policy_and_full_legacy_quotients() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3123,7 +3125,7 @@ fn integer_div_sdk_preserves_signed_pair_policy_and_full_legacy_quotients() {
 #[test]
 fn integer_div_sdk_keeps_refusals_and_legacy_overflow_panic_retirement() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3149,7 +3151,7 @@ fn integer_div_sdk_keeps_refusals_and_legacy_overflow_panic_retirement() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3175,7 +3177,7 @@ fn integer_div_sdk_keeps_refusals_and_legacy_overflow_panic_retirement() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     arm_eval_one_observation();
@@ -3198,7 +3200,7 @@ fn integer_div_sdk_keeps_refusals_and_legacy_overflow_panic_retirement() {
     let disposed = owner.snapshot().unwrap();
     assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
     assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
-    assert!(matches!(scope.evaluate_value(&Datum::Null),
+    assert!(matches!(scope.evaluate_ascii_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
@@ -3209,7 +3211,7 @@ fn integer_div_sdk_keeps_refusals_and_legacy_overflow_panic_retirement() {
 fn tso_timediff_sdk_preserves_actual_offsets_nullable_demand_and_computed_outputs() {
     use tidb_datatype::{CoreTime, Time, TimeType};
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3318,7 +3320,7 @@ fn tso_timediff_sdk_preserves_actual_offsets_nullable_demand_and_computed_output
 #[test]
 fn tso_timediff_sdk_rejects_false_presence_and_preserves_preparation_and_zero_slots() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3376,7 +3378,7 @@ fn tso_timediff_sdk_rejects_false_presence_and_preserves_preparation_and_zero_sl
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3536,7 +3538,7 @@ fn datum_identity_sdk_returns_all_original_value_bits_through_both_workers() {
     ];
     // Keep the beyond-SQL-dimension vector within a deliberately adequate call
     // budget; this proves representation identity, not a waived resource gate.
-    let policy = AsciiPoolPolicy::checked(
+    let policy = ReadyValuePoolPolicy::checked(
         1,
         1,
         TEST_POOL_BYTES,
@@ -3547,7 +3549,7 @@ fn datum_identity_sdk_returns_all_original_value_bits_through_both_workers() {
         8 * TEST_CALL_BYTES,
     )
     .unwrap();
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3592,7 +3594,7 @@ fn datum_identity_sdk_returns_all_original_value_bits_through_both_workers() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3650,7 +3652,7 @@ fn datum_identity_sdk_rejects_malformed_present_frames_without_null_fallbacks() 
         bad_shape_presence,
         bad_sign,
     ];
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3710,7 +3712,7 @@ fn datum_identity_sdk_rejects_malformed_present_frames_without_null_fallbacks() 
 fn weight_format_sdk_preserves_original_metadata_and_nullable_locale_outputs() {
     use EvaluatedBytesOp::*;
     let numeric_code = i64::from(tidb_datatype::FieldTypeCode::LongLong.mysql_type());
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3882,7 +3884,7 @@ fn weight_format_sdk_rejects_bad_metadata_and_zero_slot_fallbacks() {
             Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
         );
     }
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3953,7 +3955,7 @@ fn weight_format_sdk_rejects_bad_metadata_and_zero_slot_fallbacks() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -3995,7 +3997,7 @@ fn date_core_sdk_preserves_computed_bits_modes_nullable_predicate_and_refusals()
     };
     assert_eq!(bytes, high.to_le_bytes().to_vec());
     assert_eq!(flags, 7);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4089,7 +4091,7 @@ fn date_core_sdk_preserves_computed_bits_modes_nullable_predicate_and_refusals()
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4123,7 +4125,7 @@ fn date_core_sdk_preserves_computed_bits_modes_nullable_predicate_and_refusals()
 fn local_clock_sdk_keeps_now_truncation_sysdate_rounding_and_date_offsets() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4206,7 +4208,7 @@ fn local_clock_sdk_keeps_now_truncation_sysdate_rounding_and_date_offsets() {
 fn local_clock_sdk_rejects_wrong_roles_precision_and_zero_slot_fallbacks() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4271,7 +4273,7 @@ fn local_clock_sdk_rejects_wrong_roles_precision_and_zero_slot_fallbacks() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4306,7 +4308,7 @@ fn clock_sdk_preserves_actual_clock_fields_and_native_precision_policies() {
     assert_eq!(&raw[8..12], &u32::MAX.to_le_bytes());
     assert_eq!(&raw[12..], &i32::MIN.to_le_bytes());
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4408,7 +4410,7 @@ fn clock_sdk_preserves_actual_clock_fields_and_native_precision_policies() {
 fn clock_sdk_rejects_invalid_precision_roles_and_zero_slot_answers() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4469,7 +4471,7 @@ fn clock_sdk_rejects_invalid_precision_roles_and_zero_slot_answers() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4500,7 +4502,7 @@ fn json_unquote_sdk_keeps_text_and_binary_domains_separate() {
     use tidb_datatype::BinaryJSON;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4580,7 +4582,7 @@ fn json_unquote_sdk_preserves_refusals_and_raw_display_panic_lifecycle() {
     use tidb_datatype::BinaryJSON;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4620,7 +4622,7 @@ fn json_unquote_sdk_preserves_refusals_and_raw_display_panic_lifecycle() {
         tidb_datatype::JSON_TYPE_CODE_FLOAT64,
         f64::NAN.to_le_bytes().to_vec(),
     );
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4645,7 +4647,7 @@ fn json_unquote_sdk_preserves_refusals_and_raw_display_panic_lifecycle() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     // Catch only OUTSIDE the unchanged driver. The actual raw Display error
@@ -4671,7 +4673,7 @@ fn json_unquote_sdk_preserves_refusals_and_raw_display_panic_lifecycle() {
     let disposed = owner.snapshot().unwrap();
     assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
     assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
-    assert!(matches!(scope.evaluate_value(&Datum::Null),
+    assert!(matches!(scope.evaluate_ascii_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned));
     assert_eq!(owner.snapshot().unwrap(), disposed);
     drop(scope);
@@ -4682,7 +4684,7 @@ fn json_unquote_sdk_preserves_refusals_and_raw_display_panic_lifecycle() {
 fn legacy_json_output_sdk_preserves_raw_identity_steps_and_path_metadata() {
     use tidb_datatype::{parse_json_path_expr, BinaryJSON, JSONPathExpression};
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4809,7 +4811,7 @@ fn legacy_json_output_sdk_distinguishes_business_none_packets_and_zero_slots() {
         matches!(legacy_json_output_result(EvaluatedBytesResult::Bytes(Some(Vec::new()))),
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4875,7 +4877,7 @@ fn legacy_json_output_sdk_distinguishes_business_none_packets_and_zero_slots() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -4906,7 +4908,7 @@ fn json_path_sdk_preserves_selection_and_ordered_mutation_results() {
     use serde_json::json;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5039,7 +5041,7 @@ fn json_path_sdk_preserves_selection_and_ordered_mutation_results() {
 fn json_path_sdk_rejects_bad_roles_counts_and_zero_slot_fallbacks() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5109,7 +5111,7 @@ fn json_path_sdk_rejects_bad_roles_counts_and_zero_slot_fallbacks() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5141,7 +5143,7 @@ fn json_output_sdk_owns_arrays_objects_keys_and_native_pretty_text() {
     use serde_json::json;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let expected_json = |text| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
@@ -5280,7 +5282,7 @@ fn json_output_sdk_keeps_projection_contracts_and_zero_slot_refusals() {
         Err(EvalError::ExpressionAdapterFailure(failure)) if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract)
     );
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5324,7 +5326,7 @@ fn json_output_sdk_keeps_projection_contracts_and_zero_slot_refusals() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5357,7 +5359,7 @@ fn json_predicate_sdk_keeps_actual_serde_values_and_legacy_binary_membership() {
     use tidb_datatype::BinaryJSON;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5504,7 +5506,7 @@ fn json_predicate_sdk_rejects_invalid_transport_without_sql_or_zero_slot_answers
     use tidb_datatype::BinaryJSON;
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5542,7 +5544,7 @@ fn json_predicate_sdk_rejects_invalid_transport_without_sql_or_zero_slot_answers
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5598,7 +5600,7 @@ fn grouping_sdk_preserves_source_modes_unsigned_bits_and_wrapping_marks() {
         .unwrap();
         super::super::prepare_grouping_args(gid, &metadata)
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let mut wrapped = vec![Vec::new()];
@@ -5735,7 +5737,7 @@ fn grouping_sdk_rejects_false_presence_and_preserves_zero_slot_refusals() {
         )
         .unwrap();
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5827,7 +5829,7 @@ fn grouping_sdk_rejects_false_presence_and_preserves_zero_slot_refusals() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5864,7 +5866,7 @@ fn grouping_sdk_rejects_false_presence_and_preserves_zero_slot_refusals() {
 fn comparison_sdk_payload_identity_controls_scope_and_pool_reuse() {
     use tidb_query_expr::ComparisonOp::{Eq, Ne};
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -5936,7 +5938,7 @@ fn comparison_sdk_payload_identity_controls_scope_and_pool_reuse() {
 fn comparison_sdk_keeps_ieee_legacy_order_presence_and_infrastructure_distinct() {
     use tidb_query_expr::ComparisonOp::{Eq, Ge, Gt, Le, Lt, Ne};
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6032,7 +6034,7 @@ fn comparison_sdk_keeps_ieee_legacy_order_presence_and_infrastructure_distinct()
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6060,7 +6062,7 @@ fn comparison_sdk_keeps_ieee_legacy_order_presence_and_infrastructure_distinct()
 fn aes_sdk_all_profiles_match_original_vectors_and_typed_iv_failures() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let decode_hex = |text: &str| {
@@ -6168,7 +6170,7 @@ fn aes_sdk_all_profiles_match_original_vectors_and_typed_iv_failures() {
 fn aes_sdk_zero_slots_suppress_values_short_iv_errors_and_genuine_null() {
     use EvaluatedBytesOp::*;
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6224,7 +6226,7 @@ fn division_sdk_preserves_kinds_dispositions_and_raw_legacy_precision() {
     use tidb_datatype::Decimal;
     use NativeDecimalDivisionDisposition::{Ok as Exact, Overflow, Truncated, ZeroDivisor};
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6337,7 +6339,7 @@ fn division_sdk_preserves_kinds_dispositions_and_raw_legacy_precision() {
 fn division_sdk_zero_budget_and_precisionless_contracts_do_not_fake_sql_results() {
     use tidb_datatype::Decimal;
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6399,7 +6401,7 @@ fn division_sdk_zero_budget_and_precisionless_contracts_do_not_fake_sql_results(
 fn modulo_sdk_preserves_computed_kinds_zero_and_legacy_presence() {
     use tidb_datatype::Decimal;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6510,7 +6512,7 @@ fn modulo_sdk_preserves_computed_kinds_zero_and_legacy_presence() {
 
 #[test]
 fn modulo_sdk_zero_budget_never_fakes_sql_null_or_overflow() {
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6572,7 +6574,7 @@ fn unary_dispatch_keeps_metadata_boundaries_and_scope_admission() {
         2,
         FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
     ));
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6688,7 +6690,7 @@ fn unary_dispatch_keeps_metadata_boundaries_and_scope_admission() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6747,7 +6749,7 @@ fn regexp_dispatch_reuses_workers_and_actual_context_cache_owners() {
             })
         })
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6871,7 +6873,7 @@ fn regexp_dispatch_keeps_demand_and_refusal_ahead_of_cache_writes() {
         Datum::Int(2),
         Datum::new_bytes([0xff]),
     ];
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -6919,7 +6921,7 @@ fn regexp_dispatch_keeps_demand_and_refusal_ahead_of_cache_writes() {
     let cached = patterns.get_cache(77).unwrap();
     for closed in [false, true] {
         let slots = usize::from(closed);
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         if closed {
@@ -6954,7 +6956,7 @@ fn regexp_dispatch_keeps_demand_and_refusal_ahead_of_cache_writes() {
 
 #[test]
 fn vector_dispatch_keeps_owned_vectors_text_metadata_and_routes() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let retained = scope.with_columns(&crate::NoColumns, |columns| {
@@ -7055,7 +7057,7 @@ fn vector_dispatch_keeps_owned_vectors_text_metadata_and_routes() {
 fn vector_dispatch_keeps_metric_values_raw_bits_and_null_demand() {
     use tidb_datatype::VectorFloat32;
     let vector = |values: Vec<f32>| Datum::VectorFloat32(VectorFloat32::must_create(values));
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -7217,7 +7219,7 @@ fn vector_dispatch_keeps_actual_vector_errors_behind_admission() {
     use tidb_datatype::VectorFloat32;
     let left = Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0]));
     let right = Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 2.0]));
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -7271,7 +7273,7 @@ fn vector_dispatch_keeps_actual_vector_errors_behind_admission() {
     execution.close();
     for closed in [false, true] {
         let slots = usize::from(closed);
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         if closed {
@@ -7311,7 +7313,7 @@ fn crypt_hash_format_dispatch_keeps_crypt_bytes_metadata_and_null_demand() {
     // Original encrypt/crypt.rs and crypto.rs fixture, not a round-trip oracle.
     let crypt = [0x2c_u8, 0x35, 0xb5, 0xa4, 0xad, 0xf3, 0x91];
     let password = Datum::new_string("1234567890123456");
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -7440,7 +7442,7 @@ fn crypt_hash_format_dispatch_keeps_crypt_bytes_metadata_and_null_demand() {
     execution.close();
     for closed in [false, true] {
         let slots = usize::from(closed);
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         if closed {
@@ -7470,7 +7472,7 @@ fn crypt_hash_format_dispatch_keeps_crypt_bytes_metadata_and_null_demand() {
 #[test]
 fn crypt_hash_format_dispatch_keeps_unsigned_hashes_and_cast_warnings() {
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -7567,7 +7569,7 @@ fn crypt_hash_format_dispatch_keeps_unsigned_hashes_and_cast_warnings() {
     scope_worker_observation(&scope);
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -7595,7 +7597,7 @@ fn crypt_hash_format_dispatch_keeps_format_bits_and_source_units() {
             FieldType::new(FieldTypeCode::Double),
         ))],
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -7670,7 +7672,7 @@ fn crypt_hash_format_dispatch_keeps_format_bits_and_source_units() {
 
 #[test]
 fn uuid_translate_dispatch_preserves_uuid_spellings_and_timestamp_carriers() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -7802,7 +7804,7 @@ fn uuid_translate_dispatch_keeps_parse_swap_sequential_and_reuses_real_workers()
         0xdb,
     ];
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
@@ -8015,7 +8017,7 @@ fn uuid_translate_dispatch_preserves_error_receipts_and_flag_warning_order() {
         ),
     ];
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -8069,7 +8071,7 @@ fn uuid_translate_dispatch_preserves_error_receipts_and_flag_warning_order() {
 
     for closed in [false, true] {
         let slots = usize::from(closed);
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         if closed {
@@ -8125,7 +8127,7 @@ fn uuid_translate_dispatch_keeps_translate_modes_and_null_coercion_demand() {
             })
             .collect(),
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -8296,7 +8298,7 @@ fn uuid_translate_dispatch_keeps_translate_modes_and_null_coercion_demand() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -8323,7 +8325,7 @@ fn uuid_translate_dispatch_keeps_translate_modes_and_null_coercion_demand() {
 #[test]
 fn format_time_dispatch_keeps_sql_date_format_and_strict_last_day_distinct() {
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -8368,7 +8370,7 @@ fn format_time_dispatch_keeps_sql_date_format_and_strict_last_day_distinct() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -8426,7 +8428,7 @@ fn format_time_dispatch_keeps_sql_date_format_and_strict_last_day_distinct() {
 
 #[test]
 fn format_time_dispatch_keeps_duration_probe_before_layout_demand() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -8499,7 +8501,7 @@ fn format_time_dispatch_keeps_duration_probe_before_layout_demand() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -8560,7 +8562,7 @@ fn format_time_dispatch_preserves_pb_null_demand_and_public_raw_missing_domains(
         (None, Datum::Null),
         (Some((core, None)), Datum::Null),
     ];
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -8586,7 +8588,7 @@ fn format_time_dispatch_preserves_pb_null_demand_and_public_raw_missing_domains(
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -8631,7 +8633,7 @@ fn format_time_dispatch_preserves_pb_null_demand_and_public_raw_missing_domains(
 #[test]
 fn construct_time_dispatch_keeps_date_source_values_and_real_zero_time_carriers() {
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let zero = Datum::Time(Time::new(CoreTime::default(), TimeType::Date, 0).unwrap());
@@ -8685,7 +8687,7 @@ fn construct_time_dispatch_keeps_date_source_values_and_real_zero_time_carriers(
 #[test]
 fn construct_time_dispatch_keeps_duration_source_values_and_sequential_fsp_demand() {
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -8865,7 +8867,7 @@ fn construct_time_dispatch_keeps_duration_source_values_and_sequential_fsp_deman
 #[test]
 fn construct_time_dispatch_keeps_preparation_errors_and_warnings_before_refusal() {
     let native = ConstructTimeWarnings::default();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -8942,7 +8944,7 @@ fn week_auth_dispatch_keeps_week_mode_demand_and_two_sequential_workers() {
         mode: Cell::new(1),
         reads: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9076,7 +9078,7 @@ fn week_auth_dispatch_keeps_week_mode_demand_and_two_sequential_workers() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9124,7 +9126,7 @@ fn week_auth_dispatch_preserves_pb_null_prefix_and_legacy_raw_week_domain() {
     ];
     let core = CoreTime::from_date(2008, 2, 20, 0, 0, 0, 0);
     let invalid = CoreTime::from_date(0, 15, 31, 23, 59, 59, 999_999);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9154,7 +9156,7 @@ fn week_auth_dispatch_preserves_pb_null_prefix_and_legacy_raw_week_domain() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9225,7 +9227,7 @@ fn week_auth_dispatch_keeps_native_auth_bytes_and_password_warning_order() {
         "PASSWORD is deprecated and will be removed in a future release.".to_owned(),
         true,
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9276,7 +9278,7 @@ fn week_auth_dispatch_keeps_native_auth_bytes_and_password_warning_order() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9306,7 +9308,7 @@ fn week_auth_dispatch_keeps_native_auth_bytes_and_password_warning_order() {
 
 #[test]
 fn date_diff_days_dispatch_keeps_source_values_nulls_and_distinct_suffix_rules() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -9472,7 +9474,7 @@ fn date_diff_days_dispatch_keeps_source_values_nulls_and_distinct_suffix_rules()
 #[test]
 fn date_diff_days_dispatch_refuses_after_original_coercion_and_datetime_casts() {
     let native = CompressionWarningProbe::default();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9578,7 +9580,7 @@ fn date_diff_days_dispatch_preserves_pb_null_demand_and_public_raw_core_domain()
         (None, Some(invalid), None),
         (Some(left), None, None),
     ];
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -9603,7 +9605,7 @@ fn date_diff_days_dispatch_preserves_pb_null_demand_and_public_raw_core_domain()
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -9656,7 +9658,7 @@ fn weekday_fields_function(name: &str, input: Datum) -> crate::scalar_function::
 
 #[test]
 fn weekday_fields_dispatch_keeps_source_calendar_fields_and_typed_reparse() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -9801,7 +9803,7 @@ fn weekday_fields_dispatch_keeps_admission_after_preparation_and_original_cast_c
         reject_zero: Cell::new(true),
         events: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -9886,7 +9888,7 @@ fn period_format_function(
 
 #[test]
 fn period_format_dispatch_keeps_period_source_vectors_wrapping_and_nulls() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -9954,7 +9956,7 @@ fn period_format_dispatch_keeps_period_sql_failures_behind_admission_and_coercio
         ("PERIOD_ADD", vec![Datum::Int(-1), Datum::Null]),
         ("PERIOD_DIFF", vec![Datum::Null, Datum::Int(201613)]),
     ];
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -9985,7 +9987,7 @@ fn period_format_dispatch_keeps_period_sql_failures_behind_admission_and_coercio
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10053,7 +10055,7 @@ fn period_format_dispatch_keeps_get_format_bytes_null_demand_and_strict_ast_chil
         "GET_FORMAT",
         vec![Datum::new_string("DATE"), Datum::new_string("USA")],
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -10138,7 +10140,7 @@ fn period_format_dispatch_keeps_get_format_bytes_null_demand_and_strict_ast_chil
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -10210,7 +10212,7 @@ fn month_seconds_function(name: &str, input: Datum) -> crate::scalar_function::S
 #[test]
 fn month_seconds_dispatch_keeps_month_reparse_and_seconds_text_policy() {
     use tidb_datatype::MySqlDuration;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10318,7 +10320,7 @@ fn month_seconds_dispatch_preserves_preparation_order_context_and_unwind() {
         reject_zero: Cell::new(true),
         events: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -10386,7 +10388,7 @@ fn month_seconds_dispatch_preserves_preparation_order_context_and_unwind() {
 
     // Preserve the old unchecked multiply's unwind in the current test profile;
     // this does not promise release-profile behavior or an EvalError conversion.
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let payload = catch_unwind(AssertUnwindSafe(|| {
@@ -10460,7 +10462,7 @@ fn hms_fields_function(
 #[test]
 fn hms_fields_dispatch_keeps_source_text_parsing_and_duration_display_lane() {
     use tidb_datatype::MySqlDuration;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10524,7 +10526,7 @@ fn hms_fields_dispatch_keeps_source_text_parsing_and_duration_display_lane() {
 
 #[test]
 fn hms_fields_dispatch_keeps_ast_typed_pb_and_first_null_child_demand() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10559,7 +10561,7 @@ fn hms_fields_dispatch_keeps_ast_typed_pb_and_first_null_child_demand() {
 
 #[test]
 fn hms_fields_dispatch_admits_before_bad_text_parse_but_after_native_preparation() {
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10672,7 +10674,7 @@ fn calendar_fields_dispatch_preserves_raw_fields_zero_and_temporal_metadata() {
         .unwrap(),
     );
     let zero = Datum::Time(Time::new(CoreTime::default(), TimeType::DateTime, 0).unwrap());
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10765,7 +10767,7 @@ fn calendar_fields_dispatch_month_routes_keep_cast_context_and_nullable_worker()
         )
         .unwrap(),
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -10850,7 +10852,7 @@ fn calendar_fields_dispatch_refuses_without_fallback_but_keeps_preparation_error
             )),
         ],
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10874,7 +10876,7 @@ fn calendar_fields_dispatch_refuses_without_fallback_but_keeps_preparation_error
         )
         .unwrap(),
     );
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -10929,7 +10931,7 @@ fn calendar_fields_dispatch_refuses_without_fallback_but_keeps_preparation_error
 
 #[test]
 fn json_storage_quote_dispatch_keeps_native_storage_and_quote_conventions() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11005,7 +11007,7 @@ fn json_storage_quote_dispatch_keeps_native_storage_and_quote_conventions() {
     // Only this long-key fixture gets more per-call room for ready/column
     // storage; global policy, worker/pool caps, and ordinary cases stay put.
     // This configured allowance is not evidence of an allocator peak.
-    let policy = AsciiPoolPolicy::checked(
+    let policy = ReadyValuePoolPolicy::checked(
         1,
         1,
         TEST_POOL_BYTES,
@@ -11016,7 +11018,7 @@ fn json_storage_quote_dispatch_keeps_native_storage_and_quote_conventions() {
         4 * TEST_CALL_BYTES,
     )
     .unwrap();
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let document = Datum::new_string(format!("{{\"{}\":null}}", "k".repeat(65_536)));
@@ -11041,7 +11043,7 @@ fn json_storage_quote_dispatch_preserves_scope_and_preparation_precedence() {
     use crate::expression::Expression;
     use crate::scalar_function::ScalarFunction;
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11110,7 +11112,7 @@ fn json_introspection_raw_empty(type_code: u8) -> Datum {
 
 #[test]
 fn json_introspection_dispatch_keeps_text_other_null_and_depth_semantics() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11191,7 +11193,7 @@ fn json_introspection_dispatch_preserves_typed_tags_and_literal_nonvalidation() 
         type_code: 0,
         bytes: vec![0, 1, 2, 3],
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11248,7 +11250,7 @@ fn json_introspection_dispatch_admission_now_precedes_parse_but_not_preparation(
     use crate::expression::Expression;
     use crate::scalar_function::ScalarFunction;
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11348,7 +11350,7 @@ fn compression_dispatch_compress_keeps_go_bytes_string_carrier_and_nulls() {
         10u8, 0, 0, 0, 0x78, 0x9c, 0x4a, 0x84, 0x03, 0x40, 0, 0, 0, 0xff, 0xff, 0x14, 0xe1, 0x03,
         0xcb,
     ];
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11396,7 +11398,7 @@ fn compression_dispatch_uncompress_keeps_outcomes_and_actual_warning_contexts() 
 
     let first = CompressionWarningProbe::default();
     let second = CompressionWarningProbe::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&first, |columns| {
@@ -11475,7 +11477,7 @@ fn compression_dispatch_uncompress_keeps_outcomes_and_actual_warning_contexts() 
 #[test]
 fn compression_dispatch_refusal_precedes_sql_outcomes_but_not_string_coercion() {
     let native = CompressionWarningProbe::default();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -11518,7 +11520,7 @@ fn compression_dispatch_refusal_precedes_sql_outcomes_but_not_string_coercion() 
 
 #[test]
 fn exp_log_dispatch_preserves_native_bits_ieee_policies_and_null_workers() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11606,7 +11608,7 @@ fn exp_log_dispatch_keeps_diagnostics_before_admission_and_overflow_packing() {
         events: RefCell::new(Vec::new()),
     };
     let domain_events = "truncate|warn:1292:Truncated incorrect DOUBLE value: '0junk'|warn:3020:Invalid argument for logarithm";
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -11636,7 +11638,7 @@ fn exp_log_dispatch_keeps_diagnostics_before_admission_and_overflow_packing() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -11674,7 +11676,7 @@ fn exp_log_dispatch_keeps_diagnostics_before_admission_and_overflow_packing() {
 
 #[test]
 fn trig_dispatch_native_go_bits_preserve_reduction_and_signed_zero() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11746,7 +11748,7 @@ fn trig_dispatch_atan2_null_left_still_coerces_right_unlike_pb() {
         events: RefCell::new(Vec::new()),
         level: Cell::new(ErrorLevel::Warn),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -11840,7 +11842,7 @@ fn trig_dispatch_cot_keeps_overflow_pack_and_pb_nonnull_forwards_context() {
             field.clone(),
         ))],
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11862,7 +11864,7 @@ fn trig_dispatch_cot_keeps_overflow_pack_and_pb_nonnull_forwards_context() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11953,7 +11955,7 @@ fn char_conv_dispatch_char_empty_null_numbers_and_four_byte_values() {
             Err(EvalError::ExpressionAdapterFailure(failure))
                 if failure.class() == crate::ExpressionAdapterFailureClass::ScopeContract));
     }
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -11985,7 +11987,7 @@ fn char_conv_dispatch_char_empty_null_numbers_and_four_byte_values() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -12005,7 +12007,7 @@ fn char_conv_dispatch_char_empty_null_numbers_and_four_byte_values() {
 #[test]
 fn char_conv_dispatch_char_keeps_coercion_charset_and_decode_warning_order() {
     let native = CharConvProbe::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12060,7 +12062,7 @@ fn char_conv_dispatch_conv_keeps_literal_payload_overflow_receipts_and_pb_demand
 
     let native = CharConvProbe::default();
     let field = FieldType::new(FieldTypeCode::VarString);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12160,7 +12162,7 @@ fn char_conv_dispatch_conv_keeps_literal_payload_overflow_receipts_and_pb_demand
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12218,7 +12220,7 @@ fn wide_math_dispatch_preserves_value_kinds_wide_storage_and_typed_decimal() {
     assert!(wide.is_negative());
     assert_eq!(wide.declared_shape(), Some((100, 4)));
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -12363,7 +12365,7 @@ fn wide_math_dispatch_pb_round_null_keeps_child_demand_and_native_precedence() {
             args,
         )
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12413,7 +12415,7 @@ fn wide_math_dispatch_pb_round_null_keeps_child_demand_and_native_precedence() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12446,7 +12448,7 @@ fn wide_math_dispatch_abs_overflow_requires_actual_c4_receipt() {
             FieldType::new(FieldTypeCode::LongLong),
         ))],
     );
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -12469,7 +12471,7 @@ fn wide_math_dispatch_abs_overflow_requires_actual_c4_receipt() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -12559,7 +12561,7 @@ fn assert_set_field_c4(observation: EvalOneObservation) {
 #[test]
 fn set_field_dispatch_keeps_typed_mode_eager_children_and_coercion_cutoff() {
     let native = SetFieldProbe::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12598,7 +12600,7 @@ fn set_field_dispatch_keeps_typed_mode_eager_children_and_coercion_cutoff() {
 
 #[test]
 fn set_field_dispatch_export_keeps_distinct_frontend_policies() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -12685,7 +12687,7 @@ fn set_field_dispatch_export_keeps_distinct_frontend_policies() {
 #[test]
 fn set_field_dispatch_make_set_demand_and_all_family_root_refusal() {
     let native = SetFieldProbe::default();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12723,7 +12725,7 @@ fn set_field_dispatch_make_set_demand_and_all_family_root_refusal() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12849,7 +12851,7 @@ fn assert_concat_stream_c4(observation: EvalOneObservation) {
 #[test]
 fn concat_stream_dispatch_preserves_getters_diagnostics_and_stop() {
     let native = ConcatStreamProbe::new();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12899,7 +12901,7 @@ fn concat_stream_dispatch_preserves_getters_diagnostics_and_stop() {
 #[test]
 fn concat_stream_dispatch_ws_preserves_separator_and_original_index_budget() {
     let native = ConcatStreamProbe::new();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12935,7 +12937,7 @@ fn concat_stream_dispatch_ws_preserves_separator_and_original_index_budget() {
 #[test]
 fn concat_stream_dispatch_wide_arity_and_terminal_results_keep_explicit_root() {
     let native = ConcatStreamProbe::new();
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -12983,7 +12985,7 @@ fn concat_stream_dispatch_wide_arity_and_terminal_results_keep_explicit_root() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13047,7 +13049,7 @@ fn collation_search_dispatch_preserves_typed_order_and_values() {
         ]),
         reads: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13128,7 +13130,7 @@ fn collation_search_dispatch_find_cache_lifecycle_and_nopad() {
         values: RefCell::new([Datum::Null, Datum::Null]),
         reads: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13214,7 +13216,7 @@ fn collation_search_dispatch_find_constructor_errors_and_root_refusal() {
         fail_list: Cell::new(true),
         reads: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13280,7 +13282,7 @@ fn collation_search_dispatch_find_constructor_errors_and_root_refusal() {
     // list reevaluation would now fail; neither cached hits, misses nor NULL
     // may return a native answer or create an alternate one-shot pool.
     native.fail_list.set(true);
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13305,10 +13307,10 @@ fn collation_search_dispatch_find_constructor_errors_and_root_refusal() {
 
 #[test]
 fn substring_dispatch_preserves_arity_bytes_and_null_precedence() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -13423,7 +13425,7 @@ fn substring_dispatch_preserves_pb_demand_reader_and_actual_arity() {
         ))
     };
     let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&Strict, |columns| {
@@ -13522,7 +13524,7 @@ fn substring_dispatch_preserves_pb_demand_reader_and_actual_arity() {
     });
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&Strict, |columns| {
@@ -13563,7 +13565,7 @@ fn substring_dispatch_separates_cast_policy_from_execution_context() {
         zones: Cell::new(0),
         warnings: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13591,7 +13593,7 @@ fn substring_dispatch_separates_cast_policy_from_execution_context() {
     execution.close();
     native.levels.set(0);
     native.zones.set(0);
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13625,7 +13627,7 @@ fn log_pow_ulength_insert_dispatch_keeps_math_ieee_and_policy() {
         }
     }
     let native = Warnings(RefCell::new(Vec::new()));
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13754,10 +13756,10 @@ fn log_pow_ulength_insert_dispatch_keeps_pb_pow_demand_and_arity() {
         Vec::new(),
     ));
     let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -13812,10 +13814,10 @@ fn log_pow_ulength_insert_dispatch_keeps_pb_pow_demand_and_arity() {
     }
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -13852,7 +13854,7 @@ fn log_pow_ulength_insert_dispatch_keeps_length_warnings_and_refusal() {
         }
     }
     let native = Warnings(RefCell::new(Vec::new()));
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13884,7 +13886,7 @@ fn log_pow_ulength_insert_dispatch_keeps_length_warnings_and_refusal() {
     });
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -13937,7 +13939,7 @@ fn log_pow_ulength_insert_dispatch_keeps_insert_bytes_and_post_packet() {
         getters: Cell::new(0),
         warnings: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -14061,10 +14063,10 @@ fn log_pow_ulength_insert_dispatch_keeps_insert_bytes_and_post_packet() {
 #[test]
 fn trim_subidx_pad_dispatch_preserves_results_and_demand_markers() {
     use tidb_ast::TrimDirection;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14239,7 +14241,7 @@ fn trim_subidx_pad_dispatch_preserves_order_and_explicit_refusal() {
         reads: RefCell::new(Vec::new()),
         packet_getters: Cell::new(0),
     };
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -14328,10 +14330,10 @@ fn trim_subidx_pad_dispatch_native_text_pad_exceeds_wire_character_limit() {
 fn case_sha2_ord_dispatch_preserves_case_aliases_pb_and_nulls() {
     use crate::scalar_function::{PbBuiltin, ScalarFunction};
     use tidb_proto::tipb::ScalarFuncSig;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14421,10 +14423,10 @@ fn case_sha2_ord_dispatch_preserves_case_aliases_pb_and_nulls() {
 fn case_sha2_ord_dispatch_preserves_selector_and_charset_coercion() {
     use crate::scalar_function::ScalarFunction;
     use tidb_datatype::Decimal;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14514,10 +14516,10 @@ fn case_sha2_ord_dispatch_preserves_selector_and_charset_coercion() {
 fn case_sha2_ord_dispatch_keeps_explicit_refusal_and_error_precedence() {
     use crate::scalar_function::{PbBuiltin, ScalarFunction};
     use tidb_proto::tipb::ScalarFuncSig;
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14591,10 +14593,10 @@ fn case_sha2_ord_dispatch_keeps_explicit_refusal_and_error_precedence() {
 
 #[test]
 fn packet_string_dispatch_preserves_results_nulls_and_count_demand() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14751,7 +14753,7 @@ fn packet_string_dispatch_keeps_policy_order_and_value_only_context() {
         getters: Cell::new(0),
         warnings: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -14836,7 +14838,7 @@ fn packet_string_dispatch_keeps_policy_order_and_value_only_context() {
     drop(scope);
     execution.close();
 
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     native.level.set(ErrorLevel::Error);
@@ -14867,10 +14869,10 @@ fn ip_predicate_dispatch_preserves_spelling_raw_bytes_and_nulls() {
     use EvaluatedBytesOp::{
         IsIpv4CompatNullable, IsIpv4MappedNullable, IsIpv4Nullable, IsIpv6Nullable,
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14928,10 +14930,10 @@ fn ip_predicate_dispatch_preserves_spelling_raw_bytes_and_nulls() {
     }
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -14970,10 +14972,10 @@ fn ip_predicate_dispatch_preserves_spelling_raw_bytes_and_nulls() {
 #[test]
 fn pi_dispatch_uses_noargs_and_preserves_explicit_context() {
     use crate::scalar_function::{PbBuiltin, ScalarFunction};
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15008,10 +15010,10 @@ fn pi_dispatch_uses_noargs_and_preserves_explicit_context() {
     }
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15035,10 +15037,10 @@ fn pi_dispatch_uses_noargs_and_preserves_explicit_context() {
 #[test]
 fn math_dispatch_preserves_raw_results_and_nullable_policies() {
     use EvaluatedBytesOp::{AcosRaw, AsinRaw, DegreesRaw, RadiansRaw, SignRaw, SqrtRaw};
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15142,10 +15144,10 @@ fn math_dispatch_sign_retains_hidden_precision_and_unbounded_scale_classes() {
     assert_eq!(hidden.to_f64(), 0.0);
     let tiny = Decimal::from_scaled_i128(1, 400);
     let huge = Decimal::max_or_min(false, 400, 0);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15207,7 +15209,7 @@ fn math_dispatch_keeps_coercion_precedence_pb_null_and_explicit_refusal() {
     };
     let input = Datum::new_string("4x");
     let message = "Truncated incorrect DOUBLE value: '4x'";
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -15256,7 +15258,7 @@ fn math_dispatch_keeps_coercion_precedence_pb_null_and_explicit_refusal() {
     });
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -15286,10 +15288,10 @@ fn math_dispatch_keeps_coercion_precedence_pb_null_and_explicit_refusal() {
 #[test]
 fn inet_dispatch_preserves_unsigned_binary_text_and_null_results() {
     use EvaluatedBytesOp::{Inet6Aton, Inet6Ntoa, InetAton, InetNtoa};
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15396,7 +15398,7 @@ fn inet_dispatch_preserves_conversion_errors_warnings_and_root_refusal() {
     };
     let input = Datum::new_string("16909060x");
     let message = "Truncated incorrect INTEGER value: '16909060x'";
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -15428,7 +15430,7 @@ fn inet_dispatch_preserves_conversion_errors_warnings_and_root_refusal() {
     });
     drop(scope);
     execution.close();
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&native, |columns| {
@@ -15472,10 +15474,10 @@ fn inet_dispatch_preserves_conversion_errors_warnings_and_root_refusal() {
 #[test]
 fn logical_dispatch_checks_demand_markers_before_admission() {
     use crate::{LogicalArgs::*, LogicalFunction::*};
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15522,10 +15524,10 @@ fn logical_dispatch_checks_demand_markers_before_admission() {
     drop(scope);
     execution.close();
     // Even a legitimate short-circuit marker cannot bypass an explicit root.
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15561,7 +15563,7 @@ fn logical_dispatch_preserves_typed_pb_lazy_and_ast_eager_demand() {
     let mut parameter = Constant::new(Datum::Int(99), field.clone());
     parameter.param_marker = Some(crate::constant::ParamMarker { order: 0 });
     let rhs = Expression::Constant(parameter);
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let native = Demand(Cell::new(0));
@@ -15672,7 +15674,7 @@ fn logical_dispatch_preserves_eager_probes_and_lazy_truncation_policy() {
         probes: RefCell::new(Vec::new()),
         warnings: RefCell::new(Vec::new()),
     };
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
@@ -15755,10 +15757,10 @@ fn logical_dispatch_preserves_eager_probes_and_lazy_truncation_policy() {
 
 #[test]
 fn hash_dispatch_preserves_raw_bytes_aliases_and_text_results() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15820,10 +15822,10 @@ fn hash_dispatch_preserves_raw_bytes_aliases_and_text_results() {
 
 #[test]
 fn hash_dispatch_retains_coercion_errors_before_explicit_root_refusal() {
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15858,10 +15860,10 @@ fn hash_dispatch_retains_coercion_errors_before_explicit_root_refusal() {
 #[test]
 fn boolean_dispatch_preserves_three_values_and_composed_aliases() {
     use crate::BooleanFunction::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -15914,7 +15916,7 @@ fn boolean_dispatch_preserves_pb_warnings_and_native_predicate_wrappers() {
             self.0.borrow_mut().push((code, message.to_owned()));
         }
     }
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let native = Warnings(RefCell::new(Vec::new()));
@@ -16109,10 +16111,10 @@ fn boolean_dispatch_vector_fallback_keeps_the_explicit_root() {
     }
     let filters = [Expression::ScalarFunction(not)];
     for slots in [0, 1] {
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
-        let columns = AdvertisedAsciiColumns {
+        let columns = AdvertisedReadyValueColumns {
             scope: Some(&scope),
             execution: &execution,
         };
@@ -16147,10 +16149,10 @@ fn boolean_dispatch_vector_fallback_keeps_the_explicit_root() {
 #[test]
 fn bit_dispatch_preserves_full_width_results_and_conversion_domains() {
     use tidb_ast::BinaryOp;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -16239,7 +16241,7 @@ fn bit_dispatch_preserves_null_and_diagnostic_demand_order() {
             self.0.borrow_mut().push((code, message.to_owned()));
         }
     }
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let native = Warnings(RefCell::new(Vec::new()));
@@ -16345,10 +16347,10 @@ fn bit_dispatch_typed_and_vector_routes_retain_the_explicit_root() {
     let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 2);
     chunk.set_num_virtual_rows(2);
     for slots in [0, 1] {
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
-        let columns = AdvertisedAsciiColumns {
+        let columns = AdvertisedReadyValueColumns {
             scope: Some(&scope),
             execution: &execution,
         };
@@ -16408,10 +16410,10 @@ fn bit_dispatch_typed_and_vector_routes_retain_the_explicit_root() {
 #[test]
 fn args_dispatch_shares_one_scope_for_all_fixed_shapes() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -16513,10 +16515,10 @@ fn args_dispatch_shares_one_scope_for_all_fixed_shapes() {
 
 #[test]
 fn args_dispatch_preserves_count_first_and_replace_coercion_demand() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -16589,10 +16591,10 @@ fn args_dispatch_preserves_count_first_and_replace_coercion_demand() {
 
 #[test]
 fn args_dispatch_preserves_typed_hex_and_bin_warning_before_admission() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -16652,7 +16654,7 @@ fn args_dispatch_preserves_typed_hex_and_bin_warning_before_admission() {
 
     // A new Int shape must not obtain a fallback pool; its original warning
     // still precedes the explicit owner's ordinary admission failure.
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let native = ForwardingSentinel::new(false, None);
@@ -16680,10 +16682,10 @@ fn args_dispatch_preserves_typed_hex_and_bin_warning_before_admission() {
 #[test]
 fn next_bytes_dispatch_keeps_distinct_normalization_and_native_result_kinds() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &execution,
     };
@@ -16753,9 +16755,9 @@ fn next_bytes_dispatch_pb_char_length_preserves_go_bytes_and_demands_null() {
     use tidb_proto::tipb;
     let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
     for slots in [0, 1] {
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
-        let columns = AdvertisedAsciiColumns {
+        let columns = AdvertisedReadyValueColumns {
             scope: None,
             execution: &execution,
         };
@@ -16821,12 +16823,12 @@ fn next_bytes_dispatch_pb_char_length_preserves_go_bytes_and_demands_null() {
 #[test]
 fn bytes_dispatch_switches_one_cached_worker_in_the_same_active_root() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let other_owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let other_owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let other_execution = other_owner.begin_execution().unwrap();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &other_execution,
     };
@@ -16891,7 +16893,7 @@ fn bytes_dispatch_switches_one_cached_worker_in_the_same_active_root() {
     }
     // The original public ASCII-only API also replaces a cached Bytes worker.
     assert_eq!(
-        scope.evaluate_value(&Datum::new_string("A")),
+        scope.evaluate_ascii_value(&Datum::new_string("A")),
         Ok(Datum::Int(65))
     );
     assert_eq!(scope_worker_observation(&scope).1, 1);
@@ -16904,9 +16906,9 @@ fn bytes_dispatch_switches_one_cached_worker_in_the_same_active_root() {
 #[test]
 fn bytes_dispatch_matches_idle_operations_and_retires_for_a_full_slot_set() {
     use EvaluatedBytesOp::*;
-    let owner = AsciiPoolOwner::new(test_policy(2, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(2, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: None,
         execution: &execution,
     };
@@ -16950,13 +16952,13 @@ fn bytes_dispatch_explicit_exhausted_roots_never_create_an_alternate_pool() {
     use crate::ExpressionAdapterFailureOrigin as Origin;
     use EvaluatedBytesOp::*;
     for slots in [0, 1] {
-        let owner = AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let held = execution.scope();
         if slots != 0 {
-            assert_eq!(held.evaluate_value(&Datum::Null), Ok(Datum::Null));
+            assert_eq!(held.evaluate_ascii_value(&Datum::Null), Ok(Datum::Null));
         }
-        let columns = AdvertisedAsciiColumns {
+        let columns = AdvertisedReadyValueColumns {
             scope: None,
             execution: &execution,
         };
@@ -17067,10 +17069,10 @@ fn ascii_dispatch_one_shot_accepts_input_larger_than_worker_retained_cap() {
 }
 
 #[test]
-fn ascii_dispatch_execution_capability_reuses_worker_without_closing_epoch() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn ascii_dispatch_execution_capability_reuses_worker_without_closing_execution() {
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: None,
         execution: &execution,
     };
@@ -17097,7 +17099,7 @@ fn ascii_dispatch_execution_capability_reuses_worker_without_closing_epoch() {
         assert_eq!(snapshot.idle, 1);
     }
     assert_eq!(
-        execution.scope().evaluate_value(&Datum::Null),
+        execution.scope().evaluate_ascii_value(&Datum::Null),
         Ok(Datum::Null)
     );
     execution.close();
@@ -17105,12 +17107,12 @@ fn ascii_dispatch_execution_capability_reuses_worker_without_closing_epoch() {
 
 #[test]
 fn ascii_dispatch_active_scope_wins_and_keeps_real_worker_identity() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
-    let other_owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let other_owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let other_execution = other_owner.begin_execution().unwrap();
-    let columns = AdvertisedAsciiColumns {
+    let columns = AdvertisedReadyValueColumns {
         scope: Some(&scope),
         execution: &other_execution,
     };
@@ -17143,11 +17145,11 @@ fn ascii_dispatch_active_scope_wins_and_keeps_real_worker_identity() {
 fn ascii_dispatch_zero_slot_capabilities_never_fall_back_even_for_null() {
     use crate::ExpressionAdapterFailureClass as Class;
     use crate::ExpressionAdapterFailureOrigin as Origin;
-    let owner = AsciiPoolOwner::new(test_policy(0, 0)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     for active in [None, Some(&scope)] {
-        let columns = AdvertisedAsciiColumns {
+        let columns = AdvertisedReadyValueColumns {
             scope: active,
             execution: &execution,
         };
@@ -17175,15 +17177,15 @@ fn ascii_dispatch_zero_slot_capabilities_never_fall_back_even_for_null() {
 fn ascii_dispatch_one_shot_closer_closes_on_normal_return_and_unwind() {
     use crate::ExpressionAdapterFailureClass as Class;
     for unwind in [false, true] {
-        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
         let execution = owner.begin_execution().unwrap();
         // Exercise the production closer with a real worker, not a panic-capable
         // replacement kernel or a test-only execution factory.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let close = OneShotAsciiExecution(execution.clone());
+            let close = OneShotReadyValueExecution(execution.clone());
             let scope = close.0.scope();
             let mut guard = NativeGuard::new(&scope);
-            assert_eq!(scope.evaluate_value(&Datum::Null), Ok(Datum::Null));
+            assert_eq!(scope.evaluate_ascii_value(&Datum::Null), Ok(Datum::Null));
             if unwind {
                 std::panic::panic_any("one-shot operation unwind");
             }
@@ -17192,7 +17194,7 @@ fn ascii_dispatch_one_shot_closer_closes_on_normal_return_and_unwind() {
         assert_eq!(outcome.is_err(), unwind);
         assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
         assert!(matches!(
-            execution.scope().evaluate_value(&Datum::Null),
+            execution.scope().evaluate_ascii_value(&Datum::Null),
             Err(EvalError::ExpressionAdapterFailure(failure))
                 if failure.class() == Class::PoolClosed
         ));
@@ -17201,7 +17203,7 @@ fn ascii_dispatch_one_shot_closer_closes_on_normal_return_and_unwind() {
 
 #[test]
 fn public_value_producer_invokes_real_c4_for_null_bytes_and_reuses_one_worker() {
-    let owner = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
@@ -17215,7 +17217,7 @@ fn public_value_producer_invokes_real_c4_for_null_bytes_and_reuses_one_worker() 
     let calls = cases.len() as u64;
     let mut identity = None;
     for (index, (input, expected)) in cases.into_iter().enumerate() {
-        assert_eq!(scope.evaluate_value(&input), Ok(expected));
+        assert_eq!(scope.evaluate_ascii_value(&input), Ok(expected));
         let (address, invocations, inline, heap, total) = scope_worker_observation(&scope);
         assert_eq!(invocations, index as u64 + 1, "NULL also invokes fn_ptr");
         assert_eq!(
@@ -17231,7 +17233,7 @@ fn public_value_producer_invokes_real_c4_for_null_bytes_and_reuses_one_worker() 
     drop(scope);
     assert_eq!(owner.snapshot().unwrap().idle, 1);
     let reused = execution.scope();
-    assert_eq!(reused.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(reused.evaluate_ascii_value(&Datum::Null), Ok(Datum::Null));
     let (address, invocations, inline, heap, total) = scope_worker_observation(&reused);
     assert_eq!(invocations, calls + 1);
     assert_eq!(identity, Some((address, inline, heap, total)));
@@ -17240,68 +17242,65 @@ fn public_value_producer_invokes_real_c4_for_null_bytes_and_reuses_one_worker() 
 
 #[test]
 fn public_dynamic_capabilities_are_sized_and_keep_effective_scope_execution_identity() {
-    let owner_a = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
-    let owner_b = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner_a = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner_b = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution_a = owner_a.begin_execution().unwrap();
     let execution_b = owner_b.begin_execution().unwrap();
     let active = execution_a.scope();
     let requested = execution_b.scope();
-    assert_eq!(requested.evaluate_value(&Datum::Int(2)), Ok(Datum::Int(50)));
+    assert_eq!(
+        requested.evaluate_ascii_value(&Datum::Int(2)),
+        Ok(Datum::Int(50))
+    );
     let untouched_b = owner_b.snapshot().unwrap();
-    let conflicting = AdvertisedAsciiColumns {
+    let conflicting = AdvertisedReadyValueColumns {
         scope: Some(&active),
         execution: &execution_b,
     };
-    requested.with_columns(&conflicting, |bound: &crate::ScopedAsciiColumns<'_, '_>| {
-        let dynamic: &dyn Columns = bound;
-        assert!(std::ptr::eq(
-            dynamic.evaluated_ascii_scope().unwrap(),
-            &active
-        ));
-        assert!(std::ptr::eq(
-            dynamic.evaluated_ascii_execution().unwrap(),
-            &active.execution
-        ));
-        assert!(!Arc::ptr_eq(
-            &dynamic.evaluated_ascii_execution().unwrap().core,
-            &execution_b.core
-        ));
-        assert_eq!(
-            value_through_sized_columns(bound, &Datum::Null),
-            Ok(Datum::Null)
-        );
-        requested.with_columns(dynamic, |nested| {
+    requested.with_columns(
+        &conflicting,
+        |bound: &crate::ScopedReadyValueColumns<'_, '_>| {
+            let dynamic: &dyn Columns = bound;
+            assert!(std::ptr::eq(dynamic.ready_value_scope().unwrap(), &active));
             assert!(std::ptr::eq(
-                nested.evaluated_ascii_scope().unwrap(),
-                &active
-            ));
-            assert!(std::ptr::eq(
-                nested.evaluated_ascii_execution().unwrap(),
+                dynamic.ready_value_execution().unwrap(),
                 &active.execution
             ));
+            assert!(!Arc::ptr_eq(
+                &dynamic.ready_value_execution().unwrap().core,
+                &execution_b.core
+            ));
             assert_eq!(
-                value_through_sized_columns(nested, &Datum::Raw(vec![0xff])),
-                Ok(Datum::Int(255))
+                value_through_sized_columns(bound, &Datum::Null),
+                Ok(Datum::Null)
             );
-        });
-    });
+            requested.with_columns(dynamic, |nested| {
+                assert!(std::ptr::eq(nested.ready_value_scope().unwrap(), &active));
+                assert!(std::ptr::eq(
+                    nested.ready_value_execution().unwrap(),
+                    &active.execution
+                ));
+                assert_eq!(
+                    value_through_sized_columns(nested, &Datum::Raw(vec![0xff])),
+                    Ok(Datum::Int(255))
+                );
+            });
+        },
+    );
     assert_eq!(scope_worker_observation(&active).1, 2);
     assert_eq!(scope_worker_observation(&requested).1, 1);
     assert_eq!(owner_b.snapshot().unwrap(), untouched_b);
 
     // With no active scope, the requested binding wins even if the base
     // context advertises a different execution. Do not forward that token.
-    let execution_only = AdvertisedAsciiColumns {
+    let execution_only = AdvertisedReadyValueColumns {
         scope: None,
         execution: &execution_a,
     };
     requested.with_columns(&execution_only, |bound| {
+        assert!(std::ptr::eq(bound.ready_value_scope().unwrap(), &requested));
         assert!(std::ptr::eq(
-            bound.evaluated_ascii_scope().unwrap(),
-            &requested
-        ));
-        assert!(std::ptr::eq(
-            bound.evaluated_ascii_execution().unwrap(),
+            bound.ready_value_execution().unwrap(),
             &requested.execution
         ));
         assert_eq!(
@@ -17315,26 +17314,26 @@ fn public_dynamic_capabilities_are_sized_and_keep_effective_scope_execution_iden
 
 #[test]
 fn public_foreign_nested_native_panic_quarantines_only_the_effective_scope() {
-    let owner_a = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
-    let owner_b = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner_a = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner_b = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution_a = owner_a.begin_execution().unwrap();
     let execution_b = owner_b.begin_execution().unwrap();
     let active = execution_a.scope();
     let requested = execution_b.scope();
-    assert_eq!(active.evaluate_value(&Datum::Null), Ok(Datum::Null));
-    assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(active.evaluate_ascii_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(
+        requested.evaluate_ascii_value(&Datum::Null),
+        Ok(Datum::Null)
+    );
     let untouched_b = owner_b.snapshot().unwrap();
-    let conflicting = AdvertisedAsciiColumns {
+    let conflicting = AdvertisedReadyValueColumns {
         scope: Some(&active),
         execution: &execution_b,
     };
     let panic = catch_unwind(AssertUnwindSafe(|| {
         requested.with_columns(&conflicting, |outer| {
             requested.with_columns(outer, |inner| {
-                assert!(std::ptr::eq(
-                    inner.evaluated_ascii_scope().unwrap(),
-                    &active
-                ));
+                assert!(std::ptr::eq(inner.ready_value_scope().unwrap(), &active));
                 assert_eq!(
                     value_through_sized_columns(inner, &Datum::Bytes(vec![b'Q'])),
                     Ok(Datum::Int(81))
@@ -17359,11 +17358,14 @@ fn public_foreign_nested_native_panic_quarantines_only_the_effective_scope() {
     assert_eq!(disposed_a.reserved_bytes, disposed_a.base_bytes);
     assert!(!requested.poisoned.get());
     assert_eq!(owner_b.snapshot().unwrap(), untouched_b);
-    assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(
+        requested.evaluate_ascii_value(&Datum::Null),
+        Ok(Datum::Null)
+    );
     assert_eq!(scope_worker_observation(&requested).1, 2);
     assert_eq!(owner_b.snapshot().unwrap().factory_attempts, 1);
     assert!(matches!(
-        active.evaluate_value(&Datum::Null),
+        active.evaluate_ascii_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure))
             if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned
     ));
@@ -17378,16 +17380,19 @@ fn public_capability_getter_panic_quarantines_requested_ready_scope_before_recov
             None
         }
 
-        fn evaluated_ascii_scope(&self) -> Option<&crate::AsciiScope> {
+        fn ready_value_scope(&self) -> Option<&crate::ReadyValueScope> {
             self.0.set(self.0.get() + 1);
             std::panic::panic_any("scope discovery panic");
         }
     }
 
-    let owner = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let requested = execution.scope();
-    assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+    assert_eq!(
+        requested.evaluate_ascii_value(&Datum::Null),
+        Ok(Datum::Null)
+    );
     assert_eq!(scope_worker_observation(&requested).1, 1);
     let discoveries = Cell::new(0);
     let body_calls = Cell::new(0);
@@ -17405,7 +17410,7 @@ fn public_capability_getter_panic_quarantines_requested_ready_scope_before_recov
     assert_eq!((disposed.live, disposed.idle, disposed.retired), (0, 0, 1));
     assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
     assert!(matches!(
-        requested.evaluate_value(&Datum::Null),
+        requested.evaluate_ascii_value(&Datum::Null),
         Err(EvalError::ExpressionAdapterFailure(failure))
             if failure.class() == crate::ExpressionAdapterFailureClass::ScopePoisoned
     ));
@@ -17418,14 +17423,17 @@ fn public_capability_getter_panic_quarantines_requested_ready_scope_before_recov
 fn public_invalid_active_scope_never_falls_back_to_a_foreign_execution() {
     use crate::ExpressionAdapterFailureClass as AdapterClass;
     for poison in [false, true] {
-        let owner_a = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
-        let owner_b = crate::AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let owner_a = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
+        let owner_b = crate::ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
         let execution_a = owner_a.begin_execution().unwrap();
         let execution_b = owner_b.begin_execution().unwrap();
         let active = execution_a.scope();
         let requested = execution_b.scope();
-        assert_eq!(active.evaluate_value(&Datum::Null), Ok(Datum::Null));
-        assert_eq!(requested.evaluate_value(&Datum::Null), Ok(Datum::Null));
+        assert_eq!(active.evaluate_ascii_value(&Datum::Null), Ok(Datum::Null));
+        assert_eq!(
+            requested.evaluate_ascii_value(&Datum::Null),
+            Ok(Datum::Null)
+        );
         let expected_class = if poison {
             let panic = catch_unwind(AssertUnwindSafe(|| {
                 active.with_columns(&crate::NoColumns, |_| {
@@ -17439,19 +17447,16 @@ fn public_invalid_active_scope_never_falls_back_to_a_foreign_execution() {
             AdapterClass::PoolClosed
         };
         let untouched_b = owner_b.snapshot().unwrap();
-        let conflicting = AdvertisedAsciiColumns {
+        let conflicting = AdvertisedReadyValueColumns {
             scope: Some(&active),
             execution: &execution_b,
         };
         arm_eval_one_observation();
         let result = requested.with_columns(&conflicting, |outer| {
             requested.with_columns(outer, |inner| {
+                assert!(std::ptr::eq(inner.ready_value_scope().unwrap(), &active));
                 assert!(std::ptr::eq(
-                    inner.evaluated_ascii_scope().unwrap(),
-                    &active
-                ));
-                assert!(std::ptr::eq(
-                    inner.evaluated_ascii_execution().unwrap(),
+                    inner.ready_value_execution().unwrap(),
                     &active.execution
                 ));
                 value_through_sized_columns(inner, &Datum::Null)
@@ -17482,7 +17487,7 @@ fn public_value_errors_capture_actual_prepare_and_invoke_phases_without_recaptur
     // for the structurally captured retained_storage error sites.
     for (worker_cap, steps, phase) in [(1, 64, Phase::Prepare), (TEST_WORKER_CAP, 0, Phase::Invoke)]
     {
-        let policy = crate::AsciiPoolPolicy::checked(
+        let policy = crate::ReadyValuePoolPolicy::checked(
             1,
             1,
             TEST_POOL_BYTES,
@@ -17493,11 +17498,11 @@ fn public_value_errors_capture_actual_prepare_and_invoke_phases_without_recaptur
             TEST_CALL_BYTES,
         )
         .unwrap();
-        let owner = crate::AsciiPoolOwner::new(policy).unwrap();
+        let owner = crate::ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         for (index, value) in [Datum::Null, Datum::Int(2)].into_iter().enumerate() {
-            let failure = match scope.evaluate_value(&value) {
+            let failure = match scope.evaluate_ascii_value(&value) {
                 Err(EvalError::ExpressionRuntimeFailure(failure)) => failure,
                 other => panic!("expected real public C4 resource failure: {other:?}"),
             };
@@ -17526,7 +17531,7 @@ fn public_value_errors_capture_actual_prepare_and_invoke_phases_without_recaptur
 }
 
 #[test]
-fn public_frontend_errors_precede_zero_slots_closed_epochs_and_scope_poison() {
+fn public_frontend_errors_precede_zero_slots_closed_executions_and_scope_poison() {
     use crate::ExpressionAdapterFailureClass as AdapterClass;
     for (state, expected_class) in [
         (0, AdapterClass::PoolResource),
@@ -17534,11 +17539,11 @@ fn public_frontend_errors_precede_zero_slots_closed_epochs_and_scope_poison() {
         (2, AdapterClass::ScopePoisoned),
     ] {
         let slots = usize::from(state != 0);
-        let owner = crate::AsciiPoolOwner::new(test_policy(slots, slots)).unwrap();
+        let owner = crate::ReadyValuePoolOwner::new(test_policy(slots, slots)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         if state != 0 {
-            assert_eq!(scope.evaluate_value(&Datum::Null), Ok(Datum::Null));
+            assert_eq!(scope.evaluate_ascii_value(&Datum::Null), Ok(Datum::Null));
             if state == 1 {
                 execution.close();
             } else {
@@ -17554,7 +17559,7 @@ fn public_frontend_errors_precede_zero_slots_closed_epochs_and_scope_poison() {
         arm_eval_one_observation();
         for value in [Datum::MinNotNull, Datum::MaxValue] {
             assert_eq!(
-                scope.evaluate_value(&value),
+                scope.evaluate_ascii_value(&value),
                 Err(EvalError::Unsupported("range sentinel byte coercion"))
             );
         }
@@ -17566,7 +17571,7 @@ fn public_frontend_errors_precede_zero_slots_closed_epochs_and_scope_poison() {
             "frontend errors precede admission"
         );
         assert!(matches!(
-            scope.evaluate_value(&Datum::Null),
+            scope.evaluate_ascii_value(&Datum::Null),
             Err(EvalError::ExpressionAdapterFailure(failure))
                 if failure.class() == expected_class
         ));
@@ -17575,7 +17580,7 @@ fn public_frontend_errors_precede_zero_slots_closed_epochs_and_scope_poison() {
 
 #[test]
 fn actual_ready_values_include_null_raw_bytes_and_original_numeric_coercion() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let cases = [
@@ -17627,7 +17632,7 @@ fn actual_ready_values_include_null_raw_bytes_and_original_numeric_coercion() {
 
 #[test]
 fn nested_ready_calls_are_sequential_and_repeated_scopes_reuse_the_actual_worker() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let input = NativeInputs::new();
     let mut previous = None;
@@ -17672,7 +17677,7 @@ fn nested_ready_calls_are_sequential_and_repeated_scopes_reuse_the_actual_worker
 
 #[test]
 fn normal_native_error_after_real_kernel_preserves_error_and_healthy_scope() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let native = ForwardingSentinel::new(true, None);
@@ -17699,10 +17704,10 @@ fn normal_native_error_after_real_kernel_preserves_error_and_healthy_scope() {
 fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
     fn require_send<T: Send>() {}
     fn require_send_sync<T: Send + Sync>() {}
-    require_send_sync::<AsciiPoolOwner>();
-    require_send_sync::<AsciiExecution>();
-    require_send::<AsciiLease>();
-    require_send::<AsciiScope>();
+    require_send_sync::<ReadyValuePoolOwner>();
+    require_send_sync::<ReadyValueExecution>();
+    require_send::<ReadyValueLease>();
+    require_send::<ReadyValueScope>();
     require_send::<EvaluatedBytesWorker>();
 
     // Dependency-free negative assertions: if a type implements the forbidden
@@ -17714,8 +17719,8 @@ fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
     impl<T: ?Sized> AmbiguousIfSync<()> for T {}
     struct SyncMarker;
     impl<T: ?Sized + Sync> AmbiguousIfSync<SyncMarker> for T {}
-    let _ = <AsciiLease as AmbiguousIfSync<_>>::check;
-    let _ = <AsciiScope as AmbiguousIfSync<_>>::check;
+    let _ = <ReadyValueLease as AmbiguousIfSync<_>>::check;
+    let _ = <ReadyValueScope as AmbiguousIfSync<_>>::check;
     let _ = <EvaluatedBytesWorker as AmbiguousIfSync<_>>::check;
 
     trait AmbiguousIfClone<A> {
@@ -17724,15 +17729,15 @@ fn actual_worker_owner_and_scope_traits_are_checked_without_unsafe_impls() {
     impl<T: ?Sized> AmbiguousIfClone<()> for T {}
     struct CloneMarker;
     impl<T: ?Sized + Clone> AmbiguousIfClone<CloneMarker> for T {}
-    let _ = <AsciiLease as AmbiguousIfClone<_>>::check;
-    let _ = <AsciiScope as AmbiguousIfClone<_>>::check;
+    let _ = <ReadyValueLease as AmbiguousIfClone<_>>::check;
+    let _ = <ReadyValueScope as AmbiguousIfClone<_>>::check;
     let _ = <EvaluatedBytesWorker as AmbiguousIfClone<_>>::check;
 }
 
 #[test]
 fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare() {
     for (workers, creating) in [(0, 0), (1, 0)] {
-        let owner = AsciiPoolOwner::new(test_policy(workers, creating)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(workers, creating)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         let before = owner.snapshot().unwrap();
@@ -17746,7 +17751,7 @@ fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare()
         );
         for value in [Datum::MinNotNull, Datum::MaxValue] {
             match evaluate_ascii_value(&scope, &value) {
-                Err(AsciiBoundaryError::Frontend(error)) => assert_eq!(
+                Err(ReadyValueBoundaryError::Frontend(error)) => assert_eq!(
                     error,
                     EvalError::Unsupported("range sentinel byte coercion")
                 ),
@@ -17758,7 +17763,7 @@ fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare()
         assert!(!scope.poisoned.get());
         assert!(matches!(
             evaluate_ascii_value(&scope, &Datum::Null),
-            Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+            Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
                 kind: OwnerErrorKind::Resource,
                 ..
             }))
@@ -17766,7 +17771,7 @@ fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare()
         assert_eq!(owner.snapshot().unwrap(), before);
     }
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let occupied = execution.scope();
     assert_eq!(
@@ -17778,7 +17783,7 @@ fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare()
     for scope in [&occupied, &dormant] {
         assert!(matches!(
             evaluate_ascii_value(scope, &Datum::MinNotNull),
-            Err(AsciiBoundaryError::Frontend(EvalError::Unsupported(
+            Err(ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
                 "range sentinel byte coercion"
             )))
         ));
@@ -17790,7 +17795,7 @@ fn skipped_native_work_and_original_coercion_refusal_do_not_reserve_or_prepare()
 
 #[test]
 fn all_native_callbacks_run_outside_busy_cell_borrow_and_pool_mutex() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let probes = Cell::new(0);
@@ -17828,7 +17833,7 @@ fn all_native_callbacks_run_outside_busy_cell_borrow_and_pool_mutex() {
 fn like_ready_recipes_own_signed_metadata_and_legacy_presence() {
     use tidb_query_expr::local::NativeCollation;
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     // Original like.rs source rows: wildcard matching and escape-sensitive
@@ -17924,7 +17929,7 @@ fn like_ready_recipes_own_signed_metadata_and_legacy_presence() {
 fn like_legacy_null_and_missing_cannot_bypass_actual_work_budget() {
     let mut policy = test_policy(1, 1);
     policy.max_steps = 0;
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     scope.with_columns(&crate::NoColumns, |columns| {
@@ -17977,7 +17982,7 @@ fn real_call_budget_errors_keep_original_kernel_error_and_do_not_reprepare() {
         (64, 0, TEST_CALL_BYTES),
         (64, 8, 0),
     ] {
-        let policy = AsciiPoolPolicy::checked(
+        let policy = ReadyValuePoolPolicy::checked(
             1,
             1,
             TEST_POOL_BYTES,
@@ -17988,13 +17993,13 @@ fn real_call_budget_errors_keep_original_kernel_error_and_do_not_reprepare() {
             retained,
         )
         .unwrap();
-        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let owner = ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         for value in [Datum::Int(2), Datum::Null, Datum::Bytes(vec![])] {
             assert!(matches!(
                 evaluate_ascii_value(&scope, &value),
-                Err(AsciiBoundaryError::Kernel(failure))
+                Err(ReadyValueBoundaryError::Kernel(failure))
                     if matches!(failure.local_error(), LocalError::ResourceLimit(_))
             ));
             assert_eq!(scope_worker_observation(&scope).1, 0);
@@ -18020,7 +18025,7 @@ fn real_call_budget_errors_keep_original_kernel_error_and_do_not_reprepare() {
 fn ready_empty_vec_capacity_is_charged_and_not_retained_after_real_refusal() {
     let bytes = Vec::<u8>::with_capacity(4096);
     assert!(bytes.is_empty());
-    let policy = AsciiPoolPolicy::checked(
+    let policy = ReadyValuePoolPolicy::checked(
         1,
         1,
         TEST_POOL_BYTES,
@@ -18031,12 +18036,12 @@ fn ready_empty_vec_capacity_is_charged_and_not_retained_after_real_refusal() {
         bytes.capacity() - 1,
     )
     .unwrap();
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert!(matches!(
         eval_ready(&scope, ReadyAsciiBytes(Some(bytes))),
-        Err(AsciiBoundaryError::Kernel(failure))
+        Err(ReadyValueBoundaryError::Kernel(failure))
                     if matches!(failure.local_error(), LocalError::ResourceLimit(_))
     ));
     let refused = scope_worker_observation(&scope);
@@ -18056,7 +18061,7 @@ fn ready_empty_vec_capacity_is_charged_and_not_retained_after_real_refusal() {
 
 #[test]
 fn real_factory_low_worker_budget_releases_full_creating_reservation() {
-    let policy = AsciiPoolPolicy::checked(
+    let policy = ReadyValuePoolPolicy::checked(
         1,
         1,
         TEST_POOL_BYTES,
@@ -18067,13 +18072,13 @@ fn real_factory_low_worker_budget_releases_full_creating_reservation() {
         TEST_CALL_BYTES,
     )
     .unwrap();
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     for attempts in 1..=2 {
         assert!(matches!(
             evaluate_ascii_value(&scope, &Datum::Int(2)),
-            Err(AsciiBoundaryError::Kernel(failure))
+            Err(ReadyValueBoundaryError::Kernel(failure))
                     if matches!(failure.local_error(), LocalError::ResourceLimit(_))
         ));
         let snapshot = owner.snapshot().unwrap();
@@ -18096,7 +18101,7 @@ fn real_factory_low_worker_budget_releases_full_creating_reservation() {
 
 #[test]
 fn cold_real_factory_is_prewarmed_without_invoking_and_idle_observation_counts_box_body_once() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let creation = match execution.checkout().unwrap() {
         Checkout::Create(creation) => creation,
@@ -18141,7 +18146,7 @@ fn cold_real_factory_is_prewarmed_without_invoking_and_idle_observation_counts_b
 
 #[test]
 fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new_workers() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert_eq!(
@@ -18159,9 +18164,9 @@ fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new
     }));
     assert!(matches!(
         reentry,
-        Ok(Err(AsciiBoundaryError::Scope {
+        Ok(Err(ReadyValueBoundaryError::Scope {
             kind: ScopeFailureKind::Reentry,
-            reason: "reentrant ASCII runtime borrow",
+            reason: "reentrant ready-value runtime borrow",
         }))
     ));
     assert_eq!(
@@ -18186,9 +18191,9 @@ fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new
     }));
     assert!(matches!(
         conflict,
-        Ok(Err(AsciiBoundaryError::Scope {
+        Ok(Err(ReadyValueBoundaryError::Scope {
             kind: ScopeFailureKind::Reentry,
-            reason: "ASCII scope cell is already borrowed",
+            reason: "ready-value scope cell is already borrowed",
         }))
     ));
     drop(held);
@@ -18197,7 +18202,7 @@ fn checked_reentry_and_cell_conflict_return_errors_without_refcell_panics_or_new
     assert_eq!(owner.snapshot().unwrap().factory_attempts, 1);
 }
 
-fn new_creation(execution: &AsciiExecution) -> Creation {
+fn new_creation(execution: &ReadyValueExecution) -> Creation {
     match execution.checkout().unwrap() {
         Checkout::Create(creation) => creation,
         Checkout::Idle(_) => panic!("this test requires an actual creation, not idle reuse"),
@@ -18208,9 +18213,12 @@ fn new_creation(execution: &AsciiExecution) -> Creation {
 fn committed_creation_blocks_concurrent_miss_by_creating_limit_and_full_byte_reservation() {
     let one_creation_bytes = base_charge(2).unwrap() + TEST_CREATION_RESERVATION;
     for (policy, reason) in [
-        (test_policy(2, 1), "ASCII creating-worker limit exceeded"),
         (
-            AsciiPoolPolicy::checked(
+            test_policy(2, 1),
+            "ready-value creating-worker limit exceeded",
+        ),
+        (
+            ReadyValuePoolPolicy::checked(
                 2,
                 2,
                 one_creation_bytes,
@@ -18221,10 +18229,10 @@ fn committed_creation_blocks_concurrent_miss_by_creating_limit_and_full_byte_res
                 TEST_CALL_BYTES,
             )
             .unwrap(),
-            "ASCII owner reservation budget exceeded",
+            "ready-value owner reservation budget exceeded",
         ),
     ] {
-        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let owner = ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
         let committed = Barrier::new(2);
         let proceed = Barrier::new(2);
@@ -18296,7 +18304,7 @@ fn committed_creation_blocks_concurrent_miss_by_creating_limit_and_full_byte_res
 
 #[test]
 fn live_real_worker_plus_concurrent_creating_worker_exhaust_total_slot_cap() {
-    let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(2, 2)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let mut live = new_creation(&execution).prepare().unwrap();
     assert_eq!(
@@ -18345,9 +18353,9 @@ fn live_real_worker_plus_concurrent_creating_worker_exhaust_total_slot_cap() {
     );
     assert!(matches!(
         refused,
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Resource,
-            message: "ASCII worker-slot limit exceeded"
+            message: "ready-value worker-slot limit exceeded"
         })
     ));
     live.return_to_pool();
@@ -18359,7 +18367,7 @@ fn live_real_worker_plus_concurrent_creating_worker_exhaust_total_slot_cap() {
 
 #[test]
 fn creation_drop_and_caller_unwind_release_only_after_actual_prepared_worker_drops() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let unbuilt = new_creation(&execution);
     assert_eq!(owner.snapshot().unwrap().factory_attempts, 0);
@@ -18410,7 +18418,7 @@ fn creation_drop_and_caller_unwind_release_only_after_actual_prepared_worker_dro
 
 #[test]
 fn close_before_factory_releases_reservation_without_a_factory_attempt() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let creating = new_creation(&execution);
     execution.close();
@@ -18422,7 +18430,7 @@ fn close_before_factory_releases_reservation_without_a_factory_attempt() {
     );
     assert!(matches!(
         creating.prepare(),
-        Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+        Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
             kind: OwnerErrorKind::Closed,
             ..
         }))
@@ -18440,13 +18448,13 @@ fn close_before_factory_releases_reservation_without_a_factory_attempt() {
 }
 
 #[test]
-fn close_or_reset_after_real_factory_prevents_publication_and_preserves_full_f_until_drop() {
-    for reset in [false, true] {
-        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn close_after_real_factory_prevents_only_its_own_publication() {
+    for begin_peer in [false, true] {
+        let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
         let old = owner.begin_execution().unwrap();
         let prepared = Barrier::new(2);
         let proceed = Barrier::new(2);
-        let (pending, invalidated, newer, joined) = thread::scope(|threads| {
+        let (pending, unchanged, newer, joined) = thread::scope(|threads| {
             let worker = threads.spawn(|| {
                 let mut reserved = old.checkout();
                 let built = match &mut reserved {
@@ -18465,29 +18473,34 @@ fn close_or_reset_after_real_factory_prevents_publication_and_preserves_full_f_u
                     .expect("creation must attempt the actual factory")
                     .unwrap();
                 assert_eq!(creating.worker.as_ref().unwrap().kernel_invocations(), 0);
-                match creating.publish() {
-                    Err(AsciiBoundaryError::Owner(error)) => {
-                        assert_eq!(error.kind, OwnerErrorKind::Closed)
-                    }
-                    Err(error) => panic!("expected post-factory epoch refusal: {error:?}"),
-                    Ok(_) => panic!("old creation must not publish after close/reset"),
-                }
+                creating.publish()
             });
             prepared.wait();
             let pending = owner.snapshot();
-            let newer = if reset {
+            let newer = if begin_peer {
                 Some(owner.begin_execution())
             } else {
                 old.close();
                 None
             };
-            let invalidated = owner.snapshot();
+            let unchanged = owner.snapshot();
             proceed.wait();
-            (pending, invalidated, newer, worker.join())
+            (pending, unchanged, newer, worker.join())
         });
-        joined.unwrap();
+        let publication = joined.unwrap();
+        if begin_peer {
+            drop(publication.expect("a peer execution must not invalidate creation"));
+        } else {
+            assert!(matches!(
+                publication,
+                Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
+                    kind: OwnerErrorKind::Closed,
+                    ..
+                }))
+            ));
+        }
         let pending = pending.unwrap();
-        assert_eq!(pending, invalidated.unwrap());
+        assert_eq!(pending, unchanged.unwrap());
         assert_eq!(
             (
                 pending.creating,
@@ -18513,6 +18526,7 @@ fn close_or_reset_after_real_factory_prevents_publication_and_preserves_full_f_u
         assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
         if let Some(newer) = newer {
             let newer = newer.unwrap();
+            assert!(!old.is_closed());
             old.close();
             let scope = newer.scope();
             assert_eq!(
@@ -18520,13 +18534,15 @@ fn close_or_reset_after_real_factory_prevents_publication_and_preserves_full_f_u
                 Datum::Int(50)
             );
             assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+            drop(scope);
+            newer.close();
         }
     }
 }
 
 #[test]
-fn retirement_barrier_holds_slot_and_byte_debt_across_epoch_rotation_until_actual_drop() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn retirement_barrier_holds_slot_and_byte_debt_across_peer_begin_until_actual_drop() {
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let old = owner.begin_execution().unwrap();
     let mut lease = new_creation(&old).prepare().unwrap();
     assert_eq!(
@@ -18578,7 +18594,7 @@ fn retirement_barrier_holds_slot_and_byte_debt_across_epoch_rotation_until_actua
     assert_eq!(pending.retired, 0);
     assert!(matches!(
         refused,
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Resource,
             ..
         })
@@ -18596,8 +18612,8 @@ fn retirement_barrier_holds_slot_and_byte_debt_across_epoch_rotation_until_actua
 }
 
 #[test]
-fn closing_live_epoch_keeps_old_worker_charged_until_disposal_and_cannot_fill_new_epoch() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn closing_live_execution_keeps_worker_charged_until_disposal_and_blocks_peer() {
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let old = owner.begin_execution().unwrap();
     let old_scope = old.scope();
     assert_eq!(
@@ -18612,7 +18628,7 @@ fn closing_live_epoch_keeps_old_worker_charged_until_disposal_and_cannot_fill_ne
     let newer_scope = newer.scope();
     assert!(matches!(
         evaluate_ascii_value(&newer_scope, &Datum::Null),
-        Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+        Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
             kind: OwnerErrorKind::Resource,
             ..
         }))
@@ -18636,7 +18652,7 @@ fn closing_live_epoch_keeps_old_worker_charged_until_disposal_and_cannot_fill_ne
     let stale = old.scope();
     assert!(matches!(
         evaluate_ascii_value(&stale, &Datum::Null),
-        Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+        Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
             kind: OwnerErrorKind::Closed,
             ..
         }))
@@ -18644,47 +18660,52 @@ fn closing_live_epoch_keeps_old_worker_charged_until_disposal_and_cannot_fill_ne
 }
 
 #[test]
-fn reset_retires_idle_workers_and_stale_close_or_handle_drop_cannot_close_new_epoch() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn concurrent_executions_keep_distinct_workers_and_close_in_isolation() {
+    let owner = ReadyValuePoolOwner::new(test_policy(2, 2)).unwrap();
     let old = owner.begin_execution().unwrap();
     let old_clone = old.clone();
     drop(old.clone());
-    {
-        let scope = old.scope();
-        assert_eq!(
-            evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
-            Datum::Null
-        );
-    }
+    let old_scope = old.scope();
+    assert_eq!(
+        evaluate_ascii_value(&old_scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    let old_worker = scope_worker_observation(&old_scope).0;
+    drop(old_scope);
     assert_eq!(owner.snapshot().unwrap().idle, 1);
+
     let newer = owner.begin_execution().unwrap();
-    let reset = owner.snapshot().unwrap();
-    assert_eq!((reset.idle, reset.live, reset.retired), (0, 0, 1));
-    assert_eq!(reset.reserved_bytes, reset.base_bytes);
-    {
-        let scope = newer.scope();
-        assert_eq!(
-            evaluate_ascii_value(&scope, &Datum::Int(2)).unwrap(),
-            Datum::Int(50)
-        );
-    }
-    let idle = owner.snapshot().unwrap();
-    assert_eq!(idle.idle, 1);
+    let newer_scope = newer.scope();
+    assert_eq!(
+        evaluate_ascii_value(&newer_scope, &Datum::Int(2)).unwrap(),
+        Datum::Int(50)
+    );
+    let newer_worker = scope_worker_observation(&newer_scope).0;
+    assert_ne!(old_worker, newer_worker, "workers are statement-owned");
+    assert!(!old.is_closed());
+    assert!(!newer.is_closed());
+    let concurrent = owner.snapshot().unwrap();
+    assert_eq!((concurrent.idle, concurrent.live), (1, 1));
+
     old.close();
     old_clone.close();
-    drop(newer.clone());
-    assert_eq!(owner.snapshot().unwrap(), idle);
-    {
-        let scope = newer.scope();
-        assert_eq!(
-            evaluate_ascii_value(&scope, &Datum::Null).unwrap(),
-            Datum::Null
-        );
-        assert_eq!(scope_worker_observation(&scope).1, 2);
-    }
-    assert_eq!(owner.snapshot().unwrap().factory_successes, 2);
+    assert!(old.is_closed());
+    assert!(!newer.is_closed());
+    assert!(matches!(
+        old.scope().evaluate_ascii_value(&Datum::Null),
+        Err(EvalError::ExpressionAdapterFailure(failure))
+            if failure.class() == crate::ExpressionAdapterFailureClass::PoolClosed
+    ));
+    assert_eq!(
+        evaluate_ascii_value(&newer_scope, &Datum::Null).unwrap(),
+        Datum::Null
+    );
+    let isolated = owner.snapshot().unwrap();
+    assert_eq!((isolated.idle, isolated.live, isolated.retired), (0, 1, 1));
+
     newer.close();
     newer.close();
+    drop(newer_scope);
     let closed = owner.snapshot().unwrap();
     assert_eq!(
         (closed.idle, closed.live, closed.retiring, closed.retired),
@@ -18694,9 +18715,9 @@ fn reset_retires_idle_workers_and_stale_close_or_handle_drop_cannot_close_new_ep
 }
 
 #[test]
-fn post_kernel_epoch_check_is_the_success_publication_boundary() {
+fn post_kernel_execution_check_is_the_success_publication_boundary() {
     for close_before_finish in [true, false] {
-        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         let mut invocation = Invocation::enter(&scope).unwrap();
@@ -18720,7 +18741,7 @@ fn post_kernel_epoch_check_is_the_success_publication_boundary() {
         if close_before_finish {
             assert!(matches!(
                 publication,
-                Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+                Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
                     kind: OwnerErrorKind::Closed,
                     ..
                 }))
@@ -18749,7 +18770,7 @@ fn post_kernel_epoch_check_is_the_success_publication_boundary() {
 
 #[test]
 fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
-    let policy = AsciiPoolPolicy::checked(
+    let policy = ReadyValuePoolPolicy::checked(
         1,
         1,
         TEST_POOL_BYTES,
@@ -18760,13 +18781,13 @@ fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
         TEST_CALL_BYTES,
     )
     .unwrap();
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     let mut invocation = Invocation::enter(&scope).unwrap();
     let primary = invocation.run(coerce_ready(&Datum::Null).unwrap());
     let (original_message_allocation, original_failure) = match &primary {
-        Err(AsciiBoundaryError::Kernel(failure)) => {
+        Err(ReadyValueBoundaryError::Kernel(failure)) => {
             let LocalError::ResourceLimit(message) = failure.local_error() else {
                 panic!("expected the original C4 ResourceLimit cause");
             };
@@ -18788,7 +18809,7 @@ fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
     );
     execution.close();
     match invocation.finish(primary) {
-        Err(AsciiBoundaryError::Kernel(failure)) => {
+        Err(ReadyValueBoundaryError::Kernel(failure)) => {
             let LocalError::ResourceLimit(message) = failure.local_error() else {
                 panic!("cleanup must preserve the original C4 ResourceLimit cause");
             };
@@ -18797,7 +18818,7 @@ fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
             assert_eq!(message.as_ptr(), original_message_allocation);
             assert_eq!(failure, original_failure, "same opaque Arc, no recapture");
             assert_eq!(failure.phase(), Some(ExpressionRuntimeFailurePhase::Invoke));
-            let native = AsciiBoundaryError::Kernel(failure).into_eval_error();
+            let native = ReadyValueBoundaryError::Kernel(failure).into_eval_error();
             assert_eq!(
                 native,
                 EvalError::ExpressionRuntimeFailure(original_failure),
@@ -18823,7 +18844,7 @@ fn original_owned_kernel_error_survives_a_simultaneous_close_cleanup_error() {
 #[test]
 fn caught_native_panics_before_next_kernel_after_kernel_and_during_return_poison_surviving_scope() {
     for phase in 0_usize..3 {
-        let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+        let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         assert_eq!(
@@ -18881,9 +18902,9 @@ fn caught_native_panics_before_next_kernel_after_kernel_and_during_return_poison
         assert_eq!(disposed.reserved_bytes, disposed.base_bytes);
         assert!(matches!(
             evaluate_ascii_value(&scope, &Datum::Null),
-            Err(AsciiBoundaryError::Scope {
+            Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Poisoned,
-                reason: "ASCII scope is poisoned",
+                reason: "ready-value scope is poisoned",
             })
         ));
         assert_eq!(
@@ -18896,7 +18917,7 @@ fn caught_native_panics_before_next_kernel_after_kernel_and_during_return_poison
 
 #[test]
 fn caught_invocation_guard_unwind_retires_a_real_used_worker_before_recovery() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert_eq!(
@@ -18937,8 +18958,8 @@ fn caught_invocation_guard_unwind_retires_a_real_used_worker_before_recovery() {
 }
 
 #[test]
-fn structural_validate_rejects_epoch_and_uncertainty_from_different_instants() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn structural_validate_rejects_liveness_and_uncertainty_from_different_instants() {
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let mut lease = new_creation(&execution).prepare().unwrap();
     assert_eq!(
@@ -18956,43 +18977,43 @@ fn structural_validate_rejects_epoch_and_uncertainty_from_different_instants() {
 
     // STRUCTURAL concurrent-ledger regression, not a natural dirty-C4-context
     // observation. The worker and validate call are real; only retirement-debt
-    // state is synthesized. Before the target validate starts, (epoch E, debt 1)
+    // state is synthesized. Before the target validate starts, (open, debt 1)
     // is already installed under the bookkeeping lock.
     {
         let _state = owner.core.state.lock().unwrap();
-        assert_eq!(owner.core.epoch.load(Ordering::SeqCst), execution.epoch);
+        assert!(!execution.state.is_closed());
         owner.core.uncertain.store(1, Ordering::SeqCst);
     }
-    let (epoch_read_tx, epoch_read_rx) = std::sync::mpsc::channel();
+    let (liveness_read_tx, liveness_read_rx) = std::sync::mpsc::channel();
     let (resume_tx, resume_rx) = std::sync::mpsc::channel();
     let (joined, transition) = thread::scope(|threads| {
         let validator = threads.spawn(move || {
             // Install only after the real lease was prepared and used. Pause
-            // the ACTUAL check_epoch path after its epoch read, before debt.
-            set_after_epoch_read_hook(move || {
-                epoch_read_tx.send(()).unwrap();
+            // the ACTUAL check_execution path after its liveness read, before debt.
+            set_after_execution_read_hook(move || {
+                liveness_read_tx.send(()).unwrap();
                 resume_rx.recv().unwrap();
             });
             let accepted = lease.validate().is_ok();
             (lease, accepted)
         });
-        epoch_read_rx
+        liveness_read_rx
             .recv()
-            .expect("validate must reach the epoch-read rendezvous");
+            .expect("validate must reach the liveness-read rendezvous");
         let transition = match owner.core.state.try_lock() {
             Ok(_state) => {
                 // Model close, then acknowledgement of outstanding retirement:
-                // (E,1) -> (0,1) -> (0,0). There is NO (E,0) instant in this
-                // validation interval, even though two independent loads can
-                // incorrectly assemble it. Do not call a locking close here.
-                owner.core.epoch.store(0, Ordering::SeqCst);
+                // (open,1) -> (closed,1) -> (closed,0). There is NO (open,0)
+                // instant in this validation interval, even though independent
+                // loads can incorrectly assemble it. Do not call locking close.
+                execution.state.closed.store(true, Ordering::SeqCst);
                 owner.core.uncertain.store(0, Ordering::SeqCst);
                 Ok(true)
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 // Also safe if a later fix locks validate: let it observe the
                 // original debt=1 and reject before normal cleanup. An atomic
-                // double-epoch-read fix still follows the mutation arm above.
+                // double-liveness-read fix still follows the mutation arm above.
                 Ok(false)
             }
             Err(std::sync::TryLockError::Poisoned(_)) => {
@@ -19025,14 +19046,14 @@ fn structural_validate_rejects_epoch_and_uncertainty_from_different_instants() {
     let mutated_while_paused = transition.expect("rendezvous must not poison the owner");
     assert!(
         !accepted,
-        "validate accepted an epoch/debt pair with no common valid instant; \
+        "validate accepted a liveness/debt pair with no common valid instant; \
          mutated_while_paused={mutated_while_paused}"
     );
 }
 
 #[test]
-fn structurally_marked_uncertain_retirement_freezes_new_epochs_until_actual_worker_disposal() {
-    let owner = AsciiPoolOwner::new(test_policy(2, 2)).unwrap();
+fn structurally_marked_uncertain_retirement_freezes_executions_until_actual_worker_disposal() {
+    let owner = ReadyValuePoolOwner::new(test_policy(2, 2)).unwrap();
     let old = owner.begin_execution().unwrap();
     let mut lease = new_creation(&old).prepare().unwrap();
     assert_eq!(
@@ -19055,6 +19076,7 @@ fn structurally_marked_uncertain_retirement_freezes_new_epochs_until_actual_work
     let debt = Retirement {
         core: Arc::clone(&owner.core),
         token,
+        execution: Some(Arc::clone(&lease.execution)),
         worker,
         recorded: true,
     };
@@ -19066,9 +19088,9 @@ fn structurally_marked_uncertain_retirement_freezes_new_epochs_until_actual_work
     old.close();
     assert!(matches!(
         newer.checkout(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Resource,
-            message: "ASCII uncertain retirement debt remains"
+            message: "ready-value uncertain retirement debt remains"
         })
     ));
     assert_eq!(owner.snapshot().unwrap(), frozen);
@@ -19089,7 +19111,7 @@ fn structurally_marked_uncertain_retirement_freezes_new_epochs_until_actual_work
 #[test]
 fn checked_policy_and_reservation_overflow_refuse_before_allocating_or_mutating_slots() {
     assert!(matches!(
-        AsciiPoolPolicy::checked(
+        ReadyValuePoolPolicy::checked(
             1,
             2,
             TEST_POOL_BYTES,
@@ -19099,24 +19121,25 @@ fn checked_policy_and_reservation_overflow_refuse_before_allocating_or_mutating_
             8,
             TEST_CALL_BYTES
         ),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Policy,
             ..
         })
     ));
     assert!(matches!(
-        AsciiPoolPolicy::checked(1, 1, TEST_POOL_BYTES, 2, 1, 64, 8, TEST_CALL_BYTES),
-        Err(AsciiOwnerError {
+        ReadyValuePoolPolicy::checked(1, 1, TEST_POOL_BYTES, 2, 1, 64, 8, TEST_CALL_BYTES),
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Policy,
             ..
         })
     ));
     assert!(base_charge(usize::MAX).is_err());
     assert!(
-        AsciiPoolPolicy::checked(usize::MAX, 0, usize::MAX, 0, 0, 64, 8, TEST_CALL_BYTES).is_err()
+        ReadyValuePoolPolicy::checked(usize::MAX, 0, usize::MAX, 0, 0, 64, 8, TEST_CALL_BYTES)
+            .is_err()
     );
-    assert!(AsciiPoolPolicy::checked(0, 0, 0, 0, 0, 64, 8, TEST_CALL_BYTES).is_err());
-    let policy = AsciiPoolPolicy::checked(
+    assert!(ReadyValuePoolPolicy::checked(0, 0, 0, 0, 0, 64, 8, TEST_CALL_BYTES).is_err());
+    let policy = ReadyValuePoolPolicy::checked(
         1,
         1,
         usize::MAX,
@@ -19127,12 +19150,12 @@ fn checked_policy_and_reservation_overflow_refuse_before_allocating_or_mutating_
         TEST_CALL_BYTES,
     )
     .unwrap();
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     let execution = owner.begin_execution().unwrap();
     let before = owner.snapshot().unwrap();
     assert!(matches!(
         execution.checkout(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Resource,
             ..
         })
@@ -19142,7 +19165,7 @@ fn checked_policy_and_reservation_overflow_refuse_before_allocating_or_mutating_
 
 #[test]
 fn structural_mutex_poison_refuses_cached_ready_call_without_snapshot_or_kernel_entry() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert_eq!(
@@ -19185,7 +19208,7 @@ fn structural_mutex_poison_refuses_cached_ready_call_without_snapshot_or_kernel_
     assert!(
         matches!(
             &result,
-            Err(AsciiBoundaryError::Owner(AsciiOwnerError {
+            Err(ReadyValueBoundaryError::Owner(ReadyValueOwnerError {
                 kind: OwnerErrorKind::Poisoned,
                 ..
             }))
@@ -19198,36 +19221,36 @@ fn structural_mutex_poison_refuses_cached_ready_call_without_snapshot_or_kernel_
 }
 
 #[test]
-fn structural_epoch_serial_overflow_and_mutex_poison_fail_closed_without_reuse() {
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+fn structural_execution_serial_overflow_and_mutex_poison_fail_closed_without_reuse() {
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     owner.core.state.lock().unwrap().next_serial = u64::MAX;
     let before = owner.snapshot().unwrap();
     assert!(matches!(
         execution.checkout(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Resource,
             ..
         })
     ));
     assert_eq!(owner.snapshot().unwrap(), before);
-    owner.core.state.lock().unwrap().next_epoch = u64::MAX;
+    owner.core.state.lock().unwrap().next_execution_id = u64::MAX;
     assert!(matches!(
         owner.begin_execution(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Contract,
             ..
         })
     ));
     assert!(matches!(
         execution.checkout(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Poisoned,
             ..
         })
     ));
 
-    let owner = AsciiPoolOwner::new(test_policy(1, 1)).unwrap();
+    let owner = ReadyValuePoolOwner::new(test_policy(1, 1)).unwrap();
     let execution = owner.begin_execution().unwrap();
     let scope = execution.scope();
     assert_eq!(
@@ -19241,7 +19264,7 @@ fn structural_epoch_serial_overflow_and_mutex_poison_fail_closed_without_reuse()
     assert!(panic.is_err());
     assert!(matches!(
         owner.snapshot(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Poisoned,
             ..
         })
@@ -19249,7 +19272,7 @@ fn structural_epoch_serial_overflow_and_mutex_poison_fail_closed_without_reuse()
     drop(scope);
     assert!(matches!(
         owner.begin_execution(),
-        Err(AsciiOwnerError {
+        Err(ReadyValueOwnerError {
             kind: OwnerErrorKind::Poisoned,
             ..
         })
@@ -19310,11 +19333,12 @@ fn parent_external_observer_actual_pool_owner_arc_new_fixture() {
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER EMPTY_PRE_BEGIN");
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER EMPTY_PRE_END");
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER OWNER_NEW_BEGIN");
-    let owner = AsciiPoolOwner::new(policy).unwrap();
+    let owner = ReadyValuePoolOwner::new(policy).unwrap();
     std::hint::black_box(&owner);
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER OWNER_NEW_END");
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER STACK_CLONES_BEGIN");
-    let clones: [AsciiPoolOwner; 64] = std::array::from_fn(|_| std::hint::black_box(owner.clone()));
+    let clones: [ReadyValuePoolOwner; 64] =
+        std::array::from_fn(|_| std::hint::black_box(owner.clone()));
     std::hint::black_box(&clones);
     drop(clones);
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER STACK_CLONES_END");

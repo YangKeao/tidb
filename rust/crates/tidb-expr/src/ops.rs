@@ -2639,8 +2639,8 @@ mod tests {
             ),
         ];
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -2956,8 +2956,8 @@ mod tests {
             "3".repeat(9)
         );
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,

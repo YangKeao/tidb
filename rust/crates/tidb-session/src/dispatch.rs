@@ -1146,8 +1146,8 @@ impl Session {
 
     pub fn execute_statement(&mut self, sql: &str) -> Result<StmtOutput, DriverError> {
         // This public body entry can bypass the ordinary native boundary.
-        // Join an existing lexical caller, or own only the ASCII lifetime here.
-        let _runtime = self.enter_evaluated_ascii_statement()?;
+        // Join an existing lexical caller, or own only the ready-value lifetime here.
+        let _runtime = self.enter_ready_value_statement()?;
         let stmt = self.parse_at_statement_boundary(sql)?;
         self.execute_parsed_statement(sql, stmt, None)
     }
@@ -1255,7 +1255,7 @@ impl Session {
         prepared: &crate::PreparedAst,
     ) -> Result<crate::OpenedStatement, DriverError> {
         self.begin_statement_execution(prepared.sql())?;
-        let mut runtime = self.enter_evaluated_ascii_statement()?;
+        let mut runtime = self.enter_ready_value_statement()?;
         let result =
             self.prepare_bound_execution(prepared.sql(), stmt, prepared.privilege_requests());
         self.return_opened_record_set(result, &mut runtime)
@@ -1273,7 +1273,7 @@ impl Session {
         sql: &str,
     ) -> Result<Option<crate::OpenedStatement>, DriverError> {
         self.begin_statement_execution(sql)?;
-        let mut runtime = self.enter_evaluated_ascii_statement()?;
+        let mut runtime = self.enter_ready_value_statement()?;
         let result = (|| {
             self.set_statement_arbitration_key(sql);
             let cache_hit = execution.cache_hit();
@@ -1392,7 +1392,7 @@ impl Session {
         prepared: &crate::PreparedAst,
     ) -> Result<crate::OpenedStatement, DriverError> {
         self.begin_statement_execution(prepared.sql())?;
-        let mut runtime = self.enter_evaluated_ascii_statement()?;
+        let mut runtime = self.enter_ready_value_statement()?;
         let result = self.prepare_cached_select_execution(
             execution,
             prepared.sql(),
@@ -1776,7 +1776,7 @@ impl Session {
         sql: &str,
     ) -> Result<crate::OpenedStatement, DriverError> {
         self.begin_statement_execution(sql)?;
-        let mut runtime = self.enter_evaluated_ascii_statement()?;
+        let mut runtime = self.enter_ready_value_statement()?;
         self.begin_text_statement_boundary(&stmt);
         let result =
             self.prepare_parsed_statement_with_optional_physical_plan(sql, stmt, None, None, None);

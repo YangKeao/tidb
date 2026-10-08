@@ -23,7 +23,7 @@ Datatype `Time::native_core_fields` exposes seven fields through existing getter
 
 ## Scope and owned-zone contracts
 
-`evaluate_prepared_args_scoped_in` and the old helper share one three-way router. After Invocation::finish and owned materialization, the callback receives a stack-bound ScopedAsciiColumns under the original NativeGuard. Direct binding avoids a second capability discovery or scope switch. NoColumns still prepares before allocating its old one-shot owner; execution/scope live through the callback and both stages. The old helper ignores the scope parameter and gains no getter.
+`evaluate_prepared_args_scoped_in` and the old helper share one three-way router. After Invocation::finish and owned materialization, the callback receives a stack-bound ScopedReadyValueColumns under the original NativeGuard. Direct binding avoids a second capability discovery or scope switch. NoColumns still prepares before allocating its old one-shot owner; execution/scope live through the callback and both stages. The old helper ignores the scope parameter and gains no getter.
 
 The first lease is parked/retired before the second checkout; one slot suffices. No worker/cell/mutex borrow crosses the callback. Ordinary error, panic and close/epoch changes retain the existing cleanup/refusal semantics, with no replay, catch, replacement pool or host-answer injection.
 

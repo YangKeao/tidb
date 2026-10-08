@@ -29,8 +29,7 @@ use tidb_query_datatype::{
     EvalType,
 };
 use tidb_query_expr::local::{
-    compile_local, CompileLimits, ExecutionLimits, LocalCompileContext, LocalEvalState, LocalExpr,
-    LocalResult,
+    compile_local, CompileLimits, ExecutionLimits, LocalCompileContext, LocalExpr, LocalResult,
 };
 
 fn bigint() -> FieldType {
@@ -359,7 +358,7 @@ fn reported_plus_uses_typed_code_only_after_join() {
         let report = program
             .program
             .eval_with_bindings_reported(
-                &mut program.state,
+                program.limits,
                 &mut EvalContext::default(),
                 1,
                 &[0],
@@ -390,7 +389,7 @@ fn reported_plus_uses_typed_code_only_after_join() {
     let mut raw = Raw::new(&program, vec![vec![Datum::Int(i64::MAX)]]);
     let report = eager
         .eval_with_bindings_reported(
-            &mut LocalEvalState::default(),
+            ExecutionLimits::default(),
             &mut EvalContext::default(),
             1,
             &[0],

@@ -159,7 +159,7 @@ mod tests {
 
     use super::super::LocalError;
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn str_to_date_bridge_preserves_late_modes_warnings_and_scoped_continuations() {
@@ -206,9 +206,18 @@ mod tests {
             panic_warning: Cell::new(false),
         };
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };

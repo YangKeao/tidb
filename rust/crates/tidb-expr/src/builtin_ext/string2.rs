@@ -1566,9 +1566,9 @@ mod format_worker_tests {
         }
     }
 
-    fn owner(slots: usize) -> crate::AsciiPoolOwner {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+    fn owner(slots: usize) -> crate::ReadyValuePoolOwner {
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 << 20,

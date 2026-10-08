@@ -283,8 +283,8 @@ fn typed_clock_helper_preserves_getter_order_and_marker_boundaries() {
         clock: Cell::new(Some((1234, 987_654_321, -7_200))),
         events: RefCell::new(Vec::new()),
     };
-    let owner = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(
+    let owner = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,

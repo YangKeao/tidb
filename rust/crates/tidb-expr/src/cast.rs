@@ -1137,9 +1137,9 @@ fn real_unsigned_worker_keeps_rounding_overflow_and_union_boundary() {
             panic!("real unsigned cast does not read date modes")
         }
     }
-    fn owner(slots: usize) -> crate::AsciiPoolOwner {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+    fn owner(slots: usize) -> crate::ReadyValuePoolOwner {
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

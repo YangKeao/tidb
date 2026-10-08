@@ -949,12 +949,20 @@ mod tests {
 
     #[test]
     fn fast_like_preserves_negation_null_and_execution_failures() {
-        let policy =
-            crate::AsciiPoolPolicy::checked(1, 1, usize::MAX, 1 << 20, 1 << 20, 64, 16, 1 << 20)
-                .unwrap();
-        let owner = crate::AsciiPoolOwner::new(policy).unwrap();
+        let policy = crate::ReadyValuePoolPolicy::checked(
+            1,
+            1,
+            usize::MAX,
+            1 << 20,
+            1 << 20,
+            64,
+            16,
+            1 << 20,
+        )
+        .unwrap();
+        let owner = crate::ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
-        let ctx = crate::StmtContext::for_query().with_evaluated_ascii_execution(execution.clone());
+        let ctx = crate::StmtContext::for_query().with_ready_value_execution(execution.clone());
         let mut rows = tidb_chunk::chunk::Chunk::new_with_capacity(
             &[FieldType::new(FieldTypeCode::VarString)],
             3,

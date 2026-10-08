@@ -136,7 +136,7 @@ mod tests {
     use tidb_datatype::Decimal;
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn case_bridge_initializes_once_and_iterates_only_demanded_conditions() {
@@ -147,10 +147,18 @@ mod tests {
                 .with_declared_shape(i64::MIN, i64::MAX),
         );
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 20)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 20,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&crate::NoColumns, |bound| {
@@ -162,10 +170,7 @@ mod tests {
                         0,
                         has_else,
                         |original| {
-                            assert!(std::ptr::eq(
-                                original.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
+                            assert!(std::ptr::eq(original.ready_value_scope().unwrap(), &scope));
                             initialized.set(initialized.get() + 1);
                             Ok(Some(Datum::Int(37)))
                         },
@@ -174,10 +179,7 @@ mod tests {
                             assert!(has_else);
                             assert_eq!(index, 0);
                             assert_eq!(initialized.get(), 1);
-                            assert!(std::ptr::eq(
-                                original.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
+                            assert!(std::ptr::eq(original.ready_value_scope().unwrap(), &scope));
                             values.set(values.get() + 1);
                             Ok(raw_float.clone())
                         },
@@ -213,22 +215,16 @@ mod tests {
                         assert_eq!(base, &Some(Datum::Int(37)));
                         assert_eq!(conditions.get(), index);
                         assert!(index <= 20, "selected NULL must stop later conditions");
-                        assert!(std::ptr::eq(
-                            selected.evaluated_ascii_scope().unwrap(),
-                            &scope
-                        ));
+                        assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                         conditions.set(conditions.get() + 1);
                         Ok(if index == 1 { None } else { Some(index == 20) })
                     },
                     |index, selected| {
                         assert_eq!(index, 20, "only the selected pair may evaluate its value");
+                        assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                         assert!(std::ptr::eq(
-                            selected.evaluated_ascii_scope().unwrap(),
-                            &scope
-                        ));
-                        assert!(std::ptr::eq(
-                            selected.evaluated_ascii_execution().unwrap(),
-                            bound.evaluated_ascii_execution().unwrap()
+                            selected.ready_value_execution().unwrap(),
+                            bound.ready_value_execution().unwrap()
                         ));
                         values.set(values.get() + 1);
                         evaluate_args_in(
@@ -328,17 +324,17 @@ mod tests {
                 2,
                 false,
                 |original| {
-                    assert!(original.evaluated_ascii_scope().is_none());
+                    assert!(original.ready_value_scope().is_none());
                     initialized.set(initialized.get() + 1);
                     Ok(())
                 },
                 |index, _, selected| {
-                    assert_eq!(selected.evaluated_ascii_scope().is_some(), index != 0);
+                    assert_eq!(selected.ready_value_scope().is_some(), index != 0);
                     Ok(Some(index == 1))
                 },
                 |index, selected| {
                     assert_eq!(index, 1);
-                    assert!(selected.evaluated_ascii_scope().is_some());
+                    assert!(selected.ready_value_scope().is_some());
                     Ok(Datum::Int(7))
                 },
             ),
@@ -351,13 +347,13 @@ mod tests {
                 0,
                 true,
                 |original| {
-                    assert!(original.evaluated_ascii_scope().is_none());
+                    assert!(original.ready_value_scope().is_none());
                     Ok(())
                 },
                 |_, _, _| panic!("no condition for sole ELSE"),
                 |index, original| {
                     assert_eq!(index, 0);
-                    assert!(original.evaluated_ascii_scope().is_none());
+                    assert!(original.ready_value_scope().is_none());
                     Ok(Datum::Int(9))
                 },
             ),

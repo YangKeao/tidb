@@ -1,0 +1,62 @@
+checkpoint=ready-value-statement-lifecycle-218
+status=PASS
+paired_tikv_commit=b9161b0f5e8ef9571a3c81cb2eed7c9bb56cc00a
+
+tikv_check=PASS
+command=../tools/cargo-tikv check --locked -p tidb_query_expr --tests
+receipt=external logs/round224-tikv-final-check-2.log
+
+tikv_focused_tests=PASS
+count=4
+filters=local::control_tests::local_work_limit_is_shared_across_occurrences_and_fresh_per_invocation;local::tests::local_evaluated_bytes_integer_operations_reuse_worker;local::batch::ready_value_tests::test_evaluated_ascii_factory_fully_prewarms_without_invocation;local::batch::ready_value_tests::test_evaluated_ascii_reuses_program_context_and_computed_identity
+receipt=external logs/round224-tikv-focused-tests.log
+
+tikv_shared_budget_regression=PASS
+command=../tools/cargo-tikv test --locked -p tidb_query_expr --lib local::batch::ready_value_tests::public_evaluated_args_share_one_budget_across_preflight_and_driver -- --exact --nocapture --test-threads=1
+result=1 passed; 0 failed; 1041 filtered
+tikv_tests_check_after_fix=PASS
+receipt=external logs/round224-tikv-shared-budget-fix.log
+
+tidb_check=PASS
+command=../../tools/cargo-tidb check --locked -p tidb-expr -p tidb-session -p tidb-unistore
+receipt=external logs/round224-ready-value-lifecycle-check.log
+
+tidb_tests_check=PASS
+command=../../tools/cargo-tidb check --locked --tests -p tidb-expr -p tidb-executor -p tidb-session -p tidb-unistore
+receipt=external logs/round224-ready-value-final-tests-check.log
+
+tidb_focused_tests=PASS
+count=4
+filters=tikv::ready_value::tests::concurrent_executions_keep_distinct_workers_and_close_in_isolation;tikv::ready_value::tests::closing_live_execution_keeps_worker_charged_until_disposal_and_blocks_peer;tests_core::lifecycle::ready_value_detached_executions_close_in_isolation_and_preserve_late_worker_debt;tests_core::lifecycle::ready_value_attached_detached_and_session_drop_close_all_captured_executions
+receipt=external logs/round224-ready-value-focused-tests-2.log
+
+tidb_ready_value_module_tests=PASS
+command=../../tools/cargo-tidb test --locked -p tidb-expr --lib tikv::ready_value::tests:: -- --test-threads=1
+result=196 passed; 1 ignored; 0 failed; 1562 filtered
+receipt=external logs/round224-ready-value-final-tests.log
+
+tidb_lifecycle_suite=PASS
+command=../../tools/cargo-tidb test --locked -p tidb-session --lib tests_core::lifecycle:: -- --test-threads=1
+result=208 passed; 0 failed; 2065 filtered
+
+tidb_stmt_context_suite=PASS
+command=../../tools/cargo-tidb test --locked -p tidb-executor --lib stmt_context::tests:: -- --test-threads=1
+result=23 passed; 0 failed; 1460 filtered
+receipt=external logs/round224-ready-value-final-tests.log
+
+tidb_make_lint=PASS
+command=make lint
+receipt=external logs/round224-tidb-make-lint-final.log
+
+tikv_make_clippy=PASS
+command=make clippy
+receipt=external logs/round224-tikv-clippy-pushed-head.log
+
+rustfmt_changed_sources=PASS
+checkpoint_plan_metadata_integrity=PASS
+removed_module_path_reference_audit=PASS
+pool_observer_ready_value_filter=PASS (exact list found 1 test)
+independent_staged_lifecycle_review=PASS (no lifecycle race/accounting bug; shared-budget, historical-receipt, lifecycle-contract, naming/tool-path, and metadata findings fixed)
+
+environment=nightly-2026-08-22 for TiDB; nightly-2026-01-30 for TiKV; GCC/G++ 14; CXXFLAGS=-include cstdint; CMAKE_POLICY_VERSION_MINIMUM=3.5
+known_unresolved=current release MD5 Prepare/InvalidSpecification; public AST/value performance regressions; strict per-family audit count remains 0

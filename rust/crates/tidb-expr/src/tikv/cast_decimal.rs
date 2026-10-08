@@ -56,7 +56,7 @@ pub(crate) fn report_cast_decimal_input_in(ctx: &dyn Columns, value: &Datum) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy};
+    use crate::{ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::cell::RefCell;
     use tidb_datatype::{BinaryJSON, ConversionFlags, DateModes, SessionTimeZone};
 
@@ -97,8 +97,9 @@ mod tests {
         }
         let original = Original::default();
         // This preserves the former pure path, not a new admission capability.
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(0, 0, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16).unwrap(),
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(0, 0, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
+                .unwrap(),
         )
         .unwrap();
         let execution = owner.begin_execution().unwrap();

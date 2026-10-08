@@ -1371,8 +1371,8 @@ fn ifnull_workers_keep_actual_identity_lazy_demand_and_eager_values() {
         Datum::VectorFloat32(vector),
     ];
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -1652,8 +1652,8 @@ fn if_workers_keep_ordinary_truth_domains_lazy_identity_and_scope() {
         (Datum::MaxValue, Err(())),
     ];
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -1937,8 +1937,8 @@ fn coalesce_workers_keep_lazy_borrowed_identity_exhaustion_and_scope() {
         Datum::VectorFloat32(vector),
     ];
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -2138,9 +2138,9 @@ fn nullif_workers_keep_eager_operands_comparison_policy_and_left_identity() {
         };
         bytes
     }
-    fn owner(slots: usize) -> crate::AsciiPoolOwner {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+    fn owner(slots: usize) -> crate::ReadyValuePoolOwner {
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

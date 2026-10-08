@@ -27,7 +27,7 @@ Reports are tag0+LEi64 exactly9B or error tags1/2/3 exactly1B; output presence m
 Eight locked single-threaded launches: six final green gates, one compile failure with no tests, one new-test runtime failure. CPP datatype1/core1/local350+1ignored; native checksum4 (two original vectors plus two new tests)/gateway196+1ignored; SQL refusal1 pass. Six new tests finally pass, not all first-run green.
 
 - E0308: new test used usize for ParamMarker.order:i64. Added checked conversion only in that test.
-- New test's assert_eq left temporary retained an AsciiScope lease while the right operand requested a second scope from a one-slot pool. Original `AsciiScope::Drop` owns release. Storing the left result in a separate statement fixes the test lifetime, without increasing slots or changing values/production.
+- New test's assert_eq left temporary retained an ReadyValueScope lease while the right operand requested a second scope from a one-slot pool. Original `ReadyValueScope::Drop` owns release. Storing the left result in a separate statement fixes the test lifetime, without increasing slots or changing values/production.
 - A new CPP test enum typo was corrected statically before its first build, not counted as a failed launch.
 
 All failure logs remain. Original tests/oracles/fixtures were not modified; no provider outputs recorded as expected values. Full expression/unistore not rerun: R98's4+1 failures remain historical evidence only.

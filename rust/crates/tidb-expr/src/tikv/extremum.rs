@@ -81,7 +81,7 @@ fn frame_error(error: extrema_sdk::NativeIdentityFrameError) -> EvalError {
     match error {
         extrema_sdk::NativeIdentityFrameError::Invalid => invalid_report(),
         extrema_sdk::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit("native extremum frame allocation or size failed".into()),
                 None,
             ))
@@ -254,9 +254,8 @@ pub(crate) fn eval_extremum_in(
                                     Request::CompareLt => tidb_ast::BinaryOp::Lt,
                                     _ => tidb_ast::BinaryOp::Gt,
                                 };
-                                let scope = selected
-                                    .evaluated_ascii_scope()
-                                    .ok_or_else(invalid_report)?;
+                                let scope =
+                                    selected.ready_value_scope().ok_or_else(invalid_report)?;
                                 // Preserve eval_binary's exact context-free policy,
                                 // but charge the real selected execution and scope.
                                 let comparison =
@@ -325,7 +324,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn extremum_bridge_splits_default_comparison_policy_from_actual_scope_and_context() {
@@ -376,9 +375,18 @@ mod tests {
             panic_zone: Cell::new(false),
         };
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };

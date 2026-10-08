@@ -137,7 +137,9 @@ mod tests {
     use tidb_datatype::{CoreTime, Time, TimeType};
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ErrorLevel, ExpressionAdapterFailureClass};
+    use crate::{
+        ErrorLevel, ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy,
+    };
 
     #[test]
     fn bounded_staleness_bridge_keeps_raw_time_authority_and_guarded_safe_ts() {
@@ -236,12 +238,12 @@ mod tests {
             ))
         };
         let policy = |slots| {
-            AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
+            ReadyValuePoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
                 .unwrap()
         };
         for slots in [0, 1] {
             let native = Statement::new(Some(safe));
-            let owner = AsciiPoolOwner::new(policy(slots)).unwrap();
+            let owner = ReadyValuePoolOwner::new(policy(slots)).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&native, |bound| {
@@ -339,7 +341,7 @@ mod tests {
             let native = Statement::new(Some(safe));
             native.panic_safe.set(!warning_panic);
             native.panic_warning.set(warning_panic);
-            let owner = AsciiPoolOwner::new(policy(1)).unwrap();
+            let owner = ReadyValuePoolOwner::new(policy(1)).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&native, |bound| {

@@ -1,6 +1,6 @@
 # Next session execution lifetime cut — source-only inventory
 
-Round10 C independently inspected current session/executor source. No edits, commands, builds or tests were performed by C. This is a proposed dormant lifetime cut after the explicit value/capability API, not SQL activation or a second ExecPlan. Paths are relative to `tidb/rust/crates/`; S denotes tidb-session/src, X denotes tidb-executor/src. Anchors are navigation hints, not post-edit guarantees.
+Round10 C independently inspected then-current session/executor source. No edits, commands, builds or tests were performed by C. This was a proposed dormant lifetime cut after the explicit value/capability API, not SQL activation or a second ExecPlan. **Round224 supersedes its rotating/current-epoch assumptions:** executions are now independent statement-owned states, peer admission does not invalidate them, and Session Drop closes every still-live execution. Paths are relative to `tidb/rust/crates/`; S denotes tidb-session/src, X denotes tidb-executor/src. Anchors are historical navigation hints, not post-edit guarantees.
 
 ## Ownership and actual hooks
 
@@ -12,7 +12,7 @@ Round10 C independently inspected current session/executor source. No edits, com
 - X/projection.rs:295–306,381–390: close drops the receiver and does not join detached tasks. Old worker scopes must continue charging the same root until actual destruction and must never republish into a successor epoch.
 - X/driver/physical_builder.rs:5447–5467: scalar subqueries create and close an inner root using the same context. Closing every operator/QueryRecordSet/root must NOT close the entire borrowed execution. An independent executor needs an explicit genuine outer close-owner.
 
-AsciiScope is Send/not Sync; never store it or Arc<AsciiScope> in shared StmtContext/program state. Carry the cloneable execution, then create an affine scope per serial operation/task and bind it inside the actual panic catcher. The currently published execution API exposes close(); unique lifecycle-close authority is a caller discipline at this stage, not a Rust type-system guarantee. A stronger borrowed-capability split, if required, needs a separate explicit API decision.
+ReadyValueScope is Send/not Sync; never store it or Arc<ReadyValueScope> in shared StmtContext/program state. Carry the cloneable execution, then create an affine scope per serial operation/task and bind it inside the actual panic catcher. The currently published execution API exposes close(); unique lifecycle-close authority is a caller discipline at this stage, not a Rust type-system guarantee. A stronger borrowed-capability split, if required, needs a separate explicit API decision.
 
 ## Entry traps to test before activation
 
@@ -32,6 +32,6 @@ No production-equivalent values were found for max_creating, worker-retained cap
 
 S/lib.rs, S/stmt_ctx.rs, S/dispatch.rs, S/record_set.rs, S/tests_core/lifecycle.rs, X/stmt_context.rs and X/lib.rs. The executor carrier/reexport can avoid adding a direct session→expr Cargo dependency. Projection lexical binding is a separately approved add-on, not permission to alter all row loops now. No SQL dispatcher, default, sysvar/server or current E/D source edit is implied.
 
-Existing test anchors: statement_contexts_keep_one_session_memory_root; stats_load_wait_is_capped_and_failure_state_is_shared_by_clones; record_set_after_finish; query_cancellation_reaches_non_accounting_executor_batches; set_var_hint_overlays_one_statement; binding_set_var_overrides_the_query_hint_and_restores_the_persistent_value; prepared_program_is_shared_but_parameter_contexts_are_isolated; projection_workers_answer_the_serial_rows_in_order. Pair these with the existing old-epoch debt/stale-close pool regressions.
+Existing test anchors: statement_contexts_keep_one_session_memory_root; stats_load_wait_is_capped_and_failure_state_is_shared_by_clones; record_set_after_finish; query_cancellation_reaches_non_accounting_executor_batches; set_var_hint_overlays_one_statement; binding_set_var_overrides_the_query_hint_and_restores_the_persistent_value; prepared_program_is_shared_but_parameter_contexts_are_isolated; projection_workers_answer_the_serial_rows_in_order. Pair these with the current independent-execution debt/stale-close pool regressions.
 
-New runtime evidence must cover repeated contexts/COW without epoch rotation, nested/fallback ownership, stale detached Close not closing the new epoch, Session drop invalidation, and late-worker debt release only on destruction. This document grants no migration credit.
+Runtime evidence must cover repeated contexts/COW without beginning a replacement execution, nested/fallback ownership, stale detached Close not closing a peer execution, Session Drop closing every live execution, and late-worker debt release only on destruction. This document grants no migration credit.

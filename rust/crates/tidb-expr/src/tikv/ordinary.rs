@@ -27,9 +27,8 @@ use tidb_proto::tipb as db_pb;
 use tidb_query_datatype::{codec::data_type::VectorValue, expr::EvalContext, EvalType};
 use tidb_query_expr::local::{
     compile_local_profiled, CallMetadata, CompileLimits, ExecutionLimits, FunctionRef, InputRow,
-    LiteralKind, LocalCompileContext, LocalError, LocalEvalState, LocalExpr, LocalProgram,
-    LocalResult, LocalRuntimeServices, OrdinaryCallSite, OrdinaryProfile, OrdinaryProfileSpec,
-    OrdinarySourceId,
+    LiteralKind, LocalCompileContext, LocalError, LocalExpr, LocalProgram, LocalResult,
+    LocalRuntimeServices, OrdinaryCallSite, OrdinaryProfile, OrdinaryProfileSpec, OrdinarySourceId,
 };
 
 use crate::expression::Expression;
@@ -455,7 +454,7 @@ impl<T: NativeDatumSource + ?Sized> LocalRuntimeServices for PlusInputs<'_, T> {
 pub(crate) struct PreparedIntPlusRow {
     spec: Arc<LoweredIntPlusRow>,
     program: LocalProgram,
-    state: LocalEvalState,
+    limits: ExecutionLimits,
 }
 impl PreparedIntPlusRow {
     pub(crate) fn compile(
@@ -473,7 +472,7 @@ impl PreparedIntPlusRow {
         Ok(Self {
             spec,
             program,
-            state: LocalEvalState::with_limits(limits),
+            limits,
         })
     }
 
@@ -487,7 +486,7 @@ impl PreparedIntPlusRow {
         let mut native = NativeInputs::new(&self.spec.core, chunk, row_schema, selection)?;
         let mut inputs = PlusInputs(&mut native);
         let output = self.program.eval_with_bindings(
-            &mut self.state,
+            self.limits,
             ctx,
             chunk.physical_rows(),
             selection,
@@ -544,7 +543,7 @@ impl PreparedIntPlusRow {
     ) -> SeedResult<Vec<Datum>> {
         let mut inputs = PlusInputs(source);
         let output = self.program.eval_with_bindings(
-            &mut self.state,
+            self.limits,
             ctx,
             physical_rows,
             selection,

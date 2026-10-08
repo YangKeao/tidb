@@ -708,8 +708,8 @@ fn identity_workers_preserve_name_value_demand_and_null_boundaries() {
         ("NAME_CONST", &[Some(0), None], &[0], true),
     ];
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

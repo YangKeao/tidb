@@ -1033,8 +1033,8 @@ fn weight_string_worker_keeps_ast_typed_numeric_and_padding_demand() {
     };
     let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

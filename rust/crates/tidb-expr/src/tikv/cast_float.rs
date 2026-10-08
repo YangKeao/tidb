@@ -20,7 +20,7 @@ use tidb_query_expr::NativeCastFloatTarget as Target;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy};
+    use crate::{ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::cell::{Cell, RefCell};
     use tidb_datatype::{BinaryJSON, ConversionFlags, DateModes, SessionTimeZone};
 
@@ -89,8 +89,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value.to_bits(), 0.0f64.to_bits());
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(0, 0, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16).unwrap(),
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(0, 0, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
+                .unwrap(),
         )
         .unwrap();
         let execution = owner.begin_execution().unwrap();

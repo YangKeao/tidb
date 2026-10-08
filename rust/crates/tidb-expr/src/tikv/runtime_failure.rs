@@ -110,7 +110,7 @@ impl ExpressionRuntimeFailure {
     /// This allocates one ordinary Arc on the error path. It does not promise
     /// allocation-failure recovery or inclusion in the worker/pool byte ledger.
     #[must_use]
-    pub(super) fn from_ascii_local(
+    pub(super) fn from_local_eval(
         cause: LocalError,
         phase: Option<ExpressionRuntimeFailurePhase>,
     ) -> Self {
@@ -196,14 +196,14 @@ mod tests {
         fn native_traits<T: Clone + Eq + std::fmt::Debug + Send + Sync>() {}
         native_traits::<crate::EvalError>();
         let cause = LocalError::ResourceLimit("private backend reason 1690".to_owned());
-        let failure = ExpressionRuntimeFailure::from_ascii_local(cause, Some(Phase::Invoke));
+        let failure = ExpressionRuntimeFailure::from_local_eval(cause, Some(Phase::Invoke));
         let original = failure.clone();
         let native = crate::EvalError::ExpressionRuntimeFailure(failure);
         let cloned = native.clone();
         assert_eq!(native, cloned);
         assert_ne!(
             native,
-            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit("private backend reason 1690".to_owned()),
                 Some(Phase::Invoke),
             ))
@@ -260,7 +260,7 @@ mod tests {
             ),
         ];
         for (cause, class, message) in cases {
-            let failure = ExpressionRuntimeFailure::from_ascii_local(cause, None);
+            let failure = ExpressionRuntimeFailure::from_local_eval(cause, None);
             assert_eq!(failure.class(), class);
             assert_eq!(failure.client_message(), message);
             assert_eq!(failure.phase(), None);
@@ -279,7 +279,7 @@ mod tests {
             Some(Phase::Invoke),
             Some(Phase::Observe),
         ] {
-            let failure = ExpressionRuntimeFailure::from_ascii_local(
+            let failure = ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit("not evidence of a kernel site".to_owned()),
                 phase,
             );
@@ -295,13 +295,13 @@ mod tests {
         #[derive(Clone, Debug, PartialEq, Eq)]
         struct NativePayloadShape(ExpressionRuntimeFailure);
 
-        let failure = ExpressionRuntimeFailure::from_ascii_local(
+        let failure = ExpressionRuntimeFailure::from_local_eval(
             LocalError::InvalidSpec("identical reason".to_owned()),
             Some(Phase::Prepare),
         );
         let cloned = failure.clone();
         let another_clone = cloned.clone();
-        let independent = ExpressionRuntimeFailure::from_ascii_local(
+        let independent = ExpressionRuntimeFailure::from_local_eval(
             LocalError::InvalidSpec("identical reason".to_owned()),
             Some(Phase::Prepare),
         );
@@ -343,7 +343,7 @@ mod tests {
             let capacity = reason.capacity();
             let cause = constructor(reason);
             let discriminant = mem::discriminant(&cause);
-            let failure = ExpressionRuntimeFailure::from_ascii_local(cause, None);
+            let failure = ExpressionRuntimeFailure::from_local_eval(cause, None);
             let cloned = failure.clone();
             assert!(ptr::eq(failure.local_error(), cloned.local_error()));
             drop(failure);
@@ -374,7 +374,7 @@ mod tests {
                 LocalError::Evaluation(error) => error.0.as_ref() as *const _ as usize,
                 _ => unreachable!(),
             };
-            let failure = ExpressionRuntimeFailure::from_ascii_local(cause, Some(Phase::Invoke));
+            let failure = ExpressionRuntimeFailure::from_local_eval(cause, Some(Phase::Invoke));
             let cloned = failure.clone();
             assert!(ptr::eq(failure.local_error(), cloned.local_error()));
             drop(failure);
@@ -401,7 +401,7 @@ mod tests {
             LocalError::Evaluation(error) => error.0.as_ref() as *const _ as usize,
             _ => unreachable!(),
         };
-        let failure = ExpressionRuntimeFailure::from_ascii_local(cause, None);
+        let failure = ExpressionRuntimeFailure::from_local_eval(cause, None);
         let LocalError::Evaluation(error) = failure.local_error() else {
             panic!("original evaluation cause was replaced");
         };
@@ -420,7 +420,7 @@ mod tests {
         for phase in [None, Some(Phase::Observe)] {
             let cause =
                 LocalError::Evaluation(BackendCodecError::Eval(secret.to_owned(), 1690).into());
-            let failure = ExpressionRuntimeFailure::from_ascii_local(cause, phase);
+            let failure = ExpressionRuntimeFailure::from_local_eval(cause, phase);
             assert_eq!(
                 format!("{failure:?}"),
                 format!("ExpressionRuntimeFailure {{ class: Evaluation, phase: {phase:?} }}")

@@ -65,7 +65,7 @@ mod tests {
     use tidb_datatype::{CoreTime, TimeType};
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn legacy_from_unixtime_keeps_hidden_microseconds_and_selected_format_scope() {
@@ -109,10 +109,18 @@ mod tests {
             0,
         );
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 16,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&columns, |bound| {
@@ -124,13 +132,10 @@ mod tests {
                         bound,
                         |value, selected| {
                             packed.set(true);
+                            assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                             assert!(std::ptr::eq(
-                                selected.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
-                            assert!(std::ptr::eq(
-                                selected.evaluated_ascii_execution().unwrap(),
-                                bound.evaluated_ascii_execution().unwrap()
+                                selected.ready_value_execution().unwrap(),
+                                bound.ready_value_execution().unwrap()
                             ));
                             assert_eq!(value, present.then_some(expected));
                             crate::eval_legacy_date_format_in(

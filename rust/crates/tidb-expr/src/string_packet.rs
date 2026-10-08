@@ -759,8 +759,8 @@ mod weight_string_source_tests {
             (Datum::Null, Some((true, 100)), 0, Datum::Null, vec![]),
         ];
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,

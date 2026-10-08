@@ -1,4 +1,4 @@
-# EV-r1 independent review: execution-owned ASCII runtime leasing
+# EV-r1 independent review: execution-owned ready-value runtime leasing
 
 **Revision: EV-review-r1. Status: independent source review, with separately attributed parent compilation receipts. Not an implementation, another ExecPlan, or a product-write grant.**
 
@@ -42,7 +42,7 @@ The parent reported an actual successful pinned-rustc compilation using `--crate
 
 Inspected receipt inputs:
 
-- `expression-unification/tools/local-runtime-send-probe.rs:5–25` defines `CandidateParts { LocalProgram, LocalEvalState, EvalContext }`, wraps `Vec<CandidateParts>` in `Mutex` as `IdleOwner`, and instantiates the trait requirements.
+- The probe source recorded by this receipt (SHA-256 below) defined `CandidateParts { LocalProgram, LocalEvalState, EvalContext }`, wrapped `Vec<CandidateParts>` in `Mutex` as `IdleOwner`, and instantiated the trait requirements. The current file at `expression-unification/tools/local-runtime-send-probe.rs` was updated in round224 to use `ExecutionLimits`; it is a different source artifact and was not independently rerun.
 - `expression-unification/logs/local-runtime-send-before.log` is empty. It contains no diagnostic text, but is not by itself a command/exit-status transcript; the successful exit is attributed to the parent's execution report.
 - `expression-unification/logs/local-runtime-send-before-artifacts.sha256:1–3` records the exact source and linked-library identities below. The reviewer read this manifest, not independently rehashed or rebuilt the artifacts.
 
@@ -74,8 +74,10 @@ For each receipt's exact linked artifacts, the instantiated requirements at prob
 1. `LocalProgram: Send`.
 2. `LocalEvalState: Send`.
 3. `EvalContext: Send`.
-4. The `CandidateParts` aggregate is `Send`.
+4. The historical `CandidateParts` aggregate is `Send`.
 5. `IdleOwner(Mutex<Vec<CandidateParts>>): Send + Sync`.
+
+The round224 current source instead asks for `ExecutionLimits: Send + Sync`; the green crate-level `tidb_query_expr --tests` check compiles that source's underlying types, but the standalone artifact-link probe itself was not rerun and is not attributed to these historical SHA-256 receipts.
 
 They do **not** establish the traits of an actual future C4 prepared type, lease, execution owner with additional fields, or borrowed `ScopedColumns`. The probe does not itself assert a negative `Sync` bound. They do not prove lifecycle, reset, panic, resource, semantic, allocation, or performance behavior. The refreshed receipt is also **not C3c full-test success**: the parent separately reported test-only fixture compilation errors pending resolution.
 
@@ -90,7 +92,7 @@ The independent findings below remain source review. Existing source assertions 
 - K`local/compile.rs:26–35`: `LocalProgram` owns the RPN expression, full schema, optional host catalog key, return type and entry tag; its comment explicitly rejects an implicit Sync promise from Any+Send metadata.
 - K`local/tests.rs:360–366`: the source instantiates `LocalProgram: Send`, `LocalExpr: Send + Sync`, and `assert_not_impl_any!(LocalProgram: Sync)`.
 - K`types/expr.rs:717–720`: a separate source assertion requires `RpnExpression: Send`.
-- K`local/batch.rs:32–48`: `LocalEvalState` holds only `[usize; 1]` and `ExecutionLimits`; its contract says no input/program borrow or mutable service survives evaluation.
+- K`local/runtime.rs`: `ExecutionLimits` contains four scalar limits and is `Copy`; K`local/batch.rs` creates row scratch and budgets inside each invocation, so no input/program borrow or mutable service survives evaluation.
 - K`local/runtime.rs:49–56`: those limits contain numeric fields, not borrowed input/context handles.
 - Q`expr/ctx.rs:225–241`: `EvalContext` owns `Arc<EvalConfig>` and `EvalWarnings`. Q`expr/ctx.rs:69–81` lists the configuration fields; Q`codec/mysql/time/tz.rs:9–21` defines the owned timezone variants. Source structure alone was not treated as a substitute for the parent's actual aggregate trait compilation.
 
@@ -124,7 +126,7 @@ Q`expr/ctx.rs:184–208` has both `warning_cnt` and capped stored warning detail
 
 Q`expr/ctx.rs:196–201` allocates `Vec::with_capacity(max_warning_cnt)`. `take_warnings()` at `329–334` replaces it with another newly constructed warning buffer. Using that as unconditional per-row reset can allocate repeatedly and hide violations. Initialize the approved private context once per created runtime, keep its health invariant, and preserve all native warning counts, limits, bookmarks, drains and TryFold behavior.
 
-K`local/batch.rs:478–502` constructs invocation-local budgets/output and overwrites the row index before evaluation. Reusing `LocalEvalState` is structurally compatible with the observed index-only state, but proves neither allocation-free driver execution nor a total memory cap. No current input/result/row/native context reference should become an idle-cache member.
+K`local/batch.rs` constructs invocation-local budgets/output and row scratch before evaluation. Copying `ExecutionLimits` into a worker is compatible with this design, but proves neither allocation-free driver execution nor a total memory cap. No current input/result/row/native context reference should become an idle-cache member.
 
 ### F4. Clone/COW policy must distinguish handles from new execution lifetimes
 
@@ -159,7 +161,7 @@ This applies to a retained serial scope as well as a transient parallel one. A s
 
 ### F7. Pool bounds need a live + creating + idle ledger, separate from call scratch
 
-K`local/runtime.rs:47–71` explicitly describes Demo limits and excludes immutable program/input storage and allocator bookkeeping from retained-scratch accounting. K`local/batch.rs:478–495` creates a new budget per invocation. Reusing `max_retained_bytes` in each `LocalEvalState` does **not** by itself bound pooled programs, warning buffers, input transport, or total owner retention.
+K`local/runtime.rs:47–71` explicitly describes Demo limits and excludes immutable program/input storage and allocator bookkeeping from retained-scratch accounting. K`local/batch.rs:478–495` creates a new budget per invocation. Applying `max_retained_bytes` from the copied `ExecutionLimits` on each invocation does **not** by itself bound pooled programs, warning buffers, input transport, or total owner retention.
 
 The following is **review notation for the selected design**, not a shipped struct, new API, or implementation plan:
 

@@ -123,7 +123,7 @@ The current exception set is `json_schema_valid`, `tidb_decode_plan`, `tidb_deco
 Two bounded R85 integration fixes (fail-before/pass-after receipts in [request-scope-checkpoint.md](request-scope-checkpoint.md)):
 
 1. Literal rewriting formerly called the NoColumns entry despite PlanScopeResolver retaining a live statement context. R85 routes that capability into the existing scoped literal helper, preserving resolver timezone/modes, the old mode default and capture order.
-2. `LegacyEvaluator::eval_shared` formerly dropped an available selected parent scope. R85 binds the original semantic context through existing `AsciiScope::with_columns`, preserving row/settings/warnings and active-child-scope priority. With no parent capability, the old standalone path remains.
+2. `LegacyEvaluator::eval_shared` formerly dropped an available selected parent scope. R85 binds the original semantic context through existing `ReadyValueScope::with_columns`, preserving row/settings/warnings and active-child-scope priority. With no parent capability, the old standalone path remains.
 
 Neither target creates a live DAG request owner or closes every default/fold/DML/range/aggregate/window wrapper. `RequestEvalContext` currently has no execution capability, and production `LegacyEvaluator::new` defaults raw_columns to NoColumns. Further caller/lifecycle integration remains necessary. Before-owner standalone PREPARE and explicit NoResolver defaults must not acquire a fabricated or stale statement owner.
 

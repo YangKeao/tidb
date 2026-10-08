@@ -4,11 +4,11 @@
 
 use std::sync::Mutex;
 use tidb_query_datatype::expr::EvalContext;
-use tidb_query_expr::local::{LocalEvalState, LocalProgram};
+use tidb_query_expr::local::{ExecutionLimits, LocalProgram};
 
 struct CandidateParts {
     program: LocalProgram,
-    state: LocalEvalState,
+    limits: ExecutionLimits,
     context: EvalContext,
 }
 
@@ -19,7 +19,7 @@ fn require_send_sync<T: Send + Sync>() {}
 
 fn check_artifact_traits() {
     require_send::<LocalProgram>();
-    require_send::<LocalEvalState>();
+    require_send_sync::<ExecutionLimits>();
     require_send::<EvalContext>();
     require_send::<CandidateParts>();
     require_send_sync::<IdleOwner>();

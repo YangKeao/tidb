@@ -1542,7 +1542,7 @@ pub fn build_dag(req: &coprocessor::Request) -> Result<DagContext, String> {
         "System" => TimeZoneSpec::System,
         name => TimeZoneSpec::Named(name.to_owned()),
     };
-    let mut expression_context = RequestEvalContext::new_with_ascii_execution(
+    let mut expression_context = RequestEvalContext::new_with_ready_value_execution(
         time_zone.resolve()?,
         dag_req.div_precision_increment.unwrap_or(4),
         dag_req.flags.unwrap_or(0),
@@ -2139,9 +2139,9 @@ impl LegacyEvaluator<'_> {
         let columns = self.shared_override.unwrap_or(columns);
         let eval = |columns: &dyn tidb_expr::Columns| expr.expression.eval(columns, row.to_row());
         // Borrow only the parent's capability; retain the child's request semantics.
-        let result = if let Some(scope) = self.raw_columns.evaluated_ascii_scope() {
+        let result = if let Some(scope) = self.raw_columns.ready_value_scope() {
             scope.with_columns(columns, |bound| eval(bound))
-        } else if let Some(execution) = self.raw_columns.evaluated_ascii_execution() {
+        } else if let Some(execution) = self.raw_columns.ready_value_execution() {
             execution.scope().with_columns(columns, |bound| eval(bound))
         } else {
             eval(columns)
@@ -4959,8 +4959,8 @@ mod tests {
         let time_zone = zone();
         let request = Arc::new(RequestEvalContext::new(time_zone.clone(), 4, 0));
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -6435,8 +6435,8 @@ mod tests {
             }
         }
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -6571,8 +6571,8 @@ mod tests {
             }
         }
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -6880,8 +6880,8 @@ mod tests {
     fn legacy_like_preserves_demand_missing_null_unicode_and_pool_failures() {
         let time_zone = zone();
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -7174,8 +7174,8 @@ mod tests {
         let time_zone = zone();
         let doc = SimpleExpr::Json(BinaryJSON::parse("[1]").unwrap());
         let call = |children| SimpleExpr::Func(SimpleSig::JsonMemberOfSig, children);
-        let owner = tidb_expr::AsciiPoolOwner::new(
-            tidb_expr::AsciiPoolPolicy::checked(
+        let owner = tidb_expr::ReadyValuePoolOwner::new(
+            tidb_expr::ReadyValuePoolPolicy::checked(
                 0,
                 0,
                 16 * 1024 * 1024,
@@ -7506,7 +7506,7 @@ mod tests {
 
     #[test]
     fn legacy_round_null_and_missing_inputs_still_enter_worker() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -7517,7 +7517,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -7663,7 +7663,7 @@ mod tests {
 
     #[test]
     fn legacy_substring_keeps_demand_and_typed_null_empty_admission() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -7674,7 +7674,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -7848,7 +7848,7 @@ mod tests {
 
     #[test]
     fn legacy_case_null_and_value_admission_errors_remain_typed() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -7859,7 +7859,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -7934,7 +7934,7 @@ mod tests {
 
     #[test]
     fn legacy_pow_keeps_operand_demand_and_null_admission() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -7945,7 +7945,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -8064,7 +8064,7 @@ mod tests {
 
     #[test]
     fn legacy_trig_keeps_child_demand_and_null_admission() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -8075,7 +8075,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -8153,7 +8153,7 @@ mod tests {
 
     #[test]
     fn legacy_inverse_trig_infrastructure_survives_sql_fold_boundaries() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -8164,7 +8164,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -8239,7 +8239,7 @@ mod tests {
 
     #[test]
     fn legacy_month_infrastructure_survives_consumers_and_index_flags() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -8250,7 +8250,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -8370,7 +8370,7 @@ mod tests {
 
     #[test]
     fn legacy_hms_infrastructure_survives_nulls_and_consumers() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -8381,7 +8381,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -8774,8 +8774,8 @@ mod tests {
         // removed before boolean conversion; high/partial years stay legal
         // in this legacy predicate policy, independently of native SQL modes.
         for slots in [1, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -8845,8 +8845,8 @@ mod tests {
         // The child-only failed scope is independent of the root's scope.
         // Extra children remain unread; a demanded first Shared child still
         // propagates its original infrastructure error before the DATE worker.
-        let owner = tidb_expr::AsciiPoolOwner::new(
-            tidb_expr::AsciiPoolPolicy::checked(
+        let owner = tidb_expr::ReadyValuePoolOwner::new(
+            tidb_expr::ReadyValuePoolPolicy::checked(
                 0,
                 0,
                 16 * 1024 * 1024,
@@ -8918,8 +8918,8 @@ mod tests {
             }
         }
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -9279,7 +9279,7 @@ mod tests {
 
     #[test]
     fn legacy_conv_preserves_demand_and_admits_null_terminals() {
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -9290,7 +9290,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -9929,8 +9929,8 @@ mod tests {
             }
         }
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -10217,8 +10217,8 @@ mod tests {
             }
         }
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -10874,7 +10874,7 @@ mod tests {
     #[test]
     fn legacy_date_diff_infrastructure_survives_demand_and_consumers() {
         use tidb_datatype::{CoreTime, Datum, Time, TimeType};
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -10885,7 +10885,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -11044,7 +11044,7 @@ mod tests {
     #[test]
     fn legacy_week_infrastructure_survives_consumers_and_ignored_extras() {
         use tidb_datatype::{CoreTime, Datum, Time, TimeType};
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -11055,7 +11055,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("zero-slot policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let time_zone = zone();
@@ -11270,7 +11270,7 @@ mod tests {
             (0, false, Class::PoolResource),
             (1, true, Class::PoolClosed),
         ] {
-            let policy = tidb_expr::AsciiPoolPolicy::checked(
+            let policy = tidb_expr::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -11281,7 +11281,7 @@ mod tests {
                 4 * 1024 * 1024,
             )
             .expect("pool policy");
-            let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+            let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
             let execution = owner.begin_execution().expect("execution");
             let scope = execution.scope();
             if closed {
@@ -11325,7 +11325,7 @@ mod tests {
     #[test]
     fn legacy_regexp_like_preserves_raw_byte_policy_and_collator_choice() {
         let time_zone = zone();
-        let policy = tidb_expr::AsciiPoolPolicy::checked(
+        let policy = tidb_expr::ReadyValuePoolPolicy::checked(
             1,
             1,
             16 * 1024 * 1024,
@@ -11336,7 +11336,7 @@ mod tests {
             4 * 1024 * 1024,
         )
         .expect("pool policy");
-        let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+        let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
         let execution = owner.begin_execution().expect("execution");
         let scope = execution.scope();
         let pb = tipb::Expr {
@@ -11449,7 +11449,7 @@ mod tests {
             (0, false, Class::PoolResource),
             (1, true, Class::PoolClosed),
         ] {
-            let policy = tidb_expr::AsciiPoolPolicy::checked(
+            let policy = tidb_expr::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -11460,7 +11460,7 @@ mod tests {
                 4 * 1024 * 1024,
             )
             .expect("pool policy");
-            let owner = tidb_expr::AsciiPoolOwner::new(policy).expect("owner");
+            let owner = tidb_expr::ReadyValuePoolOwner::new(policy).expect("owner");
             let execution = owner.begin_execution().expect("execution");
             let scope = execution.scope();
             if closed {
@@ -11742,8 +11742,8 @@ mod tests {
     fn legacy_comparison_presence_and_eager_demand_keep_pool_failures() {
         use tidb_datatype::{Decimal, Time, TimeType};
         let time_zone = zone();
-        let owner = tidb_expr::AsciiPoolOwner::new(
-            tidb_expr::AsciiPoolPolicy::checked(
+        let owner = tidb_expr::ReadyValuePoolOwner::new(
+            tidb_expr::ReadyValuePoolPolicy::checked(
                 0,
                 0,
                 16 * 1024 * 1024,
@@ -11995,8 +11995,8 @@ mod tests {
             );
             assert_eq!(evaluator.eval_real(Some(&call)).unwrap(), expected);
         }
-        let owner = tidb_expr::AsciiPoolOwner::new(
-            tidb_expr::AsciiPoolPolicy::checked(
+        let owner = tidb_expr::ReadyValuePoolOwner::new(
+            tidb_expr::ReadyValuePoolPolicy::checked(
                 0,
                 0,
                 16 * 1024 * 1024,
@@ -12171,8 +12171,8 @@ mod tests {
                 None
             );
         }
-        let owner = tidb_expr::AsciiPoolOwner::new(
-            tidb_expr::AsciiPoolPolicy::checked(
+        let owner = tidb_expr::ReadyValuePoolOwner::new(
+            tidb_expr::ReadyValuePoolPolicy::checked(
                 0,
                 0,
                 16 * 1024 * 1024,
@@ -12302,8 +12302,8 @@ mod tests {
         let time_zone = zone();
         let decimal = |text: &str| Decimal::parse_mysql(text).0;
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -12493,9 +12493,9 @@ mod tests {
     fn legacy_shared_inherits_parent_capability_without_replacing_request_context() {
         use std::sync::Arc;
         use tidb_datatype::{Datum, Decimal, SessionTimeZone, Time, TimeType};
-        struct Parent<'a>(Option<&'a tidb_expr::AsciiExecution>);
+        struct Parent<'a>(Option<&'a tidb_expr::ReadyValueExecution>);
         impl tidb_expr::Columns for Parent<'_> {
-            fn evaluated_ascii_execution(&self) -> Option<&tidb_expr::AsciiExecution> {
+            fn ready_value_execution(&self) -> Option<&tidb_expr::ReadyValueExecution> {
                 self.0
             }
             fn get(&self, _: &[String]) -> Option<Datum> {
@@ -12536,8 +12536,8 @@ mod tests {
             )) if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource)
         }
         let pool = |slots| {
-            tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -12811,8 +12811,8 @@ mod tests {
         );
         let time = Time::from_date_checked(1970, 1, 1, 8, 0, 1, 0, TimeType::DateTime, 0).unwrap();
         for slots in [1, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -13093,8 +13093,8 @@ mod tests {
         let time = Time::from_date_checked(1970, 1, 1, 8, 0, 1, 0, TimeType::DateTime, 0).unwrap();
         let bad = call(Sig::CastStringAsInt, vec![text("tail")], 8);
         for slots in [1, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -13469,8 +13469,8 @@ mod tests {
         let precise_time =
             Time::from_date_checked(2024, 3, 5, 14, 30, 0, 123_000, TimeType::DateTime, 3).unwrap();
         for slots in [1, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -13777,8 +13777,8 @@ mod tests {
             tipb::ScalarFuncSig::CastRealAsInt
         ));
         for slots in [1, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -13960,8 +13960,8 @@ mod tests {
             Sig::TimestampDiff
         ));
         for slots in [1, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 << 20,
@@ -14290,8 +14290,8 @@ mod tests {
                 if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolResource)
         };
         for slots in [8, 0] {
-            let owner = tidb_expr::AsciiPoolOwner::new(
-                tidb_expr::AsciiPoolPolicy::checked(
+            let owner = tidb_expr::ReadyValuePoolOwner::new(
+                tidb_expr::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,

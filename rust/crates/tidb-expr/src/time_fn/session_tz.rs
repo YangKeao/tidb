@@ -289,8 +289,8 @@ mod tests {
             }
         }
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -455,8 +455,8 @@ mod tests {
                 panic!("valid numeric inputs must not warn")
             }
         }
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 1,
                 1,
                 16 * 1024 * 1024,
@@ -567,8 +567,8 @@ mod tests {
             }
         }
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -696,8 +696,8 @@ mod tests {
             }
         }
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -989,8 +989,8 @@ mod tests {
             ),
         ];
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,

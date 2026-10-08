@@ -441,8 +441,8 @@ fn time_microsecond_workers_preserve_parse_warning_and_scope_boundaries() {
         );
     };
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -1536,8 +1536,8 @@ fn time_diff_worker_preserves_demand_and_raw_formatter_policy() {
         (string("2000-01-01"), string("00:00:00"), Datum::Null),
     ];
     for slots in [0, 1] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 << 20,
@@ -1703,8 +1703,8 @@ fn bounded_staleness_keeps_entry_preparation_and_source_demand() {
             .eval(columns, empty.to_row())
         }
     };
-    let pool = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(
+    let pool = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
             1,
             1,
             16 * 1024 * 1024,

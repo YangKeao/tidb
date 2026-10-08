@@ -798,8 +798,8 @@ mod json_path_worker_tests {
         };
         assert!(PbBuiltin::new(ScalarFuncSig::CaseWhenString).is_none());
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -1020,8 +1020,8 @@ mod json_path_worker_tests {
         let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
         assert!(PbBuiltin::new(ScalarFuncSig::IfString).is_none());
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -1359,8 +1359,8 @@ mod json_path_worker_tests {
         let int_type = FieldType::new(FieldTypeCode::LongLong);
         let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -1628,8 +1628,8 @@ mod json_path_worker_tests {
         };
         let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -1808,8 +1808,8 @@ mod json_path_worker_tests {
         };
         let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -1978,8 +1978,8 @@ mod json_path_worker_tests {
         };
         let empty = tidb_chunk::mutrow::MutRow::from_datums(&[]);
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -2088,8 +2088,8 @@ mod json_path_worker_tests {
             )
         };
         let pool = |slots| {
-            crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -2217,8 +2217,8 @@ mod json_path_worker_tests {
             )
         };
         let pool = |slots| {
-            crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
@@ -2355,8 +2355,8 @@ mod json_path_worker_tests {
         let selected = |sig, args| {
             ScalarFunction::from_pb(PbBuiltin::new(sig).unwrap(), json_type.clone(), args)
         };
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 0,
                 0,
                 16 * 1024 * 1024,

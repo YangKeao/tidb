@@ -67,7 +67,7 @@ pub(crate) fn eval_json_sum_crc32_in(ctx: &dyn Columns, value: &Datum) -> Result
 mod tests {
     use super::super::LocalError;
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn json_sum_crc32_bridge_keeps_null_domains_reports_and_scoped_budgets() {
@@ -85,9 +85,18 @@ mod tests {
         }
         let text = |value: &str| Datum::new_string(value);
         for slots in [0, 1] {
-            let owner = AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            let owner = ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap();
             let execution = owner.begin_execution().unwrap();

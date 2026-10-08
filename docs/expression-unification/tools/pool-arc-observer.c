@@ -12,7 +12,7 @@
  * __tls_get_addr, printf/dlsym imports or competing allocator is allowed.
  * Apply LD_PRELOAD to the FINAL unit-test ELF ONLY, never Cargo/rustc/helpers:
  *   env LD_PRELOAD="$(pwd)/tools/pool-arc-observer.so" "$TEST_ELF" \
- *     tikv::evaluated_ascii::tests::parent_external_observer_actual_pool_owner_arc_new_fixture \
+ *     tikv::ready_value::tests::parent_external_observer_actual_pool_owner_arc_new_fixture \
  *     --ignored --exact --nocapture --test-threads=1
  * Parent must verify the test's exact qualified name in its actual artifact.
  * Require BOTH native one-test success/exit0 AND the final observer PASS line.

@@ -1327,13 +1327,13 @@ mod tests {
 
     #[test]
     fn projection_decimal_arithmetic_forwards_scope_and_keeps_output_atomic() {
-        use crate::tikv::{AsciiPoolOwner, AsciiPoolPolicy};
+        use crate::tikv::{ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
         let mut field = FieldType::new(FieldTypeCode::NewDecimal);
         field.set_flen(40);
         field.set_decimal(2);
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(0, 0, 1 << 20, 1 << 16, 1 << 16, 64, 8, 1 << 16).unwrap(),
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(0, 0, 1 << 20, 1 << 16, 1 << 16, 64, 8, 1 << 16).unwrap(),
         )
         .unwrap();
         let execution = owner.begin_execution().unwrap();

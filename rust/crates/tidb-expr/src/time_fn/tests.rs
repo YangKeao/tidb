@@ -1373,10 +1373,19 @@ impl Columns for SelectedWorkerClock {
     }
 }
 
-fn selected_clock_scope_owner(slots: usize) -> crate::AsciiPoolOwner {
-    crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
-            .unwrap(),
+fn selected_clock_scope_owner(slots: usize) -> crate::ReadyValuePoolOwner {
+    crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
+            slots,
+            slots,
+            16 << 20,
+            1 << 20,
+            2 << 20,
+            64,
+            8,
+            1 << 16,
+        )
+        .unwrap(),
     )
     .unwrap()
 }

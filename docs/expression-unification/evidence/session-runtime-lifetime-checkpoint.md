@@ -4,9 +4,9 @@ This cut installs explicit, optional session ownership for the shared evaluator.
 
 ## Changes
 
-- Executor StmtContext carries Option<AsciiExecution>, defaults None, and preserves the execution across cloning/COW. It stores no affine Scope and never begins/closes an execution.
-- Session accepts an explicit policy once and privately creates a stable pool. A lexical marker distinguishes nested calls from a detached result; only an outer entry begins an epoch and owns its captured closer. Busy installation is refused even when not configured.
-- Repeated contexts carry that execution. Nested EXECUTE/IMPORT borrow it. A returned result receives the closer but not lexical-marker ownership. Finish/materialization/Drop close the captured epoch; old result cleanup cannot close a newer execution or forgive retained worker debt. Session Drop invalidates before other cleanup. Normal Next/EOF/Err do not close, whereas a native epilogue unwind does.
+- Executor StmtContext carries Option<ReadyValueExecution>, defaults None, and preserves the execution across cloning/COW. It stores no affine Scope and never begins/closes an execution.
+- Session accepts an explicit policy once and privately creates a stable pool. A lexical marker distinguishes nested calls from a detached result; only an outer entry begins an independent execution and owns its captured closer. Busy installation is refused even when not configured.
+- Repeated contexts carry that execution. Nested EXECUTE/IMPORT borrow it. A returned result receives the closer but not lexical-marker ownership. Finish/materialization/Drop close the captured execution; old result cleanup cannot close a newer execution or forgive retained worker debt. The session tracks every live execution, and Session Drop closes all attached/detached executions before other cleanup. Normal Next/EOF/Err do not close, whereas a native epilogue unwind does.
 - The native owner error has an explicit into_eval_error method retaining its original typed cause. A trial From implementation caused E0282 inference in an unchanged vector builtin and ran zero tests; it was removed, not worked around by altering that builtin.
 - No SQL defaults, native kernel deletion, projection binding, or new threads. The term worker still means a synchronous evaluator object.
 
@@ -16,7 +16,7 @@ Commands below ran from expression-unification/tidb/rust with `/home/agent/tidb/
 
 ```sh
 <cargo> test --locked -p tidb-session --lib tests_core::lifecycle:: -- --test-threads=1
-<cargo> test --locked -p tidb-executor --lib stmt_context::tests::evaluated_ascii_execution_ -- --test-threads=1
+<cargo> test --locked -p tidb-executor --lib stmt_context::tests::ready_value_execution_ -- --test-threads=1
 <cargo> test --locked -p tidb-executor --lib stmt_context::tests:: -- --test-threads=1
 <cargo> test --locked -p tidb-expr --lib tikv::adapter_failure::tests::public_owner_error_conversion_retains_the_native_cause -- --exact --test-threads=1
 <cargo> test --locked -p tidb-expr --lib -- --test-threads=1

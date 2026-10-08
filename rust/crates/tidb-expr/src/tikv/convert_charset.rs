@@ -142,7 +142,7 @@ mod tests {
 
     use super::super::{identity_value, LocalError};
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn charset_bridge_keeps_helper_null_reports_and_live_capacity_accounting() {
@@ -162,9 +162,18 @@ mod tests {
         let utf8 = FieldType::new(FieldTypeCode::VarString).with_collation(Collation::Utf8Mb4Bin);
         let binary = FieldType::new(FieldTypeCode::VarString).with_collation(Collation::Binary);
         for slots in [0, 1] {
-            let owner = AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            let owner = ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap();
             let execution = owner.begin_execution().unwrap();

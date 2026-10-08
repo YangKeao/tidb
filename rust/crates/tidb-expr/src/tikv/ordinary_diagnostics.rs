@@ -647,7 +647,7 @@ impl PreparedIntPlusRow {
             .map_err(|error| PlusFailure::caller(CallerFailureStage::Preflight, error.into()))?;
         let mut inputs = PlusInputs(&mut native);
         let result = self.program.eval_with_bindings_reported(
-            &mut self.state,
+            self.limits,
             ctx,
             chunk.physical_rows(),
             selection,
@@ -697,7 +697,7 @@ impl PreparedIntPlusRow {
         self.check_diagnostics(diagnostics)?;
         let mut inputs = PlusInputs(source);
         let result = self.program.eval_with_bindings_reported(
-            &mut self.state,
+            self.limits,
             ctx,
             physical_rows,
             selection,

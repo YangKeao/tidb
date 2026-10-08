@@ -16,7 +16,9 @@
 
 use std::sync::{Arc, Mutex};
 use tidb_datatype::{Datum, SessionTimeZone};
-use tidb_expr::{AsciiExecution, AsciiPoolOwner, AsciiPoolPolicy, Columns, ErrorLevel};
+use tidb_expr::{
+    Columns, ErrorLevel, ReadyValueExecution, ReadyValuePoolOwner, ReadyValuePoolPolicy,
+};
 use tidb_model::flags::*;
 
 pub(super) struct RequestEvalContext {
@@ -25,7 +27,7 @@ pub(super) struct RequestEvalContext {
     pub(super) flags: u64,
     pub(super) column_types: Vec<tidb_datatype::FieldType>,
     warnings: Mutex<Vec<(u16, String)>>,
-    ascii_execution: Option<AsciiExecution>,
+    ready_value_execution: Option<ReadyValueExecution>,
 }
 
 impl std::fmt::Debug for RequestEvalContext {
@@ -36,7 +38,10 @@ impl std::fmt::Debug for RequestEvalContext {
             .field("flags", &self.flags)
             .field("column_types", &self.column_types)
             .field("warnings", &format_args!("<not inspected>"))
-            .field("has_ascii_execution", &self.ascii_execution.is_some())
+            .field(
+                "has_ready_value_execution",
+                &self.ready_value_execution.is_some(),
+            )
             .finish()
     }
 }
@@ -49,26 +54,27 @@ impl RequestEvalContext {
             flags,
             column_types: Vec::new(),
             warnings: Mutex::new(Vec::new()),
-            ascii_execution: None,
+            ready_value_execution: None,
         }
     }
 
-    pub(super) fn new_with_ascii_execution(
+    pub(super) fn new_with_ready_value_execution(
         zone: SessionTimeZone,
         division_precision: u32,
         flags: u64,
     ) -> Result<Self, String> {
-        let policy = AsciiPoolPolicy::checked(1, 1, 16 << 20, 4 << 20, 4 << 20, 64, 8, 4 << 20)
-            .map_err(|error| error.to_string())?;
-        let owner = AsciiPoolOwner::new(policy).map_err(|error| error.to_string())?;
-        let ascii_execution = owner.begin_execution().map_err(|error| error.to_string())?;
+        let policy =
+            ReadyValuePoolPolicy::checked(1, 1, 16 << 20, 4 << 20, 4 << 20, 64, 8, 4 << 20)
+                .map_err(|error| error.to_string())?;
+        let owner = ReadyValuePoolOwner::new(policy).map_err(|error| error.to_string())?;
+        let ready_value_execution = owner.begin_execution().map_err(|error| error.to_string())?;
         Ok(Self {
             zone,
             division_precision,
             flags,
             column_types: Vec::new(),
             warnings: Mutex::new(Vec::new()),
-            ascii_execution: Some(ascii_execution),
+            ready_value_execution: Some(ready_value_execution),
         })
     }
 
@@ -96,15 +102,15 @@ impl RequestEvalContext {
 
 impl Drop for RequestEvalContext {
     fn drop(&mut self) {
-        if let Some(execution) = self.ascii_execution.as_ref() {
+        if let Some(execution) = self.ready_value_execution.as_ref() {
             execution.close();
         }
     }
 }
 
 impl Columns for RequestEvalContext {
-    fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
-        self.ascii_execution.as_ref()
+    fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
+        self.ready_value_execution.as_ref()
     }
 
     fn get(&self, _: &[String]) -> Option<Datum> {
@@ -373,20 +379,20 @@ mod tests {
     }
 
     #[test]
-    fn request_context_owns_ascii_execution_lifetime() {
+    fn request_context_owns_ready_value_execution_lifetime() {
         let zone = SessionTimeZone::Named(chrono_tz::Asia::Shanghai);
         let ownerless = RequestEvalContext::new(zone.clone(), 8, 0);
-        assert!(ownerless.evaluated_ascii_execution().is_none());
+        assert!(ownerless.ready_value_execution().is_none());
 
-        let owned = RequestEvalContext::new_with_ascii_execution(zone, 8, 0).unwrap();
-        assert!(owned.evaluated_ascii_execution().is_some());
-        let execution = owned.evaluated_ascii_execution().unwrap().clone();
+        let owned = RequestEvalContext::new_with_ready_value_execution(zone, 8, 0).unwrap();
+        assert!(owned.ready_value_execution().is_some());
+        let execution = owned.ready_value_execution().unwrap().clone();
         drop(owned);
 
         assert!(matches!(
             execution
                 .scope()
-                .evaluate_value(&Datum::Bytes(b"ascii".to_vec())),
+                .evaluate_ascii_value(&Datum::Bytes(b"ascii".to_vec())),
             Err(tidb_expr::EvalError::ExpressionAdapterFailure(failure))
                 if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolClosed
         ));

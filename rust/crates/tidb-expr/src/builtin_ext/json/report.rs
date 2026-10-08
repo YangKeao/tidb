@@ -411,8 +411,8 @@ fn json_sum_crc32_entries_preserve_internal_domain_and_context_demand() {
         .eval(columns, row.to_row())
     };
     let owner = |slots| {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -517,7 +517,7 @@ fn json_sum_crc32_entries_preserve_internal_domain_and_context_demand() {
         );
         // End the first scope before another single-slot scope is requested;
         // an assert_eq! operand temporary otherwise parks its lease until the
-        // whole assertion ends (AsciiScope::Drop returns it to the pool).
+        // whole assertion ends (ReadyValueScope::Drop returns it to the pool).
         let unicode_actual = execution
             .scope()
             .with_columns(&ctx, |columns| evaluate(mode, &ctx.values, columns))

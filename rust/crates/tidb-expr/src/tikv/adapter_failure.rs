@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Native opaque ownership of an ASCII adapter failure, not a backend error.
+//! Native opaque ownership of a ready-value adapter failure, not a backend error.
 //!
 //! Pool, scope and result-bridge failures retain their actual origin and original
 //! cause. They are not reconstructed as `LocalError`, SQL overflow or query OOM.
@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use tidb_datatype::tikv_compat::value::BridgeError;
 
-use super::evaluated_ascii::{AsciiOwnerError, OwnerErrorKind};
+use super::ready_value::{OwnerErrorKind, ReadyValueOwnerError};
 
 /// Native adapter failure classes, independent of backend error codes or text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub enum ExpressionAdapterFailureClass {
     PoolPolicy,
     /// The pool refused a local resource demand.
     PoolResource,
-    /// The execution epoch is closed or no longer current.
+    /// The independently owned execution is closed.
     PoolClosed,
     /// The pool has been poisoned.
     PoolPoisoned,
@@ -107,7 +107,7 @@ pub(super) enum ScopeFailureKind {
 // No Clone or Debug: the original typed causes stay behind the opaque handle.
 // BridgeError may contain backend EvalType values; none is publicly exposed.
 enum AdapterFailureCause {
-    Owner(AsciiOwnerError),
+    Owner(ReadyValueOwnerError),
     Scope {
         kind: ScopeFailureKind,
         reason: &'static str,
@@ -132,7 +132,7 @@ pub struct ExpressionAdapterFailure {
 impl ExpressionAdapterFailure {
     /// Moves a native pool failure without cloning or reclassifying its text.
     #[must_use]
-    pub(super) fn from_owner(cause: AsciiOwnerError) -> Self {
+    pub(super) fn from_owner(cause: ReadyValueOwnerError) -> Self {
         Self {
             cause: Arc::new(AdapterFailureCause::Owner(cause)),
         }
@@ -213,7 +213,7 @@ impl fmt::Debug for ExpressionAdapterFailure {
     }
 }
 
-impl AsciiOwnerError {
+impl ReadyValueOwnerError {
     /// Retains this native lifecycle/configuration cause for evaluation diagnostics.
     ///
     /// This explicit conversion accepts only the opaque native owner error, not
@@ -234,7 +234,7 @@ mod tests {
     use tidb_datatype::{DatumKind, FieldTypeCode};
     use tidb_query_datatype::EvalType;
 
-    use super::super::evaluated_ascii::AsciiPoolPolicy;
+    use super::super::ready_value::ReadyValuePoolPolicy;
     use super::{
         AdapterFailureCause, BridgeError, ExpressionAdapterFailure,
         ExpressionAdapterFailureClass as Class, ExpressionAdapterFailureOrigin as Origin,
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn public_owner_error_conversion_retains_the_native_cause() {
         let cause =
-            AsciiPoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
+            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
         let expected = cause.clone();
         let native = cause.into_eval_error();
         let crate::EvalError::ExpressionAdapterFailure(failure) = native else {
@@ -304,9 +304,9 @@ mod tests {
         // Real policy validation produces the private cause; no owner-error
         // constructor or test-only factory is exposed for this test.
         let cause =
-            AsciiPoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
+            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
         let expected =
-            AsciiPoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
+            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
         let failure = ExpressionAdapterFailure::from_owner(cause);
         let address = failure.cause.as_ref() as *const _;
         let cloned = failure.clone();
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn real_control_budget_failure_stays_native_pool_resource() {
-        let cause = AsciiPoolPolicy::checked(0, 0, 0, 1, 1, 64, 16, usize::MAX).unwrap_err();
+        let cause = ReadyValuePoolPolicy::checked(0, 0, 0, 1, 1, 64, 16, usize::MAX).unwrap_err();
         assert_eq!(cause.kind(), OwnerErrorKind::Resource);
         let failure = ExpressionAdapterFailure::from_owner(cause);
         assert_eq!(failure.class(), Class::PoolResource);
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn debug_reveals_only_native_class_and_origin_for_every_source() {
         let owner =
-            AsciiPoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
+            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
         let failures = [
             ExpressionAdapterFailure::from_owner(owner),
             ExpressionAdapterFailure::from_scope(
@@ -502,7 +502,7 @@ mod tests {
                 "private",
                 "TiKV",
                 "1690",
-                "AsciiOwnerError",
+                "ReadyValueOwnerError",
                 "OwnerErrorKind",
                 "EvalTypeMismatch",
                 "Json",

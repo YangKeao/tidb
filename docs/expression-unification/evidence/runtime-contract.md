@@ -126,7 +126,7 @@ impl LocalProgram {
     pub fn return_type(&self) -> &tipb::FieldType;
     pub fn eval(
         &mut self,
-        state: &mut LocalEvalState,
+        limits: ExecutionLimits,
         ctx: &mut EvalContext,
         batch: LocalBatch<'_>,
         host: &mut dyn HostEvaluator,
@@ -134,7 +134,7 @@ impl LocalProgram {
 }
 ```
 
-`LocalProgram` privately owns the validated RPN, immutable schema/projection facts, return representation, host signatures, and compile-sensitive key. `LocalEvalState::new(limits: ExecutionLimits)` owns reusable execution buffers and work limits, not a second interpreter and not the statement diagnostics; reset per-invocation counters without discarding reusable capacities. Context is borrowed explicitly so several programs can use **the same** statement/request EvalContext. `eval(&mut self, ...)` expresses worker-exclusive use even though existing RPN entrypoints use `&self`. Neither compiled object nor metadata is promised Sync. `Arc<LocalExpr>`/`Arc<[FieldType]>` may be shared; assert their Send+Sync properties in implementation tests rather than adding unsafe traits. Build one compiled instance and scratch per worker, not per row.
+`LocalProgram` privately owns the validated RPN, immutable schema/projection facts, return representation, host signatures, and compile-sensitive key. `ExecutionLimits` is an immutable `Copy` policy. Each public evaluation creates a fresh invocation budget and row scratch; neither is stored for reuse or mixed with statement diagnostics. Context is borrowed explicitly so several programs can use **the same** statement/request EvalContext. `eval(&mut self, ...)` expresses worker-exclusive use even though existing RPN entrypoints use `&self`. Neither compiled object nor metadata is promised Sync. `Arc<LocalExpr>`/`Arc<[FieldType]>` may be shared; assert their Send+Sync properties in implementation tests rather than adding unsafe traits. Build one compiled instance per worker; create one budget and row scratch per invocation, not per row.
 
 `LocalResult` should distinguish invalid specification, invalid batch, resource exhaustion, host contract violation, and an original `tidb_query_common::Error` from execution. This is a structured classification, not string-matched fallback. `LocalProgram` never returns a native retry instruction. Its internals and mutation APIs are not public, even though the low-level official RPN type has mutable accessors.
 
@@ -175,7 +175,7 @@ pub trait LocalRuntimeServices: HostEvaluator {
 impl LocalProgram {
     pub fn eval_with_bindings(
         &mut self,
-        state: &mut LocalEvalState,
+        limits: ExecutionLimits,
         ctx: &mut EvalContext,
         physical_rows: usize,
         selection: &[usize],
@@ -490,9 +490,9 @@ LocalError::{InvalidSpec(String), InvalidBatch(String),
 LocalResult<T>
 compile_local(&LocalExpr, &[FieldType], LocalCompileContext) -> LocalResult<LocalProgram>
 LocalProgram::return_type(&self) -> &FieldType
-LocalProgram::eval(&mut self, &mut LocalEvalState, &mut EvalContext, LocalBatch<'_>)
+LocalProgram::eval(&mut self, ExecutionLimits, &mut EvalContext, LocalBatch<'_>)
     -> LocalResult<VectorValue>
-LocalEvalState::new(max_steps: u64) // Default permits u64::MAX steps
+ExecutionLimits { max_steps, ..ExecutionLimits::default() } // Default permits u64::MAX steps
 LocalBatch { columns: &LazyBatchColumnVec, physical_rows: usize, selection: &[usize] }
 ```
 
@@ -567,7 +567,7 @@ Preserve root decoded borrow behavior: current `expr_eval` tests around `:888–
 
 Also preserve the low-level legacy constant-only case `output_rows > 0` with an empty logical-row slice (existing test near `:641`). The checked local facade instead always has an explicit physical universe and selection. Do not conflate these contracts while changing the driver.
 
-Frame/stack borrows are invocation-local. Persistent LocalEvalState can retain capacities/counters and index-only scratch; it cannot retain a prior program/input borrow. Do not claim reusable lifetime-bearing frame storage merely by adding it as a field. Fresh execution pushes a new child program frame at pc=0 on the **same** driver, not a recursive public eval call. All mutable vararg TLS borrows have ended before the driver calls a service or pushes another child.
+Frame/stack borrows are invocation-local. `ExecutionLimits` retains no capacities, counters, scratch, or prior program/input borrow; frame and row scratch are invocation-local. Do not claim reusable lifetime-bearing frame storage merely by adding it as a field. Fresh execution pushes a new child program frame at pc=0 on the **same** driver, not a recursive public eval call. All mutable vararg TLS borrows have ended before the driver calls a service or pushes another child.
 
 ### 4. Proposed additive public service API
 
@@ -588,7 +588,7 @@ compile_local_with_hosts(
 // compile_local delegates to this common compiler with an empty catalog.
 
 LocalProgram::eval_with_bindings(
-    &mut self, state: &mut LocalEvalState, ctx: &mut EvalContext,
+    &mut self, limits: ExecutionLimits, ctx: &mut EvalContext,
     physical_rows: usize, selection: &[usize],
     services: &mut dyn LocalRuntimeServices,
 ) -> LocalResult<VectorValue>
@@ -599,7 +599,7 @@ ExecutionLimits {
     max_active_tasks: usize,
     max_retained_bytes: usize,
 }
-LocalEvalState::with_limits(ExecutionLimits) -> LocalEvalState
+ExecutionLimits // passed by value to each public evaluation
 // Existing new(max_steps) remains; default additional cap values are a
 // parent release choice, not a measured production recommendation here.
 
@@ -655,7 +655,7 @@ For BENCHMARK-like protocol tests: request count once with Reuse, then body Fres
 
 Validate every read_input, child reply and Ready result **before** calling a parent typed loader or resume: exact admitted EvalType and len==1. Materialize scalar constants explicitly and gather selected references. Normalize retained Int replies to canonical singleton storage instead of retaining arbitrarily oversized provider capacity. A malformed host result is discovered after that callback, so preserve its already-produced diagnostic prefix; do not claim it was a pre-execution input failure.
 
-Replace the static-only C1 work charge with one per-invocation counter shared across root rows and every nested frame. Charge actual node entries, child scheduling/merge and service start/resume/read transitions, including Reuse hits; an infinite host Reuse loop cannot be free. Extend `LocalEvalState` through an additive `with_limits(ExecutionLimits)` while preserving `new(max_steps)`. Bound frame depth, active tasks, retained replies/output and total work before allocation/callback where possible. All refusal paths use the same cleanup guard. Adapter-owned opaque task memory must also be metered by the adapter; the RPN byte budget alone cannot bound it.
+Replace the static-only C1 work charge with one per-invocation counter shared across root rows and every nested frame. Charge actual node entries, child scheduling/merge and service start/resume/read transitions, including Reuse hits; an infinite host Reuse loop cannot be free. Pass the complete immutable `ExecutionLimits` value into each public evaluation; create one fresh budget shared across all rows and nested frames in that invocation. Bound frame depth, active tasks, retained replies/output and total work before allocation/callback where possible. All refusal paths use the same cleanup guard. Adapter-owned opaque task memory must also be metered by the adapter; the RPN byte budget alone cannot bound it.
 
 Deep safety is a larger atomic change than deleting the evaluator recursion:
 
@@ -726,11 +726,11 @@ trait LocalRuntimeServices {
         row: InputRow, expected: &tipb::FieldType) -> LocalResult<VectorValue>;
 }
 LocalProgram::eval_with_bindings(
-    &mut self, state: &mut LocalEvalState, ctx: &mut EvalContext,
+    &mut self, limits: ExecutionLimits, ctx: &mut EvalContext,
     physical_rows: usize, selection: &[usize],
     services: &mut dyn LocalRuntimeServices,
 ) -> LocalResult<VectorValue>
-LocalEvalState::with_limits(ExecutionLimits) -> LocalEvalState
+ExecutionLimits // passed by value to each public evaluation
 // new(max_steps) and Default remain.
 LocalError::{InvalidSpec(String), InvalidBatch(String), BindingContract(String),
              ResourceLimit(String), Evaluation(tidb_query_common::Error)}
@@ -812,7 +812,7 @@ The parent released this scope after the D1/caller gates, approved the optional 
 
 `types/expr_eval.rs` now has Program/Control/Host continuation frames in the **existing single official loop**. Host nodes are excluded from the allocation-free primitive singleton shortcut and cannot reach eval_one_node's kernel branch. No recursive public eval call or local lazy runner exists. Native implementations may execute only the registered primitive work/protocol; no Expr::eval, evaluation closure or statement interpreter is passed through a service.
 
-A HostFrame owns one argument cache for its live invocation. Reuse miss evaluates once; a hit causes no child read, host start or child diagnostic. Fresh drops the previous cached result, restarts the requested child at pc=0 on this driver and creates fresh descendant tasks; success replaces the cache, failure aborts without returning the old value. SQL NULL is a cacheable successful Int value. Requests, accepts, start and resume transitions share the invocation work counter, including cached Reuse loops. Repeated physical rows retain separate InputRow occurrences, and caches never survive an invocation or enter LocalEvalState.
+A HostFrame owns one argument cache for its live invocation. Reuse miss evaluates once; a hit causes no child read, host start or child diagnostic. Fresh drops the previous cached result, restarts the requested child at pc=0 on this driver and creates fresh descendant tasks; success replaces the cache, failure aborts without returning the old value. SQL NULL is a cacheable successful Int value. Requests, accepts, start and resume transitions share the invocation work counter, including cached Reuse loops. Repeated physical rows retain separate InputRow occurrences, and caches never survive an invocation or enter the immutable `ExecutionLimits` policy.
 
 Binding schema, selection and required catalog identity are checked before value effects (also for an empty selection). A host-free program never calls the optional hook, even when compiled with an otherwise unused catalog. Empty selection creates no frames/read/start/resume. Host-aware execution is singleton signed Int; a decoded-only eval of a program requiring hosts refuses instead of inventing services. Child field type/shape/Int representation is checked before resume; every Ready must be exactly one Int value and is normalized to bounded owned storage. Callback borrows and provider-owned capacity do not become retained RPN values.
 
@@ -1084,7 +1084,7 @@ All new exports belong under `tidb_query_expr::local`; existing entrypoints and 
 ```rust
 impl LocalProgram {
     pub fn eval_with_bindings_reported(
-        &mut self, state: &mut LocalEvalState, ctx: &mut EvalContext,
+        &mut self, limits: ExecutionLimits, ctx: &mut EvalContext,
         physical_rows: usize, selection: &[usize],
         services: &mut dyn LocalRuntimeServices,
     ) -> Result<VectorValue, ReportedLocalFailure>;
@@ -1127,7 +1127,7 @@ Use a private invocation-local `FailureRecorder { site: Option<LocalFailureSite>
 
 **Recorder rules:** write only immediately when one of the two named operations actually returns terminal Err; first write wins; propagate that original error immediately; no recovery/retry inside the invocation after a write; no write at operation entry, child request, accept, successful read/kernel, NULL finish, validation or budget check. At the outer Err boundary, move the original LocalError plus the recorded site into ReportedLocalFailure exactly once. On success/empty input the fresh unused recorder is dropped. On panic it unwinds normally—no catch/reclassification is added—and a later call creates a new recorder.
 
-The outward API is therefore result-carried, despite using a small internal recorder. It has **no last/current-failure field** in LocalEvalState, LocalProgram, EvalContext, TaskGuard, any frame or TLS. This is smaller than converting every existing private LocalResult/explicit Err/legacy adapter into an internal reported-error type solely to decorate two operations. An internal result-wrapper implementation would also be viable, but is not the recommended first cut. The failure-only/no-recovery invariants are mandatory, not optional optimizations.
+The outward API is therefore result-carried, despite using a small internal recorder. It has **no last/current-failure field** in `LocalProgram`, `EvalContext`, `TaskGuard`, any persistent worker field, or TLS; immutable `ExecutionLimits` carries policy only. This is smaller than converting every existing private LocalResult/explicit Err/legacy adapter into an internal reported-error type solely to decorate two operations. An internal result-wrapper implementation would also be viable, but is not the recommended first cut. The failure-only/no-recovery invariants are mandatory, not optional optimizations.
 
 | Failure boundary in existing code | Proposed capture / classification |
 |---|---|
@@ -1396,12 +1396,12 @@ pub struct LocalControlProgram { /* private LocalProgram */ }
 impl LocalControlProgram {
     pub fn return_type(&self) -> &FieldType;
     pub fn eval_with_bindings(
-        &mut self, state: &mut LocalEvalState, ctx: &mut EvalContext,
+        &mut self, limits: ExecutionLimits, ctx: &mut EvalContext,
         physical_rows: usize, selection: &[usize],
         services: &mut dyn LocalRuntimeServices,
     ) -> LocalResult<LineagedBatch>;
     pub fn eval_with_bindings_reported(
-        &mut self, state: &mut LocalEvalState, ctx: &mut EvalContext,
+        &mut self, limits: ExecutionLimits, ctx: &mut EvalContext,
         physical_rows: usize, selection: &[usize],
         services: &mut dyn LocalRuntimeServices,
     ) -> Result<LineagedBatch, ReportedLocalFailure>;
@@ -2001,7 +2001,7 @@ impl WorkerStorage {
 
 `max_worker_retained_bytes` is a separate immutable worker-owner allowance, **not** a reinterpretation of per-call `ExecutionLimits`. No new numeric default is proposed. Public preparation accepts no SQL context, operation/signature, graph, schema, arbitrary metadata, services, host or native callback. The worker exposes no program/RPN/context/state reference, conversion, Deref or Clone. Its intended trait is Send, not Sync; no unsafe trait assertion is allowed. Keep the existing Any+Send executable contract.
 
-The worker privately owns one LocalProgram, reusable LocalEvalState, a sealed `PureAsciiContext`, immutable policy, health and a checked invocation counter. `Option<Vec<u8>>` means an **already normalized nullable Bytes value** whose native coercion has finished; it is not a raw SQL Datum and proves no original SQL/PB provenance. The bytes move into an invocation-local `ScalarValue::Bytes` and are only borrowed during execution. No argument/result/native descriptor, row pointer or caller context enters idle state. NULL is one ready occurrence, not zero rows.
+The worker privately owns one `LocalProgram`, one copied `ExecutionLimits` policy, a sealed private `EvalContext`, health, and a checked invocation counter. Every call creates fresh budget and row scratch. `Option<Vec<u8>>` means an **already normalized nullable Bytes value** whose native coercion has finished; it is not a raw SQL Datum and proves no original SQL/PB provenance. The bytes move into an invocation-local `ScalarValue::Bytes` and are only borrowed during execution. No argument/result/native descriptor, row pointer or caller context enters idle state. NULL is one ready occurrence, not zero rows.
 
 `ComputedInt` can be constructed only after validating the actual generated one-element Int output. `OwnSignedInt` is an explicit computed-result identity, including NULL—not an input identity, C3b selected ID or native return declaration. The TiDB adapter must create `ValueMetadata { Int, None, None }` and then perform the original native return coercion once, outside the runtime borrow. C neither stores nor reconstructs the original complete native return FieldType.
 
@@ -2046,7 +2046,7 @@ A dirty/poisoned worker must be retired and dropped by the lease owner before co
 - Actual RPN node Vec capacity and schema Vec capacity, with checked arithmetic.
 - Initialized `OnceLock<Box<RpnExpressionMetadata>>` allocation **and** its referenced-column Vec capacity, not the public slice length. This requires a narrow crate-private helper in `types/expr.rs` using `metadata.get()`; inspection itself must not initialize it. Prewarming the fixed program under a creating reservation before publication is recommended, but does not remove the observer.
 - Canonical FieldType/container heap zero **by fresh scalar-only construction**, not from protobuf equality, serialization size or empty length. Closed FnCall unit metadata is a ZST owner; no constant/child programs/opaque metadata payloads are admitted. The observation is not a generic LocalProgram heap estimator.
-- The private configuration allocation and warning Vec's actual capacity even when its length is0. The healthy-empty invariant means no live warning-message/unknown-field subowners. Current LocalEvalState is index/limits-only and has no retained heap; do not silently retain an arena/transport buffer later without extending this observation.
+- The private configuration allocation and warning Vec's actual capacity even when its length is0. The healthy-empty invariant means no live warning-message/unknown-field subowners. Current `ExecutionLimits` is four scalar limits and has no retained heap or row scratch; do not silently retain an arena/transport buffer later without extending this observation.
 
 All adds/multiplies and total/allowance comparisons are checked. Unhealthy/overflowing observations are not acceptable idle-pool admissions. Never cache a cold footprint and assume a warmed worker cannot grow.
 
@@ -2064,7 +2064,7 @@ That body hook is deliberately unavailable in TiDB's dependency build; D's integ
 
 ### Exact requested file loan and pending gates
 
-For the proposed worker **reusing existing LocalEvalState** plus complete ownership observation and the separate body proof, request these **six existing product files only**, with inline new tests and no new module:
+For the proposed worker **copying the existing `ExecutionLimits` policy** plus complete ownership observation and the separate body proof, request these **six existing product files only**, with inline new tests and no new module:
 
 | File under `components/tidb_query_expr/src/` | Exact proposed change |
 | --- | --- |
@@ -2075,7 +2075,7 @@ For the proposed worker **reusing existing LocalEvalState** plus complete owners
 | `types/expr.rs` | Narrow read-only node/cache allocation-capacity helper; no fields/ABI/structural mutation |
 | `impl_string.rs` | **Only cfg(test) ASCII-body counter/readback**; no algorithm/signature/production change |
 
-`local/runtime.rs` already has ExactRetained/checked helpers and needs no edit. No profile/registry/function/codegen/spec/lineage/datatype/Cargo/lock/native caller change is required by this design. Co-locating a distinct state/worker in compile.rs could reduce the file count by not reusing LocalEvalState, but is not the chosen ownership/organization contract. A new evaluated-value module is optional organization, not a forced seventh loan. Parent owns corresponding guide/main-plan updates and any later caller loans.
+`local/runtime.rs` already has ExactRetained/checked helpers and needs no edit. No profile/registry/function/codegen/spec/lineage/datatype/Cargo/lock/native caller change is required by this design. The worker stores the copied limits directly; no separate evaluation-state wrapper or arena is part of the ownership contract. A new evaluated-value module is optional organization, not a forced seventh loan. Parent owns corresponding guide/main-plan updates and any later caller loans.
 
 Read-only reviewers0bdc100b (canonical/API/entry/witness/lifetimes) and0106e623 (retained owners/context/pool/capacity) independently found this six-file cut sufficient, with the explicit Arc/probe and caller-disposal conditions above. Neither reviewer wrote a file or ran validation. Current source anchors include `local/batch.rs:32–47` for index-only state, `types/expr.rs:119–141,225–267` for boxed lazy metadata, `types/expr_eval.rs:1329–1343` for the actual function-pointer invocation and `Q/expr/ctx.rs:184–241` for warning/config owners (`Q=components/tidb_query_datatype/src`). No EvalFrame/RpnFnMeta field addition is proposed; nevertheless the existing400/128/400/176/152 frame baseline and any compiled/input/worker sizes must be measured again by the parent, not declared unchanged from this design. New worker/context/program ownership is not claimed free, and warmed driver allocation throughput remains unmeasured.
 
@@ -2117,11 +2117,11 @@ The private one-time context is named UTC, empty flags/SQL mode, max_warning_cnt
 
 Each invocation moves its nullable ready Vec into a call-local ScalarValue. A scalar stack node borrows that owner; it never borrows the witness and does not copy or pack Bytes. TaskGuard carries the ready Vec's **capacity** as a standing charge, once, through frame/stack/precharge/result checks; the scalar's node storage stays0. Ready input has no host provider, and host-start reservation refuses it before host-only delta arithmetic. After the driver guard is gone, publication checks still-live input capacity together with actual owned singleton Int output. The nullable Int is copied, both buffers are actually dropped, then health/owner postflight completes. No operand/result borrow or buffer remains in the worker.
 
-A caller pool must separately charge retained idle Vec slot capacity and each idle worker's heap. A popped active worker outside that still-allocated Vec needs its own **total** charge, including its additional inline owner; after moving it back, only its heap is added to the already-counted slot allocation. The corrected NEW fixture demonstrates that accounting distinction, not an implemented pool. Creation reservation/allowance, live+creating+idle limits, epoch debt, container growth/overlap and disposal remain E/parent work. No hard factory peak, allocator usable-size bound, or arbitrary native-coercion allocation bound is claimed.
+A caller pool must separately charge retained idle Vec slot capacity and each idle worker's heap. A popped active worker outside that still-allocated Vec needs its own **total** charge, including its additional inline owner; after moving it back, only its heap is added to the already-counted slot allocation. The corrected NEW fixture demonstrates that accounting distinction, not an implemented pool. Creation reservation/allowance, live+creating+idle limits, execution debt, container growth/overlap and disposal remain E/parent work. No hard factory peak, allocator usable-size bound, or arbitrary native-coercion allocation bound is claimed.
 
 ### Dispatch and body evidence seams
 
-`EvaluatedAsciiWitness` is private per-worker checked u64 state. It advances immediately beside the real shared helper's `func_meta.fn_ptr` call, with no intervening fallible operation; counter overflow refuses before dispatch without changing the counter. NULL also enters that generated nullable wrapper. Ordinary and other old eager routes pass no witness. A Some-input wrapper count is still **not** an observed body count.
+`ReadyValueDispatchWitness` is private per-worker checked u64 state. It advances immediately beside the real shared helper's `func_meta.fn_ptr` call, with no intervening fallible operation; counter overflow refuses before dispatch without changing the counter. NULL also enters that generated nullable wrapper. Ordinary and other old eager routes pass no witness. A Some-input wrapper count is still **not** an observed body count.
 
 The only `impl_string.rs` change is a strict cfg(test) AtomicU64 increment at the existing ASCII BODY entry and readback. Its signature, algorithm, generated-wrapper policy and production behavior are unchanged. The isolated ignored test below observes actual pre-dispatch refusal0/0, NULL1/0, and non-null1/1 wrapper/body distinctions, plus its own joined independent workers. Ordinary full tests contain no global body-delta assertions. The hook is unavailable in TiDB's dependency build; that build can use the public wrapper witness, not pretend it observed the body.
 

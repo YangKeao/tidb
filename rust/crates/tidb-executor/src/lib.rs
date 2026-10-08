@@ -300,8 +300,8 @@ pub use tidb_expr::{
 /// Explicit native runtime capabilities and adapter diagnostics for session
 /// lifecycle ownership; reexporting them installs no default runtime or scope.
 pub use tidb_expr::{
-    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
-    ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
+    ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ReadyValueExecution,
+    ReadyValueOwnerError, ReadyValuePoolOwner, ReadyValuePoolPolicy, ReadyValueScope,
 };
 pub use topn::TopNExec;
 pub use view::{

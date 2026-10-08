@@ -497,12 +497,12 @@ struct ShowRowResolver<'a> {
 impl tidb_executor::Columns for ShowRowResolver<'_> {
     // Preserve SHOW's existing resolver defaults; only the worker capability
     // follows the statement into predicates such as WHERE name LIKE pattern.
-    fn evaluated_ascii_scope(&self) -> Option<&tidb_executor::AsciiScope> {
-        self.ctx.evaluated_ascii_scope()
+    fn ready_value_scope(&self) -> Option<&tidb_executor::ReadyValueScope> {
+        self.ctx.ready_value_scope()
     }
 
-    fn evaluated_ascii_execution(&self) -> Option<&tidb_executor::AsciiExecution> {
-        self.ctx.evaluated_ascii_execution()
+    fn ready_value_execution(&self) -> Option<&tidb_executor::ReadyValueExecution> {
+        self.ctx.ready_value_execution()
     }
 
     fn get(&self, path: &[String]) -> Option<Datum> {

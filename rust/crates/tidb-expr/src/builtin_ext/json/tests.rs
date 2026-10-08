@@ -1933,10 +1933,19 @@ fn cast_as_json_typed_renders_binary_charset_argument_as_opaque() {
     assert!(cast_as_json_typed(&Datum::Bytes(b"ab".to_vec()), None).is_err());
 }
 
-fn json_scope_owner(slots: usize) -> crate::AsciiPoolOwner {
-    crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
-            .unwrap(),
+fn json_scope_owner(slots: usize) -> crate::ReadyValuePoolOwner {
+    crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
+            slots,
+            slots,
+            16 << 20,
+            1 << 20,
+            2 << 20,
+            64,
+            8,
+            1 << 16,
+        )
+        .unwrap(),
     )
     .unwrap()
 }

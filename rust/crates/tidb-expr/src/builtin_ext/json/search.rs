@@ -97,8 +97,8 @@ fn json_search_workers_preserve_root_demand_and_escape_boundaries() {
     }
     let s = |text: &str| Datum::new_string(text);
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

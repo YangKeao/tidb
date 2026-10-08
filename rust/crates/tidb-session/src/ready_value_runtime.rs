@@ -23,31 +23,40 @@ use std::sync::{
     Arc,
 };
 
-use tidb_executor::{AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy};
+use tidb_executor::{
+    ReadyValueExecution, ReadyValueOwnerError, ReadyValuePoolOwner, ReadyValuePoolPolicy,
+};
 
 #[derive(Default)]
-pub(super) struct SessionAsciiRuntime {
-    pool: Option<AsciiPoolOwner>,
+pub(super) struct SessionReadyValueRuntime {
+    pool: Option<ReadyValuePoolOwner>,
     lexical_active: Arc<AtomicBool>,
-    /// Retained past the lexical call for session teardown. Ordinary close
-    /// owners must never look up this slot instead of their captured execution.
-    latest_execution: Option<AsciiExecution>,
+    /// Most recently admitted execution, retained for lexical context propagation
+    /// and diagnostics. Ordinary close owners use only their captured execution.
+    latest_execution: Option<ReadyValueExecution>,
+    /// Every independently live execution admitted by this session. Closed
+    /// entries are pruned on the next outer admission; shutdown closes all that
+    /// remain, including executions owned by detached record sets.
+    executions: Vec<ReadyValueExecution>,
 }
 
-impl SessionAsciiRuntime {
-    pub(super) fn try_install(&mut self, policy: AsciiPoolPolicy) -> Result<bool, AsciiOwnerError> {
+impl SessionReadyValueRuntime {
+    pub(super) fn try_install(
+        &mut self,
+        policy: ReadyValuePoolPolicy,
+    ) -> Result<bool, ReadyValueOwnerError> {
         if self.pool.is_some() || self.lexical_active.load(Ordering::Acquire) {
             return Ok(false);
         }
         // Construct here rather than accepting an owner that another Session
         // could share. Never replace this root to erase outstanding worker debt.
-        self.pool = Some(AsciiPoolOwner::new(policy)?);
+        self.pool = Some(ReadyValuePoolOwner::new(policy)?);
         Ok(true)
     }
 
-    pub(super) fn enter(&mut self) -> Result<AsciiStatementEntry, AsciiOwnerError> {
+    pub(super) fn enter(&mut self) -> Result<ReadyValueStatementEntry, ReadyValueOwnerError> {
         if self.lexical_active.swap(true, Ordering::AcqRel) {
-            return Ok(AsciiStatementEntry {
+            return Ok(ReadyValueStatementEntry {
                 closer: None,
                 _lexical: None,
             });
@@ -55,21 +64,23 @@ impl SessionAsciiRuntime {
         // Armed before begin_execution and therefore before error conversion.
         // Even an unconfigured session is busy while its outer call runs.
         let lexical = LexicalReset(Arc::clone(&self.lexical_active));
+        self.executions.retain(|execution| !execution.is_closed());
         let closer = match &self.pool {
             Some(pool) => {
                 let execution = pool.begin_execution()?;
+                self.executions.push(execution.clone());
                 self.latest_execution = Some(execution.clone());
-                Some(AsciiStatementCloser { execution })
+                Some(ReadyValueStatementCloser { execution })
             }
             None => None,
         };
-        Ok(AsciiStatementEntry {
+        Ok(ReadyValueStatementEntry {
             closer,
             _lexical: Some(lexical),
         })
     }
 
-    pub(super) fn execution(&self) -> Option<&AsciiExecution> {
+    pub(super) fn execution(&self) -> Option<&ReadyValueExecution> {
         if self.lexical_active.load(Ordering::Acquire) {
             self.latest_execution.as_ref()
         } else {
@@ -77,16 +88,16 @@ impl SessionAsciiRuntime {
         }
     }
 
-    /// Session teardown may cancel its latest captured execution. Earlier ones
-    /// are already invalidated by begin_execution; their worker debt stays live.
+    /// Session teardown cancels every execution still owned by a detached result.
+    /// Closing is idempotent and never forgives live worker debt.
     pub(super) fn shutdown(&self) {
-        if let Some(execution) = &self.latest_execution {
+        for execution in &self.executions {
             execution.close();
         }
     }
 
     #[cfg(test)]
-    pub(super) fn latest_execution_for_test(&self) -> Option<&AsciiExecution> {
+    pub(super) fn latest_execution_for_test(&self) -> Option<&ReadyValueExecution> {
         self.latest_execution.as_ref()
     }
 }
@@ -99,30 +110,30 @@ impl Drop for LexicalReset {
     }
 }
 
-pub(super) struct AsciiStatementEntry {
+pub(super) struct ReadyValueStatementEntry {
     // Field drop order closes the captured execution before resetting the marker.
-    closer: Option<AsciiStatementCloser>,
+    closer: Option<ReadyValueStatementCloser>,
     _lexical: Option<LexicalReset>,
 }
 
-impl AsciiStatementEntry {
-    pub(super) fn take_closer(&mut self) -> Option<AsciiStatementCloser> {
+impl ReadyValueStatementEntry {
+    pub(super) fn take_closer(&mut self) -> Option<ReadyValueStatementCloser> {
         self.closer.take()
     }
 }
 
 /// Non-Clone outer close authority. Contexts receive only execution clones.
-pub(super) struct AsciiStatementCloser {
-    execution: AsciiExecution,
+pub(super) struct ReadyValueStatementCloser {
+    execution: ReadyValueExecution,
 }
 
-impl AsciiStatementCloser {
-    pub(super) fn unwind_guard(&self) -> AsciiNextUnwindGuard {
-        AsciiNextUnwindGuard(self.execution.clone())
+impl ReadyValueStatementCloser {
+    pub(super) fn unwind_guard(&self) -> ReadyValueNextUnwindGuard {
+        ReadyValueNextUnwindGuard(self.execution.clone())
     }
 }
 
-impl Drop for AsciiStatementCloser {
+impl Drop for ReadyValueStatementCloser {
     fn drop(&mut self) {
         self.execution.close();
     }
@@ -130,9 +141,9 @@ impl Drop for AsciiStatementCloser {
 
 /// Derived only from this record set's owning closer, never from a borrowed
 /// context or Session.latest. Ordinary Next success, EOF and errors keep it live.
-pub(super) struct AsciiNextUnwindGuard(AsciiExecution);
+pub(super) struct ReadyValueNextUnwindGuard(ReadyValueExecution);
 
-impl Drop for AsciiNextUnwindGuard {
+impl Drop for ReadyValueNextUnwindGuard {
     fn drop(&mut self) {
         if std::thread::panicking() {
             self.0.close();

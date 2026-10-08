@@ -58,7 +58,9 @@ mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ErrorLevel, ExpressionAdapterFailureClass};
+    use crate::{
+        ErrorLevel, ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy,
+    };
 
     #[test]
     fn real_unsigned_cast_keeps_sdk_rounding_warning_projection_and_admission() {
@@ -109,10 +111,18 @@ mod tests {
         ];
         for slots in [0, 1] {
             let native = Warnings::default();
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 16,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&native, |bound| {

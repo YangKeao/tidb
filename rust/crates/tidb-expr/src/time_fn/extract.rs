@@ -142,8 +142,8 @@ fn extract_entries_keep_fresh_modes_metadata_and_composite_boundaries() {
         ))
     };
     let owner = |slots| {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

@@ -100,8 +100,8 @@ fn convert_tz_dispatch_worker_preserves_lifecycle_and_coercion_order() {
     }
     let s = |text: &str| Datum::new_string(text);
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 << 20,

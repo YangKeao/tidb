@@ -23,7 +23,7 @@ use tidb_query_datatype::{codec::data_type::VectorValue, expr::EvalContext, Eval
 #[cfg(test)]
 use tidb_query_expr::local::LocalRuntimeServices;
 use tidb_query_expr::local::{
-    compile_local, ExecutionLimits, LocalCompileContext, LocalError, LocalEvalState, LocalProgram,
+    compile_local, ExecutionLimits, LocalCompileContext, LocalError, LocalProgram,
 };
 
 use super::context::NativeInputs;
@@ -33,7 +33,7 @@ use super::SeedResult;
 pub(crate) struct PreparedIntControlSeed {
     spec: Arc<LoweredSpec>,
     program: LocalProgram,
-    state: LocalEvalState,
+    limits: ExecutionLimits,
 }
 
 impl PreparedIntControlSeed {
@@ -48,7 +48,7 @@ impl PreparedIntControlSeed {
         Ok(Self {
             spec,
             program,
-            state: LocalEvalState::with_limits(limits),
+            limits,
         })
     }
 
@@ -63,7 +63,7 @@ impl PreparedIntControlSeed {
     ) -> SeedResult<Vec<Datum>> {
         let mut inputs = NativeInputs::new(&self.spec, chunk, row_schema, selection)?;
         let output = self.program.eval_with_bindings(
-            &mut self.state,
+            self.limits,
             ctx,
             chunk.physical_rows(),
             selection,
@@ -95,13 +95,9 @@ impl PreparedIntControlSeed {
         selection: &[usize],
         inputs: &mut dyn LocalRuntimeServices,
     ) -> SeedResult<Vec<Datum>> {
-        let output = self.program.eval_with_bindings(
-            &mut self.state,
-            ctx,
-            physical_rows,
-            selection,
-            inputs,
-        )?;
+        let output =
+            self.program
+                .eval_with_bindings(self.limits, ctx, physical_rows, selection, inputs)?;
         materialize(output, selection.len())
     }
 }

@@ -93,8 +93,8 @@ fn legacy_json_merge_patch_worker_preserves_raw_order_absence_and_child_demand()
         assert_eq!(result.type_code(), value.type_code());
         assert_eq!(result.value(), value.value());
     }
-    let owner = tidb_expr::AsciiPoolOwner::new(
-        tidb_expr::AsciiPoolPolicy::checked(
+    let owner = tidb_expr::ReadyValuePoolOwner::new(
+        tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,
@@ -325,8 +325,8 @@ fn legacy_json_raw_workers_preserve_values_presence_codecs_and_child_demand() {
         assert_eq!(scalar.value(), value.value());
     }
 
-    let owner = tidb_expr::AsciiPoolOwner::new(
-        tidb_expr::AsciiPoolPolicy::checked(
+    let owner = tidb_expr::ReadyValuePoolOwner::new(
+        tidb_expr::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,

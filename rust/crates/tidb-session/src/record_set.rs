@@ -16,7 +16,7 @@ use tidb_chunk::chunk::Chunk;
 use tidb_datatype::FieldType;
 use tidb_executor::{driver::QueryRecordSet, DriverError, StmtContext};
 
-use crate::ascii_runtime::{AsciiStatementCloser, AsciiStatementEntry};
+use crate::ready_value_runtime::{ReadyValueStatementCloser, ReadyValueStatementEntry};
 use crate::{Session, StmtOutput};
 
 /// A statement either returns an opened query or has already executed.
@@ -31,7 +31,7 @@ impl Session {
     pub(crate) fn return_opened_record_set(
         &mut self,
         result: Result<PendingExecution, DriverError>,
-        runtime: &mut AsciiStatementEntry,
+        runtime: &mut ReadyValueStatementEntry,
     ) -> Result<OpenedStatement, DriverError> {
         match result {
             Ok(PendingExecution::Query(query)) => Ok(OpenedStatement::Rows(
@@ -143,7 +143,7 @@ impl PendingQuery {
 pub struct StatementRecordSet {
     // First field: detached Drop invalidates before the native query is dropped.
     // A nested/borrowed result has no close authority or lexical marker here.
-    ascii_closer: Option<AsciiStatementCloser>,
+    ready_value_closer: Option<ReadyValueStatementCloser>,
     query: PendingQuery,
     retained: Option<std::collections::VecDeque<Chunk>>,
     retained_offset: usize,
@@ -155,9 +155,12 @@ pub struct StatementRecordSet {
 }
 
 impl StatementRecordSet {
-    pub(crate) fn new(query: PendingQuery, ascii_closer: Option<AsciiStatementCloser>) -> Self {
+    pub(crate) fn new(
+        query: PendingQuery,
+        ready_value_closer: Option<ReadyValueStatementCloser>,
+    ) -> Self {
         Self {
-            ascii_closer,
+            ready_value_closer,
             query,
             retained: None,
             retained_offset: 0,
@@ -192,9 +195,9 @@ impl StatementRecordSet {
     /// Fills a reusable chunk and transfers warnings from this execution.
     pub fn next(&mut self, session: &mut Session, req: &mut Chunk) -> Result<(), DriverError> {
         let _unwind = self
-            .ascii_closer
+            .ready_value_closer
             .as_ref()
-            .map(AsciiStatementCloser::unwind_guard);
+            .map(ReadyValueStatementCloser::unwind_guard);
         let retained = self.retained.is_some();
         let result = if self.finished {
             Err(DriverError::Mysql(tidb_executor::MysqlError::new(
@@ -240,7 +243,7 @@ impl StatementRecordSet {
     /// Go runPessimisticSelectForUpdate retains chunks before locks/retries
     /// complete. Do not publish rows to a client from inside a replayable attempt.
     pub fn retain_chunks(&mut self, session: &mut Session) -> Result<(), DriverError> {
-        let _closer = self.ascii_closer.take();
+        let _closer = self.ready_value_closer.take();
         let mut chunks = std::collections::VecDeque::new();
         let mut req = self.new_chunk();
         let result = (|| {
@@ -270,7 +273,7 @@ impl StatementRecordSet {
     pub fn finish(&mut self, session: &mut Session) -> Result<(), DriverError> {
         // Take before the fast path, flag mutation, and every native operation.
         // In particular, an unwind after finished=true cannot strand a closer.
-        let _closer = self.ascii_closer.take();
+        let _closer = self.ready_value_closer.take();
         if self.finished {
             return Ok(());
         }

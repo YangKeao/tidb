@@ -422,14 +422,14 @@ pub use tikv::{
     eval_legacy_microsecond_in, eval_legacy_numeric_prefix, eval_legacy_real_arithmetic_in,
     eval_legacy_real_comparison_in, eval_legacy_time_comparison_in, eval_legacy_timestamp_diff_in,
     eval_regexp_legacy_ready_in, unix_timestamp_dec_legacy_in, unix_timestamp_int_legacy_in,
-    AsciiExecution, AsciiOwnerError, AsciiPoolOwner, AsciiPoolPolicy, AsciiScope,
     BinaryArithmeticOperation, ComparisonOp, ExpressionAdapterFailure,
     ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure,
     ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase, LegacyBinaryArgs,
     LegacyCastIntegerResult, LegacyDateArithmeticChannel, LegacyDateArithmeticDateKind,
     LegacyDateArithmeticIntervalKind, LegacyDateArithmeticMetadata, LegacyDateArithmeticResult,
     LegacyDateArithmeticValue, LegacyIntegerArithmetic, LegacyLikeArgs, LegacyTimestampDiffArgs,
-    RegexpLegacyInput, ScopedAsciiColumns,
+    ReadyValueExecution, ReadyValueOwnerError, ReadyValuePoolOwner, ReadyValuePoolPolicy,
+    ReadyValueScope, RegexpLegacyInput, ScopedReadyValueColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
@@ -1935,9 +1935,9 @@ mod null_safe_composition_tests {
         }
     }
 
-    fn owner(slots: usize) -> AsciiPoolOwner {
-        AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+    fn owner(slots: usize) -> ReadyValuePoolOwner {
+        ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
                 .unwrap(),
         )
         .unwrap()
@@ -2258,10 +2258,10 @@ mod between_composition_tests {
         expr.clone()
     }
 
-    fn pool_owner(slots: usize) -> AsciiPoolOwner {
+    fn pool_owner(slots: usize) -> ReadyValuePoolOwner {
         // Explicit test ledger allowances, not physical allocation bounds.
-        AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
+        ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 8, 1 << 16)
                 .unwrap(),
         )
         .unwrap()
@@ -2640,8 +2640,8 @@ fn case_workers_keep_base_once_typed_demand_and_empty_preparation() {
             }
         };
     for slots in [1, 0] {
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

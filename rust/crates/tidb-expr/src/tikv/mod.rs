@@ -101,8 +101,8 @@ pub(crate) use date_arithmetic::{
     eval_date_add_default_in, eval_date_add_duration_in, eval_date_add_in,
 };
 // The closed ready-argument families share this value boundary and one pool.
-mod evaluated_ascii;
 mod extract;
+mod ready_value;
 pub(crate) use extract::{eval_extract_composite_in, eval_extract_in, eval_extract_null_unit_in};
 mod extremum;
 pub(crate) use extremum::eval_extremum_in;
@@ -140,13 +140,13 @@ mod unix_timestamp;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
-pub(crate) use evaluated_ascii::{
+pub(crate) use ready_value::{
     eval_arithmetic_decimal_fast_in, eval_decimal_integer_division_in, evaluate_args_in,
     evaluate_ascii_in, evaluate_bytes_in, evaluate_logical_in, evaluate_prepared_args_in,
     evaluate_prepared_args_scoped_in, evaluate_regexp_in, native_time_result_contract_error,
     EvaluatedBytesResult, RegexpFunction,
 };
-pub use evaluated_ascii::{
+pub use ready_value::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
     eval_legacy_decimal_integer_division_in, eval_legacy_integer_arithmetic_in,
@@ -154,9 +154,10 @@ pub use evaluated_ascii::{
     eval_legacy_json_member_of_in, eval_legacy_json_merge_patch_in,
     eval_legacy_json_output_none_in, eval_legacy_json_replace_in, eval_legacy_like_in,
     eval_legacy_microsecond_in, eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in,
-    eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, AsciiExecution, AsciiOwnerError,
-    AsciiPoolOwner, AsciiPoolPolicy, AsciiScope, LegacyBinaryArgs, LegacyIntegerArithmetic,
-    LegacyLikeArgs, RegexpLegacyInput, ScopedAsciiColumns,
+    eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, LegacyBinaryArgs,
+    LegacyIntegerArithmetic, LegacyLikeArgs, ReadyValueExecution, ReadyValueOwnerError,
+    ReadyValuePoolOwner, ReadyValuePoolPolicy, ReadyValueScope, RegexpLegacyInput,
+    ScopedReadyValueColumns,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::NativeJsonError;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
@@ -205,7 +206,7 @@ pub(crate) fn prepare_find_in_set_keys(
     key_policy: NativeCollation,
 ) -> Result<PreparedFindInSetKeys, crate::EvalError> {
     prepare_find_in_set_keys_local(list, key_policy, usize::MAX).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -221,7 +222,7 @@ pub(crate) fn prepare_concat_args(
 ) -> Result<PreparedConcatArgs, crate::EvalError> {
     prepare_concat_args_local(kind, total_sql_arity, prefix, terminal, usize::MAX).map_err(
         |error| {
-            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 error, None,
             ))
         },
@@ -232,7 +233,7 @@ pub(crate) fn prepare_concat_args(
 /// Keep the actual preparation failure without inventing a worker phase.
 pub(crate) fn prepare_char_args(values: &[Option<i64>]) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_char_args(values).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -245,7 +246,7 @@ pub(crate) fn prepare_grouping_args(
     metadata: &tidb_query_expr::GroupingMetadata,
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_grouping_args(gid, metadata).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -274,7 +275,7 @@ pub(crate) fn prepare_weight_string_args(
     }
     let mut metadata = Vec::new();
     metadata.try_reserve_exact(2).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             LocalError::ResourceLimit(format!("weight metadata allocation failed: {error}").into()),
             None,
         ))
@@ -301,7 +302,7 @@ pub(crate) fn prepare_weight_padded_args(
     }
     let mut metadata = Vec::new();
     metadata.try_reserve_exact(19).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             LocalError::ResourceLimit(
                 format!("padded weight metadata allocation failed: {error}").into(),
             ),
@@ -323,7 +324,7 @@ pub(crate) fn prepare_date_args(
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(8).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             LocalError::ResourceLimit(format!("DATE core input allocation failed: {error}").into()),
             None,
         ))
@@ -343,7 +344,7 @@ pub(crate) fn prepare_clock_args(
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(16).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             LocalError::ResourceLimit(format!("clock input allocation failed: {error}").into()),
             None,
         ))
@@ -365,7 +366,7 @@ pub(crate) fn prepare_json_serde_args(
     path: Option<&str>,
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_serde_args(first, second, path).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -376,7 +377,7 @@ pub(crate) fn prepare_json_merge_patch_args(
     values: &[Option<serde_json::Value>],
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_nullable_values_args(values).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -387,7 +388,7 @@ pub(crate) fn prepare_json_array_args(
     values: &[serde_json::Value],
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_array_args(values).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -398,7 +399,7 @@ pub(crate) fn prepare_json_object_args(
     pairs: &[(String, serde_json::Value)],
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_object_args(pairs).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -410,7 +411,7 @@ pub(crate) fn prepare_json_paths_args(
     paths: &[tidb_query_expr::NativeJsonPath],
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_paths_args(document, paths).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -426,7 +427,7 @@ pub(crate) fn prepare_json_search_args(
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_search_args(document, paths, one, pattern, escape).map_err(
         |error| {
-            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 error, None,
             ))
         },
@@ -441,7 +442,7 @@ pub(crate) fn prepare_json_path_values_args(
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_path_values_args(document, paths, values).map_err(
         |error| {
-            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 error, None,
             ))
         },
@@ -454,7 +455,7 @@ pub(crate) fn prepare_json_binary_args(
 ) -> Result<EvaluatedArgs, crate::EvalError> {
     tidb_query_expr::local::prepare_json_raw_identity_args((document.type_code(), document.value()))
         .map_err(|error| {
-            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 error, None,
             ))
         })
@@ -472,7 +473,7 @@ pub(crate) fn prepare_json_binary_pair_args(
         second.value(),
     )
     .map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
             error, None,
         ))
     })
@@ -494,7 +495,7 @@ fn math_decimal_bridge_error(
     error: tidb_query_datatype::codec::mysql::decimal::NativeDecimalError,
 ) -> crate::EvalError {
     let cause = tidb_query_expr::local::native_decimal_bridge_error(error);
-    crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+    crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
         cause, None,
     ))
 }
@@ -502,7 +503,7 @@ fn math_decimal_bridge_error(
 // Only these purpose-specific FIELD/SET pure calls use this conversion. Keep
 // the actual LocalError, without inventing a worker phase or a SQL diagnostic.
 fn field_set_pure_error(error: LocalError) -> crate::EvalError {
-    crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+    crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
         error, None,
     ))
 }

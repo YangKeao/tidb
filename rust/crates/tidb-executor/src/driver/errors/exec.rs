@@ -495,19 +495,20 @@ mod tests {
     #[test]
     fn public_ascii_value_prepare_resource_failure_reaches_generic_wire_error() {
         use tidb_expr::{
-            AsciiPoolOwner, AsciiPoolPolicy, ExpressionRuntimeFailureClass,
-            ExpressionRuntimeFailurePhase,
+            ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase, ReadyValuePoolOwner,
+            ReadyValuePoolPolicy,
         };
 
         // Valid pool admission, but one retained byte cannot hold the real C4
         // worker. This public value producer must return its preparation error;
         // no test factory or private error constructor participates.
-        let policy = AsciiPoolPolicy::checked(1, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap();
-        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let policy =
+            ReadyValuePoolPolicy::checked(1, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap();
+        let owner = ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         let error = scope
-            .evaluate_value(&tidb_datatype::Datum::Int(65))
+            .evaluate_ascii_value(&tidb_datatype::Datum::Int(65))
             .expect_err("the real C4 worker cannot fit in one retained byte");
         let EvalError::ExpressionRuntimeFailure(failure) = &error else {
             panic!("expected a real C4 preparation error, got {error:?}");
@@ -537,18 +538,19 @@ mod tests {
     #[test]
     fn public_ascii_value_pool_resource_failure_keeps_native_adapter_origin() {
         use tidb_expr::{
-            AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass,
-            ExpressionAdapterFailureOrigin,
+            ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ReadyValuePoolOwner,
+            ReadyValuePoolPolicy,
         };
 
         // Zero worker/creation slots are a legal lazy policy. Demanding a value
         // fails native pool admission before a backend worker can be prepared.
-        let policy = AsciiPoolPolicy::checked(0, 0, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap();
-        let owner = AsciiPoolOwner::new(policy).unwrap();
+        let policy =
+            ReadyValuePoolPolicy::checked(0, 0, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap();
+        let owner = ReadyValuePoolOwner::new(policy).unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         let error = scope
-            .evaluate_value(&tidb_datatype::Datum::Int(65))
+            .evaluate_ascii_value(&tidb_datatype::Datum::Int(65))
             .expect_err("a zero-slot pool must reject this demanded value");
         let EvalError::ExpressionAdapterFailure(failure) = &error else {
             panic!("native pool refusal must not become a backend error: {error:?}");

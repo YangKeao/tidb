@@ -38,7 +38,7 @@ use tidb_query_datatype::expr::EvalContext;
 use tidb_query_datatype::EvalType;
 use tidb_query_expr::local::{
     compile_numeric_batch, CallMetadata, CompileLimits, ExecutionLimits, FunctionRef, InputRow,
-    LiteralKind, LocalCompileContext, LocalError, LocalEvalState, LocalExpr, LocalFailureSite,
+    LiteralKind, LocalCompileContext, LocalError, LocalExpr, LocalFailureSite,
     LocalNumericBatchProgram, LocalResult, LocalRuntimeServices, NumericBatchFacts,
     OrdinaryCallSite, OrdinarySourceId, ReportedLocalFailure,
 };
@@ -709,7 +709,7 @@ fn lower(
 pub(crate) struct PreparedNumericBatch {
     source: Arc<NumericSource>,
     program: LocalNumericBatchProgram,
-    state: LocalEvalState,
+    limits: ExecutionLimits,
     max_materialization_retained_bytes: usize,
 }
 impl PreparedNumericBatch {
@@ -734,7 +734,7 @@ impl PreparedNumericBatch {
         Ok(Self {
             source,
             program,
-            state: LocalEvalState::with_limits(execution),
+            limits: execution,
             max_materialization_retained_bytes,
         })
     }
@@ -1012,7 +1012,7 @@ impl NumericBatchConsumer for Consumer<'_> {
             .worker
             .program
             .eval_with_bindings_reported(
-                &mut self.worker.state,
+                self.worker.limits,
                 self.ctx,
                 invocation.input.physical_rows(),
                 &self.selection,

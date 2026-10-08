@@ -14,7 +14,7 @@ Shared TiKV:
 Native TiDB (under `rust/crates/`):
 - `tidb-datatype/src/collation.rs`, `tidb-util/src/stringutil.rs`: shared reexports and thin utility delegates, not another lowering loop.
 - `tidb-expr/src/{like.rs,lib.rs,scalar_function.rs}`: pure SDK facades/compiled aliases plus actual scoped AST and typed routes.
-- `tidb-expr/src/tikv/{evaluated_ascii.rs,evaluated_ascii_tests.rs,mod.rs}`: actual owned results and narrow legacy SDK; `tests/ilike_info_cast_source.rs` changes constructor inputs only to explicit `native_policy()`.
+- `tidb-expr/src/tikv/{ready_value.rs,ready_value_tests.rs,mod.rs}`: actual owned results and narrow legacy SDK; `tests/ilike_info_cast_source.rs` changes constructor inputs only to explicit `native_policy()`.
 - `tidb-unistore/src/cophandler.rs`: original legacy child/coercion demand, actual raw bytes and typed infrastructure errors; no local matching/folding.
 - `tidb-executor/src/{predicate_pushdown.rs,lib.rs}`: real context/fallibility for fast LIKE/NOT LIKE, existing facade reexports rather than a new session dependency.
 - `tidb-session/src/{show.rs,show_statistics.rs,tests_core/lifecycle.rs}`: real statement context and errors, including SHOW WHERE. Statistics edits are eight private helper bridges. The row resolver forwards only scope/execution and preserves its other defaults.

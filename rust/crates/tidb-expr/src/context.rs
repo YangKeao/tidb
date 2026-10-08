@@ -524,19 +524,19 @@ impl BlockEncryptionMode {
 
 /// Resolves column and session state during evaluation.
 pub trait Columns {
-    /// The currently bound affine evaluated-ASCII scope, when explicitly bound.
+    /// The currently bound affine ready-value scope, when explicitly bound.
     /// Adapters preserve this capability rather than starting a second scope.
     /// Ordinary unbound contexts remain source-compatible and stateless. This
     /// is a pure borrowed lookup, not an expression-evaluation/resource hook.
-    fn evaluated_ascii_scope(&self) -> Option<&crate::AsciiScope> {
+    fn ready_value_scope(&self) -> Option<&crate::ReadyValueScope> {
         None
     }
 
     /// The reusable execution behind this context, if its owner supplied one.
     /// An active scope's execution takes precedence in a scoped wrapper. Merely
-    /// exposing this capability does not establish or rotate an execution epoch.
+    /// exposing this capability does not begin or close an execution.
     /// Implementations only return or forward a borrowed capability here.
-    fn evaluated_ascii_execution(&self) -> Option<&crate::AsciiExecution> {
+    fn ready_value_execution(&self) -> Option<&crate::ReadyValueExecution> {
         None
     }
 

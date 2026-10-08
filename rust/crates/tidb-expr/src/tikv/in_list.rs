@@ -212,7 +212,7 @@ pub fn eval_legacy_in_bytes_in<E: From<EvalError>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use tidb_datatype::{
         BinaryJSON, CoreTime, DateModes, MySqlDuration, SessionTimeZone, Time, TimeType,
@@ -248,9 +248,18 @@ mod tests {
             }
         }
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };
@@ -282,7 +291,7 @@ mod tests {
                 }
                 let mut visited = Vec::new();
                 let actual = eval_legacy_in_int_in(bound, 3, |index, selected| -> Result<Option<i128>, ChildError> {
-                    assert!(std::ptr::eq(selected.evaluated_ascii_scope().unwrap(), &scope));
+                    assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                     visited.push(index);
                     if index == 2 { return Err(ChildError::Original); }
                     Ok(Some(i128::MAX))
@@ -297,7 +306,7 @@ mod tests {
                 }
                 visited.clear();
                 let actual = eval_legacy_in_bytes_in(bound, 4, 46, |index, selected| -> Result<Option<Vec<u8>>, ChildError> {
-                    assert!(std::ptr::eq(selected.evaluated_ascii_scope().unwrap(), &scope));
+                    assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                     visited.push(index);
                     match index {
                         0 | 2 => Ok(Some(b"a".to_vec())),
@@ -365,7 +374,7 @@ mod tests {
                 0,
                 |index, selected| -> Result<Option<i128>, ChildError> {
                     assert_eq!(index, 0);
-                    assert!(selected.evaluated_ascii_scope().is_some());
+                    assert!(selected.ready_value_scope().is_some());
                     assert_eq!(
                         super::super::eval_interval_in(selected, &[Datum::Int(1), Datum::Int(2)]),
                         Ok(Datum::Int(0))
@@ -430,7 +439,7 @@ mod tests {
 #[cfg(test)]
 mod control_tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy};
+    use crate::{ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::cell::RefCell;
     use tidb_query_expr::{NativeInControlResult as Answer, NativeInControlValue as Value};
 
@@ -479,15 +488,16 @@ mod control_tests {
         assert_eq!(in_eq_observation(&Datum::Null), Value::Null);
         assert_eq!(in_control_datum(Answer::Null), Datum::Null);
         assert_eq!(in_control_datum(Answer::Bool(true)), Datum::Int(1));
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(1, 1, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16).unwrap(),
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(1, 1, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
+                .unwrap(),
         )
         .unwrap();
         let execution = owner.begin_execution().unwrap();
         let scope = execution.scope();
         let original = Original::default();
         scope.with_columns(&original, |bound| {
-            // The immutable evaluated_ascii facade-count test independently
+            // The immutable ready-value facade-count test independently
             // retains Eq, Eq, NOT = three real entries for this same AST.
             assert_eq!(sql("1 NOT IN (1, 2)", bound), Ok(Datum::Int(0)));
             assert_eq!(original.events.take(), vec!["div", "div"]);
@@ -633,7 +643,7 @@ fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
     match error {
         tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
         tidb_query_expr::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit("native IN frame allocation or size failed".into()),
                 None,
             ))

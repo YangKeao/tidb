@@ -282,8 +282,8 @@ fn charset_entries_preserve_context_null_demand_and_source_spellings() {
         )
     };
     let owner = |slots| {
-        crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

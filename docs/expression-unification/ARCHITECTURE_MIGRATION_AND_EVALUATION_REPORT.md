@@ -22,7 +22,7 @@
 | 表达式执行 | official RPN wrapper、local compiler、严格 selector、fixed recipe、batch/selection driver | AST/PB/typed expression 的接入、argument demand、结果投影 |
 | 类型 | kernel 所需的 `FieldType`/`ScalarValue`/`VectorValue` 表示与检查 | 完整 SQL `FieldType`：flags、flen、decimal、charset/collation、ENUM/SET、array 等 |
 | 上下文与副作用 | 接收显式传入的时区、precision、cache invocation、typed host request | SQL mode、statement clock、packet limit、warning sink、sysvar、identity、参数和相关列 |
-| 生命周期 | worker/program/frame 的创建、执行、清理和资源限制 | session/statement/request 级 pool、execution epoch、Drop/异常关闭 |
+| 生命周期 | worker/program/frame 的创建、执行、清理和资源限制 | session/request 级 pool、独立 statement execution、Drop/异常关闭 |
 | 错误 | 结构化 admission/runtime/resource 错误及真实 TiKV cause | 转换成 TiDB SQL error/warning，保留错误时机和 warning 顺序 |
 
 这一边界刻意区分“算法”和“宿主 effect”。例如字符串转整数前的 SQL coercion、TIMESTAMP 的 session timezone、deprecated JSON warning、未访问分支是否求值，都不是一个纯 kernel 能自行推断的；它们必须由 TiDB 明确选择或传入。相反，完成 coercion 后的比较、hash、Decimal 算术或 JSON primitive 不应在 TiDB 再实现一次。
@@ -94,7 +94,7 @@ TiKV 使用 `types/function.rs::FunctionRef` 区分：
 运行时的核心接口包括：
 
 - `LocalBatch`：借用输入 columns、physical rows 和 selection；
-- `LocalEvalState`：保存 width-one row scratch 和执行 limits；
+- `LocalProgram` 调用内使用 width-one row scratch；`ExecutionLimits` 仅保存不可变执行上限；
 - `LocalRuntimeServices::binding_schema/read_input/host_services`：只在实际 demand 时读取一个绑定值；
 - `InputRow { occurrence, input_row }`：区分 selection 中的出现位置和物理行，保留重复/乱序 selection；
 - `ExecutionLimits`：限制 steps、frame depth、active host tasks 和 retained bytes。
@@ -114,15 +114,15 @@ worker 在执行前校验 operation、shape、type 和 role；NULL 也进入真�
 
 ### 3.4 TiDB glue
 
-`rust/crates/tidb-expr/src/tikv/mod.rs` 汇总 crate-private adapter。通用 glue 位于历史命名的 `tikv/evaluated_ascii.rs`，它现在不只承载 ASCII：
+`rust/crates/tidb-expr/src/tikv/mod.rs` 汇总 crate-private adapter。通用 glue 位于历史命名的 `tikv/ready_value.rs`，它现在不只承载 ASCII：
 
-- `AsciiPoolPolicy`：显式资源策略；
-- `AsciiPoolOwner`：pool root；
-- `AsciiExecution`：statement/request execution epoch；
-- `AsciiScope`：一次词法调用的 affine scope；
+- `ReadyValuePoolPolicy`：显式资源策略；
+- `ReadyValuePoolOwner`：pool root；
+- `ReadyValueExecution`：独立、可单独关闭的 statement/request execution；
+- `ReadyValueScope`：一次词法调用的 affine scope；
 - `evaluate_prepared_args_in` / `evaluate_args_in` / `evaluate_bytes_in`：准备参数、租借 worker、执行并投影结果。
 
-`ScopedAsciiColumns` 只覆盖 scope/execution capability，其余 `Columns` 方法全部转发给原 context，避免 adapter 丢掉时区、SQL mode、warning sink、参数、identity 等宿主信息。
+`ScopedReadyValueColumns` 只覆盖 scope/execution capability，其余 `Columns` 方法全部转发给原 context，避免 adapter 丢掉时区、SQL mode、warning sink、参数、identity 等宿主信息。
 
 family-specific glue 位于 `tidb-expr/src/tikv/{cast_*,date_arithmetic,interval,extremum,in_list,extract,...}.rs`。原 SQL frontend 仍在 `ops.rs`、`func.rs`、`scalar_function.rs`、`builtin_ext/`、`time_fn/` 中决定 demand、coercion、metadata 和 effect；最终 family kernel 进入 TiKV，TiDB glue 仍可按 TiKV staged request 执行宿主 coercion/effect，并通过共享 comparison/cast 路径完成所需子操作。
 
@@ -157,7 +157,7 @@ TiDB 的 `tikv/runtime_failure.rs` 与 `tikv/adapter_failure.rs` 分别保存 ru
 | `tidb-parser` | 产生 AST；SQL digest 例外依赖 lexer/normalizer | parser 语法与 normalization 仍属 TiDB；普通值计算不在 parser |
 | `tidb-datatype` | `Datum`、完整 `FieldType`、collation/Decimal/time/json facade | SQL metadata 留 TiDB；底层表示与算法尽量复用 `tidb_query_datatype` |
 | `tidb-expr` | AST/value/typed/PB dispatcher、coercion、metadata、adapter | 不再是已迁移 family 的第二算法 owner |
-| `tidb-session` | statement 生命周期、参数、sysvar、clock、identity | `SessionAsciiRuntime` 可显式安装实验 pool/execution，dispatch/record-set 负责关闭；默认 policy 为 `None` |
+| `tidb-session` | statement 生命周期、参数、sysvar、clock、identity | `SessionReadyValueRuntime` 可显式安装实验 pool/execution，dispatch/record-set 负责关闭；默认 policy 为 `None` |
 | `tidb-executor` | selection/projection/default/DML、statement context、错误投影 | 传递真实 execution/context；保留调度而非重复 kernel |
 | `tidb-unistore` | PB/DAG、request flags/TZ/div precision、warning sink | 每 request 建 local owner；已迁移 signature 复用同一 TiKV program |
 | `tidb-util` | AES facade、plan codec、password policy 等 | 已迁移 utility 退化为 facade；plan/password 两类仍是明确例外 |
@@ -169,7 +169,7 @@ TiDB 的 `tikv/runtime_failure.rs` 与 `tikv/adapter_failure.rs` 分别保存 ru
 
 ### 4.1 生命周期关系
 
-`tidb-session/src/ascii_runtime.rs::SessionAsciiRuntime` 只有在显式安装实验 policy 后才持有 session pool root；当前默认 policy 是 `None`，也没有在 production caller 中自动启用。启用后，外层 statement call 开始 execution，嵌套 call 不创建新 epoch；captured closer 随 record set 转移，并在正常、异常或 Drop 路径关闭实际 captured execution。无 capability 的 AST/value 调用会为每次调用创建 one-shot owner/execution。
+`tidb-session/src/ready_value_runtime.rs::SessionReadyValueRuntime` 只有在显式安装实验 policy 后才持有 session pool root；当前默认 policy 是 `None`，也没有在 production caller 中自动启用。启用后，每个外层 statement call 开始一个独立 execution，嵌套 call 不创建第二个 execution；captured closer 随 record set 转移，并在正常、异常或 Drop 路径只关闭实际 captured execution。Session Drop 关闭仍存活的全部 attached/detached executions。无 capability 的 AST/value 调用会为每次调用创建 one-shot owner/execution。
 
 Unistore 不跨进程借用 session token。`tidb-unistore/src/cophandler/eval_context.rs::RequestEvalContext` 根据真实 DAG flags、timezone、division precision、column types 和 warning sink 创建 request owner，并在 Drop 时关闭。独立、ownerless 的 helper API 保持旧契约并按调用创建 one-shot owner；当前 session 默认也未安装 pool policy。不同 production caller 的实际调用频率和缓存层次没有在本次 microbenchmark 中建模。
 
@@ -245,7 +245,7 @@ TiDB 原路径按行和 source order 产生 warning/error/volatile effect，RPN 
 
 worker/cache 如果按行创建会带来明显成本；如果跨 statement 错误复用，又会污染 context。并发 pool 还出现过 cached poison 与 epoch/debt torn observation。
 
-处理方式是 session/request owner + execution epoch + lexical scope；nested call 复用 epoch，clone/reset/failure retry 有独立测试。pool 状态使用一致的同步和 sticky poison，cleanup 失败不会让有问题的 worker 回池。
+处理方式是 session/request owner + 独立 statement execution + lexical scope；nested call 复用当前 execution，另一个 live/detached statement 不会被新 admission 或 peer close 失效，clone/reset/failure retry 有独立测试。pool 状态使用一致的同步和 sticky poison，cleanup 失败不会让有问题的 worker 回池。
 
 ### 6.6 error provenance 与 fallback 风险
 
@@ -319,9 +319,9 @@ clippy 进一步发现 flate `find_match` 的 `tries` 未递减，这是实际�
 
 ### 8.1 方法
 
-本次新增了同机、同工具链的 frozen-before / current-after microbenchmark。测量边界是稳定的 TiDB `eval_in` AST/value API：SQL 只解析一次，解析不计入循环；每个 workload 先 warm up 2,000 次，再进行 9 个 sample。baseline 使用旧 native 实现；current 主结果使用 public AST/value 默认的 ownerless context：由于当前 Session 默认 policy 为 `None`，每次调用创建 one-shot owner/execution。另测一组显式注入可复用 `AsciiExecution` 的 pooled warm path，作为生命周期设计候选的 best case；它不是当前 production/default 路径。
+本次新增了同机、同工具链的 frozen-before / current-after microbenchmark。测量边界是稳定的 TiDB `eval_in` AST/value API：SQL 只解析一次，解析不计入循环；每个 workload 先 warm up 2,000 次，再进行 9 个 sample。baseline 使用旧 native 实现；current 主结果使用 public AST/value 默认的 ownerless context：由于当前 Session 默认 policy 为 `None`，每次调用创建 one-shot owner/execution。另测一组显式注入可复用 `ReadyValueExecution` 的 pooled warm path，作为生命周期设计候选的 best case；它不是当前 production/default 路径。
 
-最初的 one-shot probe 在两棵树中源码字节相同（SHA-256 `fdd542d9…c187e`）；最终可继续执行的 probe 只增加了“记录 MD5 错误后继续”的 harness 控制，不改变其他 workload 的表达式、循环次数、black-box 和输出检查。pooled 变体额外提供 `AsciiPoolOwner/AsciiExecution` context；baseline 没有这一 capability。各 revision 分别编译到独立 target，最终 test binary 在 CPU 2 上交错运行。临时 probe 和 detached baseline worktree在测量后删除，没有进入提交。
+最初的 one-shot probe 在两棵树中源码字节相同（SHA-256 `fdd542d9…c187e`）；最终可继续执行的 probe 只增加了“记录 MD5 错误后继续”的 harness 控制，不改变其他 workload 的表达式、循环次数、black-box 和输出检查。pooled 变体额外提供 `ReadyValuePoolOwner/ReadyValueExecution` context；baseline 没有这一 capability。各 revision 分别编译到独立 target，最终 test binary 在 CPU 2 上交错运行。临时 probe 和 detached baseline worktree在测量后删除，没有进入提交。
 
 环境：AMD Ryzen 9 9900X（12 cores / 24 threads）、46 GiB RAM、Linux 7.1.8；TiDB nightly-2026-08-22，release profile，locked dependencies。最终对比运行固定在 CPU 2，但 CPU boost/scaling 保持启用。结果单位是每次表达式求值的 ns；它不是数据库 QPS，也不包括 parser/planner/storage/network。
 
@@ -359,11 +359,17 @@ clippy 进一步发现 flate `find_match` 的 `tries` 未递减，这是实际�
 
 current build 的 Rust/C++ transitive closure 明显更大，这与引入 TiKV direct dependency closure 一致；但两个 revision 还包含其他源码、lock 和 dependency-graph 变化，这组 before/after 不能把增长单独归因于 direct TiKV dependencies。Cargo `Finished` 是较干净的 compile-only 标记；`/usr/bin/time` wall/RSS 还包含编译后的测试执行（baseline 约 1.35s，current 在约 10.60s 后因 MD5 返回 101）。该数据是本机 cold-target 记录，不是 CI 保证，也不能解释为 evaluator runtime。另一个较窄的 M6 dev check（四个 TiKV production crates）记录为 10.19s wall / 1,472,560 KiB RSS，两者范围不同，不能直接互换。
 
-已有 M6 current-only 诊断复用一个 compiled Plus program、`LocalEvalState`、`EvalContext` 和一行借用输入，10,000 次 width-one 执行约 1,915 ns/eval；retained output 16 B，input payload copy 0，逻辑上每次有 output collector + temporary result 两个 owned vectors 和一次 append。这个数字没有 frozen-before 对照，也不是 allocator-call/peak-memory 测量，因此不用于宣称改进。
+已有 M6 current-only 诊断复用一个 compiled Plus program 和 `EvalContext`，并逐调用复制同一 `ExecutionLimits`、创建新 budget/row scratch；10,000 次 width-one 执行约 1,915 ns/eval。retained output 16 B，input payload copy 0，逻辑上每次有 output collector + temporary result 两个 owned vectors 和一次 append。这个数字没有 frozen-before 对照，也不是 allocator-call/peak-memory 测量，因此不用于宣称改进。
 
-### 8.3 性能解释
+### 8.3 prepared worker 构造成本与 statement 生命周期选择
 
-显式复用 execution 很重要，但还不足以消除固定成本。integer add、lazy IF、STRCMP、Decimal add、JSON_TYPE、REGEXP_LIKE 从默认 one-shot 的约 2,260、4,334、2,873、4,007、2,172、12,099 ns/eval 降到 pooled 的约 1,284、3,361、1,670、2,818、1,394、10,696 ns/eval，说明实验 pool/epoch policy 有能力避免每次新建 owner 的一部分开销；当前 Session 默认尚未安装该 policy。即便显式启用后，operation/shape 检查、typed carrier 建立、worker lease/guard、width-one `VectorValue` materialization 和 TiDB `Datum` 回投仍形成较大的每调用固定成本。
+在当前 TiKV revision 的 release profile 上，固定 CPU2、500 次 warmup、每个样本 20,000 次 `prepare_evaluated_bytes + operation + retained_storage + drop`、11 个样本，测得 steady-state 构造/销毁中位数：ASCII 543.153 ns、integer add 687.988 ns、STRCMP 844.112 ns、Decimal add 851.984 ns、JSON_TYPE 530.752 ns、REGEXP_LIKE 851.114 ns；各 family 的 11-sample min/max 分别为 539.806–544.024、686.950–695.065、842.857–854.526、850.536–881.954、525.982–556.141、842.361–853.710 ns。原始记录在 `logs/worker-prepare-probe-build-run.log`。
+
+这组数字包含 worker drop，不包含 TiDB pool owner/slot/Arc/Mutex 和 public Datum glue；warm allocator/thread cache 也意味着它不是 cold-process 或物理 allocation peak。尽管如此，0.53–0.85 µs 的构造成本相对默认 public one-shot 路径的 2.17–12.10 µs 较小，支持更简单的 statement-owned 策略：worker 只在同一 statement execution 内复用；statement close 只退休自己的 idle worker；不同 live/detached statement 不再通过 rotating global epoch 相互失效。该选择明确放弃跨 statement worker 复用，从而避免在当前 metadata 仍含 per-invocation mutable binding 时引入错误共享。
+
+### 8.4 性能解释
+
+显式复用 execution 很重要，但还不足以消除固定成本。integer add、lazy IF、STRCMP、Decimal add、JSON_TYPE、REGEXP_LIKE 从默认 one-shot 的约 2,260、4,334、2,873、4,007、2,172、12,099 ns/eval 降到 pooled 的约 1,284、3,361、1,670、2,818、1,394、10,696 ns/eval，说明实验 pool/execution policy 有能力避免每次新建 owner 的一部分开销；当前 Session 默认尚未安装该 policy。即便显式启用后，operation/shape 检查、typed carrier 建立、worker lease/guard、width-one `VectorValue` materialization 和 TiDB `Datum` 回投仍形成较大的每调用固定成本。
 
 这些数字只代表 AST/value、width-one、warm execution 路径。它们不包含 SQL parser/planner/storage/network，也没有测 typed batch 或真实 server；不能直接换算为 TiDB QPS。相反，它们适合作为一个明确的优化信号：当前架构实现了唯一 owner 和兼容边界，但 hot-path glue 仍未达到生产性能要求。更复杂表达式能够摊薄固定成本，而简单 arithmetic/control 是最需要减少层次和临时 vector 的场景。
 

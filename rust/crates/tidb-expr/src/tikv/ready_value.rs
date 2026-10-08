@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Closed ready-argument caller sharing one scoped pool across its fixed operations.
-//! Legacy public ASCII capabilities retain their names and ASCII-only value API.
+//! Public ready-value capabilities expose the shared closed operation router.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
 //! precede this value boundary; original return coercion follows it. Public
@@ -33,7 +33,7 @@
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -69,12 +69,12 @@ pub(super) enum OwnerErrorKind {
 
 /// TiDB-only configuration/lifecycle failure; no KV type is exposed here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AsciiOwnerError {
+pub struct ReadyValueOwnerError {
     kind: OwnerErrorKind,
     message: &'static str,
 }
 
-impl AsciiOwnerError {
+impl ReadyValueOwnerError {
     pub(super) fn kind(&self) -> OwnerErrorKind {
         self.kind
     }
@@ -86,12 +86,12 @@ impl AsciiOwnerError {
         Self::new(OwnerErrorKind::Resource, message)
     }
     fn closed() -> Self {
-        Self::new(OwnerErrorKind::Closed, "ASCII execution epoch is closed")
+        Self::new(OwnerErrorKind::Closed, "ready-value execution is closed")
     }
     fn poisoned() -> Self {
         Self::new(
             OwnerErrorKind::Poisoned,
-            "ASCII owner accounting is poisoned",
+            "ready-value owner accounting is poisoned",
         )
     }
     fn contract(message: &'static str) -> Self {
@@ -99,28 +99,28 @@ impl AsciiOwnerError {
     }
 }
 
-impl fmt::Display for AsciiOwnerError {
+impl fmt::Display for ReadyValueOwnerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.message)
     }
 }
-impl std::error::Error for AsciiOwnerError {}
+impl std::error::Error for ReadyValueOwnerError {}
 
 /// Private structured handoff. Actual C4 failures capture their known phase at
 /// the producing call; adapter failures never impersonate a LocalError.
 #[derive(Debug)]
-pub(super) enum AsciiBoundaryError {
+pub(super) enum ReadyValueBoundaryError {
     Frontend(EvalError),
     Kernel(ExpressionRuntimeFailure),
     Metadata(BridgeError),
-    Owner(AsciiOwnerError),
+    Owner(ReadyValueOwnerError),
     Scope {
         kind: ScopeFailureKind,
         reason: &'static str,
     },
 }
 
-impl AsciiBoundaryError {
+impl ReadyValueBoundaryError {
     fn into_eval_error(self) -> EvalError {
         match self {
             Self::Frontend(error) => error,
@@ -138,13 +138,13 @@ impl AsciiBoundaryError {
     }
 }
 
-impl From<AsciiOwnerError> for AsciiBoundaryError {
-    fn from(error: AsciiOwnerError) -> Self {
+impl From<ReadyValueOwnerError> for ReadyValueBoundaryError {
+    fn from(error: ReadyValueOwnerError) -> Self {
         Self::Owner(error)
     }
 }
 
-/// Explicit, immutable limits for the closed ASCII worker; no default policy.
+/// Explicit, immutable limits for the closed ready-value worker; no default policy.
 ///
 /// The pool ledger uses conditional retained/request-size accounting for a
 /// validated, fixed compiler/layout cohort. It is not a physical-heap cap, a
@@ -153,7 +153,7 @@ impl From<AsciiOwnerError> for AsciiBoundaryError {
 /// Caller handles/scopes, native coercion and native error-carrier allocations
 /// are outside this ledger; driver temporaries have a separate call allowance.
 #[derive(Clone, Copy, Debug)]
-pub struct AsciiPoolPolicy {
+pub struct ReadyValuePoolPolicy {
     max_workers: usize,
     max_creating: usize,
     max_pool_bytes: usize,
@@ -164,13 +164,13 @@ pub struct AsciiPoolPolicy {
     max_call_retained_bytes: usize,
 }
 
-impl AsciiPoolPolicy {
+impl ReadyValuePoolPolicy {
     /// Checks explicit limits and the conditional control-storage charge.
     ///
     /// This does not prepare a worker or certify physical heap usage, factory
     /// transients or OOM recovery. See the accounting exclusions on this type.
     /// Zero worker/creating slots are valid for a dormant binding; admission
-    /// occurs only when an evaluated value demands the closed ASCII worker.
+    /// occurs only when an evaluated value demands the closed ready-value worker.
     ///
     /// # Errors
     /// Returns a native configuration/resource error for inconsistent limits or
@@ -184,19 +184,19 @@ impl AsciiPoolPolicy {
         max_steps: u64,
         max_frame_depth: usize,
         max_call_retained_bytes: usize,
-    ) -> Result<Self, AsciiOwnerError> {
+    ) -> Result<Self, ReadyValueOwnerError> {
         if max_creating > max_workers || creation_reservation < worker_retained_cap {
-            return Err(AsciiOwnerError::new(
+            return Err(ReadyValueOwnerError::new(
                 OwnerErrorKind::Policy,
-                "ASCII creation slots/reservation contradict worker limits",
+                "ready-value creation slots/reservation contradict worker limits",
             ));
         }
         // Extent checks precede allocation. Zero available slots are valid:
         // merely binding an unused scope must not perform runtime admission.
         let base = base_charge(max_workers)?;
         if base > max_pool_bytes {
-            return Err(AsciiOwnerError::resource(
-                "ASCII owner control budget exceeded",
+            return Err(ReadyValueOwnerError::resource(
+                "ready-value owner control budget exceeded",
             ));
         }
         Ok(Self {
@@ -225,7 +225,18 @@ impl AsciiPoolPolicy {
 struct SlotToken {
     index: usize,
     serial: u64,
-    epoch: u64,
+    execution_id: u64,
+}
+
+struct ExecutionState {
+    id: u64,
+    closed: AtomicBool,
+}
+
+impl ExecutionState {
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
 }
 
 enum Slot {
@@ -234,6 +245,7 @@ enum Slot {
     Leased(SlotToken),
     Idle {
         token: SlotToken,
+        execution: Arc<ExecutionState>,
         worker: Box<EvaluatedBytesWorker>,
         observed_bytes: usize,
     },
@@ -246,7 +258,7 @@ enum Slot {
 
 struct PoolState {
     slots: Vec<Slot>,
-    next_epoch: u64,
+    next_execution_id: u64,
     next_serial: u64,
     base_bytes: usize,
     reserved_bytes: usize,
@@ -256,9 +268,7 @@ struct PoolState {
 }
 
 struct PoolCore {
-    policy: AsciiPoolPolicy,
-    // Zero means closed. A single atomic word is the epoch publication point.
-    epoch: AtomicU64,
+    policy: ReadyValuePoolPolicy,
     poisoned: AtomicBool,
     uncertain: AtomicUsize,
     state: Mutex<PoolState>,
@@ -275,11 +285,13 @@ struct PoolArcAllocation {
     _data: PoolCore,
 }
 
-fn base_charge(capacity: usize) -> Result<usize, AsciiOwnerError> {
+fn base_charge(capacity: usize) -> Result<usize, ReadyValueOwnerError> {
     capacity
         .checked_mul(mem::size_of::<Slot>())
         .and_then(|slots| slots.checked_add(mem::size_of::<PoolArcAllocation>()))
-        .ok_or_else(|| AsciiOwnerError::resource("ASCII control/container extent overflow"))
+        .ok_or_else(|| {
+            ReadyValueOwnerError::resource("ready-value control/container extent overflow")
+        })
 }
 
 /// Reservation diagnostics, not a simultaneous measurement of leased workers
@@ -301,59 +313,59 @@ struct PoolSnapshot {
     caller_arc_measurement_required: bool,
 }
 
-/// Cloneable, synchronized accounting root for explicit ASCII executions.
+/// Cloneable, synchronized accounting root for explicit ready-value executions.
 ///
-/// Clones share outstanding creation/lease/retirement charges across epochs.
+/// Clones share outstanding creation/lease/retirement charges across executions.
 /// Accounting is conditional on the fixed-pin allocation-request/retained-size
 /// basis, not a physical-heap or transient-peak/OOM guarantee. Caller handles,
 /// scopes, native coercion and native error-carrier allocations are excluded;
-/// see [`AsciiPoolPolicy`]. This owner installs no SQL or statement lifecycle.
+/// see [`ReadyValuePoolPolicy`]. This owner installs no SQL or statement lifecycle.
 #[derive(Clone)]
-pub struct AsciiPoolOwner {
+pub struct ReadyValuePoolOwner {
     core: Arc<PoolCore>,
 }
 
-/// Cloneable, synchronized token for one epoch of an [`AsciiPoolOwner`].
+/// Cloneable, synchronized token for one independent execution of a
+/// [`ReadyValuePoolOwner`].
 ///
 /// Cloning does not begin an execution or clone a worker. The lifecycle owner
-/// must explicitly close this epoch; dropping a borrowed token does not do so.
+/// must explicitly close this execution; dropping a borrowed token does not do so.
 #[derive(Clone)]
-pub struct AsciiExecution {
+pub struct ReadyValueExecution {
     core: Arc<PoolCore>,
-    epoch: u64,
+    state: Arc<ExecutionState>,
 }
 
-impl AsciiPoolOwner {
-    /// Allocates the accounting root and slot container, not an ASCII worker.
+impl ReadyValuePoolOwner {
+    /// Allocates the accounting root and slot container, not a ready-value worker.
     ///
     /// Uses only the caller's checked policy. Its conditional fixed-pin request
-    /// accounting has the exclusions and non-guarantees on [`AsciiPoolPolicy`];
+    /// accounting has the exclusions and non-guarantees on [`ReadyValuePoolPolicy`];
     /// notably ordinary Arc/Box allocations do not promise OOM recovery.
     ///
     /// # Errors
     /// Returns a native resource error if the slot reservation fails or its
     /// observed container capacity exceeds the control-storage allowance.
-    pub fn new(policy: AsciiPoolPolicy) -> Result<Self, AsciiOwnerError> {
+    pub fn new(policy: ReadyValuePoolPolicy) -> Result<Self, ReadyValueOwnerError> {
         let mut slots = Vec::new();
-        slots
-            .try_reserve_exact(policy.max_workers)
-            .map_err(|_| AsciiOwnerError::resource("ASCII slot-container allocation failed"))?;
+        slots.try_reserve_exact(policy.max_workers).map_err(|_| {
+            ReadyValueOwnerError::resource("ready-value slot-container allocation failed")
+        })?;
         let base_bytes = base_charge(slots.capacity())?;
         if base_bytes > policy.max_pool_bytes {
-            return Err(AsciiOwnerError::resource(
-                "ASCII actual container budget exceeded",
+            return Err(ReadyValueOwnerError::resource(
+                "ready-value actual container budget exceeded",
             ));
         }
         slots.resize_with(policy.max_workers, || Slot::Empty);
         Ok(Self {
             core: Arc::new(PoolCore {
                 policy,
-                epoch: AtomicU64::new(0),
                 poisoned: AtomicBool::new(false),
                 uncertain: AtomicUsize::new(0),
                 state: Mutex::new(PoolState {
                     slots,
-                    next_epoch: 0,
+                    next_execution_id: 0,
                     next_serial: 0,
                     base_bytes,
                     reserved_bytes: base_bytes,
@@ -365,35 +377,37 @@ impl AsciiPoolOwner {
         })
     }
 
-    /// Begins a checked, non-reused epoch on this same accounting root.
+    /// Begins a checked, independently closable execution on this accounting root.
     ///
-    /// Invalidates older epochs without forgiving their outstanding charges.
+    /// Existing executions remain live and retain their statement-owned workers.
     /// No worker is prepared here; this is a lifecycle operation, not a row
-    /// entrypoint. The caller owns the matching [`AsciiExecution::close`].
+    /// entrypoint. The caller owns the matching [`ReadyValueExecution::close`].
     ///
     /// # Errors
     /// Returns a native lifecycle/contract error if the owner is poisoned or
-    /// the epoch counter is exhausted.
-    pub fn begin_execution(&self) -> Result<AsciiExecution, AsciiOwnerError> {
-        let epoch = {
+    /// the execution identifier is exhausted.
+    pub fn begin_execution(&self) -> Result<ReadyValueExecution, ReadyValueOwnerError> {
+        let id = {
             let mut state = self.core.lock()?;
-            let Some(epoch) = state.next_epoch.checked_add(1) else {
+            let Some(id) = state.next_execution_id.checked_add(1) else {
                 self.core.poison();
-                return Err(AsciiOwnerError::contract("ASCII epoch exhausted"));
+                return Err(ReadyValueOwnerError::contract(
+                    "ready-value execution identifier exhausted",
+                ));
             };
-            state.next_epoch = epoch;
-            self.core.epoch.store(epoch, Ordering::SeqCst);
-            epoch
+            state.next_execution_id = id;
+            id
         };
-        // Old leased/creating/retiring charges survive on this SAME root.
-        self.core.retire_old_idle();
-        Ok(AsciiExecution {
+        Ok(ReadyValueExecution {
             core: Arc::clone(&self.core),
-            epoch,
+            state: Arc::new(ExecutionState {
+                id,
+                closed: AtomicBool::new(false),
+            }),
         })
     }
 
-    fn snapshot(&self) -> Result<PoolSnapshot, AsciiOwnerError> {
+    fn snapshot(&self) -> Result<PoolSnapshot, ReadyValueOwnerError> {
         self.core.snapshot()
     }
 }
@@ -401,16 +415,15 @@ impl AsciiPoolOwner {
 impl PoolCore {
     fn poison(&self) {
         self.poisoned.store(true, Ordering::SeqCst);
-        self.epoch.store(0, Ordering::SeqCst);
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, PoolState>, AsciiOwnerError> {
+    fn lock(&self) -> Result<MutexGuard<'_, PoolState>, ReadyValueOwnerError> {
         let state = self.state.lock().map_err(|_| {
             self.poison();
-            AsciiOwnerError::poisoned()
+            ReadyValueOwnerError::poisoned()
         })?;
         if self.poisoned.load(Ordering::SeqCst) {
-            return Err(AsciiOwnerError::poisoned());
+            return Err(ReadyValueOwnerError::poisoned());
         }
         Ok(state)
     }
@@ -423,39 +436,38 @@ impl PoolCore {
         })
     }
 
-    fn check_epoch(&self, epoch: u64) -> Result<(), AsciiOwnerError> {
+    fn check_execution(&self, execution: &ExecutionState) -> Result<(), ReadyValueOwnerError> {
         if self.state.is_poisoned() || self.poisoned.load(Ordering::SeqCst) {
             // A cached lease need not acquire the state mutex again. Observe
             // its sticky poison directly, then permanently close this root.
             self.poison();
-            Err(AsciiOwnerError::poisoned())
-        } else if epoch == 0 || self.epoch.load(Ordering::SeqCst) != epoch {
-            Err(AsciiOwnerError::closed())
+            Err(ReadyValueOwnerError::poisoned())
+        } else if execution.id == 0 || execution.is_closed() {
+            Err(ReadyValueOwnerError::closed())
         } else if {
             // Timing-only one-shot rendezvous for the structural snapshot-race
             // regression. No production callback or PoolCore field is added.
             #[cfg(test)]
-            tests::after_epoch_read_for_test();
+            tests::after_execution_read_for_test();
             self.uncertain.load(Ordering::SeqCst) != 0
         } {
-            Err(AsciiOwnerError::resource(
-                "ASCII uncertain retirement debt remains",
+            Err(ReadyValueOwnerError::resource(
+                "ready-value uncertain retirement debt remains",
             ))
-        } else if self.epoch.load(Ordering::SeqCst) != epoch {
-            Err(AsciiOwnerError::closed())
+        } else if execution.is_closed() {
+            Err(ReadyValueOwnerError::closed())
         } else if self.state.is_poisoned() || self.poisoned.load(Ordering::SeqCst) {
             self.poison();
-            Err(AsciiOwnerError::poisoned())
+            Err(ReadyValueOwnerError::poisoned())
         } else {
-            // Epochs are root-local, never reused and checked against wrap.
-            // Equal reads bracket the debt observation; final sticky-poison
-            // checks establish that this same instant was eligible. No pool
-            // mutex is held across a kernel or native callback.
+            // Execution identifiers are root-local, never reused and checked
+            // against wrap. Equal liveness reads bracket the debt observation;
+            // no pool mutex is held across a kernel or native callback.
             Ok(())
         }
     }
 
-    fn snapshot(&self) -> Result<PoolSnapshot, AsciiOwnerError> {
+    fn snapshot(&self) -> Result<PoolSnapshot, ReadyValueOwnerError> {
         let state = self.lock()?;
         let mut out = PoolSnapshot {
             live: 0,
@@ -483,7 +495,9 @@ impl PoolCore {
                     out.idle_observed_bytes = out
                         .idle_observed_bytes
                         .checked_add(*observed_bytes)
-                        .ok_or_else(|| AsciiOwnerError::resource("ASCII observation overflow"))?;
+                        .ok_or_else(|| {
+                            ReadyValueOwnerError::resource("ready-value observation overflow")
+                        })?;
                 }
             }
         }
@@ -573,18 +587,21 @@ impl PoolCore {
         state.retired = retired;
     }
 
-    fn retire_old_idle(self: &Arc<Self>) {
+    fn retire_execution_idle(self: &Arc<Self>, execution_id: u64) {
         loop {
             let detached = {
                 let mut state = self.cleanup_lock();
-                let current = self.epoch.load(Ordering::SeqCst);
                 let Some(index) = state.slots.iter().position(
-                    |slot| matches!(slot, Slot::Idle { token, .. } if token.epoch != current),
+                    |slot| matches!(slot, Slot::Idle { token, .. } if token.execution_id == execution_id),
                 ) else {
                     return;
                 };
-                let Slot::Idle { token, worker, .. } =
-                    mem::replace(&mut state.slots[index], Slot::Empty)
+                let Slot::Idle {
+                    token,
+                    execution,
+                    worker,
+                    ..
+                } = mem::replace(&mut state.slots[index], Slot::Empty)
                 else {
                     unreachable!("matched idle slot");
                 };
@@ -598,6 +615,7 @@ impl PoolCore {
                 Retirement {
                     core: Arc::clone(self),
                     token,
+                    execution: Some(execution),
                     worker: Some(worker),
                     recorded: true,
                 }
@@ -607,13 +625,13 @@ impl PoolCore {
     }
 }
 
-impl AsciiExecution {
+impl ReadyValueExecution {
     /// Creates an affine scope without checkout, compilation or admission.
     ///
-    /// A closed epoch is refused only when a value demands its worker. Scopes
-    /// can move between threads but cannot share their mutable worker state.
-    pub fn scope(&self) -> AsciiScope {
-        AsciiScope {
+    /// A closed execution is refused only when a value demands its worker.
+    /// Scopes can move between threads but cannot share mutable worker state.
+    pub fn scope(&self) -> ReadyValueScope {
+        ReadyValueScope {
             execution: self.clone(),
             lease: RefCell::new(None),
             busy: Cell::new(false),
@@ -621,46 +639,61 @@ impl AsciiExecution {
         }
     }
 
-    /// Idempotently closes this epoch, never a newer epoch on the same root.
+    /// Idempotently closes only this execution on the shared root.
     ///
     /// Existing live leases/creations remain charged until their disposal.
     /// Only the execution's lifecycle owner, not a borrowing operator, should
     /// close it. This does not wait for outstanding native work to finish.
     pub fn close(&self) {
         {
-            let _state = self.core.cleanup_lock();
-            if self.core.epoch.load(Ordering::SeqCst) == self.epoch {
-                self.core.epoch.store(0, Ordering::SeqCst);
-            }
+            // Serialize the liveness transition with checkout/publication/return.
+            let _pool = self.core.cleanup_lock();
+            self.state.closed.store(true, Ordering::SeqCst);
         }
-        self.core.retire_old_idle();
+        self.core.retire_execution_idle(self.state.id);
+    }
+
+    /// Reports this execution's monotonic lifecycle state without admission.
+    pub fn is_closed(&self) -> bool {
+        self.state.is_closed()
     }
 
     // Split reservation/preparation is a closed internal seam, useful for
     // deterministic race tests. No caller supplies a replacement factory.
-    fn checkout(&self) -> Result<Checkout, AsciiOwnerError> {
+    fn checkout(&self) -> Result<Checkout, ReadyValueOwnerError> {
         self.checkout_for(EvaluatedBytesOp::Ascii)
     }
 
-    fn checkout_for(&self, operation: EvaluatedBytesOp) -> Result<Checkout, AsciiOwnerError> {
-        // Bounded eviction even if other threads continually refill idle slots.
-        // Every operation shares this same root, epoch and reservation ledger.
+    fn checkout_for(&self, operation: EvaluatedBytesOp) -> Result<Checkout, ReadyValueOwnerError> {
+        // Bounded eviction even if other threads continually refill this
+        // execution's idle slots. Workers are never reused across executions.
         let mut evictions_left = self.core.policy.max_workers;
         loop {
             let mut state = self.core.lock()?;
-            self.core.check_epoch(self.epoch)?;
+            self.core.check_execution(&self.state)?;
             if let Some(index) = state.slots.iter().position(|slot| {
                 matches!(slot, Slot::Idle { token, worker, .. }
-                    if token.epoch == self.epoch && worker.operation() == operation)
+                    if token.execution_id == self.state.id && worker.operation() == operation)
             }) {
-                let Slot::Idle { token, worker, .. } =
-                    mem::replace(&mut state.slots[index], Slot::Empty)
+                let Slot::Idle {
+                    token,
+                    execution,
+                    worker,
+                    ..
+                } = mem::replace(&mut state.slots[index], Slot::Empty)
                 else {
                     unreachable!("matched idle slot");
                 };
+                if !Arc::ptr_eq(&execution, &self.state) {
+                    self.core.poison();
+                    return Err(ReadyValueOwnerError::contract(
+                        "ready-value idle execution identity changed",
+                    ));
+                }
                 state.slots[index] = Slot::Leased(token);
-                return Ok(Checkout::Idle(AsciiLease {
+                return Ok(Checkout::Idle(ReadyValueLease {
                     core: Arc::clone(&self.core),
+                    execution,
                     token,
                     worker: Some(worker),
                 }));
@@ -671,8 +704,8 @@ impl AsciiExecution {
                 .filter(|slot| matches!(slot, Slot::Creating(_)))
                 .count();
             if creating >= self.core.policy.max_creating {
-                return Err(AsciiOwnerError::resource(
-                    "ASCII creating-worker limit exceeded",
+                return Err(ReadyValueOwnerError::resource(
+                    "ready-value creating-worker limit exceeded",
                 ));
             }
             let empty = state
@@ -684,20 +717,20 @@ impl AsciiExecution {
                 .checked_add(self.core.policy.creation_reservation)
                 .filter(|bytes| *bytes <= self.core.policy.max_pool_bytes);
             if let (Some(index), Some(bytes)) = (empty, bytes) {
-                let serial = state
-                    .next_serial
-                    .checked_add(1)
-                    .ok_or_else(|| AsciiOwnerError::resource("ASCII slot serial exhausted"))?;
+                let serial = state.next_serial.checked_add(1).ok_or_else(|| {
+                    ReadyValueOwnerError::resource("ready-value slot serial exhausted")
+                })?;
                 let token = SlotToken {
                     index,
                     serial,
-                    epoch: self.epoch,
+                    execution_id: self.state.id,
                 };
                 state.next_serial = serial;
                 state.reserved_bytes = bytes;
                 state.slots[index] = Slot::Creating(token);
                 return Ok(Checkout::Create(Creation {
                     core: Arc::clone(&self.core),
+                    execution: Arc::clone(&self.state),
                     token,
                     operation,
                     worker: None,
@@ -707,18 +740,29 @@ impl AsciiExecution {
             if evictions_left != 0 {
                 if let Some(index) = state.slots.iter().position(|slot| {
                     matches!(slot, Slot::Idle { token, worker, .. }
-                        if token.epoch == self.epoch && worker.operation() != operation)
+                        if token.execution_id == self.state.id && worker.operation() != operation)
                 }) {
-                    let Slot::Idle { token, worker, .. } =
-                        mem::replace(&mut state.slots[index], Slot::Empty)
+                    let Slot::Idle {
+                        token,
+                        execution,
+                        worker,
+                        ..
+                    } = mem::replace(&mut state.slots[index], Slot::Empty)
                     else {
                         unreachable!("matched idle slot");
                     };
+                    if !Arc::ptr_eq(&execution, &self.state) {
+                        self.core.poison();
+                        return Err(ReadyValueOwnerError::contract(
+                            "ready-value eviction execution identity changed",
+                        ));
+                    }
                     // Reuse the real retirement path; do not release bytes or
                     // the slot until the detached worker is actually destroyed.
                     state.slots[index] = Slot::Leased(token);
-                    let retired = AsciiLease {
+                    let retired = ReadyValueLease {
                         core: Arc::clone(&self.core),
+                        execution,
                         token,
                         worker: Some(worker),
                     };
@@ -728,22 +772,22 @@ impl AsciiExecution {
                     continue;
                 }
             }
-            return Err(AsciiOwnerError::resource(if empty.is_none() {
-                "ASCII worker-slot limit exceeded"
+            return Err(ReadyValueOwnerError::resource(if empty.is_none() {
+                "ready-value worker-slot limit exceeded"
             } else {
-                "ASCII owner reservation budget exceeded"
+                "ready-value owner reservation budget exceeded"
             }));
         }
     }
 }
 
 enum Checkout {
-    Idle(AsciiLease),
+    Idle(ReadyValueLease),
     Create(Creation),
 }
 
 impl Checkout {
-    fn ready(self) -> Result<AsciiLease, AsciiBoundaryError> {
+    fn ready(self) -> Result<ReadyValueLease, ReadyValueBoundaryError> {
         match self {
             Self::Idle(lease) => {
                 lease.validate()?;
@@ -756,6 +800,7 @@ impl Checkout {
 
 struct Creation {
     core: Arc<PoolCore>,
+    execution: Arc<ExecutionState>,
     token: SlotToken,
     operation: EvaluatedBytesOp,
     worker: Option<Box<EvaluatedBytesWorker>>,
@@ -763,30 +808,33 @@ struct Creation {
 }
 
 impl Creation {
-    fn prepare(mut self) -> Result<AsciiLease, AsciiBoundaryError> {
+    fn prepare(mut self) -> Result<ReadyValueLease, ReadyValueBoundaryError> {
         self.build_worker()?;
         self.publish()
     }
 
     // Keeping these two closed phases separate permits a test to close an
-    // epoch AFTER real preparation but BEFORE publication. Neither phase
+    // execution AFTER real preparation but BEFORE publication. Neither phase
     // accepts a factory, callback, program, context or substituted worker.
-    fn build_worker(&mut self) -> Result<(), AsciiBoundaryError> {
+    fn build_worker(&mut self) -> Result<(), ReadyValueBoundaryError> {
         if self.worker.is_some() {
-            return Err(AsciiOwnerError::contract("ASCII creation already prepared").into());
+            return Err(
+                ReadyValueOwnerError::contract("ready-value creation already prepared").into(),
+            );
         }
         {
             let mut state = self.core.lock()?;
-            self.core.check_epoch(self.token.epoch)?;
+            self.core.check_execution(&self.execution)?;
             if !matches!(state.slots.get(self.token.index), Some(Slot::Creating(t)) if *t == self.token)
             {
                 self.core.poison();
-                return Err(AsciiOwnerError::contract("ASCII creation token changed").into());
+                return Err(
+                    ReadyValueOwnerError::contract("ready-value creation token changed").into(),
+                );
             }
-            state.factory_attempts = state
-                .factory_attempts
-                .checked_add(1)
-                .ok_or_else(|| AsciiOwnerError::resource("ASCII factory counter exhausted"))?;
+            state.factory_attempts = state.factory_attempts.checked_add(1).ok_or_else(|| {
+                ReadyValueOwnerError::resource("ready-value factory counter exhausted")
+            })?;
         }
         // The full creating reservation predates ALL factory/prewarm/Box work.
         let worker = prepare_evaluated_bytes(
@@ -820,7 +868,7 @@ impl Creation {
             self.core.policy.worker_retained_cap,
         )
         .map_err(|error| {
-            AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+            ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
                 error,
                 Some(ExpressionRuntimeFailurePhase::Prepare),
             ))
@@ -830,7 +878,7 @@ impl Creation {
         let observed = worker
             .retained_storage()
             .map_err(|error| {
-                AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
                     error,
                     Some(ExpressionRuntimeFailurePhase::Observe),
                 ))
@@ -840,61 +888,67 @@ impl Creation {
             || !worker.is_healthy()
             || observed > self.core.policy.worker_retained_cap
         {
-            return Err(
-                AsciiOwnerError::contract("ASCII factory published unhealthy storage").into(),
-            );
+            return Err(ReadyValueOwnerError::contract(
+                "ready-value factory published unhealthy storage",
+            )
+            .into());
         }
         {
             let mut state = self.core.lock()?;
             // Count real successful factory returns, including one invalidated
             // by a concurrent close. Do not label a cache lookup as preparation.
-            state.factory_successes = state
-                .factory_successes
-                .checked_add(1)
-                .ok_or_else(|| AsciiOwnerError::resource("ASCII factory counter exhausted"))?;
+            state.factory_successes = state.factory_successes.checked_add(1).ok_or_else(|| {
+                ReadyValueOwnerError::resource("ready-value factory counter exhausted")
+            })?;
         }
         Ok(())
     }
 
-    fn publish(mut self) -> Result<AsciiLease, AsciiBoundaryError> {
-        let worker = self.worker.as_ref().ok_or(AsciiBoundaryError::Scope {
+    fn publish(mut self) -> Result<ReadyValueLease, ReadyValueBoundaryError> {
+        let worker = self.worker.as_ref().ok_or(ReadyValueBoundaryError::Scope {
             kind: ScopeFailureKind::Contract,
-            reason: "ASCII publication before preparation",
+            reason: "ready-value publication before preparation",
         })?;
         let observed = worker
             .retained_storage()
             .map_err(|error| {
-                AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
                     error,
                     Some(ExpressionRuntimeFailurePhase::Observe),
                 ))
             })?
             .total_bytes();
         if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
-            return Err(AsciiOwnerError::contract("ASCII publication is not healthy").into());
+            return Err(
+                ReadyValueOwnerError::contract("ready-value publication is not healthy").into(),
+            );
         }
         {
             let mut state = self.core.lock()?;
-            self.core.check_epoch(self.token.epoch)?;
+            self.core.check_execution(&self.execution)?;
             if !matches!(state.slots.get(self.token.index), Some(Slot::Creating(t)) if *t == self.token)
             {
                 self.core.poison();
-                return Err(AsciiOwnerError::contract("ASCII publication token changed").into());
+                return Err(ReadyValueOwnerError::contract(
+                    "ready-value publication token changed",
+                )
+                .into());
             }
             let bytes = state
                 .reserved_bytes
                 .checked_sub(self.core.policy.creation_reservation)
                 .and_then(|bytes| bytes.checked_add(self.core.policy.worker_retained_cap))
                 .ok_or_else(|| {
-                    AsciiOwnerError::contract("ASCII publication reservation changed")
+                    ReadyValueOwnerError::contract("ready-value publication reservation changed")
                 })?;
             state.reserved_bytes = bytes;
             state.slots[self.token.index] = Slot::Leased(self.token);
         }
         // All factory temporaries are gone before F is exchanged for W.
         self.active = false;
-        Ok(AsciiLease {
+        Ok(ReadyValueLease {
             core: Arc::clone(&self.core),
+            execution: Arc::clone(&self.execution),
             token: self.token,
             worker: self.worker.take(),
         })
@@ -911,31 +965,35 @@ impl Drop for Creation {
     }
 }
 
-struct AsciiLease {
+struct ReadyValueLease {
     core: Arc<PoolCore>,
+    execution: Arc<ExecutionState>,
     token: SlotToken,
     worker: Option<Box<EvaluatedBytesWorker>>,
 }
 
-impl AsciiLease {
-    fn validate(&self) -> Result<usize, AsciiBoundaryError> {
-        let worker = self.worker.as_ref().ok_or(AsciiBoundaryError::Scope {
+impl ReadyValueLease {
+    fn validate(&self) -> Result<usize, ReadyValueBoundaryError> {
+        let worker = self.worker.as_ref().ok_or(ReadyValueBoundaryError::Scope {
             kind: ScopeFailureKind::Contract,
-            reason: "missing ASCII worker",
+            reason: "missing ready-value worker",
         })?;
         let observed = worker
             .retained_storage()
             .map_err(|error| {
-                AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+                ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
                     error,
                     Some(ExpressionRuntimeFailurePhase::Observe),
                 ))
             })?
             .total_bytes();
         if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
-            return Err(AsciiOwnerError::contract("ASCII worker ownership is not healthy").into());
+            return Err(ReadyValueOwnerError::contract(
+                "ready-value worker ownership is not healthy",
+            )
+            .into());
         }
-        self.core.check_epoch(self.token.epoch)?;
+        self.core.check_execution(&self.execution)?;
         Ok(observed)
     }
 
@@ -948,6 +1006,7 @@ impl AsciiLease {
         Some(Retirement {
             core: Arc::clone(&self.core),
             token: self.token,
+            execution: Some(Arc::clone(&self.execution)),
             worker: Some(worker),
             recorded,
         })
@@ -968,7 +1027,7 @@ impl AsciiLease {
             let Ok(mut state) = self.core.lock() else {
                 return;
             };
-            if self.core.check_epoch(self.token.epoch).is_err() {
+            if self.core.check_execution(&self.execution).is_err() {
                 return;
             }
             if !matches!(state.slots.get(self.token.index), Some(Slot::Leased(t)) if *t == self.token)
@@ -979,15 +1038,16 @@ impl AsciiLease {
             let worker = self.worker.take().expect("validated owned worker");
             state.slots[self.token.index] = Slot::Idle {
                 token: self.token,
+                execution: Arc::clone(&self.execution),
                 worker,
                 observed_bytes,
             };
         }
-        // Drop sees no worker. The unique Box moved into the same root/epoch.
+        // Drop sees no worker. The unique Box moved into the same execution slot.
     }
 }
 
-impl Drop for AsciiLease {
+impl Drop for ReadyValueLease {
     fn drop(&mut self) {
         // Default destruction NEVER recycles. Only explicit normal scope
         // completion may choose return_to_pool after all health checks.
@@ -998,6 +1058,7 @@ impl Drop for AsciiLease {
 struct Retirement {
     core: Arc<PoolCore>,
     token: SlotToken,
+    execution: Option<Arc<ExecutionState>>,
     worker: Option<Box<EvaluatedBytesWorker>>,
     recorded: bool,
 }
@@ -1005,6 +1066,7 @@ struct Retirement {
 impl Drop for Retirement {
     fn drop(&mut self) {
         drop(self.worker.take()); // no pool lock; byte/slot debt is still live
+        drop(self.execution.take());
         if self.recorded {
             self.core.finish_retirement(self.token);
         }
@@ -1014,17 +1076,17 @@ impl Drop for Retirement {
 /// Affine worker scope. RefCell/Cell intentionally make this Send, not Sync.
 /// It contains no native Columns/row/SQL descriptor or invocation value.
 ///
-/// A healthy worker is reused within the scope and returned to its same-epoch
-/// pool on ordinary drop. Unwind poison is sticky: it never permits native
+/// A healthy worker is reused within the scope and returned to its same-execution
+/// pool slot on ordinary drop. Unwind poison is sticky: it never permits native
 /// replay or silently creates a replacement execution.
-pub struct AsciiScope {
-    execution: AsciiExecution,
-    lease: RefCell<Option<AsciiLease>>,
+pub struct ReadyValueScope {
+    execution: ReadyValueExecution,
+    lease: RefCell<Option<ReadyValueLease>>,
     busy: Cell<bool>,
     poisoned: Cell<bool>,
 }
 
-impl AsciiScope {
+impl ReadyValueScope {
     /// Lexically binds a capability while preserving native Columns behavior.
     ///
     /// An already active scope on `native` wins, including its execution token
@@ -1044,18 +1106,18 @@ impl AsciiScope {
     pub fn with_columns<'a, R>(
         &'a self,
         native: &'a dyn Columns,
-        body: impl FnOnce(&ScopedAsciiColumns<'a, 'a>) -> R,
+        body: impl FnOnce(&ScopedReadyValueColumns<'a, 'a>) -> R,
     ) -> R {
         // Capability discovery is a native virtual call and can itself unwind.
         // Protect the requested scope until the effective guard is armed; a
         // scope the getter fails to disclose cannot be identified here.
         let mut discovery_guard = NativeGuard::new(self);
-        let scope = native.evaluated_ascii_scope().unwrap_or(self);
+        let scope = native.ready_value_scope().unwrap_or(self);
         // This guard must be INSIDE the existing caller's panic catcher. It
         // catches no panic itself; Drop marks poison while unwinding.
         let mut guard = NativeGuard::new(scope);
         discovery_guard.disarm();
-        let scoped = ScopedAsciiColumns { native, scope };
+        let scoped = ScopedReadyValueColumns { native, scope };
         let result = body(&scoped);
         guard.disarm();
         result
@@ -1080,8 +1142,8 @@ impl AsciiScope {
     /// Original frontend coercion errors precede runtime admission. Actual C4
     /// errors preserve their cause and known phase; pool/scope/bridge errors
     /// have the distinct native adapter origin. No failure is replayed natively.
-    pub fn evaluate_value(&self, value: &Datum) -> Result<Datum, EvalError> {
-        evaluate_ascii_value(self, value).map_err(AsciiBoundaryError::into_eval_error)
+    pub fn evaluate_ascii_value(&self, value: &Datum) -> Result<Datum, EvalError> {
+        evaluate_ascii_value(self, value).map_err(ReadyValueBoundaryError::into_eval_error)
     }
 
     fn poison(&self) {
@@ -1096,7 +1158,7 @@ impl AsciiScope {
     }
 }
 
-impl Drop for AsciiScope {
+impl Drop for ReadyValueScope {
     fn drop(&mut self) {
         let lease = self.lease.get_mut().take();
         if let Some(lease) = lease {
@@ -1110,11 +1172,11 @@ impl Drop for AsciiScope {
 }
 
 struct NativeGuard<'a> {
-    scope: &'a AsciiScope,
+    scope: &'a ReadyValueScope,
     armed: bool,
 }
 impl<'a> NativeGuard<'a> {
-    fn new(scope: &'a AsciiScope) -> Self {
+    fn new(scope: &'a ReadyValueScope) -> Self {
         Self { scope, armed: true }
     }
     fn disarm(&mut self) {
@@ -1130,32 +1192,33 @@ impl Drop for NativeGuard<'_> {
 }
 
 struct Invocation<'a> {
-    scope: &'a AsciiScope,
-    lease: Option<AsciiLease>,
+    scope: &'a ReadyValueScope,
+    lease: Option<ReadyValueLease>,
     armed: bool,
 }
 
 impl<'a> Invocation<'a> {
-    fn enter(scope: &'a AsciiScope) -> Result<Self, AsciiBoundaryError> {
+    fn enter(scope: &'a ReadyValueScope) -> Result<Self, ReadyValueBoundaryError> {
         if scope.poisoned.get() {
-            return Err(AsciiBoundaryError::Scope {
+            return Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Poisoned,
-                reason: "ASCII scope is poisoned",
+                reason: "ready-value scope is poisoned",
             });
         }
         if scope.busy.get() {
-            return Err(AsciiBoundaryError::Scope {
+            return Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Reentry,
-                reason: "reentrant ASCII runtime borrow",
+                reason: "reentrant ready-value runtime borrow",
             });
         }
-        let mut parked = scope
-            .lease
-            .try_borrow_mut()
-            .map_err(|_| AsciiBoundaryError::Scope {
-                kind: ScopeFailureKind::Reentry,
-                reason: "ASCII scope cell is already borrowed",
-            })?;
+        let mut parked =
+            scope
+                .lease
+                .try_borrow_mut()
+                .map_err(|_| ReadyValueBoundaryError::Scope {
+                    kind: ScopeFailureKind::Reentry,
+                    reason: "ready-value scope cell is already borrowed",
+                })?;
         let lease = parked.take();
         scope.busy.set(true);
         Ok(Self {
@@ -1165,7 +1228,7 @@ impl<'a> Invocation<'a> {
         })
     }
 
-    fn run(&mut self, ready: ReadyAsciiBytes) -> Result<ComputedInt, AsciiBoundaryError> {
+    fn run(&mut self, ready: ReadyAsciiBytes) -> Result<ComputedInt, ReadyValueBoundaryError> {
         require_computed_int(self.run_for(EvaluatedBytesOp::Ascii, ready)?)
     }
 
@@ -1173,7 +1236,7 @@ impl<'a> Invocation<'a> {
         &mut self,
         operation: EvaluatedBytesOp,
         ready: ReadyAsciiBytes,
-    ) -> Result<ComputedValue, AsciiBoundaryError> {
+    ) -> Result<ComputedValue, ReadyValueBoundaryError> {
         self.run_args(operation, EvaluatedArgs::Bytes(ready.0))
     }
 
@@ -1181,7 +1244,7 @@ impl<'a> Invocation<'a> {
         &mut self,
         operation: EvaluatedBytesOp,
         ready: EvaluatedArgs,
-    ) -> Result<ComputedValue, AsciiBoundaryError> {
+    ) -> Result<ComputedValue, ReadyValueBoundaryError> {
         if let Some(lease) = self.lease.as_ref() {
             lease.validate()?;
             if lease.worker.as_ref().expect("validated worker").operation() != operation {
@@ -1198,7 +1261,9 @@ impl<'a> Invocation<'a> {
         // No cell/pool borrow or native callback enters the C4 driver.
         let worker = lease.worker.as_mut().expect("validated worker");
         if worker.operation() != operation {
-            return Err(AsciiOwnerError::contract("closed Bytes worker operation mismatch").into());
+            return Err(
+                ReadyValueOwnerError::contract("closed Bytes worker operation mismatch").into(),
+            );
         }
         // Test-only facade-entry observation, not a substitute for C4's real
         // function-pointer witness. No observer is passed into the worker.
@@ -1218,7 +1283,7 @@ impl<'a> Invocation<'a> {
                     Some(EvaluatedSqlFailureKind::AbsSignedOverflow)
                 )
             {
-                return AsciiBoundaryError::Frontend(EvalError::IntOverflow);
+                return ReadyValueBoundaryError::Frontend(EvalError::IntOverflow);
             }
             if matches!(
                 operation,
@@ -1232,12 +1297,12 @@ impl<'a> Invocation<'a> {
                 // The authenticated kernel owns the exact digits, including
                 // stripping the source sign. Do not reparse the native input.
                 let Some(digits) = report.conv_overflow_digits() else {
-                    return AsciiBoundaryError::Scope {
+                    return ReadyValueBoundaryError::Scope {
                         kind: ScopeFailureKind::Contract,
                         reason: "CONV overflow receipt lacks its digit payload",
                     };
                 };
-                return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
+                return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
                     value: "BIGINT UNSIGNED",
                     expression: digits.to_owned(),
                 });
@@ -1268,7 +1333,7 @@ impl<'a> Invocation<'a> {
                     // exact opcode/profile and this invocation's kernel witness.
                     // Cipher failures are successful NULL values, not this cause.
                     if let Some(cause) = report.native_aes_error() {
-                        return AsciiBoundaryError::Frontend(EvalError::IncorrectArguments(
+                        return ReadyValueBoundaryError::Frontend(EvalError::IncorrectArguments(
                             cause.to_string(),
                         ));
                     }
@@ -1285,7 +1350,7 @@ impl<'a> Invocation<'a> {
                     _ => None,
                 };
                 if let Some(message) = message {
-                    return AsciiBoundaryError::Frontend(EvalError::IncorrectArguments(
+                    return ReadyValueBoundaryError::Frontend(EvalError::IncorrectArguments(
                         message.to_owned(),
                     ));
                 }
@@ -1294,7 +1359,7 @@ impl<'a> Invocation<'a> {
                         EvaluatedBytesOp::UuidToBinParseNative,
                         Some(EvaluatedSqlFailureKind::UuidToBinWhitespace),
                     ) => {
-                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
                             "invalid UUID_TO_BIN whitespace",
                         ));
                     }
@@ -1302,7 +1367,7 @@ impl<'a> Invocation<'a> {
                         EvaluatedBytesOp::UuidToBinParseNative,
                         Some(EvaluatedSqlFailureKind::UuidToBinInvalid),
                     ) => {
-                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
                             "invalid UUID for UUID_TO_BIN",
                         ));
                     }
@@ -1310,7 +1375,7 @@ impl<'a> Invocation<'a> {
                         EvaluatedBytesOp::UuidVersionNative,
                         Some(EvaluatedSqlFailureKind::UuidVersionInvalid),
                     ) => {
-                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
                             "invalid UUID for UUID_VERSION",
                         ));
                     }
@@ -1318,7 +1383,7 @@ impl<'a> Invocation<'a> {
                         EvaluatedBytesOp::UuidTimestampNative,
                         Some(EvaluatedSqlFailureKind::UuidTimestampInvalid),
                     ) => {
-                        return AsciiBoundaryError::Frontend(EvalError::Unsupported(
+                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
                             "invalid UUID for UUID_TIMESTAMP",
                         ));
                     }
@@ -1329,12 +1394,12 @@ impl<'a> Invocation<'a> {
                         // The receipt owns the exact rejected byte payload;
                         // never re-read or revalidate the frontend argument.
                         let Some(input) = report.bin_to_uuid_input() else {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "BIN_TO_UUID length receipt lacks its input payload",
                             };
                         };
-                        return AsciiBoundaryError::Frontend(EvalError::WrongValueForType {
+                        return ReadyValueBoundaryError::Frontend(EvalError::WrongValueForType {
                             value_class: "string",
                             value: String::from_utf8_lossy(input).into_owned(),
                             function: "bin_to_uuid",
@@ -1369,7 +1434,7 @@ impl<'a> Invocation<'a> {
                         Some(EvaluatedSqlFailureKind::BinaryArithmeticNative),
                     ) => {
                         let Some(cause) = report.native_binary_arithmetic_error() else {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "binary arithmetic failure receipt lacks its native cause",
                             };
@@ -1378,7 +1443,7 @@ impl<'a> Invocation<'a> {
                             && (cause.operation != BinaryArithmeticOperation::Modulo
                                 || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
                         {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "native modulo failure receipt has an unexpected cause",
                             };
@@ -1387,7 +1452,7 @@ impl<'a> Invocation<'a> {
                             && (cause.operation != BinaryArithmeticOperation::Divide
                                 || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
                         {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "native division failure receipt has an unexpected cause",
                             };
@@ -1398,12 +1463,12 @@ impl<'a> Invocation<'a> {
                             && (cause.operation != BinaryArithmeticOperation::IntDivide
                                 || cause.kind != BinaryArithmeticErrorKind::IntOverflow)
                         {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "native integer division failure receipt has an unexpected cause",
                             };
                         }
-                        return AsciiBoundaryError::Frontend(match cause.kind {
+                        return ReadyValueBoundaryError::Frontend(match cause.kind {
                             BinaryArithmeticErrorKind::IntOverflow => EvalError::IntOverflow,
                             BinaryArithmeticErrorKind::FloatOverflow => EvalError::FloatOverflow,
                             BinaryArithmeticErrorKind::DecimalOverflow => {
@@ -1425,7 +1490,7 @@ impl<'a> Invocation<'a> {
                         Some(EvaluatedSqlFailureKind::BinaryArithmeticLegacy),
                     ) => {
                         let Some(cause) = report.legacy_binary_arithmetic_error() else {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "binary arithmetic failure receipt lacks its legacy cause",
                             };
@@ -1435,19 +1500,19 @@ impl<'a> Invocation<'a> {
                             BinaryArithmeticOperation::Subtract => "SUBTRACT",
                             BinaryArithmeticOperation::Multiply => "MULTIPLY",
                             BinaryArithmeticOperation::Modulo => {
-                                return AsciiBoundaryError::Scope {
+                                return ReadyValueBoundaryError::Scope {
                                     kind: ScopeFailureKind::Contract,
                                     reason: "legacy modulo has no arithmetic SQL failure",
                                 };
                             }
                             BinaryArithmeticOperation::Divide | BinaryArithmeticOperation::IntDivide => {
-                                return AsciiBoundaryError::Scope {
+                                return ReadyValueBoundaryError::Scope {
                                     kind: ScopeFailureKind::Contract,
                                     reason: "legacy division has no integer arithmetic SQL failure",
                                 };
                             }
                         };
-                        return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
+                        return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
                             value: if cause.unsigned {
                                 "BIGINT UNSIGNED"
                             } else {
@@ -1462,7 +1527,7 @@ impl<'a> Invocation<'a> {
                         Some(EvaluatedSqlFailureKind::UnaryMinusNative),
                     ) => {
                         let Some(cause) = report.native_unary_minus_error() else {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "unary-minus failure receipt lacks its native cause",
                             };
@@ -1474,7 +1539,7 @@ impl<'a> Invocation<'a> {
                         } else {
                             format!("-{}", cause.bits as i64)
                         };
-                        return AsciiBoundaryError::Frontend(EvalError::DataOutOfRange {
+                        return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
                             value: "BIGINT",
                             expression,
                         });
@@ -1487,12 +1552,12 @@ impl<'a> Invocation<'a> {
                         Some(EvaluatedSqlFailureKind::RegexpNative),
                     ) => {
                         let Some(cause) = report.native_regexp_error() else {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "regexp failure receipt lacks its native cause",
                             };
                         };
-                        return AsciiBoundaryError::Frontend(crate::regexp::native_regexp_error(
+                        return ReadyValueBoundaryError::Frontend(crate::regexp::native_regexp_error(
                             cause,
                         ));
                     }
@@ -1510,24 +1575,27 @@ impl<'a> Invocation<'a> {
                         // Render only the actual typed cause. Do not parse the
                         // input again or recompute vector dimensions here.
                         let Some(cause) = report.native_vector_error() else {
-                            return AsciiBoundaryError::Scope {
+                            return ReadyValueBoundaryError::Scope {
                                 kind: ScopeFailureKind::Contract,
                                 reason: "vector failure receipt lacks its native cause",
                             };
                         };
-                        return AsciiBoundaryError::Frontend(EvalError::Vector(cause.to_string()));
+                        return ReadyValueBoundaryError::Frontend(EvalError::Vector(cause.to_string()));
                     }
                     _ => {}
                 }
             }
-            AsciiBoundaryError::Kernel(ExpressionRuntimeFailure::from_ascii_local(
+            ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
                 report.into_error(),
                 Some(ExpressionRuntimeFailurePhase::Invoke),
             ))
         })
     }
 
-    fn finish<T>(mut self, result: Result<T, AsciiBoundaryError>) -> Result<T, AsciiBoundaryError> {
+    fn finish<T>(
+        mut self,
+        result: Result<T, ReadyValueBoundaryError>,
+    ) -> Result<T, ReadyValueBoundaryError> {
         let postflight = self
             .lease
             .as_ref()
@@ -1556,9 +1624,9 @@ impl<'a> Invocation<'a> {
                 _ => {
                     self.scope.poisoned.set(true);
                     drop(lease);
-                    Err(AsciiBoundaryError::Scope {
+                    Err(ReadyValueBoundaryError::Scope {
                         kind: ScopeFailureKind::Contract,
-                        reason: "ASCII lease restore conflict",
+                        reason: "ready-value lease restore conflict",
                     })
                 }
             }
@@ -1591,16 +1659,16 @@ struct NativeComputedInt {
     metadata: ValueMetadata,
 }
 
-fn coerce_ready(value: &Datum) -> Result<ReadyAsciiBytes, AsciiBoundaryError> {
+fn coerce_ready(value: &Datum) -> Result<ReadyAsciiBytes, ReadyValueBoundaryError> {
     crate::coerce::coerce_str_bytes(value)
         .map(ReadyAsciiBytes)
-        .map_err(AsciiBoundaryError::Frontend)
+        .map_err(ReadyValueBoundaryError::Frontend)
 }
 
 fn eval_ready(
-    scope: &AsciiScope,
+    scope: &ReadyValueScope,
     ready: ReadyAsciiBytes,
-) -> Result<NativeComputedInt, AsciiBoundaryError> {
+) -> Result<NativeComputedInt, ReadyValueBoundaryError> {
     let mut invocation = Invocation::enter(scope)?;
     let result = invocation.run(ready);
     let computed = invocation.finish(result)?;
@@ -1623,8 +1691,8 @@ fn own_computed_int(computed: ComputedInt) -> NativeComputedInt {
     }
 }
 
-fn result_kind_error() -> AsciiBoundaryError {
-    AsciiBoundaryError::Scope {
+fn result_kind_error() -> ReadyValueBoundaryError {
+    ReadyValueBoundaryError::Scope {
         kind: ScopeFailureKind::Contract,
         reason: "closed Bytes result kind mismatch",
     }
@@ -1634,7 +1702,7 @@ pub(crate) fn native_time_result_contract_error() -> EvalError {
     result_kind_error().into_eval_error()
 }
 
-fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBoundaryError> {
+fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, ReadyValueBoundaryError> {
     match computed {
         ComputedValue::Int(value) => Ok(value),
         ComputedValue::Bytes(_)
@@ -1650,20 +1718,20 @@ fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, AsciiBou
 }
 
 impl NativeComputedInt {
-    fn into_datum(self) -> Result<Datum, AsciiBoundaryError> {
+    fn into_datum(self) -> Result<Datum, ReadyValueBoundaryError> {
         from_scalar(
             ScalarValueRef::Int(self.value.as_ref()),
             EvalType::Int,
             &self.metadata,
         )
-        .map_err(AsciiBoundaryError::Metadata)
+        .map_err(ReadyValueBoundaryError::Metadata)
     }
 }
 
 pub(super) fn evaluate_ascii_value(
-    scope: &AsciiScope,
+    scope: &ReadyValueScope,
     value: &Datum,
-) -> Result<Datum, AsciiBoundaryError> {
+) -> Result<Datum, ReadyValueBoundaryError> {
     // Also cover a direct private helper's coercion/materialization. The outer
     // with_columns guard covers native child/return work beyond this function.
     let mut guard = NativeGuard::new(scope);
@@ -1674,9 +1742,9 @@ pub(super) fn evaluate_ascii_value(
 
 // Only the isolated one-shot path owns a close. A borrowed execution above a
 // temporary operation scope must remain open for its actual lifecycle owner.
-struct OneShotAsciiExecution(AsciiExecution);
+struct OneShotReadyValueExecution(ReadyValueExecution);
 
-impl Drop for OneShotAsciiExecution {
+impl Drop for OneShotReadyValueExecution {
     fn drop(&mut self) {
         self.0.close();
     }
@@ -1797,7 +1865,7 @@ impl EvaluatedBytesResult {
             return Ok(Datum::Null);
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| {
-            AsciiBoundaryError::Scope {
+            ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "computed JSON text is not UTF-8",
             }
@@ -1907,7 +1975,7 @@ impl EvaluatedBytesResult {
 fn materialize_computed(
     operation: EvaluatedBytesOp,
     computed: ComputedValue,
-) -> Result<EvaluatedBytesResult, AsciiBoundaryError> {
+) -> Result<EvaluatedBytesResult, ReadyValueBoundaryError> {
     match (operation, computed) {
         (
             EvaluatedBytesOp::Ascii
@@ -2435,7 +2503,7 @@ fn materialize_computed(
                 .map(|value| tidb_datatype::Decimal::try_from_shared_math(&value, usize::MAX))
                 .transpose()
                 .map_err(|error| {
-                    AsciiBoundaryError::Frontend(super::math_decimal_bridge_error(error))
+                    ReadyValueBoundaryError::Frontend(super::math_decimal_bridge_error(error))
                 })?;
             Ok(EvaluatedBytesResult::Decimal {
                 value,
@@ -2459,7 +2527,7 @@ fn materialize_computed(
                     Some(_),
                 ) => {}
                 _ => {
-                    return Err(AsciiBoundaryError::Scope {
+                    return Err(ReadyValueBoundaryError::Scope {
                         kind: ScopeFailureKind::Contract,
                         reason: "decimal division disposition contradicts its computed value",
                     });
@@ -2469,7 +2537,7 @@ fn materialize_computed(
                 .map(|value| tidb_datatype::Decimal::try_from_shared_math(&value, usize::MAX))
                 .transpose()
                 .map_err(|error| {
-                    AsciiBoundaryError::Frontend(super::math_decimal_bridge_error(error))
+                    ReadyValueBoundaryError::Frontend(super::math_decimal_bridge_error(error))
                 })?;
             Ok(EvaluatedBytesResult::DecimalDivision { value, disposition })
         }
@@ -2510,21 +2578,21 @@ fn materialize_computed(
 }
 
 fn evaluate_scoped_args<T>(
-    scope: &AsciiScope,
+    scope: &ReadyValueScope,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult, &AsciiScope) -> Result<T, EvalError>,
-) -> Result<T, AsciiBoundaryError> {
+    pack: impl FnOnce(EvaluatedBytesResult, &ReadyValueScope) -> Result<T, EvalError>,
+) -> Result<T, ReadyValueBoundaryError> {
     let mut guard = NativeGuard::new(scope);
     let result = (|| {
         // Frontend coercion and closed recipe selection happen exactly once,
         // before taking/replacing a lease, under the original scope guard.
-        let (operation, ready) = prepare().map_err(AsciiBoundaryError::Frontend)?;
+        let (operation, ready) = prepare().map_err(ReadyValueBoundaryError::Frontend)?;
         let mut invocation = Invocation::enter(scope)?;
         let result = invocation.run_args(operation, ready);
         let computed = invocation.finish(result)?;
         // No worker/cell/mutex borrow surrounds original native result packing.
         pack(materialize_computed(operation, computed)?, scope)
-            .map_err(AsciiBoundaryError::Frontend)
+            .map_err(ReadyValueBoundaryError::Frontend)
     })();
     guard.disarm(); // ordinary Result::Err is never an unwind or native replay
     result
@@ -2550,7 +2618,7 @@ pub(crate) fn evaluate_prepared_args_scoped_in<T>(
     pack: impl FnOnce(EvaluatedBytesResult, &dyn Columns) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
     route_prepared_args_in(ctx, prepare, |computed, scope| {
-        let columns = ScopedAsciiColumns { native: ctx, scope };
+        let columns = ScopedReadyValueColumns { native: ctx, scope };
         pack(computed, &columns)
     })
 }
@@ -2558,34 +2626,35 @@ pub(crate) fn evaluate_prepared_args_scoped_in<T>(
 fn route_prepared_args_in<T>(
     ctx: &dyn Columns,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult, &AsciiScope) -> Result<T, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult, &ReadyValueScope) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
-    if let Some(scope) = ctx.evaluated_ascii_scope() {
+    if let Some(scope) = ctx.ready_value_scope() {
         return evaluate_scoped_args(scope, prepare, pack)
-            .map_err(AsciiBoundaryError::into_eval_error);
+            .map_err(ReadyValueBoundaryError::into_eval_error);
     }
-    if let Some(execution) = ctx.evaluated_ascii_execution() {
+    if let Some(execution) = ctx.ready_value_execution() {
         return evaluate_scoped_args(&execution.scope(), prepare, pack)
-            .map_err(AsciiBoundaryError::into_eval_error);
+            .map_err(ReadyValueBoundaryError::into_eval_error);
     }
 
     let result = (|| {
         // No capability: preserve frontend precedence even before pool creation.
-        let ready = prepare().map_err(AsciiBoundaryError::Frontend)?;
+        let ready = prepare().map_err(ReadyValueBoundaryError::Frontend)?;
         // One explicit experimental policy for all closed fixed-arity recipes.
         // Retained/request allowances are not physical heap/factory-peak bounds.
         // A worker's retained cap must not become a maximum SQL string length.
-        let policy = AsciiPoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;
-        let owner = AsciiPoolOwner::new(policy)?;
-        let execution = OneShotAsciiExecution(owner.begin_execution()?);
+        let policy =
+            ReadyValuePoolPolicy::checked(1, 1, 8 << 20, 1 << 20, 2 << 20, 64, 16, usize::MAX)?;
+        let owner = ReadyValuePoolOwner::new(policy)?;
+        let execution = OneShotReadyValueExecution(owner.begin_execution()?);
         // The scope/guard drop before the owned closer, including on unwind.
         let scope = execution.0.scope();
         evaluate_scoped_args(&scope, || Ok(ready), pack)
     })();
-    result.map_err(AsciiBoundaryError::into_eval_error)
+    result.map_err(ReadyValueBoundaryError::into_eval_error)
 }
 
-/// One closed operation router, sharing the legacy-named ASCII capabilities.
+/// One closed operation router, sharing the ready-value capabilities.
 /// Neither frontend callback enters C4: coercion precedes admission, and native
 /// packing follows the exclusive invocation. Existing scopes guard both; the
 /// no-capability route retains its original preparation-before-pool precedence.
@@ -2630,7 +2699,7 @@ pub enum LegacyBinaryArgs<T> {
 
 fn arithmetic_null_witness(value: Option<i64>) -> Result<EvaluatedArgs, EvalError> {
     if value.is_some() {
-        return Err(AsciiBoundaryError::Scope {
+        return Err(ReadyValueBoundaryError::Scope {
             kind: ScopeFailureKind::Contract,
             reason: "binary arithmetic NULL witness contains a value",
         }
@@ -2683,7 +2752,7 @@ fn legacy_json_output_result(
         return Ok(None);
     };
     if bytes.is_empty() {
-        return Err(AsciiBoundaryError::Scope {
+        return Err(ReadyValueBoundaryError::Scope {
             kind: ScopeFailureKind::Contract,
             reason: "computed raw JSON result lacks a type byte",
         }
@@ -2716,7 +2785,7 @@ pub fn eval_legacy_json_replace_in(
                     .map(|value| (value.type_code(), value.value())),
             )
             .map_err(|error| {
-                EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                     error, None,
                 ))
             })?;
@@ -2755,7 +2824,7 @@ pub fn eval_legacy_json_array_append_step_in(
                 ),
             };
             let args = args.map_err(|error| {
-                EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                     error, None,
                 ))
             })?;
@@ -2796,7 +2865,7 @@ pub fn eval_legacy_json_merge_patch_in(
             raw_values
                 .try_reserve_exact(values.len())
                 .map_err(|error| {
-                    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                         tidb_query_expr::local::LocalError::ResourceLimit(
                             format!("raw JSON operand references allocation failed: {error}")
                                 .into(),
@@ -2811,7 +2880,7 @@ pub fn eval_legacy_json_merge_patch_in(
             );
             let args = tidb_query_expr::local::prepare_json_raw_values_args(&raw_values).map_err(
                 |error| {
-                    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+                    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                         error, None,
                     ))
                 },
@@ -3092,7 +3161,7 @@ pub fn eval_legacy_real_arithmetic_in(
                     BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModRealLegacy,
                     BinaryArithmeticOperation::Divide => EvaluatedBytesOp::DivRealLegacy,
                     BinaryArithmeticOperation::IntDivide => {
-                        return Err(AsciiBoundaryError::Scope {
+                        return Err(ReadyValueBoundaryError::Scope {
                             kind: ScopeFailureKind::Contract,
                             reason: "integer division is not a legacy REAL arithmetic profile",
                         }
@@ -3129,14 +3198,14 @@ pub fn eval_legacy_decimal_arithmetic_in(
         BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalLegacy,
         BinaryArithmeticOperation::Modulo => EvaluatedBytesOp::ModDecimalNative,
         BinaryArithmeticOperation::IntDivide => {
-            return Err(AsciiBoundaryError::Scope {
+            return Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "integer division is not a legacy decimal arithmetic profile",
             }
             .into_eval_error());
         }
         BinaryArithmeticOperation::Divide => {
-            return Err(AsciiBoundaryError::Scope {
+            return Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "decimal division requires an explicit fraction increment",
             }
@@ -3190,7 +3259,7 @@ fn encode_decimal_intdiv_operand(
     tidb_query_expr::encode_native_identity(view).map_err(|error| match error {
         tidb_query_expr::NativeIdentityFrameError::Invalid => result_kind_error().into_eval_error(),
         tidb_query_expr::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 tidb_query_expr::local::LocalError::ResourceLimit(
                     "native decimal INTDIV frame allocation or size failed".into(),
                 ),
@@ -3358,14 +3427,14 @@ pub(crate) fn eval_arithmetic_decimal_fast_in(
         BinaryArithmeticOperation::Subtract => EvaluatedBytesOp::SubDecimalFastNative,
         BinaryArithmeticOperation::Multiply => EvaluatedBytesOp::MulDecimalFastNative,
         BinaryArithmeticOperation::Modulo => {
-            return Err(AsciiBoundaryError::Scope {
+            return Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "modulo is unsupported by the decimal fast contract",
             }
             .into_eval_error());
         }
         BinaryArithmeticOperation::Divide | BinaryArithmeticOperation::IntDivide => {
-            return Err(AsciiBoundaryError::Scope {
+            return Err(ReadyValueBoundaryError::Scope {
                 kind: ScopeFailureKind::Contract,
                 reason: "division is unsupported by the decimal fast contract",
             }
@@ -3430,7 +3499,7 @@ pub fn eval_legacy_like_in(
             )),
             LegacyLikeArgs::NullWitness(value) => {
                 if value.is_some() {
-                    return Err(AsciiBoundaryError::Scope {
+                    return Err(ReadyValueBoundaryError::Scope {
                         kind: ScopeFailureKind::Contract,
                         reason: "legacy LIKE NULL witness contains a value",
                     }
@@ -3511,7 +3580,7 @@ pub fn eval_regexp_legacy_ready_in(
                     ));
                 }
                 let Some(case_insensitive) = case_insensitive else {
-                    return Err(AsciiBoundaryError::Scope {
+                    return Err(ReadyValueBoundaryError::Scope {
                         kind: ScopeFailureKind::Contract,
                         reason: "legacy regexp values lack their collation decision",
                     }
@@ -3590,7 +3659,7 @@ pub(crate) fn evaluate_logical_in(
                 (function, left),
                 (LogicalFunction::And, Some(false)) | (LogicalFunction::Or, Some(true))
             ) {
-                return Err(AsciiBoundaryError::Scope {
+                return Err(ReadyValueBoundaryError::Scope {
                     kind: ScopeFailureKind::Contract,
                     reason: "invalid undemanded logical right argument",
                 }
@@ -3639,16 +3708,16 @@ pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datu
     )
 }
 
-/// Opaque, sized lexical Columns binding created by [`AsciiScope::with_columns`].
+/// Opaque, sized lexical Columns binding created by [`ReadyValueScope::with_columns`].
 ///
 /// Borrows the original native context and effective scope, with no ownership
 /// or `'static` requirement on that context. Ordinary methods forward to the
-/// original context; only the two ASCII capability methods are overridden.
+/// original context; only the two ready-value capability methods are overridden.
 /// The wrapper cannot share the scope between threads and does not establish
 /// business-wrapper propagation or statement/executor lifecycle ownership.
-pub struct ScopedAsciiColumns<'native, 'scope> {
+pub struct ScopedReadyValueColumns<'native, 'scope> {
     native: &'native dyn Columns,
-    scope: &'scope AsciiScope,
+    scope: &'scope ReadyValueScope,
 }
 
 // One local forwarding list, not a general context/delegation framework.
@@ -3661,12 +3730,12 @@ macro_rules! forward_columns {
     };
 }
 
-impl Columns for ScopedAsciiColumns<'_, '_> {
-    fn evaluated_ascii_scope(&self) -> Option<&AsciiScope> {
+impl Columns for ScopedReadyValueColumns<'_, '_> {
+    fn ready_value_scope(&self) -> Option<&ReadyValueScope> {
         Some(self.scope)
     }
 
-    fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+    fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
         Some(&self.scope.execution)
     }
 
@@ -3738,5 +3807,5 @@ impl Columns for ScopedAsciiColumns<'_, '_> {
 }
 
 #[cfg(test)]
-#[path = "evaluated_ascii_tests.rs"]
+#[path = "ready_value_tests.rs"]
 mod tests;

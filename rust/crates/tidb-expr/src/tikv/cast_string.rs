@@ -19,7 +19,7 @@ use tidb_query_expr::{NativeCastStringInput as Input, NativeCastStringTarget as 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ErrorLevel};
+    use crate::{ErrorLevel, ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::cell::{Cell, RefCell};
     use tidb_datatype::{BinaryLiteral, Collation, FieldTypeCode, FieldTypeFlags, MysqlEnum};
 
@@ -60,8 +60,9 @@ mod tests {
                 self.warnings.borrow_mut().push((code, message.to_owned()));
             }
         }
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(0, 0, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16).unwrap(),
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(0, 0, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
+                .unwrap(),
         )
         .unwrap();
         let execution = owner.begin_execution().unwrap();

@@ -79,7 +79,7 @@ mod tests {
 
     use super::super::{identity_value, EvaluatedBytesResult};
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     #[test]
     fn coalesce_bridge_iterates_borrowed_and_owned_candidates_under_one_scope() {
@@ -106,10 +106,18 @@ mod tests {
         ];
         let null = Datum::Null;
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 20)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 20,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&crate::NoColumns, |bound| {
@@ -117,10 +125,7 @@ mod tests {
                     let calls = Cell::new(0);
                     let result = eval_coalesce_in(bound, arity, |index, selected| {
                         assert!(index < arity);
-                        assert!(std::ptr::eq(
-                            selected.evaluated_ascii_scope().unwrap(),
-                            &scope
-                        ));
+                        assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                         calls.set(calls.get() + 1);
                         Ok(BorrowOnly(&null))
                     });
@@ -139,10 +144,7 @@ mod tests {
                     let calls = Cell::new(0);
                     let result = eval_coalesce_in(bound, 131, |index, selected| {
                         assert!(index <= 129, "a selected value must leave the suffix dead");
-                        assert!(std::ptr::eq(
-                            selected.evaluated_ascii_scope().unwrap(),
-                            &scope
-                        ));
+                        assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                         assert_eq!(calls.get(), index);
                         calls.set(calls.get() + 1);
                         Ok(BorrowOnly(if index == 129 { raw } else { &null }))
@@ -167,13 +169,10 @@ mod tests {
                             );
                             assert_eq!(calls.get(), index);
                             calls.set(calls.get() + 1);
+                            assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                             assert!(std::ptr::eq(
-                                selected.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
-                            assert!(std::ptr::eq(
-                                selected.evaluated_ascii_execution().unwrap(),
-                                bound.evaluated_ascii_execution().unwrap()
+                                selected.ready_value_execution().unwrap(),
+                                bound.ready_value_execution().unwrap()
                             ));
                             if index < 129 {
                                 return Ok(Datum::Null);
@@ -207,7 +206,7 @@ mod tests {
         assert_eq!(
             eval_coalesce_in(&crate::NoColumns, 66, |index, selected| {
                 calls.set(calls.get() + 1);
-                assert_eq!(selected.evaluated_ascii_scope().is_some(), index != 0);
+                assert_eq!(selected.ready_value_scope().is_some(), index != 0);
                 Ok(if index == 65 {
                     Datum::Int(7)
                 } else {

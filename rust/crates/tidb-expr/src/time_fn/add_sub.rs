@@ -232,8 +232,8 @@ fn add_sub_workers_preserve_signatures_demand_and_direct_warnings() {
         }
     }
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -590,8 +590,8 @@ fn timestamp_workers_preserve_scoped_stage_demand_and_warnings() {
         );
     };
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,
@@ -700,8 +700,8 @@ fn timestamp_workers_keep_source_kind_values_and_single_slot_continuation() {
         }
     }
     let s = |text: &str| Datum::new_string(text);
-    let owner = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(
+    let owner = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
             1,
             1,
             16 * 1024 * 1024,
@@ -862,8 +862,8 @@ fn timestamp_add_workers_preserve_numeric_coercion_null_demand_and_warnings() {
         }
     }
     for slots in [1, 0] {
-        let owner = crate::AsciiPoolOwner::new(
-            crate::AsciiPoolPolicy::checked(
+        let owner = crate::ReadyValuePoolOwner::new(
+            crate::ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

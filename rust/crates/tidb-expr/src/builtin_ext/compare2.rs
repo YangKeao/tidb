@@ -1323,8 +1323,8 @@ fn extremum_runtime_entries_keep_five_domains_static_metadata_and_getter_order()
             }
         }
     };
-    let owner = crate::AsciiPoolOwner::new(
-        crate::AsciiPoolPolicy::checked(
+    let owner = crate::ReadyValuePoolOwner::new(
+        crate::ReadyValuePoolPolicy::checked(
             0,
             0,
             16 * 1024 * 1024,

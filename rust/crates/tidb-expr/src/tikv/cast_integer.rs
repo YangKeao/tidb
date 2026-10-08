@@ -148,7 +148,7 @@ pub(crate) fn eval_cast_unsigned_value_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::cell::{Cell, RefCell};
     use tidb_datatype::{BinaryJSON, CoreTime, FieldTypeCode, Time, TimeType};
 
@@ -219,9 +219,18 @@ mod tests {
             20110313030000
         );
         for slots in [0, 1] {
-            let owner = AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            let owner = ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap();
             let execution = owner.begin_execution().unwrap();

@@ -4,15 +4,15 @@
 
 ## EV-r3: narrow explicit capability/value authorization
 
-- Publish existing opaque native policy/owner/execution/scope/owner-error types and the borrowing ScopedAsciiColumns shape. Keep all data fields and backend machinery private. Lifecycle/config methods retain Result<_,AsciiOwnerError>; only the value evaluation boundary returns EvalError. No default policy, session epoch integration, implicit scope creation or SQL dispatcher switch is authorized by this cut.
-- Columns gains two pure borrowed optional queries: evaluated_ascii_scope and evaluated_ascii_execution, both default None. ScopedAsciiColumns has63 ordinary native forwarders plus TWO effective-capability overrides; the latter are not arbitrary forwarding. Public with_columns takes a Sized opaque borrowing wrapper so existing Sized consumers can use it without unrelated signature rewrites.
+- Publish existing opaque native policy/owner/execution/scope/owner-error types and the borrowing ScopedReadyValueColumns shape. Keep all data fields and backend machinery private. Lifecycle/config methods retain Result<_,ReadyValueOwnerError>; only the value evaluation boundary returns EvalError. No default policy, session epoch integration, implicit scope creation or SQL dispatcher switch is authorized by this cut.
+- Columns gains two pure borrowed optional queries: ready_value_scope and ready_value_execution, both default None. ScopedReadyValueColumns has63 ordinary native forwarders plus TWO effective-capability overrides; the latter are not arbitrary forwarding. Public with_columns takes a Sized opaque borrowing wrapper so existing Sized consumers can use it without unrelated signature rewrites.
 - Existing active scope wins over the explicitly requested fallback scope, even if stale/poisoned. Wrapper, execution capability and normal-operation unwind guard all use that SAME effective scope. Before capability discovery succeeds, a temporary guard covers the requested scope; getter panic conservatively quarantines only that requested scope, not an unknowable hidden active scope. Establish the effective guard before disarming the discovery guard, without an intervening callback/allocation/fallible operation. No catch/retry/replay is introduced.
-- Public AsciiScope::evaluate_value delegates the existing checked closed-worker value boundary for an already evaluated/context-transcoded Datum. It is not AST argument evaluation, SQL charset/return-coercion handling, or global ASCII activation. Existing frontend coercion errors still precede scope/pool/backend admission, including when the scope is closed or has no slots. NULL must actually go through the official worker when admitted.
+- Public ReadyValueScope::evaluate_value delegates the existing checked closed-worker value boundary for an already evaluated/context-transcoded Datum. It is not AST argument evaluation, SQL charset/return-coercion handling, or global ASCII activation. Existing frontend coercion errors still precede scope/pool/backend admission, including when the scope is closed or has no slots. NULL must actually go through the official worker when admitted.
 - Actual LocalError is captured once at its failing producer as Prepare (factory), Observe (retained_storage), or Invoke (eval_one). Invoke does not establish kernel-body entry. Keep primary cause identity/phase when secondary cleanup/observation fails; do not manufacture natural Observe failures where only structural coverage is available.
 - Pool, Scope and result-Bridge failures retain their ORIGINAL native causes in a separate opaque Arc carrier, never a fabricated LocalError or arithmetic status. Public adapter class/origin are native-only, private constructors/accessors remain within the adapter. Fixed terminal1105/HY000 messages distinguish PoolPolicy/Resource/Closed/Poisoned/Contract, ScopePoisoned/Reentry/Contract and ResultContract. Class/origin do not replace SQL evaluation-origin handling.
 - Worker/pool accounting remains the pinned conditional request/retained basis, not portable ABI, physical heap, factory peak or OOM recovery. Native handles/coercion and error-carrier allocations are outside that ledger. No test_policy constants become production defaults.
 
-Round10 file loans: E owns evaluated_ascii.rs plus its tests; D owns new adapter_failure.rs and executor terminal mapping/tests; parent owns context/lib/mod exports, runtime_failure documentation, compilation and acceptance. A reviews read-only. Real public value→wire resource tests must use the production policy/owner/execution/scope path, not a new test-only constructor. Normal SQL entrypoints, business-context capability propagation, lifecycle/catcher integration, native deletion and performance remain separate open gates; complete-family credit stays0.
+Round10 file loans: E owns ready_value.rs plus its tests; D owns new adapter_failure.rs and executor terminal mapping/tests; parent owns context/lib/mod exports, runtime_failure documentation, compilation and acceptance. A reviews read-only. Real public value→wire resource tests must use the production policy/owner/execution/scope path, not a new test-only constructor. Normal SQL entrypoints, business-context capability propagation, lifecycle/catcher integration, native deletion and performance remain separate open gates; complete-family credit stays0.
 
 ## Historical EV-r2 proposal
 
@@ -265,34 +265,34 @@ Rust feasibility requirement: a `Mutex<Pool<Runtime>>` is a Sync owner when `Run
 
 A serial owner may retain one worker runtime directly. The idle-pool path is needed where existing Send+Sync contexts or transient pool tasks require shared ownership of the *factory/available leases*. Prefer retaining one lazily acquired worker lease for a whole row/chunk loop, not locking a pool for every character operation. The new scope is a transport/lifetime adapter, not an expression evaluator.
 
-EV-r2 replaces the generic roles with the **ASCII-only** concrete proposal in §11:
+EV-r2 originally introduced an **ASCII-only** concrete proposal; round224 generalizes the authority to ready values and supersedes its rotating/current-epoch lifecycle with the independent-execution contract in §11:
 
 ```text
-AsciiPoolOwner::new(accepted_policy) -> synchronized stable accounting root
-owner.begin_execution() -> AsciiExecution (epoch handle; closes prior epoch)
-execution.scope() -> AsciiScope (inert, no lease/preparation yet)
-scope.with_columns(native, body) -> body result through ScopedAsciiColumns
-Columns::evaluated_ascii_scope() -> Option<&AsciiScope>     [later hook loan]
-Columns::evaluated_ascii_execution() -> Option<&AsciiExecution> [later hook loan]
+ReadyValuePoolOwner::new(accepted_policy) -> synchronized stable accounting root
+owner.begin_execution() -> ReadyValueExecution (independent statement handle; peers remain live)
+execution.scope() -> ReadyValueScope (inert, no lease/preparation yet)
+scope.with_columns(native, body) -> body result through ScopedReadyValueColumns
+Columns::ready_value_scope() -> Option<&ReadyValueScope>     [later hook loan]
+Columns::ready_value_execution() -> Option<&ReadyValueExecution> [later hook loan]
 private eval_ready(scope, ReadyAsciiBytes) -> checked native computed Int
 ```
 
-The scope owns an epoch handle and later an affine lease, not a native context. `ScopedAsciiColumns` borrows the real native context and active scope only while its body runs. Root capability exports/hooks are a separate parent-owned cut; the first private two-file prototype uses an explicit scope and does not pretend those hooks already exist.
+The scope owns an independent execution handle and later an affine lease, not a native context. `ScopedReadyValueColumns` borrows the real native context and active scope only while its body runs. Root capability exports/hooks are a separate parent-owned cut; the first private two-file prototype uses an explicit scope and does not pretend those hooks already exist.
 
 The default optional capabilities on an ordinary Columns implementation are absent; that absence is not a request to use native arithmetic. A public one-shot wrapper makes an explicit stack owner/scope when necessary. An active scope takes precedence over an owner and is propagated through recursion. A provided execution owner permits reuse across separate calls, but hot loops should bind one scope outside the loop. Concrete TiKV types stay inside the opaque TiDB boundary types. The scope borrows the real context; it does not copy it into a long-lived runtime, use TLS to discover it, or pass a native evaluator closure to TiKV.
 
-Creating the scope is only inert bookkeeping. Its interior state starts without a lease; **checkout, allocation of a new runtime, preparation, and pure-context initialization are all lazy at the first ready ASCII invocation**. This prevents an unused/dead ASCII branch or a query with no ASCII at all from failing an unrelated pool-admission check. Once acquired, the lease may remain in the scope across successive invocations, with no active runtime borrow between them.
+Creating the scope is only inert bookkeeping. Its interior state starts without a lease; **checkout, allocation of a new runtime, preparation, and pure-context initialization are all lazy at the first ready-value invocation**. This prevents an unused/dead ASCII branch or a query with no ASCII at all from failing an unrelated pool-admission check. Once acquired, the lease may remain in the scope across successive invocations, with no active runtime borrow between them.
 
 ### 6.3 Lifecycle and safety rules
 
-1. **Create:** the actual execution/builder/SHOW operation creates the owner. Pool bookkeeping starts empty. Lazy checkout and preparation occur at the first demanded ASCII invocation, after the original frontend's checks/coercion. A dead/empty path must not acquire a runtime, prepare, or execute a call merely to populate a cache.
+1. **Create:** the actual execution/builder/SHOW operation creates the owner. Pool bookkeeping starts empty. Lazy checkout and preparation occur at the first demanded ready-value invocation, after the original frontend's checks/coercion. A dead/empty path must not acquire a runtime, prepare, or execute a call merely to populate a cache.
 2. **Reuse:** each warmed owned runtime retains the immutable fixed ABI recipe, its prepared program and approved private context. Invocation inputs/results are not cached. Across N rows on W active warmed lanes, preparation/context creation is bounded by actual runtime creation/policy changes, not N or the number of chunks.
 3. **Borrow order:** evaluate children, transcode and coerce with the native context first; then take the short mutable runtime borrow; execute checked ready Bytes; release it; then run native return coercion and diagnostics. Never hold a runtime mutable borrow, pool mutex or allocation-bookkeeping lock while evaluating a child or calling the native warning/session interface. Nested `ASCII(ASCII(...))` uses sequential borrows, not recursive borrowing.
 4. **Worker scope:** a scope may own a lease throughout native evaluation while the runtime's short mutable borrow is inactive. A non-Sync local interior-mutability cell can implement the `&self` access needed by `Columns`; failed re-entry is a structured contract error, not `borrow_mut` panic or native fallback.
-5. **Context forwarding:** `ScopedColumns` must delegate **every existing Columns method**, including overridden methods with defaults, to the original context. This includes context ID, parameters/current INSERT values, connection charset, TZ/clock, SQL/type flags, warnings/counts/bookmarks/drains, RNG/sequences, packet limits, session services and kill behavior. Forwarding only `get`, TZ and `append_warning` would silently alter semantics. Only the two new ASCII scope/execution capability hooks are intentional overrides. Add forwarding coverage and review new Columns methods for delegation drift.
-6. **Reset/close:** reset the owner epoch per execution/open/rebuild, not merely per Rust thread. A close/reset marks the old owner closed and drops idle runtimes. In-flight leases may finish/drop under their existing worker lifetime, but cannot return to or publish into a new owner epoch. No borrowed input/context/row reference survives a call; no active lease is recycled after panic. Follow existing unwind policy; do not catch panic and replay.
-7. **Clone:** cloning a shared handle within the same statement may share the synchronized owner; cloning an execution recipe produces an empty execution owner. Native COW context detachment and executor reopen need explicit tests. Never implement Clone for the live RPN runtime by cloning its Any metadata or aliasing scratch.
-8. **Bounds:** cap pool slots, prepared entries and retained allocation by the assigned execution budget. Account for permitted nested operation scopes as well as parallel lanes; a thread count alone is not a bound on live scopes. Propagate an existing worker scope where appropriate rather than reacquiring the same owner's lease recursively. Do not grow a new runtime per row or silently evict/recompile the sole ASCII recipe in steady state. Lease exhaustion is an explicit resource failure at the demanded call after frontend coercion, never native execution, an error on a dead call, or indefinite waiting for a lease held by the caller itself. Do not block while holding native/session locks.
+5. **Context forwarding:** `ScopedColumns` must delegate **every existing Columns method**, including overridden methods with defaults, to the original context. This includes context ID, parameters/current INSERT values, connection charset, TZ/clock, SQL/type flags, warnings/counts/bookmarks/drains, RNG/sequences, packet limits, session services and kill behavior. Forwarding only `get`, TZ and `append_warning` would silently alter semantics. Only the two new ready-value scope/execution capability hooks are intentional overrides. Add forwarding coverage and review new Columns methods for delegation drift.
+6. **Reset/close:** begin one independent execution per statement/open/rebuild, not merely per Rust thread. Closing an execution marks only its own state closed and retires only its matching idle runtimes; peer statements remain live. In-flight leases may finish/drop under their existing worker lifetime, but cannot return to or publish into the closed execution. No borrowed input/context/row reference survives a call; no active lease is recycled after panic. Follow existing unwind policy; do not catch panic and replay.
+7. **Clone:** cloning a handle within the same statement retains that exact execution; a new statement explicitly begins another independent execution on the shared accounting root. Native COW context detachment and executor reopen need explicit tests. Never implement Clone for the live RPN runtime by cloning its Any metadata or aliasing scratch.
+8. **Bounds:** cap pool slots, prepared entries and retained allocation by the assigned execution budget. Account for permitted nested operation scopes as well as parallel lanes; a thread count alone is not a bound on live scopes. Propagate an existing worker scope where appropriate rather than reacquiring the same owner's lease recursively. Do not grow a new runtime per row or silently evict/recompile a fixed operation recipe in steady state. Lease exhaustion is an explicit resource failure at the demanded call after frontend coercion, never native execution, an error on a dead call, or indefinite waiting for a lease held by the caller itself. Do not block while holding native/session locks.
 9. **No semantic cache keys:** the initial finite key is the reviewed domain version, operation, canonical full ABI types, metadata-none and compile/build/resource policy. It is not argument bytes, a SQL value/result, statement warning state, NOW or a borrowed native node pointer. Any later compilation-sensitive key extension must be explicit.
 
 ### 6.4 Actual placement map
@@ -300,14 +300,14 @@ Creating the scope is only inert bookkeeping. Its interior state starts without 
 | Caller | Feasible owner placement | Required change / lifetime check |
 | --- | --- | --- |
 | Serial `EvaluatorSuite` | Execution-owned worker/owner alongside the suite, not `EvaluatorProgram` | Reuse across `run` calls; reset for a new execution; preserve ColumnSwapHelper behavior |
-| Parallel projection | Execution-owned synchronized idle owner in `ParallelProjectionShared`/pipeline; task checks out a runtime and makes a borrowed scope | Keep the current fresh native suite per chunk unless its ownership cache is separately proven reusable. Recycle only the value runtime across tasks. `open/close` at X`projection.rs:342–390` delimit owner epochs |
-| Normal statement-driven helpers and DML | Opaque synchronized owner attached to the real statement/execution handle, plus a borrowed worker scope around hot loops | X`stmt_context.rs:301–316,1834–1845,4041–4050` provides the actual ownership/COW/ID seams. Do not use the ID as a global lookup. `StmtContextData` cloning must not accidentally clone/share a live executable across distinct execution epochs |
+| Parallel projection | Execution-owned synchronized idle owner in `ParallelProjectionShared`/pipeline; task checks out a runtime and makes a borrowed scope | Keep the current fresh native suite per chunk unless its ownership cache is separately proven reusable. Recycle only the value runtime across tasks. `open/close` at X`projection.rs:342–390` delimit independently closable executions |
+| Normal statement-driven helpers and DML | Opaque synchronized owner attached to the real statement/execution handle, plus a borrowed worker scope around hot loops | X`stmt_context.rs:301–316,1834–1845,4041–4050` provides the actual ownership/COW/ID seams. Do not use the ID as a global lookup. `StmtContextData` cloning must not accidentally clone/share a live executable across distinct statement executions |
 | Generic executors using NoColumns/custom contexts | Explicit execution-owned worker/owner in the executor's operational state; bind a scope before its loops | A shared recipe/native meta is not the owner. May centralize an opaque owner in an execution support object, but do not hide unreviewed fields in all metadata. Listed consumer loops remain required loans/proofs; NoColumns does not excuse per-row compilation |
 | Public one-shot AST/typed/helper APIs | Stack-owned execution scope when none is supplied; recursive calls reuse the borrowed active scope | Main-plan one-shot allowance. Repeated production callers must hoist the scope. Existing public APIs remain; no global/TLS convenience cache |
 | SHOW AST filters | Owner outside `filter_show_output` and each independent SHOW row loop; borrow into `ShowRowResolver` | Current resolver is rebuilt per row and only implements `get`; S`show.rs:491–529,645–667` is a concrete mandatory loan, not covered by StmtContext |
 | Partial-index maintenance | Write/index-build/scan operation owns the runtime and lends it to `IndexConditionContext` | X`kv_table.rs:423–442,3198–3230` currently receives row + timezone only. Extend the internal operation/helper seam to carry an explicit scope; never place live RPN in cloned/shared KvTable/index metadata |
 | Folding and cached-plan rebuild | One fold/build/rebuild invocation owns a scope; preserve actual context and warning stash | D`constant_fold.rs:850–885` and P`physical_plan_cache.rs:310–362` are separate owners. The deferred evaluator callback is Send+Sync; it may capture a synchronized owner/recipe, not a raw runtime |
-| Unistore | No ASCII runtime owner integration in this first domain | ASCII PB remains unsupported. A future PB release must use request lifetime, not masquerade as TypedRow/AST |
+| Unistore | No ready-value runtime owner integration in this first domain | ASCII PB remains unsupported. A future PB release must use request lifetime, not masquerade as TypedRow/AST |
 
 **Feasibility conclusion:** no TLS or Arc<non-Sync> is necessary. Execution-owned affine runtimes, leased through a synchronized idle owner where sharing is required, fit the existing `Executor: Send` and shared-program/context architecture. This does require caller lifecycle loans. Withholding those loans leaves a private prototype at zero; it is not permission to replace missing owner plumbing with per-row compilation or a native fast path.
 
@@ -324,7 +324,7 @@ Account explicitly for:
 
 Existing C3b scratch limits do not automatically account for external native coercion allocations, immutable input storage, SQL FieldType allocations or an idle pool. The caller must bound/charge those explicitly; do not claim a total allocation cap from node/depth limits. No giant allocations are required for boundary tests: use small budgets and arithmetic-only extent checks.
 
-A retained byte buffer cannot become free for budgeting purposes merely because it is empty. C4 drops invocation-owned ready/output buffers before healthy publication; its idle worker must not retain a transport buffer, operand or row reference. Any later retained-buffer/arena proposal would require a new observation and admission review, not an inferred permission from this document. Preserve only the fixed approved reusable state; `LocalEvalState` is not already a reusable allocation arena.
+A retained byte buffer cannot become free for budgeting purposes merely because it is empty. C4 drops invocation-owned ready/output buffers before healthy publication; its idle worker must not retain a transport buffer, operand or row reference. Any later retained-buffer/arena proposal would require a new observation and admission review, not an inferred permission from this document. Preserve only the fixed approved reusable program/context state; `ExecutionLimits` is an immutable policy and not a reusable allocation arena.
 
 Selection stays owned by the current caller. Repeated selected occurrences remain repeated calls, in order. Empty selection evaluates neither children nor kernel and produces no warnings/RNG/host effects. Test 0/1/1024/1025 rows, sparse/reversed/duplicate selection and scalar constants with no physical input columns. Initial width-one operation is deliberately not a new batched child evaluator; compiling once does not permit result caching or hoisting side effects.
 
@@ -335,7 +335,7 @@ No file in this section is granted to E for product changes. Parent assigns owne
 | Loan set / owner boundary | Exact proposed paths | Intended cut |
 | --- | --- | --- |
 | C, **already separately released by parent** | K`local/compile.rs`, `local/batch.rs`, `local/mod.rs`, `types/expr_eval.rs`, `types/expr.rs`, `impl_string.rs` | Exactly C4's six files; body instrumentation only cfg(test); no new K module, registry/profile/runtime/Cargo expansion by E |
-| **FIRST private TiDB loan requested**, designated adapter owner | **D`tikv/evaluated_ascii.rs`, D`tikv/evaluated_ascii_tests.rs` (two new files only)** | Concrete §11 adapter/pool/lease/forwarder using actual accepted C4 worker; no existing SQL dispatch, public capability or native-body edit |
+| **FIRST private TiDB loan requested**, designated adapter owner | **D`tikv/ready_value.rs`, D`tikv/ready_value_tests.rs` (two new files only)** | Concrete §11 adapter/pool/lease/forwarder using actual accepted C4 worker; no existing SQL dispatch, public capability or native-body edit |
 | Parent-only first-cut compilation wiring | D`tikv/mod.rs` | Declare the new crate-visible private module/test inclusion after KV gate; adapter owner does not take this file |
 | Separate additive capability cut, not in first loan | D`context.rs`, D`lib.rs`, D`tikv/mod.rs` as parent coordinates | Root-public opaque TiDB types before public Columns capability signatures; two default-None hooks and corresponding forwarder overrides; no concrete TiKV types leak; no dispatcher activation implied |
 | Frontend activation and deletion | D`func.rs`, D`string_fn.rs`, D`scalar_function.rs`, D`expression.rs` | Preserve original scheduling/coercion; common ASCII dispatch; exact result-coerce position; no body left behind; one-shot scope propagation |
@@ -374,7 +374,7 @@ All rows remain **required / unverified for the proposed C4/TiDB route** in EV-r
 | EV-15 | Sparse/reversed/duplicate selection | Preserve occurrence order, duplicates and first failure; no reading/coercing unselected bad rows |
 | EV-16 | Exact budgets / capacity growth / overflow arithmetic | Charge C4 ready Vec capacity, actual Int/NULL storage, peak overlap and complete caller reservations/retirement; no absent Bytes-vector owners invented; small-budget and arithmetic-only tests |
 | EV-17 | Serial cache and multi-chunk parallel projection | Cache hit across chunks despite fresh native suites; one mutable owner at a time; no Arc<non-Sync>, unsafe Sync, TLS or native/session capture |
-| EV-18 | Parallel statements, COW clone, reset/reopen, close with in-flight lease | Owner/epoch isolation; old lease cannot populate new execution; Send/Sync trait assertions; dropped/failed worker does not leak or replay |
+| EV-18 | Parallel statements, COW clone, reset/reopen, close with in-flight lease | Owner/execution isolation; a closed execution's lease cannot populate a peer; Send/Sync trait assertions; dropped/failed worker does not leak or replay |
 | EV-19 | Nested ASCII, error cleanup, low pool limit, failed preparation | No reentrant borrow panic, stale input, lock held during native callbacks, unchecked pool growth, or fallback/retry |
 | EV-20 | Context forwarding | Every overridden Columns method remains observable through scope; non-default SQL/TZ/charset/warning policies and native identity preserved |
 | EV-21 | PB / unistore candidate signatures | Existing ASCII/Length/BitLength refusals unchanged; genuine unsupported tests, not fake runtime coverage or expanded authorization |
@@ -400,7 +400,7 @@ The new consumer enables a genuine family-kernel deletion while general Decimal/
 
 ### 11.1 First-private-cut objective and ordering
 
-The first implementation request is **exactly two new files**: D`tikv/evaluated_ascii.rs` and D`tikv/evaluated_ascii_tests.rs`. Parent owns their module/test wiring and waits for the C4 KV gate. No edit to `string_fn.rs`, `func.rs`, `scalar_function.rs`, `Columns`, root exports or Cargo is included. The prototype must link/use the **actual** `prepare_evaluated_ascii`/`EvaluatedAsciiWorker`, not pass tests only against a mock runtime.
+The first implementation request is **exactly two new files**: D`tikv/ready_value.rs` and D`tikv/ready_value_tests.rs`. Parent owns their module/test wiring and waits for the C4 KV gate. No edit to `string_fn.rs`, `func.rs`, `scalar_function.rs`, `Columns`, root exports or Cargo is included. The prototype must link/use the **actual** `prepare_evaluated_ascii`/`EvaluatedAsciiWorker`, not pass tests only against a mock runtime.
 
 One finite recipe, one factory, one worker type, one-slot ready input and one computed output: no registry of operations, trait-object backend factory, graph cache, eviction framework, generic runtime pool or alternate evaluator. Preparation/context creation is lazy at the first ready call; all prepared-worker metadata caches must be warm before that worker is published to a lease or idle slot.
 
@@ -428,16 +428,16 @@ Concrete first-cut adapter signatures (proposal, not existing entrypoints):
 
 ```rust
 pub(crate) fn evaluate_ascii_value(
-    scope: &AsciiScope, value: &Datum,
-) -> Result<Datum, AsciiBoundaryError>;
+    scope: &ReadyValueScope, value: &Datum,
+) -> Result<Datum, ReadyValueBoundaryError>;
 
 // Module-private pieces; no caller can forge a ready/computed wrapper.
-fn coerce_ready(value: &Datum) -> Result<ReadyAsciiBytes, AsciiBoundaryError>;
+fn coerce_ready(value: &Datum) -> Result<ReadyAsciiBytes, ReadyValueBoundaryError>;
 fn eval_ready(
-    scope: &AsciiScope, ready: ReadyAsciiBytes,
-) -> Result<NativeComputedInt, AsciiBoundaryError>;
+    scope: &ReadyValueScope, ready: ReadyAsciiBytes,
+) -> Result<NativeComputedInt, ReadyValueBoundaryError>;
 impl NativeComputedInt {
-    fn into_datum(self) -> Result<Datum, AsciiBoundaryError>;
+    fn into_datum(self) -> Result<Datum, ReadyValueBoundaryError>;
 }
 ```
 
@@ -445,36 +445,36 @@ impl NativeComputedInt {
 
 **Return boundary remains two-layered:** the private prototype proves C4 computed identity and checked Datum materialization. It cannot claim to have exercised an integrated call through private `ScalarFunction::coerce_to_ret_type`, nor copy/expose that private routine merely to obtain such a test. During a later dispatcher loan, `ScalarFunction::eval` must continue to apply its existing full-FieldType coercion exactly once after the common adapter returns. AST/value-only paths keep their existing result behavior. EV-09/EV-10 full manual-return-descriptor regressions remain activation gates.
 
-**Error boundary:** private `AsciiBoundaryError` distinguishes original frontend `EvalError`, original C4 `LocalError`, bridge metadata errors, pool resource/closed/poisoned errors and checked reentry failure. Keep the moved original engine error; simultaneous cleanup/health failure retires the worker without replacing that primary error. No text parsing, diagnostic formatter or native replay. D`context.rs::EvalError` currently derives Clone/PartialEq/Eq; K`LocalError` does not. The first cut must therefore NOT silently add a leaking LocalError variant or stringify the error to satisfy those derives. Public SQL activation requires a separately reviewed structured `EvalError` mapping that preserves the native error contract. Public capability methods below return no TiKV error.
+**Error boundary:** private `ReadyValueBoundaryError` distinguishes original frontend `EvalError`, original C4 `LocalError`, bridge metadata errors, pool resource/closed/poisoned errors and checked reentry failure. Keep the moved original engine error; simultaneous cleanup/health failure retires the worker without replacing that primary error. No text parsing, diagnostic formatter or native replay. D`context.rs::EvalError` currently derives Clone/PartialEq/Eq; K`LocalError` does not. The first cut must therefore NOT silently add a leaking LocalError variant or stringify the error to satisfy those derives. Public SQL activation requires a separately reviewed structured `EvalError` mapping that preserves the native error contract. Public capability methods below return no TiKV error.
 
 ### 11.2 TiDB-owned capability and lifetime API
 
 These are **proposed TiDB signatures**, not present `Columns` methods. All fields are private. Public reachability is a later parent-owned additive export cut; the first private module can declare these concrete types without publishing them externally.
 
 ```rust
-pub struct AsciiPoolPolicy { /* immutable TiDB integer limits only */ }
-pub struct AsciiPoolOwner { /* Arc<PoolCore>; no direct worker access */ }
-pub struct AsciiExecution { /* same root Arc + immutable checked epoch token */ }
-pub struct AsciiScope { /* execution handle + local state + sticky poison */ }
-pub struct AsciiOwnerError { /* opaque TiDB-only configuration/lifecycle error */ }
+pub struct ReadyValuePoolPolicy { /* immutable TiDB integer limits only */ }
+pub struct ReadyValuePoolOwner { /* Arc<PoolCore>; no direct worker access */ }
+pub struct ReadyValueExecution { /* same root Arc + immutable checked epoch token */ }
+pub struct ReadyValueScope { /* execution handle + local state + sticky poison */ }
+pub struct ReadyValueOwnerError { /* opaque TiDB-only configuration/lifecycle error */ }
 
-impl AsciiPoolPolicy {
+impl ReadyValuePoolPolicy {
     // No numeric defaults, generic op, TiKV type, SQL context or callback.
     pub fn checked(
         max_workers: usize, max_creating: usize, max_pool_bytes: usize,
         worker_retained_cap: usize, creation_reservation: usize,
         max_steps: u64, max_frame_depth: usize, max_call_retained_bytes: usize,
-    ) -> Result<Self, AsciiOwnerError>;
+    ) -> Result<Self, ReadyValueOwnerError>;
 }
-impl AsciiPoolOwner {
-    pub fn new(policy: AsciiPoolPolicy) -> Result<Self, AsciiOwnerError>;
-    pub fn begin_execution(&self) -> Result<AsciiExecution, AsciiOwnerError>;
+impl ReadyValuePoolOwner {
+    pub fn new(policy: ReadyValuePoolPolicy) -> Result<Self, ReadyValueOwnerError>;
+    pub fn begin_execution(&self) -> Result<ReadyValueExecution, ReadyValueOwnerError>;
 }
-impl AsciiExecution {
-    pub fn scope(&self) -> AsciiScope; // inert: no checkout/factory/context
+impl ReadyValueExecution {
+    pub fn scope(&self) -> ReadyValueScope; // inert: no checkout/factory/context
     pub fn close(&self);              // idempotent for THIS epoch
 }
-impl AsciiScope {
+impl ReadyValueScope {
     pub fn with_columns<R>(
         &self, native: &dyn Columns,
         body: impl FnOnce(&dyn Columns) -> R,
@@ -482,36 +482,36 @@ impl AsciiScope {
 }
 
 // LATER additive changes to the existing public Columns trait:
-fn evaluated_ascii_scope(&self) -> Option<&AsciiScope> { None }
-fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> { None }
+fn ready_value_scope(&self) -> Option<&ReadyValueScope> { None }
+fn ready_value_execution(&self) -> Option<&ReadyValueExecution> { None }
 ```
 
 The private conversion builds `LocalCompileContext` with the fixed two-node/depth-two construction allowance and `ExecutionLimits` from the accepted primitive policy, with no Host allowance; it passes the distinct worker cap to the fixed C4 factory. No public policy field is a TiKV `LocalCompileContext`, `ExecutionLimits`, `EvalContext`, `LocalProgram`, `ComputedInt` or `WorkerStorage`.
 
-`AsciiPoolOwner`/same-execution handles may clone the synchronized root. `AsciiExecution` cloning preserves its epoch; it does not begin a new execution. `AsciiScope`, `AsciiLease` and the actual C4 worker are **not Clone**. Intended traits: root/epoch handles Send+Sync; worker/lease/scope Send and deliberately not Sync; the borrowing `ScopedAsciiColumns<'native, 'scope>` stays local. No unsafe Send/Sync assertion, Arc of a raw worker, native context capture or TLS/global lookup. These traits require actual C4-cohort compilation, not only A's earlier generic CandidateParts receipt.
+`ReadyValuePoolOwner`/same-execution handles may clone the synchronized root. `ReadyValueExecution` cloning preserves its exact execution state; it does not begin a new execution. `ReadyValueScope`, `ReadyValueLease` and the actual C4 worker are **not Clone**. Intended traits: root/execution handles Send+Sync; worker/lease/scope Send and deliberately not Sync; the borrowing `ScopedReadyValueColumns<'native, 'scope>` stays local. No unsafe Send/Sync assertion, Arc of a raw worker, native context capture or TLS/global lookup. These traits require actual C4-cohort compilation, not only A's earlier generic CandidateParts receipt.
 
 The runtime backing is a unique `Box<EvaluatedAsciiWorker>` moved between an idle slot and one affine lease. It is never aliased through Arc. The Box keeps its worker inline allocation at one location across the move; caller container/handle storage is charged separately.
 
-**Resolve the public-type problem explicitly:** a public `Columns` method must not name a private/unreachable type from `tikv::evaluated_ascii`. Parent first reexports the opaque TiDB types through `tidb_expr`'s public root, then the separately loaned `context.rs` adds the two default-None methods. The private module can be crate-visible for parent wiring while its fields and TiKV internals stay sealed. Do not accept a `private_interfaces` warning as an API design, put TiKV types directly on Columns, or use `Any`/downcast to avoid the export decision.
+**Resolve the public-type problem explicitly:** a public `Columns` method must not name a private/unreachable type from `tikv::ready_value`. Parent first reexports the opaque TiDB types through `tidb_expr`'s public root, then the separately loaned `context.rs` adds the two default-None methods. The private module can be crate-visible for parent wiring while its fields and TiKV internals stay sealed. Do not accept a `private_interfaces` warning as an API design, put TiKV types directly on Columns, or use `Any`/downcast to avoid the export decision.
 
-The first two-file cut **does not edit that trait**. Its `ScopedAsciiColumns` forwards every currently existing method and its tests invoke the private ready boundary with an explicit scope. Once the two hooks are separately released, the forwarder overrides only them. Dynamic capability discovery/recursive propagation is then tested as a distinct additive step; it cannot be claimed from the explicit-scope prototype alone.
+The first two-file cut **does not edit that trait**. Its `ScopedReadyValueColumns` forwards every currently existing method and its tests invoke the private ready boundary with an explicit scope. Once the two hooks are separately released, the forwarder overrides only them. Dynamic capability discovery/recursive propagation is then tested as a distinct additive step; it cannot be claimed from the explicit-scope prototype alone.
 
-`with_columns` is an unwind-guarded lexical binding, not a second evaluator. In the later capability-aware version an already active scope exposed by `native` takes precedence; use it rather than acquiring another lease for nesting or silently switching execution. Otherwise bind this scope. The wrapper's execution capability is the active scope's epoch, not an unrelated base owner. Binding itself performs no pool admission. A stale/closed epoch refuses at the demanded ready call, not by treating absence/staleness as permission for a fresh implicit execution.
+`with_columns` is an unwind-guarded lexical binding, not a second evaluator. In the later capability-aware version an already active scope exposed by `native` takes precedence; use it rather than acquiring another lease for nesting or silently switching execution. Otherwise bind this scope. The wrapper's execution capability is the active scope's independent execution, not an unrelated base owner. Binding itself performs no pool admission. A closed execution refuses at the demanded ready call, not by treating absence/staleness as permission for a fresh implicit execution.
 
 No-scope-but-present-execution permits a short scope for a genuinely separate public call. Hot loops must hoist `with_columns`/scope outside their loop. A no-capability one-shot entry eventually needs a parent-approved explicit standalone policy/owner path, created only when demanded; the first private cut invents no default limits or per-row global cache. Absence never authorizes native ASCII arithmetic.
 
-### 11.3 Shared-root epochs, close and affine state
+### 11.3 Shared root, independent executions, close and affine state
 
-`PoolCore` contains one immutable policy, synchronized finite slot/byte ledger, and a checked published epoch/closed word. It survives epoch rotation through shared handles. No per-expression map or thread-ID map is added.
+`PoolCore` contains one immutable policy and synchronized finite slot/byte ledger. `begin_execution` allocates a checked monotonic execution ID plus a private `Arc<ExecutionState { id, closed }>`; there is no root-global current epoch or implicit invalidation. No per-expression map or thread-ID map is added.
 
-- `begin_execution` atomically closes the prior epoch, invalidates its idle entries and issues a checked fresh epoch. **The same root ledger survives**; it does not zero the charges of older leased/creating/retiring workers. Epoch overflow fails closed rather than wrapping. Policy replacement is not a first-cut API; a new accounting root requires old-root quiescence or a separately owned aggregate budget.
-- `execution.close()` closes only that token if it is current. Calling close on an old cloned handle must not close a newer execution. It rejects new ready admissions immediately, detaches idle workers for retirement and leaves old in-flight/creating debt charged until actual disposal. Dropping a parallel receiver/handle is not close.
-- A lease carries a private root/token/slot identity. Its worker and immutable reservation belong to exactly one slot. Creation checks the epoch again before publication; a close during factory/prewarm retires the result without publishing it.
-- A ready invocation checks its epoch before entering C4 and again before publishing successful computed output. The checked post-call epoch observation is the publication linearization point: if close wins, discard the result and retire; if publication wins, the outer executor still owns its normal cancellation/output-publication rule. An original engine error remains primary even when close races with cleanup.
-- Use a checked atomic epoch observation for these hot-path checks, with publication/close ordering specified and tested. Pool mutex work is limited to checkout/reserve/return/retire bookkeeping; the fixed worker reservation stays charged during use, so no per-character pool-lock cycle is required merely to observe unchanged storage. No mutex is held through native work or C4 preparation/evaluation/destruction.
-- Reset/reopen calls close/begin explicitly. Same-statement handle clone and configuration COW retain the same execution capability; a new statement/rebuild gets the appropriate new epoch, not a fresh hidden owner on every clone. In-flight references may keep an old root alive, but cannot repopulate the current epoch.
+- `begin_execution` issues a fresh independently closable execution without closing or retiring another live/detached execution. **The same root ledger survives** and continues charging every leased/creating/retiring worker. Execution-ID overflow fails closed rather than wrapping. Policy replacement is not a first-cut API; a new accounting root requires old-root quiescence or a separately owned aggregate budget.
+- `execution.close()` atomically closes only its own state. It rejects new ready admissions for that execution, detaches only its idle workers for retirement, and leaves its in-flight/creating debt charged until actual disposal. Peer executions remain live. Dropping a parallel receiver/handle is not close.
+- A lease carries a private root/execution/token/slot identity. Its worker and immutable reservation belong to exactly one slot and may be reused only by that same execution. Creation checks its execution state again before publication; a same-execution close during factory/prewarm retires the result without publishing it, while beginning a peer does not interfere.
+- A ready invocation checks its own execution before entering C4 and again before publishing successful computed output. The checked post-call observation is the publication linearization point: if its close wins, discard the result and retire; if publication wins, the outer executor still owns its normal cancellation/output-publication rule. An original engine error remains primary even when close races with cleanup.
+- Use each execution's atomic closed observation for hot-path checks, with publication/close ordering specified and tested. Pool mutex work is limited to checkout/reserve/return/retire bookkeeping; the fixed worker reservation stays charged during use, so no per-character pool-lock cycle is required merely to observe unchanged storage. No mutex is held through native work or C4 preparation/evaluation/destruction.
+- Reset/reopen calls close/begin explicitly. Same-statement handle clone and configuration COW retain the same execution capability; a new statement gets another execution on the shared accounting root. It neither reuses a peer's worker nor invalidates that peer.
 
-Scope state is a closed local enum such as `Dormant | Leased(AsciiLease) | Busy | Poisoned`, plus a sticky poison bit. At first ready demand, reserve/check out; then use checked short cell access to **move the lease out**, mark Busy and release the cell borrow before calling C4. An invocation guard owns the lease while executing. On normal completion, validate worker health/storage and epoch before restoring it. No runtime/cell borrow survives into native result coercion. Busy/reentry yields a structured contract error, not `borrow_mut` panic or another lease. An already-poisoned scope never silently repairs itself by preparing a replacement; an explicit new scope is a caller decision after handling the failed operation.
+Scope state is a closed local enum such as `Dormant | Leased(ReadyValueLease) | Busy | Poisoned`, plus a sticky poison bit. At first ready demand, reserve/check out; then use checked short cell access to **move the lease out**, mark Busy and release the cell borrow before calling C4. An invocation guard owns the lease while executing. On normal completion, validate worker health/storage and its execution state before restoring it. No runtime/cell borrow survives into native result coercion. Busy/reentry yields a structured contract error, not `borrow_mut` panic or another lease. An already-poisoned scope never silently repairs itself by preparing a replacement; an explicit new scope is a caller decision after handling the failed operation.
 
 ### 11.4 Two pool observations: actual footprint and conservative reservations
 
@@ -537,9 +537,9 @@ F = explicit creation_reservation, at least W plus any separately reserved
     caller/factory construction allowance required by the approved accounting
 ```
 
-All arithmetic, slot/generation IDs and comparisons are checked before mutation. Static policy validation and finite control/slab allocation belong to owner construction/configuration; they perform no C4 preparation. Policies can allow zero available worker/creating slots for demand tests. Scope binding remains inert. Resource admission for an ASCII runtime occurs only after its original frontend coercion has completed.
+All arithmetic, slot/generation IDs and comparisons are checked before mutation. Static policy validation and finite control/slab allocation belong to owner construction/configuration; they perform no C4 preparation. Policies can allow zero available worker/creating slots for demand tests. Scope binding remains inert. Resource admission for a ready-value runtime occurs only after its original frontend coercion has completed.
 
-A Creating slot and the **full F** are committed under the mutex **before** the real factory/Box allocation/prewarm is invoked outside the lock. A second thread cannot see the same free slot or uncharged creation. Cap creation explicitly even if remaining byte budget is large. Publication requires healthy C4 state, nonmutating observed `total_bytes <= W`, completed cache prewarm and matching live epoch; only then replace F with W. Temporary creation owners must already be gone before the difference is released. Factory error/panic and close-during-create hold the reservation until partial/new objects have actually dropped. No retry or indefinite wait for a lease held by the caller itself; exhaustion is the demanded call's structured resource error.
+A Creating slot and the **full F** are committed under the mutex **before** the real factory/Box allocation/prewarm is invoked outside the lock. A second thread cannot see the same free slot or uncharged creation. Cap creation explicitly even if remaining byte budget is large. Publication requires healthy C4 state, nonmutating observed `total_bytes <= W`, completed cache prewarm and matching live execution; only then replace F with W. Temporary creation owners must already be gone before the difference is released. Factory error/panic and close-during-create hold the reservation until partial/new objects have actually dropped. No retry or indefinite wait for a lease held by the caller itself; exhaustion is the demanded call's structured resource error.
 
 W remains reserved while a worker is live **or idle**, even when its observed footprint is smaller. This deliberately trades utilization for simple safe hot-loop reuse. Continue checking actual storage on return and after invocations; never trust an initial observation. A larger/failed observation or unhealthy worker cannot reenter idle. Unmeasurable dirty warning payloads are disposed of immediately; do not hide them behind a reusable poison flag. If storage cannot be certified within W, mark **uncertain retirement debt** and freeze new checkout/creation/publication on that root until actual disposal clears it. W is then only a last certified reservation, not a fabricated measurement of the dirty payload. Epoch rotation must not bypass this freeze.
 
@@ -607,7 +607,7 @@ All following gates are **proposed / unexecuted**. First-cut tests must prepare 
 | PV-04 reuse/prewarm | Multiple ready values on one lease and repeated scopes on one root/epoch; one actual factory/context per created worker, no stale bytes, nonmutating stable cold-published/warm storage | No warm caller-program/FieldType cache assumption; KV gate must prove prewarm before publication |
 | PV-05 full scope order | Native child/coercion before checkout, no lease on skipped/coercion-error paths, nested ready calls use sequential ownership, output materialization/native callbacks after Busy ends | Integrated dead-branch/selection/full-ret-type tests await dispatch loan; no mocked whole-tree proof |
 | PV-06 concurrency admission | Real workers with tiny slot/byte budgets; barrier after committed creating reservation but before factory; concurrent miss cannot exceed max_creating/total slots/F cap | A cfg(test) barrier is not a replacement backend; real factory runs after release |
-| PV-07 close/retirement | Close/reset while creating/live; old handle close cannot close new epoch; returned old lease cannot populate new epoch; barrier before actual drop retains slot/byte debt | Actual executor/statement close/COW/reopen wiring remains a later hot-entry gate |
+| PV-07 close/retirement | Close/reset while creating/live; closing one handle cannot close a peer execution; a closed execution's lease cannot populate a peer; barrier before actual drop retains slot/byte debt | Actual executor/statement close/COW/reopen wiring remains a later hot-entry gate |
 | PV-08 caught panic | Actual worker first used; then panic in guarded native work before kernel, after kernel, and in return-processing stand-in; catcher outside guard while scope survives; worker dropped and scope sticky-poisoned before next demand | Driver-internal poison/zero-count-vs-details cases require C4's own private tests; TiDB adds no context getter or production panic hook |
 | PV-09 clean/error disposal | Actual low-budget C4 refusal, wrong/stale epoch, checked reentry and observer failure handling; preserve primary error; no native retry | Any synthetic corruption test is labelled structural only; no fake dirty-worker result passed off as C4 health proof |
 | PV-10 full forwarding | All 63 methods' sentinel behavior plus drift check; no native callback with runtime/bookkeeping lock held | After additive hooks: active-scope precedence, recursive propagation, owner-only entry and default-None behavior |

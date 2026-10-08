@@ -4449,10 +4449,10 @@ fn compare_op_from_binary(op: tidb_ast::BinaryOp) -> Option<CompareOp> {
 #[test]
 fn planner_temporal_literals_keep_existing_execution_and_resolver_settings() {
     use tidb_datatype::{DateModes, Datum, FieldTypeCode};
-    use tidb_expr::{AsciiExecution, AsciiPoolOwner, AsciiPoolPolicy, Columns};
+    use tidb_expr::{Columns, ReadyValueExecution, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 
     struct ScopeOnly {
-        execution: Option<AsciiExecution>,
+        execution: Option<ReadyValueExecution>,
     }
     impl Columns for ScopeOnly {
         fn get(&self, _: &[String]) -> Option<Datum> {
@@ -4478,7 +4478,7 @@ fn planner_temporal_literals_keep_existing_execution_and_resolver_settings() {
             // even for the literal's constant text. Temporal getters stay trapped.
             0
         }
-        fn evaluated_ascii_execution(&self) -> Option<&AsciiExecution> {
+        fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
             self.execution.as_ref()
         }
     }
@@ -4573,8 +4573,8 @@ fn planner_temporal_literals_keep_existing_execution_and_resolver_settings() {
     }
 
     for slots in [1, 0] {
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(
                 slots,
                 slots,
                 16 * 1024 * 1024,

@@ -62,8 +62,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass,
-        ExpressionRuntimeFailureClass,
+        ExpressionAdapterFailureClass, ExpressionRuntimeFailureClass, ReadyValuePoolOwner,
+        ReadyValuePoolPolicy,
     };
 
     #[test]
@@ -86,10 +86,18 @@ mod tests {
         ];
         let comparisons = [Datum::Null, Datum::Int(0), Datum::Int(1)];
         for slots in [0, 1] {
-            let policy =
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap();
-            let owner = AsciiPoolOwner::new(policy).unwrap();
+            let policy = ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 16,
+            )
+            .unwrap();
+            let owner = ReadyValuePoolOwner::new(policy).unwrap();
             let execution = owner.begin_execution().unwrap();
             let scope = execution.scope();
             scope.with_columns(&crate::NoColumns, |bound| {
@@ -99,10 +107,7 @@ mod tests {
                         // This direct completed comparison deliberately needs
                         // no worker: a zero-slot error must be the selector's.
                         let result = eval_null_if_in(bound, first, |original| {
-                            assert!(std::ptr::eq(
-                                original.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
+                            assert!(std::ptr::eq(original.ready_value_scope().unwrap(), &scope));
                             calls.set(calls.get() + 1);
                             Ok(comparison.clone())
                         });
@@ -151,13 +156,10 @@ mod tests {
                         let calls = Cell::new(0);
                         let result = eval_null_if_in(bound, &values[2], |original| {
                             calls.set(calls.get() + 1);
+                            assert!(std::ptr::eq(original.ready_value_scope().unwrap(), &scope));
                             assert!(std::ptr::eq(
-                                original.evaluated_ascii_scope().unwrap(),
-                                &scope
-                            ));
-                            assert!(std::ptr::eq(
-                                original.evaluated_ascii_execution().unwrap(),
-                                bound.evaluated_ascii_execution().unwrap()
+                                original.ready_value_execution().unwrap(),
+                                bound.ready_value_execution().unwrap()
                             ));
                             evaluate_args_in(
                                 EvaluatedBytesOp::AnyValueNative,
@@ -194,7 +196,7 @@ mod tests {
         }
         assert_eq!(
             eval_null_if_in(&crate::NoColumns, &Datum::UInt(u64::MAX), |original| {
-                assert!(original.evaluated_ascii_scope().is_none());
+                assert!(original.ready_value_scope().is_none());
                 Ok(Datum::Int(0))
             }),
             Ok(Datum::UInt(u64::MAX))

@@ -38,7 +38,7 @@ A focused independent source review found no additional runtime IN reducer. Plan
 
 [Exact commands/counts/hashes](../logs/in-control-summary.txt): twelve actual locked single-threaded launches, all nonzero GREEN; no failed, zero-match or interrupted run. SDK core1, native control1, unchanged gateway196 (one existing ignored test), private cache2, prepared rebind1, original IN source4, row3, expanded bridge2, original row/IN vectors1, real legacy mapper1, new SQL1 and R108 typed SQL1.
 
-Three new explicit tests (SDK1/native2); original233 native test bodies in the six changed Rust files remain byte-identical. The two changed SDK files contained no old explicit test bodies. `evaluated_ascii.rs` and its complete test file are unchanged; the old three-facade test was executed and passed. No provider output was used as an oracle.
+Three new explicit tests (SDK1/native2); original233 native test bodies in the six changed Rust files remain byte-identical. The two changed SDK files contained no old explicit test bodies. `ready_value.rs` and its complete test file are unchanged; the old three-facade test was executed and passed. No provider output was used as an oracle.
 
 After the first native control receipt, the newly added test was extended to exercise the actual ready-value dispatcher and row false-first versus full-field-evaluation boundary. The expanded bridge run executes that final test plus R108's existing bridge test; it is supplemental validation, not a retry after failure. The new SDK module's import path was corrected during static preflight before the first command; no fail-before receipt is invented.
 

@@ -44,8 +44,8 @@ use tidb_query_datatype::{
 use tidb_query_expr::local::{
     compile_control_with_lineage, CallMetadata, CompileLimits, ControlLineageFacts,
     ControlProducerFact, ControlProducerRole, ExecutionLimits, FunctionRef, InputRow,
-    LineageCarrier, LiteralKind, LocalCompileContext, LocalControlProgram, LocalError,
-    LocalEvalState, LocalExpr, LocalResult, LocalRuntimeServices, ResultMetaId,
+    LineageCarrier, LiteralKind, LocalCompileContext, LocalControlProgram, LocalError, LocalExpr,
+    LocalResult, LocalRuntimeServices, ResultMetaId,
 };
 
 use crate::expr_collation::CollationInfo;
@@ -852,7 +852,7 @@ impl NativeControlBatch {
 pub(crate) struct PreparedControlLineage {
     spec: Arc<LoweredControlLineage>,
     program: LocalControlProgram,
-    state: LocalEvalState,
+    limits: ExecutionLimits,
     max_materialization_retained_bytes: usize,
 }
 impl PreparedControlLineage {
@@ -872,7 +872,7 @@ impl PreparedControlLineage {
         Ok(Self {
             spec,
             program,
-            state: LocalEvalState::with_limits(execution),
+            limits: execution,
             max_materialization_retained_bytes,
         })
     }
@@ -891,7 +891,7 @@ impl PreparedControlLineage {
             spec: &self.spec,
         };
         let output = self.program.eval_with_bindings(
-            &mut self.state,
+            self.limits,
             ctx,
             chunk.physical_rows(),
             selection,
@@ -1028,7 +1028,7 @@ impl PreparedControlLineage {
             spec: &self.spec,
         };
         let output = self.program.eval_with_bindings(
-            &mut self.state,
+            self.limits,
             ctx,
             physical_rows,
             selection,

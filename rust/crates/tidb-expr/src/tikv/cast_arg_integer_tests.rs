@@ -15,7 +15,8 @@
 #[test]
 fn argument_integer_preserves_json_effect_order_identity_source_flags_and_worker_refusal() {
     use crate::{
-        AsciiPoolOwner, AsciiPoolPolicy, Columns, Datum, EvalError, ExpressionAdapterFailureClass,
+        Columns, Datum, EvalError, ExpressionAdapterFailureClass, ReadyValuePoolOwner,
+        ReadyValuePoolPolicy,
     };
     use std::cell::{Cell, RefCell};
     use tidb_datatype::{
@@ -148,9 +149,18 @@ fn argument_integer_preserves_json_effect_order_identity_source_flags_and_worker
         assert!(ctx.events.take().is_empty());
     }
     for slots in [0, 1] {
-        let owner = AsciiPoolOwner::new(
-            AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                .unwrap(),
+        let owner = ReadyValuePoolOwner::new(
+            ReadyValuePoolPolicy::checked(
+                slots,
+                slots,
+                16 << 20,
+                1 << 20,
+                2 << 20,
+                64,
+                16,
+                1 << 16,
+            )
+            .unwrap(),
         )
         .unwrap();
         let execution = owner.begin_execution().unwrap();

@@ -322,7 +322,7 @@ pub struct LegacyDateArithmeticResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsciiPoolOwner, AsciiPoolPolicy, ExpressionAdapterFailureClass};
+    use crate::{ExpressionAdapterFailureClass, ReadyValuePoolOwner, ReadyValuePoolPolicy};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use tidb_datatype::{CoreTime, DateModes, TimeType};
 
@@ -366,9 +366,18 @@ mod tests {
             }
         }
         let owner = |slots| {
-            AsciiPoolOwner::new(
-                AsciiPoolPolicy::checked(slots, slots, 16 << 20, 1 << 20, 2 << 20, 64, 16, 1 << 16)
-                    .unwrap(),
+            ReadyValuePoolOwner::new(
+                ReadyValuePoolPolicy::checked(
+                    slots,
+                    slots,
+                    16 << 20,
+                    1 << 20,
+                    2 << 20,
+                    64,
+                    16,
+                    1 << 16,
+                )
+                .unwrap(),
             )
             .unwrap()
         };
@@ -400,7 +409,7 @@ mod tests {
                 for entry in [Entry::Text, Entry::Time, Entry::Duration] {
                     let mut visited = Vec::new();
                     let mut eval = |index, channel, selected: &dyn Columns| -> Result<V, ChildError> {
-                        assert!(std::ptr::eq(selected.evaluated_ascii_scope().unwrap(), &scope));
+                        assert!(std::ptr::eq(selected.ready_value_scope().unwrap(), &scope));
                         visited.push((index, channel));
                         Ok(match (index, channel) {
                             (2, C::Bytes) => V::Bytes(Some(if matches!(entry, Entry::Duration) { b"SECOND".to_vec() } else { b"DAY".to_vec() })),
@@ -507,7 +516,7 @@ mod tests {
             metadata(D::Datetime),
             &zone,
             |_, _, selected| -> Result<V, ChildError> {
-                assert!(selected.evaluated_ascii_scope().is_some());
+                assert!(selected.ready_value_scope().is_some());
                 assert_eq!(
                     super::super::eval_interval_in(selected, &[Datum::Int(1), Datum::Int(2)]),
                     Ok(Datum::Int(0))
@@ -537,7 +546,7 @@ fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
     match error {
         tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
         tidb_query_expr::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_ascii_local(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit(
                     "native legacy date arithmetic frame allocation or size failed".into(),
                 ),

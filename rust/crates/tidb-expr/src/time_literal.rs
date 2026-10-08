@@ -247,8 +247,8 @@ mod tests {
         let zone = tidb_datatype::SessionTimeZone::Named(chrono_tz::America::Los_Angeles);
         let modes = tidb_datatype::DateModes::default();
         for slots in [1, 0] {
-            let owner = crate::AsciiPoolOwner::new(
-                crate::AsciiPoolPolicy::checked(
+            let owner = crate::ReadyValuePoolOwner::new(
+                crate::ReadyValuePoolPolicy::checked(
                     slots,
                     slots,
                     16 * 1024 * 1024,
