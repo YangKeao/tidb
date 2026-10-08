@@ -1,7 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **decimal-binary-decode-195**. Functional Demo: **240/245 (97.96%)**, strict **0**.
+Current paired checkpoint **decimal-word-parts-196**. Functional Demo: **240/245 (97.96%)**, strict **0**.
 
-TiKV now uniquely owns Decimal fixed binary size, writer, and decoder algorithms. TiDB retains only concrete Decimal/failure projection; its duplicate word reader, word-count clamp, and decoder body are deleted. Four focused filters are GREEN. [Evidence](evidence/decimal-binary-decode-checkpoint.md) · [receipts](logs/decimal-binary-decode-summary.txt).
+TiKV now uniquely owns Decimal raw-word-to-coefficient projection, including inline SmallVec storage and negative-zero scale semantics. TiDB retains a thin concrete `Decimal` constructor and its TiDB-only JSON persistence schema. Five focused filters are GREEN. [Evidence](evidence/decimal-word-parts-checkpoint.md) · [receipts](logs/decimal-word-parts-summary.txt).
 
 Broader M2 and M6 final acceptance remain active. PR readiness is not claimed.

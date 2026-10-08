@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use smallvec::SmallVec;
-
-use super::{pad_scale, Decimal, DecimalDigits, INLINE_DECIMAL_DIGITS};
+use super::{pad_scale, Decimal, DecimalDigits};
 
 // ===========================================================================
 // Binary storage codec: faithful port of Go `MyDecimal` `ToBin`/`DecimalBinSize`
@@ -34,7 +32,7 @@ use super::{pad_scale, Decimal, DecimalDigits, INLINE_DECIMAL_DIGITS};
 
 pub(super) const DIGITS_PER_WORD: usize = 9;
 pub(super) const CODEC_WORD_BUF_LEN: usize = 9;
-/// `10^k` for `k` in `0..=9` (all fit in `i32`; `10^9 < i32::MAX`).
+/// Powers retained for native word-view validation and projection.
 pub(super) const CODEC_POWERS10: [i32; 10] = [
     1,
     10,
@@ -47,7 +45,6 @@ pub(super) const CODEC_POWERS10: [i32; 10] = [
     100_000_000,
     1_000_000_000,
 ];
-
 /// Hard codec failure — Go `ErrBadNumber` (illegal precision/scale, or a corrupt
 /// binary). Truncation/overflow are soft and reported as [`DecimalCodecWarning`].
 pub use tidb_query_datatype::codec::mysql::NativeDecimalCodecError as DecimalCodecError;
@@ -119,78 +116,23 @@ impl MyDecimalWords {
     /// `Decimal` re-normalizes and `Display` re-inserts the point/sign, matching
     /// Go `ToString`.
     pub(super) fn to_decimal(&self) -> Decimal {
-        let (word_start_idx, digits_int) = self.remove_leading_zeros();
-        let digits_frac = self.digits_frac;
-
-        // Build one coefficient buffer. The previous implementation allocated
-        // separate integer/fraction vectors and then copied both into a
-        // String; that turns every DECIMAL cell into several heap operations.
-        // Go's MyDecimal already owns a fixed word buffer, so keep the Rust
-        // representation to one final coefficient allocation as well.
-        let int_len = digits_int.max(0) as usize;
-        let fraction_len = digits_frac.max(0) as usize;
-        let mut coefficient = SmallVec::<[u8; INLINE_DECIMAL_DIGITS]>::new();
-        coefficient.resize(int_len + fraction_len, b'0');
-        if digits_int > 0 {
-            let mut pos = int_len;
-            let mut word_idx = word_start_idx + digits_to_words(digits_int as usize);
-            let mut remaining = digits_int;
-            while remaining > 0 {
-                word_idx -= 1;
-                let mut x = self.word_buf[word_idx];
-                let take = remaining.min(DIGITS_PER_WORD as i32);
-                for _ in 0..take {
-                    let y = x / 10;
-                    pos -= 1;
-                    coefficient[pos] = b'0' + (x - y * 10) as u8;
-                    x = y;
-                }
-                remaining -= DIGITS_PER_WORD as i32;
-            }
-        }
-
-        // Fraction coefficient digits, built left-to-right like Go `ToString`.
-        if digits_frac > 0 {
-            let dig_mask = CODEC_POWERS10[DIGITS_PER_WORD - 1]; // ten8 = 10^8
-            let mut word_idx = word_start_idx + digits_to_words(digits_int.max(0) as usize);
-            let mut remaining = digits_frac;
-            let mut offset = int_len;
-            while remaining > 0 {
-                let mut x = self.word_buf[word_idx];
-                word_idx += 1;
-                let take = remaining.min(DIGITS_PER_WORD as i32);
-                for _ in 0..take {
-                    let y = x / dig_mask;
-                    coefficient[offset] = b'0' + y as u8;
-                    offset += 1;
-                    x -= y * dig_mask;
-                    x *= 10;
-                }
-                remaining -= DIGITS_PER_WORD as i32;
-            }
-        }
-
-        if coefficient.is_empty() {
-            coefficient.push(b'0');
-        }
-        let digits = DecimalDigits::from_ascii(coefficient);
-        let scale = digits_frac.max(0) as u32;
-        if digits_frac > 0 {
-            Decimal::new_with_storage_preserving_zero_sign(self.negative, digits, scale, scale)
-        } else {
-            // Go `FromBin` resets to `zeroMyDecimal` only when both digit
-            // counts are zero, clearing a non-canonical sign at scale zero.
-            Decimal::new_with_storage(self.negative, digits, scale, scale)
-        }
-    }
-
-    /// Go `removeLeadingZeros`: index of the first significant word and the
-    /// count of significant integer digits.
-    fn remove_leading_zeros(&self) -> (usize, i32) {
-        tidb_query_datatype::codec::mysql::native_decimal_remove_leading_zeros(
+        let parts = tidb_query_datatype::codec::mysql::native_decimal_words_to_parts(
+            self.negative,
             self.digits_int,
+            self.digits_frac,
             &self.word_buf,
-        )
+        );
+        let digits = DecimalDigits::from_ascii(parts.coefficient);
+        if parts.scale > 0 {
+            Decimal::new_with_storage_preserving_zero_sign(
+                parts.negative,
+                digits,
+                parts.scale,
+                parts.scale,
+            )
+        } else {
+            Decimal::new_with_storage(parts.negative, digits, parts.scale, parts.scale)
+        }
     }
 }
 
