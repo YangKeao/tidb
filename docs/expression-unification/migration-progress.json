@@ -1,7 +1,10 @@
 {
-  "checkpoint_id": "wrapper-owner-matrix-191",
+  "checkpoint_id": "wrapper-classification-192",
   "query_dml_filter_grouping_owner_matrix_verified": true,
-  "window_and_standalone_ddl_fold_owner_classification_pending": true,
+  "window_runtime_owner_verified": true,
+  "standalone_ddl_default_and_aggregate_probe_classified": true,
+  "window_and_standalone_ddl_fold_owner_classification_pending": false,
+  "open_wrapper_context_gaps": ["null-rejection-live-columns", "window-param-marker-uint"],
   "remote_unistore_dag_server_local_owner_complete": true,
   "local_session_planner_legacy_owner_matrix_verified": true,
   "remote_unistore_dag_owner_requires_server_local_lifecycle": false,

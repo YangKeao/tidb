@@ -19554,3 +19554,43 @@ fn evaluated_ascii_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() 
         assert!(zero.warnings().is_empty(), "{sql}");
     }
 }
+
+#[test]
+fn evaluated_ascii_window_arguments_borrow_the_statement_execution() {
+    let mut session = Session::new();
+    session
+        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
+        .unwrap();
+    session
+        .run("CREATE TABLE ascii_window_owner (id INT, v VARBINARY(8))")
+        .unwrap();
+    session
+        .run("INSERT INTO ascii_window_owner VALUES (1,X'41'),(2,X'42')")
+        .unwrap();
+    assert!(session
+        .try_install_evaluated_ascii_policy(ascii_session_policy(0))
+        .unwrap());
+
+    let sql = "SELECT SUM(ASCII(v)) OVER (ORDER BY id) FROM ascii_window_owner";
+    let error = session.run_with_columns(sql).expect_err(sql);
+    match &error {
+        DriverError::Exec(tidb_executor::ExecError::Eval(
+            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
+        )) => {
+            assert_eq!(
+                failure.class(),
+                tidb_executor::ExpressionAdapterFailureClass::PoolResource
+            );
+            assert_eq!(
+                failure.origin(),
+                tidb_executor::ExpressionAdapterFailureOrigin::Pool
+            );
+        }
+        other => panic!("window arguments must retain the statement owner: {other:?}"),
+    }
+    let mysql = error.to_mysql_error();
+    assert_eq!(mysql.code, 1105);
+    assert_eq!(mysql.state, *b"HY000");
+    assert!(mysql.is_from_evaluation());
+    assert!(session.warnings().is_empty());
+}

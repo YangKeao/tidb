@@ -4,4 +4,6 @@
 
 Five immutable real-SQL filters are GREEN: query+DML/COW, execute/import, predicate/filter zero-slot refusal, comparison typed/filter/tuple, and grouping/rollup. [Receipts](../logs/wrapper-owner-matrix-summary.txt).
 
-This does not claim exhaustive wrapper closure. The range audit only excluded Go production `pkg` NoColumns use, while the aggregate/window audit produced no reliable result. Rust standalone DDL/fold NoColumns paths and window-specific runtime propagation remain to classify.
+R198 classifies window runtime: `build_window` retains `StmtContext` in `WindowExec`, and partition/order/range/aggregate/value/lead-lag evaluations use it. A zero-slot `SUM(ASCII(v)) OVER` SQL test confirms the owner reaches a window argument. DDL default paths also use live context, while aggregate cast's NoColumns use is a literal metadata probe.
+
+Two real gaps remain: null-rejection folding drops available planner `Columns`, and window integer constant extraction rejects prepared `ParamMarker` values. A suspected storage-class UTC/default-zone mismatch was not reproduced by the attempted accepted expression, so no fix or claim was made. [R198 receipt](../logs/wrapper-classification-summary.txt).
