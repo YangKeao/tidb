@@ -218,10 +218,10 @@ fn evaluate(
         },
         |computed, selected| {
             if default_policy {
-                let scope = selected.ready_value_scope().ok_or_else(invalid_report)?;
+                let cache = selected.ready_value_cache().ok_or_else(invalid_report)?;
                 // AST DATE_ADD formerly passed NoColumns into its entire body.
-                // Keep that semantic policy while borrowing the actual authority.
-                scope.with_columns(&crate::NoColumns, |defaults| {
+                // Keep that semantic policy while borrowing the selected lane cache.
+                cache.with_columns(&crate::NoColumns, |defaults| {
                     drive(computed, defaults, defaults, domain, [date, amount])
                 })
             } else {

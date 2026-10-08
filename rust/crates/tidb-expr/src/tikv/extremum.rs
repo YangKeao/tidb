@@ -254,12 +254,12 @@ pub(crate) fn eval_extremum_in(
                                     Request::CompareLt => tidb_ast::BinaryOp::Lt,
                                     _ => tidb_ast::BinaryOp::Gt,
                                 };
-                                let scope =
-                                    selected.ready_value_scope().ok_or_else(invalid_report)?;
+                                let cache =
+                                    selected.ready_value_cache().ok_or_else(invalid_report)?;
                                 // Preserve eval_binary's exact context-free policy,
-                                // but charge the real selected execution and scope.
+                                // but reuse the selected lane cache.
                                 let comparison =
-                                    scope.with_columns(&crate::NoColumns, |defaults| {
+                                    cache.with_columns(&crate::NoColumns, |defaults| {
                                         crate::ops::eval_binary_with_div_precision(
                                             op,
                                             value.clone(),

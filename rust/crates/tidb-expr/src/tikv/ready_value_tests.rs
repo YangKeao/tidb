@@ -19385,3 +19385,22 @@ fn parent_external_observer_actual_pool_owner_arc_new_fixture() {
     positive_controls();
     eprintln!("ASCII_POOL_EXTERNAL_OBSERVER CONTROL_POST_END");
 }
+
+#[test]
+fn expression_router_ignores_legacy_pool_capabilities() {
+    let owner = ReadyValuePoolOwner::new(test_policy(0, 0)).unwrap();
+    let execution = owner.begin_execution().unwrap();
+    let scope = execution.scope();
+    let columns = AdvertisedReadyValueColumns {
+        scope: Some(&scope),
+        execution: &execution,
+    };
+    let before = owner.snapshot().unwrap();
+
+    assert_eq!(
+        crate::func::eval_func_values("ASCII", &[Datum::Raw(b"A".to_vec())], &columns),
+        Some(Ok(Datum::Int(65)))
+    );
+    assert_eq!(owner.snapshot().unwrap(), before);
+    execution.close();
+}

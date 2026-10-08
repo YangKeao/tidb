@@ -2915,27 +2915,6 @@ fn route_prepared_args_in<T>(
         return evaluate_cached_args(cache, prepare, |computed| pack(computed, ctx))
             .map_err(ReadyValueBoundaryError::into_eval_error);
     }
-    if let Some(scope) = ctx.ready_value_scope() {
-        return evaluate_scoped_args(scope, prepare, |computed, scope| {
-            let columns = ScopedReadyValueColumns {
-                native: ctx,
-                authority: ReadyValueAuthorityRef::Scope(scope),
-            };
-            pack(computed, &columns)
-        })
-        .map_err(ReadyValueBoundaryError::into_eval_error);
-    }
-    if let Some(execution) = ctx.ready_value_execution() {
-        return evaluate_scoped_args(&execution.scope(), prepare, |computed, scope| {
-            let columns = ScopedReadyValueColumns {
-                native: ctx,
-                authority: ReadyValueAuthorityRef::Scope(scope),
-            };
-            pack(computed, &columns)
-        })
-        .map_err(ReadyValueBoundaryError::into_eval_error);
-    }
-
     let result = (|| {
         // No lane capability: preserve frontend precedence, then use an affine
         // one-shot cache. It owns exactly the demanded workers and drops them
