@@ -3419,70 +3419,51 @@ impl LegacyEvaluator<'_> {
                 )?
                 .value
             }
-            // The duration-answer casts: Go's `NumberToDuration` reads
-            // integer digits as HHMMSS and text goes through `ParseDuration`
-            // (the truncated-wrong-value folds answer NULL); the identity
-            // passes through. `CastJsonAsDuration` stays refused.
+            // The duration-answer casts retain each signature's exact child
+            // reader before sharing the legacy datum conversion.
             SimpleExpr::Func(
                 sig @ (SimpleSig::CastIntAsDuration
                 | SimpleSig::CastRealAsDuration
                 | SimpleSig::CastDecimalAsDuration
                 | SimpleSig::CastStringAsDuration
-                | SimpleSig::CastDurationAsDuration),
+                | SimpleSig::CastDurationAsDuration
+                | SimpleSig::CastJsonAsDuration),
                 children,
-            ) => {
-                let to_duration = |parsed: tidb_datatype::ParsedDuration| {
-                    tidb_datatype::MySqlDuration::from_nanoseconds(
-                        parsed.nanoseconds(),
-                        parsed.fsp(),
-                    )
-                    .ok()
-                };
-                match sig {
-                    SimpleSig::CastIntAsDuration => self
-                        .folded_int(children.first())?
-                        .and_then(|value| i64::try_from(value).ok())
-                        .and_then(|value| {
-                            tidb_datatype::number_to_duration(value, 6)
-                                .ok()
-                                .map(|converted| converted.value)
-                        }),
-                    SimpleSig::CastRealAsDuration => {
-                        // Go formats shortest-'f', then `ParseDuration`.
-                        let value = legacy_some!(self.eval_real(children.first())?);
-                        to_duration(legacy_some!(tidb_datatype::parse_duration(
-                            format!("{value}").as_bytes(),
-                            6
-                        )
-                        .ok()))
-                    }
-                    SimpleSig::CastDecimalAsDuration => {
-                        let value = legacy_some!(self.eval_decimal(children.first())?);
-                        to_duration(legacy_some!(tidb_datatype::parse_duration(
-                            value.to_string().as_bytes(),
-                            6
-                        )
-                        .ok()))
-                    }
-                    SimpleSig::CastStringAsDuration => {
-                        let raw = legacy_some!(self.eval_bytes(children.first())?);
-                        to_duration(legacy_some!(tidb_datatype::parse_duration(&raw, 6).ok()))
-                    }
-                    _ => self.eval_duration(children.first())?,
+            ) => match sig {
+                SimpleSig::CastIntAsDuration => self
+                    .folded_int(children.first())?
+                    .and_then(|value| i64::try_from(value).ok())
+                    .and_then(|value| {
+                        let datum = Datum::Int(value);
+                        tidb_expr::eval_legacy_cast_duration_datum(&datum)
+                    }),
+                SimpleSig::CastRealAsDuration => {
+                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let datum = Datum::Real(value);
+                    tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
-            }
-            // Go reads the opaque duration code and parses string contents;
-            // other codes answer NULL under the folded error.
-            SimpleExpr::Func(SimpleSig::CastJsonAsDuration, children) => {
-                let value = legacy_some!(self.eval_json(children.first())?);
-                if let Ok(duration) = value.as_duration() {
-                    return Ok(Some(duration));
+                SimpleSig::CastDecimalAsDuration => {
+                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let datum = Datum::Decimal(value);
+                    tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
-                let text = legacy_some!(value.as_string());
-                let parsed = legacy_some!(tidb_datatype::parse_duration(text, 6).ok());
-                tidb_datatype::MySqlDuration::from_nanoseconds(parsed.nanoseconds(), parsed.fsp())
-                    .ok()
-            }
+                SimpleSig::CastStringAsDuration => {
+                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let datum = Datum::Bytes(value);
+                    tidb_expr::eval_legacy_cast_duration_datum(&datum)
+                }
+                SimpleSig::CastDurationAsDuration => {
+                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let datum = Datum::Duration(value);
+                    tidb_expr::eval_legacy_cast_duration_datum(&datum)
+                }
+                SimpleSig::CastJsonAsDuration => {
+                    let value = legacy_some!(self.eval_json(children.first())?);
+                    let datum = Datum::Json(value);
+                    tidb_expr::eval_legacy_cast_duration_datum(&datum)
+                }
+                _ => None,
+            },
             _ => None,
         })
     }

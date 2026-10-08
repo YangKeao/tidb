@@ -40,6 +40,7 @@ pub use cast_json::{
     eval_legacy_cast_json_datum, eval_legacy_cast_json_integer, eval_legacy_cast_json_real,
 };
 mod cast_duration;
+pub use cast_duration::eval_legacy_cast_duration_datum;
 pub(crate) use cast_duration::{
     eval_cast_arg_as_duration_in, eval_cast_duration_in, eval_parse_computed_duration_in,
 };

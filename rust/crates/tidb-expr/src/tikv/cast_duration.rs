@@ -16,6 +16,11 @@ use crate::{Columns, Datum, EvalError};
 use tidb_datatype::{FieldType, MySqlDuration};
 use tidb_query_expr::{NativeDurationCastOutcome, NativeDurationCastSource};
 
+pub fn eval_legacy_cast_duration_datum(value: &Datum) -> Option<MySqlDuration> {
+    let parts = tidb_query_expr::native_legacy_cast_duration(value.as_shared_json_input())?;
+    MySqlDuration::from_nanoseconds(parts.nanoseconds, parts.fsp).ok()
+}
+
 fn source_metadata(source: &FieldType) -> NativeDurationCastSource {
     NativeDurationCastSource {
         code: source.code().as_shared_type_name_code(),

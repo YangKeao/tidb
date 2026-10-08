@@ -407,9 +407,9 @@ pub use tidb_util::mathutil::MysqlRng;
 pub use tikv::{
     eval_from_unixtime_legacy_scoped_in, eval_legacy_bytes_comparison_in,
     eval_legacy_cast_decimal_datum, eval_legacy_cast_decimal_integer,
-    eval_legacy_cast_integer_datum, eval_legacy_cast_json_datum, eval_legacy_cast_json_integer,
-    eval_legacy_cast_json_real, eval_legacy_cast_real_datum, eval_legacy_cast_real_integer,
-    eval_legacy_cast_string_datum, eval_legacy_cast_string_integer,
+    eval_legacy_cast_duration_datum, eval_legacy_cast_integer_datum, eval_legacy_cast_json_datum,
+    eval_legacy_cast_json_integer, eval_legacy_cast_json_real, eval_legacy_cast_real_datum,
+    eval_legacy_cast_real_integer, eval_legacy_cast_string_datum, eval_legacy_cast_string_integer,
     eval_legacy_date_arithmetic_duration_in, eval_legacy_date_arithmetic_text_in,
     eval_legacy_date_arithmetic_time_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
