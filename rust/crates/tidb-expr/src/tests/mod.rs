@@ -56,6 +56,7 @@ mod helper_current_timestamp_source;
 mod ilike_info_cast_source;
 mod in_func_decimal_collation_source;
 mod json_merge_patch_integration_source;
+mod lane_cache_performance;
 mod math;
 mod operand_dispatch;
 mod regexp_like;

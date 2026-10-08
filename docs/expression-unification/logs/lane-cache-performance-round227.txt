@@ -1,0 +1,52 @@
+Lane-cache-only runtime performance receipt (round 227)
+date: 2026-10-08
+host: AMD Ryzen 9 9900X, 12C/24T, 46 GiB, Linux 7.1.8
+toolchain: nightly-2026-08-22
+cpu: taskset -c 2
+current TiDB: c1072a8004c5650189420a939dc27f3d569126e0
+frozen TiDB: 364aef2bab5cc633ecb76a775ae8f36f86a6687d
+current probe sha256: 7713df1e524698f82203ac56e8d8f7d45df1e2c031a74f5de758f63b4c180fb4
+current binary sha256: c35d49955c65036dcb49eba2ae4bb491ded95e468a2544a8cfa773a79037d3b0
+frozen retained probe: docs/expression-unification/evidence/lane-cache-performance-frozen-probe-round227.rs
+frozen retained/compiled probe sha256: 6519dc809d94a44a6c2728eec12fa92f5decae6083ed39d382de0d73881d3be2
+frozen binary sha256: 65ebd75c03c4cadc963ef1106318335e4a5182d89bffd53d7898fdf1df840424
+raw log sha256: 37a8bbc6f11c36302b6512f38214776825dae6a40bb304f9c99afdd4a1eb5d07
+parsed summary sha256: 9a91334851cb79a3a952d5337c69e9a46023268d964cc6c44c37bc71d0e51155
+environment receipt sha256: 04c8ad2460fba482c8f70e2f237ac61b3d37480ba1a34814586d46b089008a9d
+
+method:
+- release tidb-expr libtest; parse and chunk rewrite outside timing
+- 2000 warmups; 9 samples/process; 3 independent processes/revision/mode
+- 27 observations per reported cell
+- revision process order: current/baseline/baseline/current/current/baseline
+- current one_shot/lane_cache order balanced ABBA/BABA within every workload
+- one fresh persistent lane cache/workload; prepared worker count asserted > 0
+- fixed result labels asserted before and during timing
+- medians below; brackets are full observed min..max, not confidence intervals
+- md5 excluded due known current release InvalidSpecification/Prepare failure
+
+AST/value tier ns/eval:
+workload       frozen_native             current_one_shot             current_lane_cache          lane/one  lane/frozen
+integer_add    32.373 [32.162..32.603]    1819.074 [1801.277..1857.183] 942.720 [935.496..1080.637]  0.518x    29.121x
+lazy_if        93.143 [92.651..94.359]    3563.882 [3520.453..3597.737] 1931.111 [1897.306..1953.085] 0.542x    20.733x
+strcmp         163.677 [162.198..167.645] 2339.523 [2308.384..2363.934] 1301.113 [1270.405..1328.411] 0.556x    7.949x
+decimal_add    321.666 [318.326..347.491] 3323.598 [3274.559..3377.774] 2240.418 [2203.852..3092.502] 0.674x    6.965x
+json_type      226.483 [224.380..232.931] 1813.678 [1798.852..1869.660] 1100.992 [1093.755..1147.002] 0.607x    4.861x
+regexp_like    7604.944 [7552.436..7793.478] 10496.124 [10363.341..10576.654] 9315.557 [9187.597..9440.046] 0.888x 1.225x
+geomean lane/one_shot: 0.620x (38.0% reduction)
+geomean lane/frozen: 7.641x
+
+Standalone chunk tier ns/eval:
+workload       frozen_native             current_one_shot             current_lane_cache          lane/one  lane/frozen
+integer_add    92.416 [91.789..133.450]   1904.730 [1879.602..2207.631] 1032.651 [1015.958..1100.422] 0.542x    11.174x
+lazy_if        43.603 [43.382..44.383]    3534.536 [3485.098..3609.825] 1911.341 [1874.872..1936.647] 0.541x    43.835x
+strcmp         75.748 [74.944..78.893]    2291.848 [2241.961..2332.834] 1216.726 [1188.519..1262.481] 0.531x    16.063x
+decimal_add    469.011 [464.298..478.587] 3506.964 [3461.159..3562.664] 2438.929 [2411.601..2452.570] 0.695x    5.200x
+json_type      199.407 [195.500..210.683] 1830.467 [1779.396..1921.990] 1122.176 [1093.527..1198.142] 0.613x    5.628x
+regexp_like    239.975 [237.263..245.339] 2499.003 [2469.641..2596.285] 1441.767 [1423.895..1799.695] 0.577x    6.008x
+geomean lane/one_shot: 0.581x (41.9% reduction)
+geomean lane/frozen: 10.556x
+
+Scope:
+warm width-one unfolded constant-kernel evaluator cost only; not parser/planner,
+real row batches, storage/network, SQL server QPS, or end-to-end latency.

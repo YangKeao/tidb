@@ -1,5 +1,5 @@
 {
-  "checkpoint_id": "lane-cache-only-runtime-220",
+  "checkpoint_id": "lane-cache-performance-227",
   "overall_goal_complete": true,
   "pr_ready": false,
   "standalone_architecture_migration_evaluation_report": true,
@@ -992,6 +992,17 @@
   "pool_free_test_targets_compile_green": true,
   "lane_cache_unit_tests_green": true,
   "lane_cache_real_sql_smoke_green": true,
-  "paired_tikv_commit": "e0b9a4a1bd8f3438db9b613b12c3efdd58ae872a",
-  "plan_sha256": "f91aa3e88b4bd83863515c41025460919f090993c5ec9fe68dfd48653cf9e93b"
+  "lane_cache_performance_retested": true,
+  "performance_frozen_tidb_commit": "364aef2bab5cc633ecb76a775ae8f36f86a6687d",
+  "performance_current_tidb_commit": "c1072a8004c5650189420a939dc27f3d569126e0",
+  "performance_observations_per_cell": 27,
+  "ast_lane_vs_one_shot_geomean": 0.620,
+  "chunk_lane_vs_one_shot_geomean": 0.581,
+  "ast_lane_vs_frozen_range": [1.225, 29.121],
+  "chunk_lane_vs_frozen_range": [5.200, 43.835],
+  "performance_scope": "warm-width-one-unfolded-constant-kernel",
+  "performance_md5_excluded_known_release_prepare_failure": true,
+  "lane_cache_performance_report_review": "APPROVED_AFTER_RETAINING_FROZEN_PROBE_AND_SOFTENING_CAUSAL_CLAIMS",
+  "paired_tikv_commit": "4787df8fcde696ac73d821b7fb54fbc8f0acd6ce",
+  "plan_sha256": "977d11e4ece62abad8b2213a3ef97dbb717af5bba569607402fdfd6482706c59"
 }
