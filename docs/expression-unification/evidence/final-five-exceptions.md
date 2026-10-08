@@ -12,6 +12,6 @@ Checkpoint `final-five-exceptions-185`. These five frozen families remain in the
 
 ## Acceptance boundary
 
-All five retain direct, named native dispatches and zero TiKV/PB/Unistore family admission. Unsupported domains are explicit; no generic fallback is added. Future credit requires deleting the retained algorithm, routing every existing entry through a real TiKV-owned kernel, and preserving host effects only as typed inputs/effect handling.
+All five retain one closed `host_compat` name/arity adapter and zero TiKV/PB/Unistore family admission. They are absent from the generic `builtin_ext` family chain, so retaining them does not retain a second native expression evaluator. JSON_SCHEMA_VALID alone exposes a dedicated lazy expression adapter for its cache/no-I/O-on-NULL contract. Unsupported domains are explicit; no generic fallback is added. Future credit requires deleting the retained algorithm, routing every existing entry through a real TiKV-owned kernel, and preserving host effects only as typed inputs/effect handling.
 
 Implemented families are **240/245 (97.96%)**, above the 90% target. Strict/final-audited count remains 0 until M6 gates and broader lifecycle/type acceptance are completed.

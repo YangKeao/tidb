@@ -125,14 +125,16 @@ fn password_globals(enabled: bool) -> PasswordGlobals {
 }
 
 fn call(name: &str, vals: &[Datum], ctx: &dyn Columns) -> Datum {
-    crate::builtin_ext::crypto::dispatch(name, vals, ctx)
-        .expect("the name must be part of the crypto family")
+    crate::host_compat::eval(name, vals, ctx)
+        .or_else(|| crate::builtin_ext::crypto::dispatch(name, vals, ctx))
+        .expect("the name must have one explicit owner")
         .expect("the row must evaluate")
 }
 
 fn try_call(name: &str, vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::crypto::dispatch(name, vals, ctx)
-        .expect("the name must be part of the crypto family")
+    crate::host_compat::eval(name, vals, ctx)
+        .or_else(|| crate::builtin_ext::crypto::dispatch(name, vals, ctx))
+        .expect("the name must have one explicit owner")
 }
 
 fn s(text: &str) -> Datum {

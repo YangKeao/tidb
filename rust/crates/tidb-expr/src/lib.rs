@@ -357,6 +357,7 @@ mod field_name;
 pub mod fts;
 mod func;
 mod grouping;
+mod host_compat;
 pub mod infer_pushdown;
 mod like;
 mod math_fn;

@@ -1624,7 +1624,12 @@ impl ScalarFunction {
                 .map_or(Ok(Datum::Null), Ok);
         }
         if name == "json_schema_valid" {
-            return self.json_schema_cache.eval(&self.args, ctx, row);
+            return crate::host_compat::eval_json_schema(
+                &self.json_schema_cache,
+                &self.args,
+                ctx,
+                row,
+            );
         }
         // Keep GROUPING's original argument and metadata demand order: NULL
         // never reads planner metadata, but still reaches its genuine NULL worker.

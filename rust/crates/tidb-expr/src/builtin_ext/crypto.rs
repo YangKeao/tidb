@@ -62,7 +62,6 @@ pub(crate) fn dispatch(
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
         ("PASSWORD", 1) => Some(password_hash(&vals[0], ctx)),
-        ("VALIDATE_PASSWORD_STRENGTH", 1) => Some(validate_password_strength(&vals[0], ctx)),
         ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1], ctx)),
         ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1], ctx)),
         ("COMPRESS", 1) => Some(compress(&vals[0], ctx)),
@@ -397,7 +396,10 @@ fn identity_username(identity: &str) -> &str {
 }
 
 /// `VALIDATE_PASSWORD_STRENGTH(str)`.
-fn validate_password_strength(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn validate_password_strength(
+    value: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
     use tidb_util::password_validation::{self, PasswordUser};
 
     let Some(password) = sql_string_bytes(value)? else {
@@ -723,8 +725,8 @@ mod tests {
     }
 
     fn password_call(value: Datum, context: &PasswordContext) -> Datum {
-        dispatch("VALIDATE_PASSWORD_STRENGTH", &[value], context)
-            .expect("password strength should dispatch")
+        crate::host_compat::eval("VALIDATE_PASSWORD_STRENGTH", &[value], context)
+            .expect("host exception should dispatch")
             .expect("password strength should evaluate")
     }
 

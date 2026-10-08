@@ -458,6 +458,12 @@ pub(crate) fn eval_func_values_in(
     vals: &[Datum],
     cols: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
+    // The five explicitly deferred families use narrow TiDB host adapters,
+    // never the generic family dispatcher or a second expression evaluator.
+    if let Some(result) = crate::host_compat::eval(name, vals, cols) {
+        return Some(result);
+    }
+
     // Go's `builtinFromBase64Sig` checks the estimated decoded length against
     // `max_allowed_packet` before decoding and routes an over-limit result
     // through the statement warning policy. Keep this context-sensitive arm

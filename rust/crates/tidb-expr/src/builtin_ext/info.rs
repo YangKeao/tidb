@@ -27,16 +27,13 @@ pub(crate) fn dispatch(
     match (name, vals) {
         ("FORMAT_BYTES", [value]) => Some(format_bytes(value, ctx)),
         ("FORMAT_NANO_TIME", [value]) => Some(format_nano_time(value, ctx)),
-        ("TIDB_DECODE_PLAN", [value]) => Some(decode_plan(value)),
-        ("TIDB_DECODE_BINARY_PLAN", [value]) => Some(decode_binary_plan(value, ctx)),
-        ("TIDB_ENCODE_SQL_DIGEST", [value]) => Some(encode_sql_digest(value)),
         _ => None,
     }
 }
 
 /// `TIDB_ENCODE_SQL_DIGEST(sql)`: the digest of the parser-normalized SQL,
 /// using the same normalizer and SHA-256 representation as `parser.DigestHash`.
-fn encode_sql_digest(value: &Datum) -> Result<Datum, EvalError> {
+pub(crate) fn encode_sql_digest(value: &Datum) -> Result<Datum, EvalError> {
     let Some(sql) = crate::arg_eval_type::eval_string(value)? else {
         return Ok(Datum::Null);
     };
@@ -50,7 +47,7 @@ fn encode_sql_digest(value: &Datum) -> Result<Datum, EvalError> {
 /// `TIDB_DECODE_PLAN(value)`. TiDB deliberately returns the original encoded
 /// value when a textual plan is malformed, so slow-log queries remain useful
 /// even when one row predates the current codec.
-fn decode_plan(value: &Datum) -> Result<Datum, EvalError> {
+pub(crate) fn decode_plan(value: &Datum) -> Result<Datum, EvalError> {
     let Some(input) = crate::arg_eval_type::eval_string(value)? else {
         return Ok(Datum::Null);
     };
@@ -62,7 +59,10 @@ fn decode_plan(value: &Datum) -> Result<Datum, EvalError> {
 
 /// `TIDB_DECODE_BINARY_PLAN(value)`. Its error policy differs from the textual
 /// builtin: malformed data becomes an empty string and one statement warning.
-fn decode_binary_plan(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+pub(crate) fn decode_binary_plan(
+    value: &Datum,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
     let Some(input) = crate::arg_eval_type::eval_string(value)? else {
         return Ok(Datum::Null);
     };
@@ -141,6 +141,14 @@ mod tests {
         dispatch(name, &[value], &crate::NoColumns)
             .expect("name/arity should dispatch")
             .expect("formatting must be total over finite ETReal values")
+    }
+
+    fn host_dispatch(
+        name: &str,
+        values: &[Datum],
+        ctx: &dyn Columns,
+    ) -> Option<Result<Datum, crate::EvalError>> {
+        crate::host_compat::eval(name, values, ctx)
     }
 
     #[test]
@@ -244,7 +252,7 @@ mod tests {
             &mut raw,
         );
         let encoded = tidb_util::plancodec::compress(raw.as_bytes());
-        let decoded = dispatch(
+        let decoded = host_dispatch(
             "TIDB_DECODE_PLAN",
             &[Datum::new_string(encoded)],
             &crate::NoColumns,
@@ -256,7 +264,7 @@ mod tests {
         assert!(decoded.contains("Selection"));
 
         let encoded = tidb_util::plancodec::compress(b"0\t1\t0\t1\t\xff\n");
-        let decoded = dispatch(
+        let decoded = host_dispatch(
             "TIDB_DECODE_PLAN",
             &[Datum::new_string(encoded)],
             &crate::NoColumns,
@@ -269,7 +277,7 @@ mod tests {
         );
 
         let encoded = tidb_util::plancodec::compress(b"0\t2147483648\t0\tinfo\n");
-        let decoded = dispatch(
+        let decoded = host_dispatch(
             "TIDB_DECODE_PLAN",
             &[Datum::new_string(encoded)],
             &crate::NoColumns,
@@ -282,7 +290,7 @@ mod tests {
             .contains("UnknownPlanID2147483648"));
 
         assert_eq!(
-            dispatch(
+            host_dispatch(
                 "TIDB_DECODE_PLAN",
                 &[Datum::new_string("malformed")],
                 &crate::NoColumns,
@@ -301,7 +309,7 @@ mod tests {
             ("EUBzb21lIHJhbmRvbSBieXRlcw==", "proto: illegal wireType 7"),
         ] {
             assert_eq!(
-                dispatch(
+                host_dispatch(
                     "TIDB_DECODE_BINARY_PLAN",
                     &[Datum::new_string(input)],
                     &warnings,
@@ -318,7 +326,7 @@ mod tests {
             );
         }
         assert_eq!(
-            dispatch(
+            host_dispatch(
                 "TIDB_DECODE_BINARY_PLAN",
                 &[Datum::new_string(
                     tidb_util::plancodec::BINARY_PLAN_DISCARDED_ENCODED.as_str(),
@@ -345,7 +353,7 @@ mod tests {
             }
             .encode_to_vec(),
         );
-        let decoded = dispatch(
+        let decoded = host_dispatch(
             "TIDB_DECODE_BINARY_PLAN",
             &[Datum::new_string(encoded)],
             &warnings,
@@ -357,13 +365,13 @@ mod tests {
         assert!(decoded.contains("| -1 "));
 
         assert_eq!(
-            dispatch("TIDB_DECODE_PLAN", &[Datum::Null], &warnings)
+            host_dispatch("TIDB_DECODE_PLAN", &[Datum::Null], &warnings)
                 .unwrap()
                 .unwrap(),
             Datum::Null
         );
         assert_eq!(
-            dispatch(
+            host_dispatch(
                 "TIDB_DECODE_PLAN",
                 &[Datum::new_string(vec![0xff])],
                 &warnings,
@@ -373,7 +381,7 @@ mod tests {
             Datum::new_string(vec![0xff])
         );
         assert_eq!(
-            dispatch(
+            host_dispatch(
                 "TIDB_DECODE_BINARY_PLAN",
                 &[Datum::new_string(vec![0xff])],
                 &warnings,

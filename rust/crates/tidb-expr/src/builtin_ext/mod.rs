@@ -19,6 +19,10 @@
 //! These files are seed material until their complete upstream Go packages
 //! are transcreated. Every builtin must cite the Go function it was read from
 //! in `pkg/expression/builtin_*.go`.
+//!
+//! The five approved TiDB-owned exceptions are deliberately absent from this
+//! generic family chain. [`crate::host_compat`] exposes their only value-level
+//! entry, so retaining them does not retain a second expression evaluator.
 
 use crate::{Datum, EvalError};
 

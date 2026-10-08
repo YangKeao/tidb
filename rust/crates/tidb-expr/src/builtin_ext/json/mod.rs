@@ -60,7 +60,7 @@ use modify::{
 };
 use path::json_extract;
 use predicate::{json_contains, json_contains_path, json_member_of, json_overlaps};
-use report::{json_keys, json_length, json_schema_valid, json_sum_crc32, json_type, json_valid};
+use report::{json_keys, json_length, json_sum_crc32, json_type, json_valid};
 use search::json_search;
 use text::json_pretty;
 
@@ -69,7 +69,7 @@ use tidb_datatype::FieldType;
 
 pub(crate) use modify::parse_json_modify_paths;
 pub(crate) use path::{parse_path, JsonPath};
-pub(crate) use report::JsonSchemaCache;
+pub(crate) use report::{json_schema_valid, JsonSchemaCache};
 pub(crate) use value::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed, cast_json_prepared,
     json_cast_source_supported, json_document_text_argument, parse_json_document_argument,
@@ -87,7 +87,6 @@ pub(crate) fn dispatch_in(
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
         ("JSON_VALID", 1) => Some(json_valid(&vals[0], ctx)),
-        ("JSON_SCHEMA_VALID", 2) => Some(json_schema_valid(vals)),
         ("JSON_TYPE", 1) => Some(json_type(&vals[0], ctx)),
         ("JSON_QUOTE", 1) => Some(json_quote(&vals[0], ctx)),
         ("JSON_UNQUOTE", 1) => Some(json_unquote(&vals[0], ctx)),
@@ -133,7 +132,8 @@ pub(crate) fn dispatch_in(
 
 #[cfg(test)]
 pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
-    dispatch_in(name, vals, &crate::NoColumns)
+    crate::host_compat::eval(name, vals, &crate::NoColumns)
+        .or_else(|| dispatch_in(name, vals, &crate::NoColumns))
 }
 
 /// The typed sibling of [`dispatch_in`] for the function class whose value

@@ -168,13 +168,15 @@ fn validate_json_schema(schema: &PreparedJsonSchema, document: &Datum) -> Result
     Ok(Datum::Int(i64::from(validator.is_valid(&document))))
 }
 
-/// Datum-level `JSON_SCHEMA_VALID(schema, document)` used by callers that do
-/// not own a reusable scalar-function node.
-pub(super) fn json_schema_valid(values: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(schema) = prepare_json_schema(&values[0])? else {
+/// Datum-level host adapter used by callers without a reusable scalar node.
+pub(crate) fn json_schema_valid(
+    schema_value: &Datum,
+    document: &Datum,
+) -> Result<Datum, EvalError> {
+    let Some(schema) = prepare_json_schema(schema_value)? else {
         return Ok(Datum::Null);
     };
-    validate_json_schema(&schema, &values[1])
+    validate_json_schema(&schema, document)
 }
 
 /// `JSON_VALID(arg)`, port of `builtinJSONValid{JSON,String,Others}Sig`.
