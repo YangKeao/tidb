@@ -1,7 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **legacy-cast-time-183**. Functional **239/245 (97.55%)**, strict **0**, remaining **6**.
+Current paired checkpoint **cast-complete-184**. Functional **240/245 (97.96%)**, strict **0**, remaining **5**.
 
-TiKV owns admitted legacy Time casts for five sources plus JSON opaque-first/string fallback. Unistore retains child/NULL/Datum projection. [Evidence](evidence/legacy-cast-time-checkpoint.md) · [receipts](logs/legacy-cast-time-summary.txt).
+Frozen family `cast` is functionally TiKV-only across implemented AST/typed/PB/vector/helper/Unistore routes. Native retains only child/NULL/Datum/error/context effects and full-width i128 identity projection. Explicit unsupported exceptions are documented without fallback. [Evidence](evidence/cast-complete-checkpoint.md) · [receipts](logs/cast-complete-summary.txt).
 
-Three focused gates GREEN. Duration→Time stays refused; Time→Duration and i128 identity remain. Whole CAST is partial; R100 and broad gates remain. Goal active.
+Two focused gates GREEN. R100, M2/root/live-DAG and broad final gates remain. Goal active.

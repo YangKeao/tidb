@@ -3390,9 +3390,11 @@ impl LegacyEvaluator<'_> {
                 Some(Datum::Time(value)) => value.to_duration().ok(),
                 _ => None,
             },
-            SimpleExpr::Func(SimpleSig::CastTimeAsDuration, children) => self
-                .eval_time(children.first())?
-                .and_then(|time| time.to_duration().ok()),
+            SimpleExpr::Func(SimpleSig::CastTimeAsDuration, children) => {
+                let value = legacy_some!(self.eval_time(children.first())?);
+                let datum = Datum::Time(value);
+                tidb_expr::eval_legacy_cast_duration_datum(&datum)
+            }
             // DATE_ADD/DATE_SUB over a duration column answers a duration
             // (Go `builtinAddSubDateDurationAnySig.evalDuration`): the
             // interval text extracts to a duration that shifts the source.

@@ -1,0 +1,4 @@
+cast-complete-184 / R190
+tikv 1/0/0/1036 exit0 sha256 f3addf09401351ccadb7652f437df23e1c5bec8f2cc73aadc7e93f9aaf1d6b90
+unistore 1/0/0/239 exit0 sha256 c2233321dcf0fc6e090ab038f324ef3ca95b7d6dfa7665ec77480e10ca8ec24a
+Both locked exact-filter single-thread. No failures/retries. Two production agents owned non-overlapping files; final read-only audit confirmed all implemented Unistore CAST value algorithms delegate SDK. AST JSON bridge was manually inspected through native_cast_as_json. Functional240/245 strict0 remaining5. R100 and broad gates retained.
