@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{Columns, Datum, EvalError};
-use tidb_datatype::{CoreTime, FieldType, Time, TimeType};
+use tidb_datatype::{CoreTime, FieldType, SessionTimeZone, Time, TimeType};
 use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
 use tidb_query_expr::NativeTimeCastModes;
 
@@ -28,6 +28,15 @@ fn modes(ctx: &dyn Columns) -> NativeTimeCastModes {
 
 fn restore(value: NativeTemporalValue) -> Time {
     Time::from_raw_parts(CoreTime::from_raw(value.raw), value.kind, value.fsp)
+}
+
+pub fn eval_legacy_cast_time_datum(value: &Datum, zone: &SessionTimeZone) -> Option<Time> {
+    tidb_query_expr::native_legacy_cast_time(
+        value.as_shared_json_input(),
+        value.as_shared_numeric_input(),
+        zone,
+    )
+    .map(restore)
 }
 
 pub(crate) fn eval_cast_time_value_in(

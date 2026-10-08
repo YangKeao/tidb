@@ -3527,49 +3527,49 @@ impl LegacyEvaluator<'_> {
                 },
                 _,
             ) => None,
-            // The temporal-answer casts compose for the comparison channels:
-            // Go parses numeric and text sources with the converters the
-            // string-form arithmetic uses. A pure-date text stays a date;
-            // anything else widens to datetime. `CastDurationAsTime` (a
-            // now-anchored convert) and the JSON sources stay refused.
+            // The temporal-answer casts retain each signature's exact child
+            // reader before sharing the legacy datum conversion.
+            // `CastDurationAsTime` remains refused because it anchors on the
+            // current date.
             SimpleExpr::Func(
                 sig @ (SimpleSig::CastIntAsTime
                 | SimpleSig::CastRealAsTime
                 | SimpleSig::CastDecimalAsTime
                 | SimpleSig::CastStringAsTime
-                | SimpleSig::CastTimeAsTime),
+                | SimpleSig::CastTimeAsTime
+                | SimpleSig::CastJsonAsTime),
                 children,
             ) => {
-                let zone = time_zone;
-                match sig {
-                    SimpleSig::CastIntAsTime => self
-                        .folded_int(children.first())?
-                        .and_then(|value| i64::try_from(value).ok())
-                        .and_then(|value| {
-                            tidb_datatype::parse_time_from_int64(value, false, false, zone).ok()
-                        }),
+                let datum = match sig {
+                    SimpleSig::CastIntAsTime => {
+                        let value = legacy_some!(self
+                            .folded_int(children.first())?
+                            .and_then(|value| i64::try_from(value).ok()));
+                        Datum::Int(value)
+                    }
                     SimpleSig::CastRealAsTime => {
                         let value = legacy_some!(self.eval_real(children.first())?);
-                        tidb_datatype::parse_time_from_float64(value, false, false, zone).ok()
+                        Datum::Real(value)
                     }
                     SimpleSig::CastDecimalAsTime => {
                         let value = legacy_some!(self.eval_decimal(children.first())?);
-                        tidb_datatype::parse_time_from_decimal(&value, false, false, zone).ok()
+                        Datum::Decimal(value)
                     }
                     SimpleSig::CastStringAsTime => {
-                        let raw = legacy_some!(self.eval_bytes(children.first())?);
-                        let text = String::from_utf8_lossy(&raw).into_owned();
-                        let kind = if tidb_datatype::is_date_format(&text) {
-                            tidb_datatype::TimeType::Date
-                        } else {
-                            tidb_datatype::TimeType::DateTime
-                        };
-                        tidb_datatype::parse_time(&text, kind, 6, false, false, false, zone)
-                            .ok()
-                            .map(|parsed| parsed.time)
+                        let value = legacy_some!(self.eval_bytes(children.first())?);
+                        Datum::Bytes(value)
                     }
-                    _ => self.eval_time(children.first())?,
-                }
+                    SimpleSig::CastTimeAsTime => {
+                        let value = legacy_some!(self.eval_time(children.first())?);
+                        Datum::Time(value)
+                    }
+                    SimpleSig::CastJsonAsTime => {
+                        let value = legacy_some!(self.eval_json(children.first())?);
+                        Datum::Json(value)
+                    }
+                    _ => return Ok(None),
+                };
+                tidb_expr::eval_legacy_cast_time_datum(&datum, time_zone)
             }
             // Go `evalFromUnixTime`: a negative or too-large epoch answers
             // NULL; the split seconds render through the session zone.
@@ -3582,24 +3582,6 @@ impl LegacyEvaluator<'_> {
                     |time, _| time,
                 )
                 .map_err(LegacyEvalError::from)?
-            }
-            // Go reads the opaque date codes and parses string contents;
-            // other codes answer NULL under the folded error.
-            SimpleExpr::Func(SimpleSig::CastJsonAsTime, children) => {
-                let value = legacy_some!(self.eval_json(children.first())?);
-                if let Ok(time) = value.as_time(6) {
-                    return Ok(Some(time));
-                }
-                let text = legacy_some!(value.as_string());
-                let text = String::from_utf8_lossy(text).into_owned();
-                let kind = if tidb_datatype::is_date_format(&text) {
-                    tidb_datatype::TimeType::Date
-                } else {
-                    tidb_datatype::TimeType::DateTime
-                };
-                tidb_datatype::parse_time(&text, kind, 6, false, false, false, time_zone)
-                    .ok()
-                    .map(|parsed| parsed.time)
             }
             _ => None,
         })
