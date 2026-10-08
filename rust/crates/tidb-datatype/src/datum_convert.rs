@@ -603,16 +603,10 @@ impl Datum {
                 ));
             }
             NativeDecimalTargetShape::Bounded { precision, scale } => {
-                let rounded = value.round_to_scale(scale as i32);
-                let fitted = rounded.fit_precision_scale(precision, scale);
-                let overflowed = fitted.is_none();
-                value = fitted.unwrap_or_else(|| {
-                    Decimal::from_signed_literal(&format!(
-                        "{}{}",
-                        if rounded.is_negative() { "-" } else { "" },
-                        max_decimal_text(precision as usize, scale as usize)
-                    ))
-                });
+                let (fitted, overflowed) = value
+                    .fit_precision_scale_or_clamp(precision, scale)
+                    .expect("bounded decimal target has precision >= scale");
+                value = fitted;
                 if overflowed {
                     diagnostics.error(|| decimal_target_overflow(target));
                     event =
@@ -1625,14 +1619,6 @@ fn value_to_literal_uint(bytes: &[u8], event: &mut Option<ScalarConversionEvent>
         *event = Some(ScalarConversionEvent::Truncated);
     }
     outcome.value()
-}
-
-fn max_decimal_text(flen: usize, scale: usize) -> String {
-    tidb_query_datatype::codec::native_decimal_convert::native_bound_decimal_text(
-        flen as i64,
-        scale as i64,
-        true,
-    )
 }
 
 fn numeric_outcome<T>(result: Result<T, (T, ScalarConversionError)>) -> Converted<T> {

@@ -1123,11 +1123,19 @@ impl Decimal {
     /// doesn't count). Used by `tidb_exec`'s column-width validation on
     /// `INSERT`/`UPDATE`.
     pub fn fit_precision_scale(&self, precision: u32, scale: u32) -> Option<Decimal> {
-        let int_budget = precision.checked_sub(scale)?;
-        let rounded = self.round_to_scale(scale as i32);
-        let int_len = rounded.digits().len() - rounded.scale() as usize;
-        let significant_int = rounded.digits()[..int_len].trim_start_matches('0').len();
-        (significant_int as u32 <= int_budget).then_some(rounded)
+        let (value, overflowed) = self.fit_precision_scale_or_clamp(precision, scale)?;
+        (!overflowed).then_some(value)
+    }
+
+    /// Shared assignment fitting with its signed maximum on overflow.
+    pub(crate) fn fit_precision_scale_or_clamp(
+        &self,
+        precision: u32,
+        scale: u32,
+    ) -> Option<(Decimal, bool)> {
+        self.0
+            .fit_precision_scale(precision, scale)
+            .map(|(value, overflowed)| (Self::from_shared_parse(value), overflowed))
     }
 
     /// Thin native-policy bridge for [`Decimal::round_to_scale`] and
