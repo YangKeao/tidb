@@ -160,6 +160,41 @@ impl LocalRuntimeServices for Recording<'_> {
 }
 
 #[test]
+fn sql_signed_in_uses_source_order_local_kernel_and_rebinds() {
+    let schema = vec![bigint(); 3];
+    let expression = sql("a IN (7,b,NULL,c)");
+    let spec = lower(&expression, &schema);
+    let first = chunk(
+        &schema,
+        &[
+            vec![Datum::Int(5), Datum::Int(5), Datum::Int(99)],
+            vec![Datum::Int(5), Datum::Int(4), Datum::Int(5)],
+            vec![Datum::Null, Datum::Int(5), Datum::Int(5)],
+        ],
+    );
+    let mut program = prepared(Arc::clone(&spec));
+    assert_eq!(
+        program
+            .eval_selected(&mut EvalContext::default(), &first, &schema, &[0, 1, 2])
+            .unwrap(),
+        vec![Datum::Int(1), Datum::Int(1), Datum::Null]
+    );
+    let rebound = chunk(
+        &schema,
+        &[
+            vec![Datum::Int(5), Datum::Int(4), Datum::Int(6)],
+            vec![Datum::Int(5), Datum::Int(4), Datum::Int(5)],
+        ],
+    );
+    assert_eq!(
+        program
+            .eval_selected(&mut EvalContext::default(), &rebound, &schema, &[0, 1])
+            .unwrap(),
+        vec![Datum::Null, Datum::Int(1)]
+    );
+}
+
+#[test]
 fn demanded_input_only_and_local_error_retained() {
     let schema = vec![bigint(); 3];
     let spec = lower(&sql("IF(a,b,c)"), &schema);

@@ -16,7 +16,7 @@
 
 use protobuf::ProtobufEnum;
 use tidb_proto::tipb::ScalarFuncSig;
-use tidb_query_expr::local::FunctionRef;
+use tidb_query_expr::local::{FunctionRef, LocalFunctionId};
 
 use crate::pushdown_catalog::{conditional_signature, CATALOG};
 use crate::scalar_function::ScalarFunction;
@@ -46,6 +46,9 @@ pub(super) fn int_control(function: &ScalarFunction) -> SeedResult<FunctionRef> 
             return Err(SeedError::Admission("PB origin lost its selected builtin"));
         }
         let name = function.func_name.lowercase();
+        if name == "in" && function.args.len() >= 2 {
+            return Ok(FunctionRef::Local(LocalFunctionId::InIntSourceOrder));
+        }
         match name {
             "case" | "if" | "ifnull" | "coalesce" => conditional_signature(
                 name,
