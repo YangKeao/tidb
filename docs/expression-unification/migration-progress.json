@@ -1,7 +1,10 @@
 {
-  "checkpoint_id": "m6-gates-186",
+  "checkpoint_id": "m6-crypto-fips-187",
+  "m6_crypto_aes_sha1_dependency_bans_resolved": true,
+  "m6_vitess_nonsecurity_des_wrapper_explicit": true,
+  "m6_full_clippy_blocked_by_grpc_cpp_toolchain": true,
   "m6_tidb_lint_passed": true,
-  "m6_tikv_clippy_blocked_by_fips_dependency_bans": true,
+  "m6_tikv_clippy_blocked_by_fips_dependency_bans": false,
   "m6_full_rust_historical_failures_retained": true,
   "final_five_explicit_exceptions_frozen": true,
   "cast_functional_migration": true,
