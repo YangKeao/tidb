@@ -31,6 +31,7 @@
 //! ready input/driver temporaries belong to C4's separate per-call allowance.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::fmt;
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1073,6 +1074,262 @@ impl Drop for Retirement {
     }
 }
 
+const READY_VALUE_CACHE_WORKER_RETAINED_CAP: usize = 1 << 20;
+
+fn cache_compile_limits(operation: EvaluatedBytesOp) -> CompileLimits {
+    CompileLimits {
+        max_nodes: match operation {
+            EvaluatedBytesOp::RegexpSubstrNative
+            | EvaluatedBytesOp::IntDivDecimalSignedNative
+            | EvaluatedBytesOp::IntDivDecimalUnsignedNative => 6,
+            EvaluatedBytesOp::RegexpInstrNative | EvaluatedBytesOp::RegexpReplaceNative => 7,
+            EvaluatedBytesOp::LpadBytesNative
+            | EvaluatedBytesOp::RpadBytesNative
+            | EvaluatedBytesOp::LpadUtf8Native
+            | EvaluatedBytesOp::RpadUtf8Native
+            | EvaluatedBytesOp::Insert
+            | EvaluatedBytesOp::InsertUtf8Native
+            | EvaluatedBytesOp::Locate3Native
+            | EvaluatedBytesOp::ConvertUsingNative
+            | EvaluatedBytesOp::DateArithmeticHeadNative
+            | EvaluatedBytesOp::DateArithmeticDurationHeadNative => 5,
+            _ => 4,
+        },
+        max_depth: 3,
+    }
+}
+
+fn prepare_cache_worker(
+    operation: EvaluatedBytesOp,
+) -> Result<Box<EvaluatedBytesWorker>, ReadyValueBoundaryError> {
+    let worker = prepare_evaluated_bytes(
+        operation,
+        LocalCompileContext {
+            limits: cache_compile_limits(operation),
+        },
+        ExecutionLimits::default(),
+        READY_VALUE_CACHE_WORKER_RETAINED_CAP,
+    )
+    .map_err(|error| {
+        ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
+            error,
+            Some(ExpressionRuntimeFailurePhase::Prepare),
+        ))
+    })?;
+    let observed = worker
+        .retained_storage()
+        .map_err(|error| {
+            ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
+                error,
+                Some(ExpressionRuntimeFailurePhase::Observe),
+            ))
+        })?
+        .total_bytes();
+    if worker.operation() != operation
+        || !worker.is_healthy()
+        || observed > READY_VALUE_CACHE_WORKER_RETAINED_CAP
+    {
+        return Err(ReadyValueOwnerError::contract(
+            "ready-value cache factory published unhealthy storage",
+        )
+        .into());
+    }
+    Ok(Box::new(worker))
+}
+
+/// Executor-lane-owned operation cache. It is Send but deliberately neither
+/// Sync nor Clone: one movable evaluation lane has exclusive access to every
+/// prepared worker and drops all workers with that lane.
+pub struct ReadyValueCache {
+    workers: RefCell<HashMap<EvaluatedBytesOp, Box<EvaluatedBytesWorker>>>,
+    busy: Cell<bool>,
+    poisoned: Cell<bool>,
+}
+
+impl Default for ReadyValueCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReadyValueCache {
+    /// Creates an empty lane cache; no worker is prepared before first demand.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            workers: RefCell::new(HashMap::new()),
+            busy: Cell::new(false),
+            poisoned: Cell::new(false),
+        }
+    }
+
+    /// Binds this cache to a native evaluation context for one lane task.
+    /// An already bound cache wins, and unwind poisons only that effective lane.
+    pub fn with_columns<'a, R>(
+        &'a self,
+        native: &'a dyn Columns,
+        body: impl FnOnce(&ScopedReadyValueColumns<'a, 'a>) -> R,
+    ) -> R {
+        let cache = native.ready_value_cache().unwrap_or(self);
+        let mut guard = CacheNativeGuard::new(cache);
+        let columns = ScopedReadyValueColumns {
+            native,
+            authority: ReadyValueAuthorityRef::Cache(cache),
+        };
+        let result = body(&columns);
+        guard.disarm();
+        result
+    }
+
+    fn run_args(
+        &self,
+        operation: EvaluatedBytesOp,
+        ready: EvaluatedArgs,
+    ) -> Result<ComputedValue, ReadyValueBoundaryError> {
+        if self.poisoned.get() {
+            return Err(ReadyValueBoundaryError::Scope {
+                kind: ScopeFailureKind::Poisoned,
+                reason: "ready-value cache is poisoned",
+            });
+        }
+        if self.busy.replace(true) {
+            return Err(ReadyValueBoundaryError::Scope {
+                kind: ScopeFailureKind::Reentry,
+                reason: "reentrant ready-value cache borrow",
+            });
+        }
+        let worker = match self.workers.try_borrow_mut() {
+            Ok(mut workers) => workers
+                .remove(&operation)
+                .map(Ok)
+                .unwrap_or_else(|| prepare_cache_worker(operation)),
+            Err(_) => Err(ReadyValueBoundaryError::Scope {
+                kind: ScopeFailureKind::Reentry,
+                reason: "ready-value cache map is already borrowed",
+            }),
+        };
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.busy.set(false);
+                return Err(error);
+            }
+        };
+        let mut invocation = CacheInvocation {
+            cache: self,
+            operation,
+            worker: Some(worker),
+            armed: true,
+        };
+        let result = eval_worker_args(
+            invocation.worker.as_mut().expect("cache worker").as_mut(),
+            operation,
+            ready,
+        );
+        invocation.finish(result)
+    }
+
+    fn poison(&self) {
+        self.poisoned.set(true);
+        if let Ok(mut workers) = self.workers.try_borrow_mut() {
+            workers.clear();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_count(&self) -> usize {
+        self.workers.borrow().len()
+    }
+}
+
+struct CacheNativeGuard<'a> {
+    cache: &'a ReadyValueCache,
+    armed: bool,
+}
+
+impl<'a> CacheNativeGuard<'a> {
+    fn new(cache: &'a ReadyValueCache) -> Self {
+        Self { cache, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CacheNativeGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.poison();
+        }
+    }
+}
+
+struct CacheInvocation<'a> {
+    cache: &'a ReadyValueCache,
+    operation: EvaluatedBytesOp,
+    worker: Option<Box<EvaluatedBytesWorker>>,
+    armed: bool,
+}
+
+impl<'a> CacheInvocation<'a> {
+    fn finish<T>(
+        mut self,
+        result: Result<T, ReadyValueBoundaryError>,
+    ) -> Result<T, ReadyValueBoundaryError> {
+        let healthy = self.worker.as_ref().is_some_and(|worker| {
+            worker.operation() == self.operation
+                && worker.is_healthy()
+                && worker.retained_storage().is_ok_and(|storage| {
+                    storage.total_bytes() <= READY_VALUE_CACHE_WORKER_RETAINED_CAP
+                })
+        });
+        if !healthy {
+            self.cache.poisoned.set(true);
+            drop(self.worker.take());
+            self.cache.busy.set(false);
+            self.armed = false;
+            return match result {
+                Err(primary) => Err(primary),
+                Ok(_) => Err(ReadyValueOwnerError::contract(
+                    "ready-value cache worker failed postflight",
+                )
+                .into()),
+            };
+        }
+        let worker = self.worker.take().expect("healthy cache worker");
+        let restore = match self.cache.workers.try_borrow_mut() {
+            Ok(mut workers) if !workers.contains_key(&self.operation) => {
+                workers.insert(self.operation, worker);
+                Ok(())
+            }
+            _ => {
+                self.cache.poisoned.set(true);
+                Err(ReadyValueBoundaryError::Scope {
+                    kind: ScopeFailureKind::Contract,
+                    reason: "ready-value cache restore conflict",
+                })
+            }
+        };
+        self.cache.busy.set(false);
+        self.armed = false;
+        match result {
+            Err(primary) => Err(primary),
+            Ok(value) => restore.map(|()| value),
+        }
+    }
+}
+
+impl Drop for CacheInvocation<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.poisoned.set(true);
+            drop(self.worker.take());
+            self.cache.busy.set(false);
+        }
+    }
+}
+
 /// Affine worker scope. RefCell/Cell intentionally make this Send, not Sync.
 /// It contains no native Columns/row/SQL descriptor or invocation value.
 ///
@@ -1117,7 +1374,10 @@ impl ReadyValueScope {
         // catches no panic itself; Drop marks poison while unwinding.
         let mut guard = NativeGuard::new(scope);
         discovery_guard.disarm();
-        let scoped = ScopedReadyValueColumns { native, scope };
+        let scoped = ScopedReadyValueColumns {
+            native,
+            authority: ReadyValueAuthorityRef::Scope(scope),
+        };
         let result = body(&scoped);
         guard.disarm();
         result
@@ -1191,6 +1451,345 @@ impl Drop for NativeGuard<'_> {
     }
 }
 
+fn eval_worker_args(
+    worker: &mut EvaluatedBytesWorker,
+    operation: EvaluatedBytesOp,
+    ready: EvaluatedArgs,
+) -> Result<ComputedValue, ReadyValueBoundaryError> {
+    if worker.operation() != operation {
+        return Err(
+            ReadyValueOwnerError::contract("closed Bytes worker operation mismatch").into(),
+        );
+    }
+    // Test-only facade-entry observation, not a substitute for C4's real
+    // function-pointer witness. No observer is passed into the worker.
+    #[cfg(test)]
+    tests::before_eval_one_for_test(worker.kernel_invocations());
+    let result = worker.eval_args_reported(ready);
+    #[cfg(test)]
+    tests::after_eval_one_for_test(worker.kernel_invocations());
+    result.map_err(|report| {
+        // Only C4's sealed receipt for this operation's actual generated
+        // call authorizes the existing native SQL error carrier. Neither
+        // an input value nor an error code/text substitutes for that proof.
+        if operation == EvaluatedBytesOp::AbsIntNative
+            && report.operation() == Some(operation)
+            && matches!(
+                report.sql_failure(),
+                Some(EvaluatedSqlFailureKind::AbsSignedOverflow)
+            )
+        {
+            return ReadyValueBoundaryError::Frontend(EvalError::IntOverflow);
+        }
+        if matches!(
+            operation,
+            EvaluatedBytesOp::ConvNative | EvaluatedBytesOp::ConvBinaryLiteralNative
+        ) && report.operation() == Some(operation)
+            && matches!(
+                report.sql_failure(),
+                Some(EvaluatedSqlFailureKind::ConvUnsignedOverflow)
+            )
+        {
+            // The authenticated kernel owns the exact digits, including
+            // stripping the source sign. Do not reparse the native input.
+            let Some(digits) = report.conv_overflow_digits() else {
+                return ReadyValueBoundaryError::Scope {
+                    kind: ScopeFailureKind::Contract,
+                    reason: "CONV overflow receipt lacks its digit payload",
+                };
+            };
+            return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
+                value: "BIGINT UNSIGNED",
+                expression: digits.to_owned(),
+            });
+        }
+        if report.operation() == Some(operation) {
+            if matches!(
+                operation,
+                EvaluatedBytesOp::AesEncrypt128CbcNative
+                    | EvaluatedBytesOp::AesEncrypt192CbcNative
+                    | EvaluatedBytesOp::AesEncrypt256CbcNative
+                    | EvaluatedBytesOp::AesEncrypt128OfbNative
+                    | EvaluatedBytesOp::AesEncrypt192OfbNative
+                    | EvaluatedBytesOp::AesEncrypt256OfbNative
+                    | EvaluatedBytesOp::AesEncrypt128CfbNative
+                    | EvaluatedBytesOp::AesEncrypt192CfbNative
+                    | EvaluatedBytesOp::AesEncrypt256CfbNative
+                    | EvaluatedBytesOp::AesDecrypt128CbcNative
+                    | EvaluatedBytesOp::AesDecrypt192CbcNative
+                    | EvaluatedBytesOp::AesDecrypt256CbcNative
+                    | EvaluatedBytesOp::AesDecrypt128OfbNative
+                    | EvaluatedBytesOp::AesDecrypt192OfbNative
+                    | EvaluatedBytesOp::AesDecrypt256OfbNative
+                    | EvaluatedBytesOp::AesDecrypt128CfbNative
+                    | EvaluatedBytesOp::AesDecrypt192CfbNative
+                    | EvaluatedBytesOp::AesDecrypt256CfbNative
+            ) {
+                // This accessor authenticates the actual short-IV cause,
+                // exact opcode/profile and this invocation's kernel witness.
+                // Cipher failures are successful NULL values, not this cause.
+                if let Some(cause) = report.native_aes_error() {
+                    return ReadyValueBoundaryError::Frontend(EvalError::IncorrectArguments(
+                        cause.to_string(),
+                    ));
+                }
+            }
+            let message = match (operation, report.sql_failure()) {
+                (
+                    EvaluatedBytesOp::PeriodAddNative,
+                    Some(EvaluatedSqlFailureKind::PeriodAddIncorrectArguments),
+                ) => Some("Incorrect arguments to period_add"),
+                (
+                    EvaluatedBytesOp::PeriodDiffNative,
+                    Some(EvaluatedSqlFailureKind::PeriodDiffIncorrectArguments),
+                ) => Some("Incorrect arguments to period_diff"),
+                _ => None,
+            };
+            if let Some(message) = message {
+                return ReadyValueBoundaryError::Frontend(EvalError::IncorrectArguments(
+                    message.to_owned(),
+                ));
+            }
+            match (operation, report.sql_failure()) {
+                (
+                    EvaluatedBytesOp::UuidToBinParseNative,
+                    Some(EvaluatedSqlFailureKind::UuidToBinWhitespace),
+                ) => {
+                    return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
+                        "invalid UUID_TO_BIN whitespace",
+                    ));
+                }
+                (
+                    EvaluatedBytesOp::UuidToBinParseNative,
+                    Some(EvaluatedSqlFailureKind::UuidToBinInvalid),
+                ) => {
+                    return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
+                        "invalid UUID for UUID_TO_BIN",
+                    ));
+                }
+                (
+                    EvaluatedBytesOp::UuidVersionNative,
+                    Some(EvaluatedSqlFailureKind::UuidVersionInvalid),
+                ) => {
+                    return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
+                        "invalid UUID for UUID_VERSION",
+                    ));
+                }
+                (
+                    EvaluatedBytesOp::UuidTimestampNative,
+                    Some(EvaluatedSqlFailureKind::UuidTimestampInvalid),
+                ) => {
+                    return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
+                        "invalid UUID for UUID_TIMESTAMP",
+                    ));
+                }
+                (
+                    EvaluatedBytesOp::BinToUuidNative,
+                    Some(EvaluatedSqlFailureKind::BinToUuidInvalidLength),
+                ) => {
+                    // The receipt owns the exact rejected byte payload;
+                    // never re-read or revalidate the frontend argument.
+                    let Some(input) = report.bin_to_uuid_input() else {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "BIN_TO_UUID length receipt lacks its input payload",
+                        };
+                    };
+                    return ReadyValueBoundaryError::Frontend(EvalError::WrongValueForType {
+                        value_class: "string",
+                        value: String::from_utf8_lossy(input).into_owned(),
+                        function: "bin_to_uuid",
+                    });
+                }
+                (
+                    EvaluatedBytesOp::AddIntSsNative
+                    | EvaluatedBytesOp::AddIntSuNative
+                    | EvaluatedBytesOp::AddIntUsNative
+                    | EvaluatedBytesOp::AddIntUuNative
+                    | EvaluatedBytesOp::SubIntSsNative
+                    | EvaluatedBytesOp::SubIntSuNative
+                    | EvaluatedBytesOp::SubIntUsNative
+                    | EvaluatedBytesOp::SubIntUuNative
+                    | EvaluatedBytesOp::SubIntSuForcedNative
+                    | EvaluatedBytesOp::SubIntUsForcedNative
+                    | EvaluatedBytesOp::SubIntUuForcedNative
+                    | EvaluatedBytesOp::MulIntSignedNative
+                    | EvaluatedBytesOp::MulIntUnsignedNative
+                    | EvaluatedBytesOp::IntDivIntSsNative
+                    | EvaluatedBytesOp::IntDivIntUsNative
+                    | EvaluatedBytesOp::IntDivIntSuNative
+                    | EvaluatedBytesOp::IntDivIntUuNative
+                    | EvaluatedBytesOp::AddRealNative
+                    | EvaluatedBytesOp::SubRealNative
+                    | EvaluatedBytesOp::MulRealNative
+                    | EvaluatedBytesOp::ModRealNative
+                    | EvaluatedBytesOp::DivRealNative
+                    | EvaluatedBytesOp::AddDecimalNative
+                    | EvaluatedBytesOp::SubDecimalNative
+                    | EvaluatedBytesOp::MulDecimalNative,
+                    Some(EvaluatedSqlFailureKind::BinaryArithmeticNative),
+                ) => {
+                    let Some(cause) = report.native_binary_arithmetic_error() else {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "binary arithmetic failure receipt lacks its native cause",
+                        };
+                    };
+                    if operation == EvaluatedBytesOp::ModRealNative
+                        && (cause.operation != BinaryArithmeticOperation::Modulo
+                            || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
+                    {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "native modulo failure receipt has an unexpected cause",
+                        };
+                    }
+                    if operation == EvaluatedBytesOp::DivRealNative
+                        && (cause.operation != BinaryArithmeticOperation::Divide
+                            || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
+                    {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "native division failure receipt has an unexpected cause",
+                        };
+                    }
+                    if matches!(
+                        operation,
+                        EvaluatedBytesOp::IntDivIntSsNative
+                            | EvaluatedBytesOp::IntDivIntUsNative
+                            | EvaluatedBytesOp::IntDivIntSuNative
+                            | EvaluatedBytesOp::IntDivIntUuNative
+                    ) && (cause.operation != BinaryArithmeticOperation::IntDivide
+                        || cause.kind != BinaryArithmeticErrorKind::IntOverflow)
+                    {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason:
+                                "native integer division failure receipt has an unexpected cause",
+                        };
+                    }
+                    return ReadyValueBoundaryError::Frontend(match cause.kind {
+                        BinaryArithmeticErrorKind::IntOverflow => EvalError::IntOverflow,
+                        BinaryArithmeticErrorKind::FloatOverflow => EvalError::FloatOverflow,
+                        BinaryArithmeticErrorKind::DecimalOverflow => EvalError::DecimalOverflow,
+                    });
+                }
+                (
+                    EvaluatedBytesOp::AddInt128SignedLegacy
+                    | EvaluatedBytesOp::AddInt128UnsignedLegacy
+                    | EvaluatedBytesOp::AddInt128RejectLeftLegacy
+                    | EvaluatedBytesOp::AddInt128RejectRightLegacy
+                    | EvaluatedBytesOp::SubInt128SignedLegacy
+                    | EvaluatedBytesOp::SubInt128UnsignedLegacy
+                    | EvaluatedBytesOp::SubInt128RejectLeftLegacy
+                    | EvaluatedBytesOp::SubInt128RejectRightLegacy
+                    | EvaluatedBytesOp::MulInt128SignedLegacy
+                    | EvaluatedBytesOp::MulInt128UnsignedLegacy,
+                    Some(EvaluatedSqlFailureKind::BinaryArithmeticLegacy),
+                ) => {
+                    let Some(cause) = report.legacy_binary_arithmetic_error() else {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "binary arithmetic failure receipt lacks its legacy cause",
+                        };
+                    };
+                    let expression = match cause.operation {
+                        BinaryArithmeticOperation::Add => "ADD",
+                        BinaryArithmeticOperation::Subtract => "SUBTRACT",
+                        BinaryArithmeticOperation::Multiply => "MULTIPLY",
+                        BinaryArithmeticOperation::Modulo => {
+                            return ReadyValueBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "legacy modulo has no arithmetic SQL failure",
+                            };
+                        }
+                        BinaryArithmeticOperation::Divide
+                        | BinaryArithmeticOperation::IntDivide => {
+                            return ReadyValueBoundaryError::Scope {
+                                kind: ScopeFailureKind::Contract,
+                                reason: "legacy division has no integer arithmetic SQL failure",
+                            };
+                        }
+                    };
+                    return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
+                        value: if cause.unsigned {
+                            "BIGINT UNSIGNED"
+                        } else {
+                            "BIGINT"
+                        },
+                        expression: expression.to_owned(),
+                    });
+                }
+                (
+                    EvaluatedBytesOp::UnaryMinusIntNative | EvaluatedBytesOp::UnaryMinusUIntNative,
+                    Some(EvaluatedSqlFailureKind::UnaryMinusNative),
+                ) => {
+                    let Some(cause) = report.native_unary_minus_error() else {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "unary-minus failure receipt lacks its native cause",
+                        };
+                    };
+                    // Render the authenticated source bits, not a new negation.
+                    // Signed MIN retains the original double minus in its text.
+                    let expression = if cause.unsigned {
+                        format!("-{}", cause.bits)
+                    } else {
+                        format!("-{}", cause.bits as i64)
+                    };
+                    return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
+                        value: "BIGINT",
+                        expression,
+                    });
+                }
+                (
+                    EvaluatedBytesOp::RegexpLikeNative
+                    | EvaluatedBytesOp::RegexpSubstrNative
+                    | EvaluatedBytesOp::RegexpInstrNative
+                    | EvaluatedBytesOp::RegexpReplaceNative,
+                    Some(EvaluatedSqlFailureKind::RegexpNative),
+                ) => {
+                    let Some(cause) = report.native_regexp_error() else {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "regexp failure receipt lacks its native cause",
+                        };
+                    };
+                    return ReadyValueBoundaryError::Frontend(crate::regexp::native_regexp_error(
+                        cause,
+                    ));
+                }
+                (
+                    EvaluatedBytesOp::VecFromTextNative
+                    | EvaluatedBytesOp::VecL1DistanceNative
+                    | EvaluatedBytesOp::VecL2DistanceNative
+                    | EvaluatedBytesOp::VecNegativeInnerProductNative
+                    | EvaluatedBytesOp::VecCosineDistanceNative
+                    | EvaluatedBytesOp::AddVectorNative
+                    | EvaluatedBytesOp::SubVectorNative
+                    | EvaluatedBytesOp::MulVectorNative,
+                    Some(EvaluatedSqlFailureKind::VectorNative),
+                ) => {
+                    // Render only the actual typed cause. Do not parse the
+                    // input again or recompute vector dimensions here.
+                    let Some(cause) = report.native_vector_error() else {
+                        return ReadyValueBoundaryError::Scope {
+                            kind: ScopeFailureKind::Contract,
+                            reason: "vector failure receipt lacks its native cause",
+                        };
+                    };
+                    return ReadyValueBoundaryError::Frontend(EvalError::Vector(cause.to_string()));
+                }
+                _ => {}
+            }
+        }
+        ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
+            report.into_error(),
+            Some(ExpressionRuntimeFailurePhase::Invoke),
+        ))
+    })
+}
+
 struct Invocation<'a> {
     scope: &'a ReadyValueScope,
     lease: Option<ReadyValueLease>,
@@ -1260,336 +1859,7 @@ impl<'a> Invocation<'a> {
         lease.validate()?;
         // No cell/pool borrow or native callback enters the C4 driver.
         let worker = lease.worker.as_mut().expect("validated worker");
-        if worker.operation() != operation {
-            return Err(
-                ReadyValueOwnerError::contract("closed Bytes worker operation mismatch").into(),
-            );
-        }
-        // Test-only facade-entry observation, not a substitute for C4's real
-        // function-pointer witness. No observer is passed into the worker.
-        #[cfg(test)]
-        tests::before_eval_one_for_test(worker.kernel_invocations());
-        let result = worker.eval_args_reported(ready);
-        #[cfg(test)]
-        tests::after_eval_one_for_test(worker.kernel_invocations());
-        result.map_err(|report| {
-            // Only C4's sealed receipt for this operation's actual generated
-            // call authorizes the existing native SQL error carrier. Neither
-            // an input value nor an error code/text substitutes for that proof.
-            if operation == EvaluatedBytesOp::AbsIntNative
-                && report.operation() == Some(operation)
-                && matches!(
-                    report.sql_failure(),
-                    Some(EvaluatedSqlFailureKind::AbsSignedOverflow)
-                )
-            {
-                return ReadyValueBoundaryError::Frontend(EvalError::IntOverflow);
-            }
-            if matches!(
-                operation,
-                EvaluatedBytesOp::ConvNative | EvaluatedBytesOp::ConvBinaryLiteralNative
-            ) && report.operation() == Some(operation)
-                && matches!(
-                    report.sql_failure(),
-                    Some(EvaluatedSqlFailureKind::ConvUnsignedOverflow)
-                )
-            {
-                // The authenticated kernel owns the exact digits, including
-                // stripping the source sign. Do not reparse the native input.
-                let Some(digits) = report.conv_overflow_digits() else {
-                    return ReadyValueBoundaryError::Scope {
-                        kind: ScopeFailureKind::Contract,
-                        reason: "CONV overflow receipt lacks its digit payload",
-                    };
-                };
-                return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
-                    value: "BIGINT UNSIGNED",
-                    expression: digits.to_owned(),
-                });
-            }
-            if report.operation() == Some(operation) {
-                if matches!(
-                    operation,
-                    EvaluatedBytesOp::AesEncrypt128CbcNative
-                        | EvaluatedBytesOp::AesEncrypt192CbcNative
-                        | EvaluatedBytesOp::AesEncrypt256CbcNative
-                        | EvaluatedBytesOp::AesEncrypt128OfbNative
-                        | EvaluatedBytesOp::AesEncrypt192OfbNative
-                        | EvaluatedBytesOp::AesEncrypt256OfbNative
-                        | EvaluatedBytesOp::AesEncrypt128CfbNative
-                        | EvaluatedBytesOp::AesEncrypt192CfbNative
-                        | EvaluatedBytesOp::AesEncrypt256CfbNative
-                        | EvaluatedBytesOp::AesDecrypt128CbcNative
-                        | EvaluatedBytesOp::AesDecrypt192CbcNative
-                        | EvaluatedBytesOp::AesDecrypt256CbcNative
-                        | EvaluatedBytesOp::AesDecrypt128OfbNative
-                        | EvaluatedBytesOp::AesDecrypt192OfbNative
-                        | EvaluatedBytesOp::AesDecrypt256OfbNative
-                        | EvaluatedBytesOp::AesDecrypt128CfbNative
-                        | EvaluatedBytesOp::AesDecrypt192CfbNative
-                        | EvaluatedBytesOp::AesDecrypt256CfbNative
-                ) {
-                    // This accessor authenticates the actual short-IV cause,
-                    // exact opcode/profile and this invocation's kernel witness.
-                    // Cipher failures are successful NULL values, not this cause.
-                    if let Some(cause) = report.native_aes_error() {
-                        return ReadyValueBoundaryError::Frontend(EvalError::IncorrectArguments(
-                            cause.to_string(),
-                        ));
-                    }
-                }
-                let message = match (operation, report.sql_failure()) {
-                    (
-                        EvaluatedBytesOp::PeriodAddNative,
-                        Some(EvaluatedSqlFailureKind::PeriodAddIncorrectArguments),
-                    ) => Some("Incorrect arguments to period_add"),
-                    (
-                        EvaluatedBytesOp::PeriodDiffNative,
-                        Some(EvaluatedSqlFailureKind::PeriodDiffIncorrectArguments),
-                    ) => Some("Incorrect arguments to period_diff"),
-                    _ => None,
-                };
-                if let Some(message) = message {
-                    return ReadyValueBoundaryError::Frontend(EvalError::IncorrectArguments(
-                        message.to_owned(),
-                    ));
-                }
-                match (operation, report.sql_failure()) {
-                    (
-                        EvaluatedBytesOp::UuidToBinParseNative,
-                        Some(EvaluatedSqlFailureKind::UuidToBinWhitespace),
-                    ) => {
-                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
-                            "invalid UUID_TO_BIN whitespace",
-                        ));
-                    }
-                    (
-                        EvaluatedBytesOp::UuidToBinParseNative,
-                        Some(EvaluatedSqlFailureKind::UuidToBinInvalid),
-                    ) => {
-                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
-                            "invalid UUID for UUID_TO_BIN",
-                        ));
-                    }
-                    (
-                        EvaluatedBytesOp::UuidVersionNative,
-                        Some(EvaluatedSqlFailureKind::UuidVersionInvalid),
-                    ) => {
-                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
-                            "invalid UUID for UUID_VERSION",
-                        ));
-                    }
-                    (
-                        EvaluatedBytesOp::UuidTimestampNative,
-                        Some(EvaluatedSqlFailureKind::UuidTimestampInvalid),
-                    ) => {
-                        return ReadyValueBoundaryError::Frontend(EvalError::Unsupported(
-                            "invalid UUID for UUID_TIMESTAMP",
-                        ));
-                    }
-                    (
-                        EvaluatedBytesOp::BinToUuidNative,
-                        Some(EvaluatedSqlFailureKind::BinToUuidInvalidLength),
-                    ) => {
-                        // The receipt owns the exact rejected byte payload;
-                        // never re-read or revalidate the frontend argument.
-                        let Some(input) = report.bin_to_uuid_input() else {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "BIN_TO_UUID length receipt lacks its input payload",
-                            };
-                        };
-                        return ReadyValueBoundaryError::Frontend(EvalError::WrongValueForType {
-                            value_class: "string",
-                            value: String::from_utf8_lossy(input).into_owned(),
-                            function: "bin_to_uuid",
-                        });
-                    }
-                    (
-                        EvaluatedBytesOp::AddIntSsNative
-                        | EvaluatedBytesOp::AddIntSuNative
-                        | EvaluatedBytesOp::AddIntUsNative
-                        | EvaluatedBytesOp::AddIntUuNative
-                        | EvaluatedBytesOp::SubIntSsNative
-                        | EvaluatedBytesOp::SubIntSuNative
-                        | EvaluatedBytesOp::SubIntUsNative
-                        | EvaluatedBytesOp::SubIntUuNative
-                        | EvaluatedBytesOp::SubIntSuForcedNative
-                        | EvaluatedBytesOp::SubIntUsForcedNative
-                        | EvaluatedBytesOp::SubIntUuForcedNative
-                        | EvaluatedBytesOp::MulIntSignedNative
-                        | EvaluatedBytesOp::MulIntUnsignedNative
-                        | EvaluatedBytesOp::IntDivIntSsNative
-                        | EvaluatedBytesOp::IntDivIntUsNative
-                        | EvaluatedBytesOp::IntDivIntSuNative
-                        | EvaluatedBytesOp::IntDivIntUuNative
-                        | EvaluatedBytesOp::AddRealNative
-                        | EvaluatedBytesOp::SubRealNative
-                        | EvaluatedBytesOp::MulRealNative
-                        | EvaluatedBytesOp::ModRealNative
-                        | EvaluatedBytesOp::DivRealNative
-                        | EvaluatedBytesOp::AddDecimalNative
-                        | EvaluatedBytesOp::SubDecimalNative
-                        | EvaluatedBytesOp::MulDecimalNative,
-                        Some(EvaluatedSqlFailureKind::BinaryArithmeticNative),
-                    ) => {
-                        let Some(cause) = report.native_binary_arithmetic_error() else {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "binary arithmetic failure receipt lacks its native cause",
-                            };
-                        };
-                        if operation == EvaluatedBytesOp::ModRealNative
-                            && (cause.operation != BinaryArithmeticOperation::Modulo
-                                || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
-                        {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "native modulo failure receipt has an unexpected cause",
-                            };
-                        }
-                        if operation == EvaluatedBytesOp::DivRealNative
-                            && (cause.operation != BinaryArithmeticOperation::Divide
-                                || cause.kind != BinaryArithmeticErrorKind::FloatOverflow)
-                        {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "native division failure receipt has an unexpected cause",
-                            };
-                        }
-                        if matches!(operation,
-                            EvaluatedBytesOp::IntDivIntSsNative | EvaluatedBytesOp::IntDivIntUsNative
-                                | EvaluatedBytesOp::IntDivIntSuNative | EvaluatedBytesOp::IntDivIntUuNative)
-                            && (cause.operation != BinaryArithmeticOperation::IntDivide
-                                || cause.kind != BinaryArithmeticErrorKind::IntOverflow)
-                        {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "native integer division failure receipt has an unexpected cause",
-                            };
-                        }
-                        return ReadyValueBoundaryError::Frontend(match cause.kind {
-                            BinaryArithmeticErrorKind::IntOverflow => EvalError::IntOverflow,
-                            BinaryArithmeticErrorKind::FloatOverflow => EvalError::FloatOverflow,
-                            BinaryArithmeticErrorKind::DecimalOverflow => {
-                                EvalError::DecimalOverflow
-                            }
-                        });
-                    }
-                    (
-                        EvaluatedBytesOp::AddInt128SignedLegacy
-                        | EvaluatedBytesOp::AddInt128UnsignedLegacy
-                        | EvaluatedBytesOp::AddInt128RejectLeftLegacy
-                        | EvaluatedBytesOp::AddInt128RejectRightLegacy
-                        | EvaluatedBytesOp::SubInt128SignedLegacy
-                        | EvaluatedBytesOp::SubInt128UnsignedLegacy
-                        | EvaluatedBytesOp::SubInt128RejectLeftLegacy
-                        | EvaluatedBytesOp::SubInt128RejectRightLegacy
-                        | EvaluatedBytesOp::MulInt128SignedLegacy
-                        | EvaluatedBytesOp::MulInt128UnsignedLegacy,
-                        Some(EvaluatedSqlFailureKind::BinaryArithmeticLegacy),
-                    ) => {
-                        let Some(cause) = report.legacy_binary_arithmetic_error() else {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "binary arithmetic failure receipt lacks its legacy cause",
-                            };
-                        };
-                        let expression = match cause.operation {
-                            BinaryArithmeticOperation::Add => "ADD",
-                            BinaryArithmeticOperation::Subtract => "SUBTRACT",
-                            BinaryArithmeticOperation::Multiply => "MULTIPLY",
-                            BinaryArithmeticOperation::Modulo => {
-                                return ReadyValueBoundaryError::Scope {
-                                    kind: ScopeFailureKind::Contract,
-                                    reason: "legacy modulo has no arithmetic SQL failure",
-                                };
-                            }
-                            BinaryArithmeticOperation::Divide | BinaryArithmeticOperation::IntDivide => {
-                                return ReadyValueBoundaryError::Scope {
-                                    kind: ScopeFailureKind::Contract,
-                                    reason: "legacy division has no integer arithmetic SQL failure",
-                                };
-                            }
-                        };
-                        return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
-                            value: if cause.unsigned {
-                                "BIGINT UNSIGNED"
-                            } else {
-                                "BIGINT"
-                            },
-                            expression: expression.to_owned(),
-                        });
-                    }
-                    (
-                        EvaluatedBytesOp::UnaryMinusIntNative
-                        | EvaluatedBytesOp::UnaryMinusUIntNative,
-                        Some(EvaluatedSqlFailureKind::UnaryMinusNative),
-                    ) => {
-                        let Some(cause) = report.native_unary_minus_error() else {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "unary-minus failure receipt lacks its native cause",
-                            };
-                        };
-                        // Render the authenticated source bits, not a new negation.
-                        // Signed MIN retains the original double minus in its text.
-                        let expression = if cause.unsigned {
-                            format!("-{}", cause.bits)
-                        } else {
-                            format!("-{}", cause.bits as i64)
-                        };
-                        return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
-                            value: "BIGINT",
-                            expression,
-                        });
-                    }
-                    (
-                        EvaluatedBytesOp::RegexpLikeNative
-                        | EvaluatedBytesOp::RegexpSubstrNative
-                        | EvaluatedBytesOp::RegexpInstrNative
-                        | EvaluatedBytesOp::RegexpReplaceNative,
-                        Some(EvaluatedSqlFailureKind::RegexpNative),
-                    ) => {
-                        let Some(cause) = report.native_regexp_error() else {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "regexp failure receipt lacks its native cause",
-                            };
-                        };
-                        return ReadyValueBoundaryError::Frontend(crate::regexp::native_regexp_error(
-                            cause,
-                        ));
-                    }
-                    (
-                        EvaluatedBytesOp::VecFromTextNative
-                        | EvaluatedBytesOp::VecL1DistanceNative
-                        | EvaluatedBytesOp::VecL2DistanceNative
-                        | EvaluatedBytesOp::VecNegativeInnerProductNative
-                        | EvaluatedBytesOp::VecCosineDistanceNative
-                        | EvaluatedBytesOp::AddVectorNative
-                        | EvaluatedBytesOp::SubVectorNative
-                        | EvaluatedBytesOp::MulVectorNative,
-                        Some(EvaluatedSqlFailureKind::VectorNative),
-                    ) => {
-                        // Render only the actual typed cause. Do not parse the
-                        // input again or recompute vector dimensions here.
-                        let Some(cause) = report.native_vector_error() else {
-                            return ReadyValueBoundaryError::Scope {
-                                kind: ScopeFailureKind::Contract,
-                                reason: "vector failure receipt lacks its native cause",
-                            };
-                        };
-                        return ReadyValueBoundaryError::Frontend(EvalError::Vector(cause.to_string()));
-                    }
-                    _ => {}
-                }
-            }
-            ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
-                report.into_error(),
-                Some(ExpressionRuntimeFailurePhase::Invoke),
-            ))
-        })
+        eval_worker_args(worker, operation, ready)
     }
 
     fn finish<T>(
@@ -2577,6 +2847,21 @@ fn materialize_computed(
     }
 }
 
+fn evaluate_cached_args<T>(
+    cache: &ReadyValueCache,
+    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
+) -> Result<T, ReadyValueBoundaryError> {
+    let mut guard = CacheNativeGuard::new(cache);
+    let result = (|| {
+        let (operation, ready) = prepare().map_err(ReadyValueBoundaryError::Frontend)?;
+        let computed = cache.run_args(operation, ready)?;
+        pack(materialize_computed(operation, computed)?).map_err(ReadyValueBoundaryError::Frontend)
+    })();
+    guard.disarm();
+    result
+}
+
 fn evaluate_scoped_args<T>(
     scope: &ReadyValueScope,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
@@ -2603,7 +2888,7 @@ pub(crate) fn evaluate_prepared_args_in<T>(
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
-    route_prepared_args_in(ctx, prepare, |computed, _scope| pack(computed))
+    route_prepared_args_in(ctx, prepare, |computed, _columns| pack(computed))
 }
 
 /// Lend the selected authority to a dependent stage after the first lease has
@@ -2617,24 +2902,37 @@ pub(crate) fn evaluate_prepared_args_scoped_in<T>(
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
     pack: impl FnOnce(EvaluatedBytesResult, &dyn Columns) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
-    route_prepared_args_in(ctx, prepare, |computed, scope| {
-        let columns = ScopedReadyValueColumns { native: ctx, scope };
-        pack(computed, &columns)
-    })
+    route_prepared_args_in(ctx, prepare, pack)
 }
 
 fn route_prepared_args_in<T>(
     ctx: &dyn Columns,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult, &ReadyValueScope) -> Result<T, EvalError>,
+    pack: impl FnOnce(EvaluatedBytesResult, &dyn Columns) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
-    if let Some(scope) = ctx.ready_value_scope() {
-        return evaluate_scoped_args(scope, prepare, pack)
+    if let Some(cache) = ctx.ready_value_cache() {
+        return evaluate_cached_args(cache, prepare, |computed| pack(computed, ctx))
             .map_err(ReadyValueBoundaryError::into_eval_error);
     }
+    if let Some(scope) = ctx.ready_value_scope() {
+        return evaluate_scoped_args(scope, prepare, |computed, scope| {
+            let columns = ScopedReadyValueColumns {
+                native: ctx,
+                authority: ReadyValueAuthorityRef::Scope(scope),
+            };
+            pack(computed, &columns)
+        })
+        .map_err(ReadyValueBoundaryError::into_eval_error);
+    }
     if let Some(execution) = ctx.ready_value_execution() {
-        return evaluate_scoped_args(&execution.scope(), prepare, pack)
-            .map_err(ReadyValueBoundaryError::into_eval_error);
+        return evaluate_scoped_args(&execution.scope(), prepare, |computed, scope| {
+            let columns = ScopedReadyValueColumns {
+                native: ctx,
+                authority: ReadyValueAuthorityRef::Scope(scope),
+            };
+            pack(computed, &columns)
+        })
+        .map_err(ReadyValueBoundaryError::into_eval_error);
     }
 
     let result = (|| {
@@ -2649,7 +2947,17 @@ fn route_prepared_args_in<T>(
         let execution = OneShotReadyValueExecution(owner.begin_execution()?);
         // The scope/guard drop before the owned closer, including on unwind.
         let scope = execution.0.scope();
-        evaluate_scoped_args(&scope, || Ok(ready), pack)
+        evaluate_scoped_args(
+            &scope,
+            || Ok(ready),
+            |computed, scope| {
+                let columns = ScopedReadyValueColumns {
+                    native: ctx,
+                    authority: ReadyValueAuthorityRef::Scope(scope),
+                };
+                pack(computed, &columns)
+            },
+        )
     })();
     result.map_err(ReadyValueBoundaryError::into_eval_error)
 }
@@ -3715,9 +4023,15 @@ pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datu
 /// original context; only the two ready-value capability methods are overridden.
 /// The wrapper cannot share the scope between threads and does not establish
 /// business-wrapper propagation or statement/executor lifecycle ownership.
+#[derive(Clone, Copy)]
+enum ReadyValueAuthorityRef<'a> {
+    Cache(&'a ReadyValueCache),
+    Scope(&'a ReadyValueScope),
+}
+
 pub struct ScopedReadyValueColumns<'native, 'scope> {
     native: &'native dyn Columns,
-    scope: &'scope ReadyValueScope,
+    authority: ReadyValueAuthorityRef<'scope>,
 }
 
 // One local forwarding list, not a general context/delegation framework.
@@ -3731,12 +4045,25 @@ macro_rules! forward_columns {
 }
 
 impl Columns for ScopedReadyValueColumns<'_, '_> {
+    fn ready_value_cache(&self) -> Option<&ReadyValueCache> {
+        match self.authority {
+            ReadyValueAuthorityRef::Cache(cache) => Some(cache),
+            ReadyValueAuthorityRef::Scope(_) => self.native.ready_value_cache(),
+        }
+    }
+
     fn ready_value_scope(&self) -> Option<&ReadyValueScope> {
-        Some(self.scope)
+        match self.authority {
+            ReadyValueAuthorityRef::Scope(scope) => Some(scope),
+            ReadyValueAuthorityRef::Cache(_) => self.native.ready_value_scope(),
+        }
     }
 
     fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
-        Some(&self.scope.execution)
+        match self.authority {
+            ReadyValueAuthorityRef::Scope(scope) => Some(&scope.execution),
+            ReadyValueAuthorityRef::Cache(_) => self.native.ready_value_execution(),
+        }
     }
 
     forward_columns! {

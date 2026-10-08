@@ -39,6 +39,39 @@ trait AsciiComputedValue {
     fn value(&self) -> Option<i64>;
 }
 
+#[test]
+fn lane_cache_is_lazy_and_reuses_one_worker_per_operation() {
+    let cache = ReadyValueCache::new();
+    assert_eq!(cache.worker_count(), 0);
+    cache.with_columns(&crate::NoColumns, |ctx| {
+        assert_eq!(
+            evaluate_ascii_in(&Datum::Bytes(b"A".to_vec()), ctx),
+            Ok(Datum::Int(65))
+        );
+        assert_eq!(cache.worker_count(), 1);
+        assert_eq!(
+            evaluate_ascii_in(&Datum::Bytes(b"B".to_vec()), ctx),
+            Ok(Datum::Int(66))
+        );
+        assert_eq!(cache.worker_count(), 1);
+        assert_eq!(
+            evaluate_args_in(
+                EvaluatedBytesOp::Length,
+                ctx,
+                || Ok(EvaluatedArgs::Bytes(Some(b"hello".to_vec()))),
+                EvaluatedBytesResult::into_int_datum,
+            ),
+            Ok(Datum::Int(5))
+        );
+        assert_eq!(cache.worker_count(), 2);
+        assert_eq!(
+            evaluate_ascii_in(&Datum::Bytes(b"C".to_vec()), ctx),
+            Ok(Datum::Int(67))
+        );
+        assert_eq!(cache.worker_count(), 2);
+    });
+}
+
 impl AsciiComputedValue for ComputedValue {
     fn value(&self) -> Option<i64> {
         match self {

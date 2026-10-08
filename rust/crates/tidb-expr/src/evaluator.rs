@@ -27,6 +27,7 @@ use tidb_query_expr::local::{CompileLimits, ExecutionLimits};
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
+use crate::ReadyValueCache;
 
 // Private consumer checkpoint; the public suite still selects Native below.
 pub(crate) mod numeric_batch;
@@ -369,6 +370,7 @@ enum NumericVectorLane {
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
     column_swap_helper: Option<ColumnSwapHelper>,
+    ready_value_cache: ReadyValueCache,
     numeric_vector_lane: RefCell<NumericVectorLane>,
 }
 
@@ -452,6 +454,7 @@ impl EvaluatorSuite {
         Self {
             program,
             column_swap_helper,
+            ready_value_cache: ReadyValueCache::new(),
             numeric_vector_lane: RefCell::new(NumericVectorLane::Uninitialized),
         }
     }
@@ -474,7 +477,9 @@ impl EvaluatorSuite {
         input: &mut Chunk,
         output: &mut Chunk,
     ) -> Result<(), EvaluatorError> {
-        self.run_with_consumer(ctx, input, output, &mut NativeNumericConsumer)
+        self.ready_value_cache.with_columns(ctx, |bound| {
+            self.run_with_consumer(bound, input, output, &mut NativeNumericConsumer)
+        })
     }
 
     /// Projection-lane entry for the checked signed-LongLong numeric seed.
@@ -815,6 +820,26 @@ mod tests {
                 assert_eq!(input.num_rows(), rows);
             }
             assert_eq!(output.num_rows(), 0);
+        }
+    }
+
+    #[test]
+    fn evaluator_suite_reuses_ready_value_worker_across_chunks() {
+        let mut column = Column::new(1, string());
+        column.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("ascii"),
+            longlong(),
+            vec![Expression::Column(column)],
+        ));
+        let suite = EvaluatorSuite::new(vec![expression], false);
+        for (input_value, expected) in [(b"A".as_slice(), 65), (b"B".as_slice(), 66)] {
+            let mut input = Chunk::new_with_capacity(&[string()], 1);
+            input.append_bytes(0, input_value);
+            let mut output = Chunk::new_with_capacity(&[longlong()], 1);
+            suite.run(&NoColumns, &mut input, &mut output).unwrap();
+            assert_eq!(output.get_row(0).get_int64(0), expected);
+            assert_eq!(suite.ready_value_cache.worker_count(), 1);
         }
     }
 

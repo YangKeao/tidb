@@ -524,6 +524,13 @@ impl BlockEncryptionMode {
 
 /// Resolves column and session state during evaluation.
 pub trait Columns {
+    /// The current executor-lane operation cache, when explicitly bound.
+    /// This is a pure borrowed lookup; contexts must not synthesize or share a
+    /// cache through statement/session clones.
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        None
+    }
+
     /// The currently bound affine ready-value scope, when explicitly bound.
     /// Adapters preserve this capability rather than starting a second scope.
     /// Ordinary unbound contexts remain source-compatible and stateless. This

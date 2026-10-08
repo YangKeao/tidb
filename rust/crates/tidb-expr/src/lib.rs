@@ -428,8 +428,8 @@ pub use tikv::{
     LegacyCastIntegerResult, LegacyDateArithmeticChannel, LegacyDateArithmeticDateKind,
     LegacyDateArithmeticIntervalKind, LegacyDateArithmeticMetadata, LegacyDateArithmeticResult,
     LegacyDateArithmeticValue, LegacyIntegerArithmetic, LegacyLikeArgs, LegacyTimestampDiffArgs,
-    ReadyValueExecution, ReadyValueOwnerError, ReadyValuePoolOwner, ReadyValuePoolPolicy,
-    ReadyValueScope, RegexpLegacyInput, ScopedReadyValueColumns,
+    ReadyValueCache, ReadyValueExecution, ReadyValueOwnerError, ReadyValuePoolOwner,
+    ReadyValuePoolPolicy, ReadyValueScope, RegexpLegacyInput, ScopedReadyValueColumns,
 };
 
 use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
