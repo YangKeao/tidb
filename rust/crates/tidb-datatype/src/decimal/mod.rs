@@ -94,39 +94,7 @@ impl std::fmt::Display for DecimalDigits {
 /// different, harder problem than the truncating division `DIV`/`MOD` need
 /// (see [`Decimal::div_rem`]).
 #[derive(Debug, Clone)]
-pub struct Decimal {
-    negative: bool,
-    digits: DecimalDigits,
-    /// Fractional digits visible through `Display`/SQL result formatting.
-    /// This is MyDecimal's `resultFrac` equivalent.
-    scale: u32,
-    /// Fractional digits retained for later decimal arithmetic. Division in
-    /// TiDB stores whole base-1e9 words here even when `scale` exposes fewer
-    /// digits, so an aggregate can consume precision a scalar result does
-    /// not print. Normal literals and exact arithmetic keep this equal to
-    /// `scale`.
-    storage_scale: u32,
-    /// The DECLARED `DECIMAL(M, D)` shape this value was converted into for a
-    /// column, or `None` when no column is involved (a literal, an expression
-    /// result, an intermediate).
-    ///
-    /// This is Go's `Datum.length`/`Datum.decimal` pair, which lives beside
-    /// the value on the datum rather than inside `MyDecimal`: Go's
-    /// `convertToMysqlDecimal` stamps it from the target `FieldType`
-    /// (`pkg/types/datum.go`), the row-v2 encoder passes it straight into
-    /// `codec.EncodeDecimal` (`pkg/util/rowcodec/encoder.go`), and
-    /// `MyDecimal.PrecisionAndFrac` keeps reporting the value's own natural
-    /// shape regardless. Our `Datum::Decimal` is a newtype over this value, so
-    /// the pair rides here; every value-producing operation (parse, arithmetic,
-    /// rounding) goes through [`Decimal::new_with_storage`] and therefore
-    /// resets it to `None`, exactly as a fresh Go `Datum` starts at length 0.
-    ///
-    /// Storage bytes must use this shape, not the natural one: `11.99` written
-    /// to a `DECIMAL(10, 4)` column is 7 payload bytes under `(10, 4)` and 3
-    /// under its natural `(4, 2)`, and TiDB/TiCDC row checksums are computed
-    /// over those bytes.
-    declared_shape: Option<(i64, i64)>,
-}
+pub struct Decimal(NativeDecimalParseValue);
 
 /// Source `MyDecimal.ToInt`/`ToUint` non-fatal disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,39 +113,20 @@ impl Decimal {
     /// sign, visible/storage scales and declared shape without validation or
     /// normalization. Arithmetic and formatting retain their own preconditions.
     pub fn from_shared_parse(value: NativeDecimalParseValue) -> Self {
-        let (negative, digits, scale, storage_scale, declared_shape) = value.into_raw_parts();
-        Self {
-            negative,
-            digits: DecimalDigits(digits),
-            scale,
-            storage_scale,
-            declared_shape,
-        }
+        Self(value)
     }
 
     /// Borrows the actual coefficient and all metadata without UTF-8 checks,
     /// normalization or allocation. This transport view is not SQL admission.
     pub fn as_shared_parse(&self) -> NativeDecimalParseRef<'_> {
-        NativeDecimalParseRef {
-            negative: self.negative,
-            digits: &self.digits.0,
-            scale: self.scale,
-            storage_scale: self.storage_scale,
-            declared_shape: self.declared_shape,
-        }
+        self.0.as_ref()
     }
 
     /// Moves the actual SmallVec coefficient and all five storage fields into
     /// the shared value without cloning, validation or normalization. Even raw
     /// invalid UTF-8, noncanonical zero signs and declared shape are preserved.
     pub fn into_shared_parse(self) -> NativeDecimalParseValue {
-        NativeDecimalParseValue::from_raw_parts(
-            self.negative,
-            self.digits.0,
-            self.scale,
-            self.storage_scale,
-            self.declared_shape,
-        )
+        self.0
     }
 
     /// Reconstructs an exact decimal representation returned by value transport.
@@ -187,20 +136,29 @@ impl Decimal {
     /// [`Self::with_declared_shape`]. Arithmetic and text APIs retain their own
     /// representation preconditions.
     pub fn from_raw_parts(negative: bool, digits: Vec<u8>, scale: u32, storage_scale: u32) -> Self {
-        Self {
+        Self(NativeDecimalParseValue::from_raw_parts(
             negative,
-            digits: DecimalDigits(SmallVec::from_vec(digits)),
+            SmallVec::from_vec(digits),
             scale,
             storage_scale,
-            declared_shape: None,
-        }
+            None,
+        ))
     }
 
     /// Returns exact coefficient storage without ASCII or UTF-8 validation.
     /// This representation accessor is for lossless value transport, not text
     /// formatting or admission to decimal arithmetic.
     pub fn coefficient_bytes(&self) -> &[u8] {
-        &self.digits.0
+        self.0.as_ref().digits
+    }
+
+    fn digits(&self) -> &str {
+        std::str::from_utf8(self.coefficient_bytes())
+            .expect("decimal coefficients are ASCII digits")
+    }
+
+    fn owned_digits(&self) -> DecimalDigits {
+        DecimalDigits::from_ascii(SmallVec::from_slice(self.coefficient_bytes()))
     }
 
     /// Copies the exact coefficient into the shared native-math value domain.
@@ -208,11 +166,12 @@ impl Decimal {
     /// precision or the combined physical peak. Declared column shape is not
     /// part of this arithmetic value; both storage and result scales are.
     pub fn try_to_shared_math(&self, limit: usize) -> Result<SharedDecimal, NativeDecimalError> {
+        let parts = self.0.as_ref();
         SharedDecimal::try_from_native_digits(
-            self.negative,
-            self.digits.as_bytes(),
-            self.storage_scale,
-            self.scale,
+            parts.negative,
+            parts.digits,
+            parts.storage_scale,
+            parts.scale,
             limit,
         )
     }
@@ -312,13 +271,13 @@ impl Decimal {
             .take_while(|digit| **digit == b'0')
             .count();
         digits.drain(..leading);
-        Ok(Self {
-            negative: parts.negative,
-            digits: DecimalDigits::from_ascii(SmallVec::from_vec(digits)),
-            scale: parts.result_frac,
-            storage_scale: parts.storage_frac,
-            declared_shape: None,
-        })
+        Ok(Self(NativeDecimalParseValue::from_raw_parts(
+            parts.negative,
+            DecimalDigits::from_ascii(SmallVec::from_vec(digits)).0,
+            parts.result_frac,
+            parts.storage_frac,
+            None,
+        )))
     }
 
     // Retain the old infallible value API: bridge/core refusals panic here,
@@ -440,10 +399,10 @@ impl Decimal {
     /// discarding fraction digits retained beyond the displayed scale.
     pub fn to_my_decimal(&self) -> Result<MyDecimal, crate::mydecimal::DecimalError> {
         MyDecimal::from_decimal_parts(
-            self.negative,
-            &self.digits,
-            self.storage_scale,
-            self.scale,
+            self.is_negative(),
+            self.digits(),
+            self.storage_scale(),
+            self.scale(),
             false,
         )
     }
@@ -453,10 +412,10 @@ impl Decimal {
     /// for values below one, while hidden fraction words remain intact.
     pub fn to_chunk_my_decimal(&self) -> Result<MyDecimal, crate::mydecimal::DecimalError> {
         MyDecimal::from_decimal_parts(
-            self.negative,
-            &self.digits,
-            self.storage_scale,
-            self.scale,
+            self.is_negative(),
+            self.digits(),
+            self.storage_scale(),
+            self.scale(),
             true,
         )
     }
@@ -477,8 +436,8 @@ impl Decimal {
             return value;
         }
 
-        let mut text = self.digits.as_str().to_owned();
-        let storage_scale = self.storage_scale as usize;
+        let mut text = self.digits().to_owned();
+        let storage_scale = self.storage_scale() as usize;
         debug_assert!(storage_scale <= text.len());
         if storage_scale > 0 {
             // `from_decimal_parts(..., minimum_integer_digit = true)` gives
@@ -491,7 +450,7 @@ impl Decimal {
             let split = text.len() - storage_scale;
             text.insert(split, '.');
         }
-        if self.negative {
+        if self.is_negative() {
             text.insert(0, '-');
         }
         let mut value = MyDecimal::from_string(text.as_bytes()).0;
@@ -502,7 +461,7 @@ impl Decimal {
         // matches Go's `ToString` of the same clamped cell. The exact path
         // above already carries this convention (`resultFrac = scale`).
         let kept = value.digits_frac().max(0) as u32;
-        value.set_result_frac(self.scale.min(kept) as i8);
+        value.set_result_frac(self.scale().min(kept) as i8);
         value
     }
 
@@ -592,7 +551,7 @@ impl Decimal {
     /// Returns the number of fractional decimal digits preserved by this
     /// value's representation.
     pub fn scale(&self) -> u32 {
-        self.scale
+        self.0.as_ref().scale
     }
 
     /// Returns whether the stored numeric value is negative.
@@ -600,7 +559,7 @@ impl Decimal {
     /// This is a semantic storage/protocol accessor, not a leak of Go's
     /// base-1e9 `MyDecimal` word layout. Zero is normalized to non-negative.
     pub const fn is_negative(&self) -> bool {
-        self.negative
+        self.0.negative()
     }
 
     /// Returns the lossless unsigned coefficient digits retained for exact
@@ -610,7 +569,7 @@ impl Decimal {
     /// use [`Decimal::storage_scale`] rather than the SQL-visible [`Self::scale`]
     /// because division can retain hidden precision for a later aggregate.
     pub fn coefficient_digits(&self) -> &str {
-        &self.digits
+        self.digits()
     }
 
     /// Returns the signed coefficient and retained fractional scale when the
@@ -624,23 +583,24 @@ impl Decimal {
     /// digits, so a value whose two scales differ keeps the exact path.
     #[must_use]
     pub fn fold_coefficient_i128(&self) -> Option<(i128, u32)> {
-        if self.scale != self.storage_scale {
+        if self.scale() != self.storage_scale() {
             return None;
         }
         self.coefficient_i128()
     }
 
     pub fn coefficient_i128(&self) -> Option<(i128, u32)> {
+        let parts = self.0.as_ref();
         SharedDecimal::native_raw_coefficient_i128(
-            self.negative,
-            &self.digits.0,
-            self.storage_scale,
+            parts.negative,
+            parts.digits,
+            parts.storage_scale,
         )
     }
 
     #[cfg(test)]
     pub(crate) fn coefficient_is_inline(&self) -> bool {
-        !self.digits.0.spilled()
+        self.0.coefficient_is_inline()
     }
 
     /// Builds a value straight from coefficient parts for differential tests
@@ -662,7 +622,7 @@ impl Decimal {
     /// scale. Storage and protocol codecs need this value to avoid discarding
     /// arithmetic precision.
     pub const fn storage_scale(&self) -> u32 {
-        self.storage_scale
+        self.0.storage_scale()
     }
 
     /// Stamps the declared `DECIMAL(M, D)` column shape onto this value.
@@ -671,13 +631,13 @@ impl Decimal {
     /// `ret.SetLength(target.GetFlen()); ret.SetFrac(target.GetDecimal())`.
     #[must_use]
     pub fn with_declared_shape(mut self, flen: i64, decimal: i64) -> Self {
-        self.declared_shape = Some((flen, decimal));
+        self.0.set_declared_shape(Some((flen, decimal)));
         self
     }
 
     /// The declared column shape, or `None` for a value no column produced.
     pub const fn declared_shape(&self) -> Option<(i64, i64)> {
-        self.declared_shape
+        self.0.declared_shape()
     }
 
     /// The `(precision, frac)` pair storage codecs must encode under.
@@ -688,7 +648,7 @@ impl Decimal {
     /// same way. Callers pass this pair through unchanged so the fallback stays
     /// in the one place Go put it.
     pub const fn storage_shape(&self) -> (i64, i64) {
-        match self.declared_shape {
+        match self.0.declared_shape() {
             Some(shape) => shape,
             None => (0, 0),
         }
@@ -700,18 +660,20 @@ impl Decimal {
     /// at `DECIMAL(10, 4)` still reports `(4, 2)` for `11.99`, matching Go.
     /// Storage codecs want [`Decimal::storage_shape`] instead.
     pub fn precision_and_frac(&self) -> (i32, i32) {
-        let split = self.digits.len() - self.storage_scale as usize;
-        let integer_digits = self.digits[..split].trim_start_matches('0').len() as i32;
-        let fraction = self.storage_scale as i32;
+        let digits = self.digits();
+        let split = digits.len() - self.storage_scale() as usize;
+        let integer_digits = digits[..split].trim_start_matches('0').len() as i32;
+        let fraction = self.storage_scale() as i32;
         ((integer_digits + fraction).max(1), fraction)
     }
 
     /// Source `MyDecimal.ToHashKey`: numerically equal decimals with different
     /// written scales produce the same key.
     pub fn to_hash_key(&self) -> Result<(Vec<u8>, Option<DecimalCodecWarning>), DecimalCodecError> {
-        let split = self.digits.len() - self.storage_scale as usize;
-        let integer_digits = self.digits[..split].trim_start_matches('0').len() as i32;
-        let significant_fraction = self.digits[split..].trim_end_matches('0').len() as i32;
+        let digits = self.digits();
+        let split = digits.len() - self.storage_scale() as usize;
+        let integer_digits = digits[..split].trim_start_matches('0').len() as i32;
+        let significant_fraction = digits[split..].trim_end_matches('0').len() as i32;
         let precision = (integer_digits + significant_fraction).max(1);
         let (mut key, warning) = self.to_bin(precision, significant_fraction)?;
         key.push(significant_fraction as u8);
@@ -727,9 +689,10 @@ impl Decimal {
 
     /// Source `MyDecimal.HashKeySize`.
     pub fn hash_key_size(&self) -> Result<usize, DecimalCodecError> {
-        let split = self.digits.len() - self.storage_scale as usize;
-        let integer_digits = self.digits[..split].trim_start_matches('0').len() as i32;
-        let significant_fraction = self.digits[split..].trim_end_matches('0').len() as i32;
+        let digits = self.digits();
+        let split = digits.len() - self.storage_scale() as usize;
+        let integer_digits = digits[..split].trim_start_matches('0').len() as i32;
+        let significant_fraction = digits[split..].trim_end_matches('0').len() as i32;
         let precision = (integer_digits + significant_fraction).max(1);
         decimal_bin_size(precision, significant_fraction).map(|size| size + 1)
     }
@@ -753,7 +716,7 @@ impl Decimal {
     pub fn signum(&self) -> i64 {
         if self.is_zero() {
             0
-        } else if self.negative {
+        } else if self.is_negative() {
             -1
         } else {
             1
@@ -932,10 +895,10 @@ impl Decimal {
     /// `resultFrac` presentation rounding used by `String`.
     pub fn storage_string(&self) -> String {
         Decimal::new_with_storage(
-            self.negative,
-            self.digits.clone(),
-            self.storage_scale,
-            self.storage_scale,
+            self.is_negative(),
+            self.owned_digits(),
+            self.storage_scale(),
+            self.storage_scale(),
         )
         .to_string()
     }
@@ -951,11 +914,11 @@ impl Decimal {
     /// `target_scale` must be `>= self.scale` (always true for `AVG`, which
     /// only grows scale).
     pub fn div_round(&self, divisor: i64, target_scale: u32) -> Decimal {
-        let increment = target_scale - self.scale;
-        let storage_scale = word_scale(self.storage_scale + increment);
-        let numerator = pad_scale(&self.digits, self.storage_scale, storage_scale);
+        let increment = target_scale - self.scale();
+        let storage_scale = word_scale(self.storage_scale() + increment);
+        let numerator = pad_scale(self.digits(), self.storage_scale(), storage_scale);
         let (quotient, _) = digit_divmod(&numerator, &divisor.to_string());
-        Decimal::new_with_storage(self.negative, quotient, target_scale, storage_scale)
+        Decimal::new_with_storage(self.is_negative(), quotient, target_scale, storage_scale)
     }
 
     /// True (rounding) division by an arbitrary `Decimal` divisor — MySQL's
@@ -984,7 +947,7 @@ impl Decimal {
         other: &Decimal,
         target_scale: u32,
     ) -> Option<(Decimal, Option<DecimalCodecWarning>)> {
-        self.div_mysql_with_warning(other, target_scale.saturating_sub(self.scale))
+        self.div_mysql_with_warning(other, target_scale.saturating_sub(self.scale()))
     }
 
     /// Rounds to the nearest integer, ties away from zero — MySQL's
@@ -997,7 +960,8 @@ impl Decimal {
     /// Source `MyDecimal.ToInt`: truncates toward zero and reports a non-zero
     /// discarded fraction separately from overflow.
     pub fn to_i64_trunc(&self) -> (i64, Option<DecimalIntegerWarning>) {
-        match SharedDecimal::native_to_i64_trunc(self.negative, &self.digits.0, self.storage_scale)
+        let parts = self.0.as_ref();
+        match SharedDecimal::native_to_i64_trunc(parts.negative, parts.digits, parts.storage_scale)
         {
             SharedDecimalResult::Ok(value) => (value, None),
             SharedDecimalResult::Truncated(value) => {
@@ -1010,7 +974,8 @@ impl Decimal {
     /// Source `MyDecimal.ToUint`: truncates toward zero, rejects negatives,
     /// and saturates positive overflow.
     pub fn to_u64_trunc(&self) -> (u64, Option<DecimalIntegerWarning>) {
-        match SharedDecimal::native_to_u64_trunc(self.negative, &self.digits.0, self.storage_scale)
+        let parts = self.0.as_ref();
+        match SharedDecimal::native_to_u64_trunc(parts.negative, parts.digits, parts.storage_scale)
         {
             SharedDecimalResult::Ok(value) => (value, None),
             SharedDecimalResult::Truncated(value) => {
@@ -1119,14 +1084,14 @@ impl Decimal {
     /// SQL `CEIL`/`FLOOR` semantics.
     pub fn round_ceiling_to_scale(&self, target_scale: i32) -> Decimal {
         let result_scale = target_scale.max(0) as u32;
-        let shift = self.storage_scale as i32 - target_scale;
+        let shift = self.storage_scale() as i32 - target_scale;
         if shift <= 0 {
-            let digits = pad_scale(&self.digits, self.storage_scale, result_scale);
-            return Decimal::new(self.negative, digits, result_scale);
+            let digits = pad_scale(self.digits(), self.storage_scale(), result_scale);
+            return Decimal::new(self.is_negative(), digits, result_scale);
         }
 
         let shift = shift as usize;
-        let mut digits = self.digits.clone();
+        let mut digits = self.owned_digits();
         if digits.len() <= shift {
             digits = format!("{}{digits}", "0".repeat(shift + 1 - digits.len())).into();
         }
@@ -1153,7 +1118,7 @@ impl Decimal {
         if target_scale < 0 {
             kept.push_str(&"0".repeat((-target_scale) as usize));
         }
-        Decimal::new(self.negative, kept, result_scale)
+        Decimal::new(self.is_negative(), kept, result_scale)
     }
 
     /// Truncates (never rounds) to `target_scale` fractional digits
@@ -1178,8 +1143,8 @@ impl Decimal {
     pub fn fit_precision_scale(&self, precision: u32, scale: u32) -> Option<Decimal> {
         let int_budget = precision.checked_sub(scale)?;
         let rounded = self.round_to_scale(scale as i32);
-        let int_len = rounded.digits.len() - rounded.scale as usize;
-        let significant_int = rounded.digits[..int_len].trim_start_matches('0').len();
+        let int_len = rounded.digits().len() - rounded.scale() as usize;
+        let significant_int = rounded.digits()[..int_len].trim_start_matches('0').len();
         (significant_int as u32 <= int_budget).then_some(rounded)
     }
 
@@ -1211,11 +1176,12 @@ impl std::fmt::Display for Decimal {
     /// for zero), then the digits with the decimal point inserted `scale`
     /// places from the right — omitted entirely when `scale == 0`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts = self.0.as_ref();
         f.write_str(&SharedDecimal::native_format_visible(
-            self.negative,
-            self.coefficient_bytes(),
-            self.scale,
-            self.storage_scale,
+            parts.negative,
+            parts.digits,
+            parts.scale,
+            parts.storage_scale,
         ))
     }
 }
@@ -1244,16 +1210,18 @@ impl Ord for Decimal {
     /// form cost four heap allocations Go's word-wise `MyDecimal.Compare`
     /// does not have.
     fn cmp(&self, other: &Self) -> Ordering {
+        let left = self.0.as_ref();
+        let right = other.0.as_ref();
         native_decimal_cmp(
             NativeDecimalCmpParts {
-                negative: self.negative,
-                digits: self.digits.as_str(),
-                storage_scale: self.storage_scale,
+                negative: left.negative,
+                digits: self.digits(),
+                storage_scale: left.storage_scale,
             },
             NativeDecimalCmpParts {
-                negative: other.negative,
-                digits: other.digits.as_str(),
-                storage_scale: other.storage_scale,
+                negative: right.negative,
+                digits: other.digits(),
+                storage_scale: right.storage_scale,
             },
         )
     }
@@ -1988,9 +1956,9 @@ fn shared_decimal_parse_facade_moves_storage_and_preserves_raw_shift_identity() 
     let digits = SmallVec::<[u8; INLINE_DECIMAL_DIGITS]>::from_slice(&[b'1'; 90]);
     let allocation = digits.as_ptr();
     let value = Decimal::from_shared_parse(native_decimal_normalize(false, digits, 0, 0, false));
-    assert_eq!(value.digits.0.as_ptr(), allocation);
+    assert_eq!(value.coefficient_bytes().as_ptr(), allocation);
     assert_eq!(value.coefficient_bytes(), &[b'1'; 90]);
-    assert!(!Decimal::from_int(i64::MIN).digits.0.spilled());
-    assert!(!Decimal::from_uint(u64::MAX).digits.0.spilled());
-    assert!(!Decimal::from_scaled_i128(12345, 2).digits.0.spilled());
+    assert!(Decimal::from_int(i64::MIN).coefficient_is_inline());
+    assert!(Decimal::from_uint(u64::MAX).coefficient_is_inline());
+    assert!(Decimal::from_scaled_i128(12345, 2).coefficient_is_inline());
 }

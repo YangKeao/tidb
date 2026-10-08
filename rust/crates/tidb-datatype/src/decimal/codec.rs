@@ -231,7 +231,10 @@ impl Decimal {
             "DigitsFrac".to_owned(),
             serde_json::Value::from(words.digits_frac),
         );
-        object.insert("ResultFrac".to_owned(), serde_json::Value::from(self.scale));
+        object.insert(
+            "ResultFrac".to_owned(),
+            serde_json::Value::from(self.scale()),
+        );
         object.insert(
             "Negative".to_owned(),
             serde_json::Value::from(words.negative),
@@ -293,8 +296,8 @@ impl Decimal {
         }
         .to_decimal();
         let result_frac = result_frac as u32;
-        let storage_scale = raw.storage_scale.max(result_frac);
-        let digits = pad_scale(&raw.digits, raw.storage_scale, storage_scale);
+        let storage_scale = raw.storage_scale().max(result_frac);
+        let digits = pad_scale(raw.digits(), raw.storage_scale(), storage_scale);
         Ok(Decimal::new_with_storage_preserving_zero_sign(
             negative,
             digits,
