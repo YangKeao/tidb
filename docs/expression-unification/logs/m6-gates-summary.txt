@@ -1,0 +1,6 @@
+m6-gates-186 / R192
+TiDB make lint: exit0 sha256 205890ac6313d381613aee8113c5521470cdde49e60a0eb2c75936618e6280cc (tipb sync/projection and Go lint included).
+TiKV make clippy with pinned rustup: exit2 sha256 3b42ddd6225a9c14216dd18b3a9b55aebf21317fd2b7efeb3639aa47d83d9b13. Prechecks security/style/dashboard/docker/license passed; cargo-deny rejected experimental tidb_query_crypto direct RustCrypto aes 0.9.1, cipher 0.5.2 and sha1 0.10.6 under existing FIPS bans. Initial invocation also exited2 before clippy because rustup was absent from PATH; retry fixed environment, not source.
+Full tidb-expr: exit101, 1654 pass/4 fail/94 ignore sha256 3a1da2eaa8d51ee8a295d40fa8cfa9a38f293829d8c2450cf34caf834be9c737. Historical failures: ifnull collation, EXP, vectorized op, STR_TO_DATE no-zero-date.
+Full tidb-unistore: exit101, 226 pass/1 fail/13 ignore sha256 6804579992e534e4550f1ef786e0699e91228789eb33ac2eec6692650126d9fe. Historical closure executor DECIMAL truncation failure.
+Ledger/exception/link/diff checks PASS. No deny bypass or failure suppression. Functional240/245; strict0; PR ready false.

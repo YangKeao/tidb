@@ -1,7 +1,7 @@
 # Expression unification experiment
 
-Current paired checkpoint **final-five-exceptions-185**. Functional **240/245 (97.96%)**, strict **0**.
+Current paired checkpoint **m6-gates-186**. Functional **240/245 (97.96%)**, strict **0**; five explicit exceptions remain.
 
-The 90% functional target is met. The final five frozen families are individually deferred without credit or hidden fallback: JSON schema validation, two plan decoders, SQL digest normalization, and password-strength policy. [Exception contracts](evidence/final-five-exceptions.md).
+M6 gate status: TiDB `make lint` passed. Full Rust libraries retained the known four `tidb-expr` and one Unistore failures. TiKV `make clippy` reached cargo-deny but failed because experimental `tidb_query_crypto` directly depends on RustCrypto AES/cipher/SHA1 crates banned by the existing FIPS policy. No deny bypass was added. [Exact receipts](logs/m6-gates-summary.txt).
 
-This checkpoint is a five-agent read-only audit and changes no production code; no Cargo tests were run. M6 lint, broad gates, lifecycle/type acceptance and PR readiness remain active.
+Ledger, exception set, relative links and diff checks pass. PR readiness, FIPS-compatible crypto ownership, broad dev/release/performance and lifecycle/type final acceptance remain active.

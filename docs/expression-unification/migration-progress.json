@@ -1,5 +1,8 @@
 {
-  "checkpoint_id": "final-five-exceptions-185",
+  "checkpoint_id": "m6-gates-186",
+  "m6_tidb_lint_passed": true,
+  "m6_tikv_clippy_blocked_by_fips_dependency_bans": true,
+  "m6_full_rust_historical_failures_retained": true,
   "final_five_explicit_exceptions_frozen": true,
   "cast_functional_migration": true,
   "legacy_time_cast_shared": true,
