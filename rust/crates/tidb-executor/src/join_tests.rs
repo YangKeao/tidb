@@ -1060,6 +1060,54 @@ impl Executor for RowSource {
     }
 }
 
+#[test]
+fn legacy_join_lane_reuses_ready_value_worker_for_residuals() {
+    let string = FieldType::new(FieldTypeCode::VarString);
+    let types = [long(), string.clone()];
+    let ascii = |index: i64| {
+        let mut text = Column::new(index + 1, string.clone());
+        text.index = index;
+        Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("ascii"),
+            long(),
+            vec![Expression::Column(text)],
+        ))
+    };
+    let residual = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("gt"),
+        long(),
+        vec![ascii(1), ascii(3)],
+    ));
+    let mut join = join_with_types(
+        vec![eq_on(0, 0, 2), residual],
+        vec![
+            vec![Datum::Int(1), Datum::Bytes(b"A".to_vec())],
+            vec![Datum::Int(2), Datum::Bytes(Vec::new())],
+            vec![Datum::Int(3), Datum::Bytes(b"B".to_vec())],
+        ],
+        &types,
+        vec![
+            vec![Datum::Int(1), Datum::Bytes(b"@".to_vec())],
+            vec![Datum::Int(2), Datum::Bytes(b"y".to_vec())],
+            vec![Datum::Int(3), Datum::Bytes(b"A".to_vec())],
+        ],
+        &types,
+    );
+    join.set_parallelism(1);
+    let rows = run_datums(&mut join);
+    assert_eq!(rows.len(), 2);
+    let joined = [
+        Datum::Int(1),
+        Datum::Bytes(b"A".to_vec()),
+        Datum::Int(1),
+        Datum::Bytes(b"@".to_vec()),
+    ];
+    assert_eq!(join.residual_verdict(&joined).unwrap(), (true, false));
+    assert_eq!(join.ready_values.prepared_worker_count(), 2);
+    assert_eq!(join.residual_verdict(&joined).unwrap(), (true, false));
+    assert_eq!(join.ready_values.prepared_worker_count(), 2);
+}
+
 /// `left.<lhs> = right.<rhs>`, addressed against the joined schema.
 pub(super) fn eq_on(lhs: usize, rhs: usize, left_width: usize) -> Expression {
     let column = |index: usize| {

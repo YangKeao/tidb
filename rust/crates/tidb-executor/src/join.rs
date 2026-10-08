@@ -179,7 +179,7 @@ use tidb_chunk::row_container::RowContainer;
 use tidb_datatype::{Datum, FieldType};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
-use tidb_expr::Columns;
+use tidb_expr::{Columns, ReadyValueCache};
 use tidb_util::memory::{ArcAction, Tracker};
 
 /// Which side, if any, keeps rows that match nothing.
@@ -347,6 +347,7 @@ struct ParallelProbeResult {
 /// the temporary lookup and row-reconstruction buffers here removes the same
 /// per-chunk allocation churn from the probe side.
 struct ProbeBatchScratch {
+    ready_values: ReadyValueCache,
     build_buf: Chunk,
     condition_chunk: Chunk,
     exact_keys: Vec<Option<i128>>,
@@ -362,6 +363,7 @@ struct ProbeBatchScratch {
 impl ProbeBatchScratch {
     fn new(build_types: &[FieldType], condition_types: &[FieldType]) -> Self {
         Self {
+            ready_values: ReadyValueCache::new(),
             build_buf: Chunk::new_with_capacity(build_types, 1),
             condition_chunk: Chunk::new_with_capacity(condition_types, 1),
             exact_keys: Vec::new(),
@@ -1404,6 +1406,7 @@ pub struct JoinExec<C: Columns> {
     left_types: Vec<FieldType>,
     right_types: Vec<FieldType>,
     ctx: C,
+    ready_values: ReadyValueCache,
     /// The indexable `col = col` conjuncts; empty means the nested loop.
     keys: Vec<EquiKey>,
     /// Go `HashContext.NaKeyColIdx`: the null-aware key conjuncts a `NOT IN`
@@ -1567,6 +1570,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             left_types,
             right_types,
             ctx,
+            ready_values: ReadyValueCache::new(),
             keys,
             emitted: false,
             hash: None,
@@ -1916,16 +1920,17 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             chunk.append_datum(i, value);
         }
         let row = chunk.get_row(0);
-        Ok(fold_verdict(
-            self.kind,
-            crate::joiner::eval_bool(&self.ctx, conditions, row)?,
-        ))
+        let verdict = self.ready_values.with_columns(&self.ctx, |ctx| {
+            crate::joiner::eval_bool(ctx, conditions, row)
+        })?;
+        Ok(fold_verdict(self.kind, verdict))
     }
 
     /// [`Self::residual_verdict`] for the chunk-backed probe paths, which
     /// lay the pair out in a caller-owned scratch chunk and carry no `self`.
     #[allow(clippy::too_many_arguments)]
     fn chunk_rows_verdict(
+        ready_values: &ReadyValueCache,
         ctx: &C,
         kind: JoinKind,
         conditions: &[Expression],
@@ -1944,10 +1949,9 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         scratch.append_partial_row_limited(0, left, left_width);
         scratch.append_partial_row_limited(left_width, right, right_width);
         let row = scratch.get_row(0);
-        Ok(fold_verdict(
-            kind,
-            crate::joiner::eval_bool(ctx, conditions, row)?,
-        ))
+        let verdict =
+            ready_values.with_columns(ctx, |ctx| crate::joiner::eval_bool(ctx, conditions, row))?;
+        Ok(fold_verdict(kind, verdict))
     }
 
     /// Concatenates an outer and an inner row back into left-then-right
@@ -4181,6 +4185,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             keys.len() == 1 && key.class == KeyClass::Int && !key.null_safe && table.has_exact_int()
         });
         scratch.reset_for_chunk();
+        let ready_values = &scratch.ready_values;
         let build_buf = &mut scratch.build_buf;
         let condition_chunk = &mut scratch.condition_chunk;
         let exact_keys = &mut scratch.exact_keys;
@@ -4360,6 +4365,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                             }
                             if !residual_conditions.is_empty() {
                                 let (accepted, row_has_null) = Self::chunk_rows_verdict(
+                                    ready_values,
                                     &shared.ctx,
                                     kind,
                                     residual_conditions,
@@ -4495,6 +4501,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             )));
         }
         scratch.reset_for_chunk();
+        let ready_values = &scratch.ready_values;
         let build_buf = &mut scratch.build_buf;
         let condition_chunk = &mut scratch.condition_chunk;
         let exact_keys = &mut scratch.exact_keys;
@@ -4570,6 +4577,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                                 (build_row, probe_row, build_types.len(), probe_types.len())
                             };
                             if Self::chunk_rows_verdict(
+                                ready_values,
                                 ctx,
                                 kind,
                                 residual_conditions,
@@ -4707,6 +4715,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                                     (build_row, probe_row, build_types.len(), probe_types.len())
                                 };
                                 if !Self::chunk_rows_verdict(
+                                    ready_values,
                                     ctx,
                                     kind,
                                     residual_conditions,
@@ -4831,16 +4840,14 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             // still-exceeding budget -- the action's FALLBACK, the
             // cancellation -- into the statement's error.
             if !self.outer_filter.is_empty() && self.filter_is_left == build_is_left {
-                let selected = (0..chunk.num_rows())
-                    .map(|index| {
-                        crate::joiner::eval_bool(
-                            &self.ctx,
-                            &self.outer_filter,
-                            chunk.get_row(index),
-                        )
-                        .map(|result| result.0)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let selected = self.ready_values.with_columns(&self.ctx, |ctx| {
+                    (0..chunk.num_rows())
+                        .map(|index| {
+                            crate::joiner::eval_bool(ctx, &self.outer_filter, chunk.get_row(index))
+                                .map(|result| result.0)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })?;
                 table
                     .index_chunk_selected(
                         chunk,
@@ -4935,18 +4942,19 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             self.right_exec_mut()
         };
         let result = probe.next(&mut chunk);
-        let selected = if !self.outer_filter.is_empty()
-            && self.filter_is_left != self.hash_build_is_left()
-        {
-            (0..chunk.num_rows())
-                .map(|index| {
-                    crate::joiner::eval_bool(&self.ctx, &self.outer_filter, chunk.get_row(index))
-                        .map(|result| result.0)
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            Vec::new()
-        };
+        let selected =
+            if !self.outer_filter.is_empty() && self.filter_is_left != self.hash_build_is_left() {
+                self.ready_values.with_columns(&self.ctx, |ctx| {
+                    (0..chunk.num_rows())
+                        .map(|index| {
+                            crate::joiner::eval_bool(ctx, &self.outer_filter, chunk.get_row(index))
+                                .map(|result| result.0)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })?
+            } else {
+                Vec::new()
+            };
         let hash = self.hash.as_mut().expect("hash state exists in this arm");
         hash.probe_done = chunk.num_rows() == 0;
         hash.probe_chunk = chunk;
@@ -5504,12 +5512,14 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
             chunk.append_datum(index, value);
         }
         let row = chunk.get_row(0);
-        for condition in &self.residual_conditions {
-            if !truthy(&condition.eval(&self.ctx, row)?)? {
-                return Ok(false);
+        self.ready_values.with_columns(&self.ctx, |ctx| {
+            for condition in &self.residual_conditions {
+                if !truthy(&condition.eval(ctx, row)?)? {
+                    return Ok(false);
+                }
             }
-        }
-        Ok(true)
+            Ok(true)
+        })
     }
 
     /// Chunk-backed steady state for a pure equality hash join. When the
@@ -5758,6 +5768,8 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         });
         let conditions = &self.residual_conditions;
         let ctx = &self.ctx;
+        let ready_values = &self.ready_values;
+        let kind = self.kind;
         let condition_evals = &self.condition_evals;
         let condition_chunk = &mut self.condition_chunk;
         loop {
@@ -5821,8 +5833,9 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                         && !equi_keys_equal_chunk_rows(&keys, left, left_types, right, right_types)
                             .map_err(key_error)?
                         || !Self::chunk_rows_verdict(
+                            ready_values,
                             ctx,
-                            self.kind,
+                            kind,
                             conditions,
                             condition_evals,
                             condition_chunk,
