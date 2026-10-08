@@ -23,13 +23,9 @@ use tidb_query_datatype::codec::mysql::time::NativeTemporalValue;
 /// MySQL temporal type carried by [`Time`].
 pub use tidb_query_datatype::codec::mysql::time::TimeType;
 
-/// TiDB date/datetime/timestamp value.
+/// TiDB date/datetime/timestamp public API over shared temporal storage.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct Time {
-    core: CoreTime,
-    kind: TimeType,
-    fsp: u8,
-}
+pub struct Time(NativeTemporalValue);
 
 #[cfg(test)]
 #[test]
@@ -191,20 +187,16 @@ impl Time {
     /// Preserves every core bit, kind and raw FSP without calendar validation or
     /// normalization. This is not a SQL constructor and does not change the
     /// admission rules of [`Self::new`] or the temporal parsers.
-    pub fn from_raw_parts(core: CoreTime, kind: TimeType, fsp: u8) -> Self {
-        Self { core, kind, fsp }
+    pub const fn from_raw_parts(core: CoreTime, kind: TimeType, fsp: u8) -> Self {
+        Self(NativeTemporalValue::from_raw_parts(core.raw(), kind, fsp))
     }
 
-    fn as_shared(self) -> NativeTemporalValue {
-        NativeTemporalValue {
-            raw: self.core.raw(),
-            kind: self.kind,
-            fsp: self.fsp,
-        }
+    const fn as_shared(self) -> NativeTemporalValue {
+        self.0
     }
 
-    fn from_shared(value: NativeTemporalValue) -> Self {
-        Self::from_raw_parts(CoreTime::from_raw(value.raw), value.kind, value.fsp)
+    const fn from_shared(value: NativeTemporalValue) -> Self {
+        Self(value)
     }
 
     /// Constructs a temporal value from its internal calendar fields.
@@ -241,17 +233,17 @@ impl Time {
 
     /// Returns the internal calendar fields.
     pub const fn core_time(self) -> CoreTime {
-        self.core
+        CoreTime::from_raw(self.0.raw)
     }
 
     /// Replaces the internal calendar fields.
     pub fn set_core_time(&mut self, core: CoreTime) {
-        self.core = core;
+        self.0.raw = core.raw();
     }
 
     /// Returns `DATE`, `DATETIME`, or `TIMESTAMP`.
     pub const fn kind(self) -> TimeType {
-        self.kind
+        self.0.kind
     }
 
     /// Changes the temporal type; DATE forces FSP zero.
@@ -263,7 +255,7 @@ impl Time {
 
     /// Returns fractional-seconds precision.
     pub const fn fsp(self) -> u8 {
-        self.fsp
+        self.0.fsp
     }
 
     /// Changes fractional-seconds precision; DATE remains zero.
@@ -276,22 +268,23 @@ impl Time {
 
     /// Returns hour, minute, and second.
     pub const fn clock(self) -> (u8, u8, u8) {
-        (self.core.hour(), self.core.minute(), self.core.second())
+        let core = self.core_time();
+        (core.hour(), core.minute(), core.second())
     }
 
     /// Returns whether all calendar/time fields are zero.
     pub fn is_zero(self) -> bool {
-        self.core == CoreTime::default()
+        self.core_time() == CoreTime::default()
     }
 
     /// Returns whether month or day is zero.
     pub const fn invalid_zero(self) -> bool {
-        self.core.month() == 0 || self.core.day() == 0
+        self.core_time().month() == 0 || self.core_time().day() == 0
     }
 
     /// Compares calendar fields and microseconds.
     pub fn compare(self, other: Self) -> Ordering {
-        self.core.compare(other.core)
+        self.core_time().compare(other.core_time())
     }
 
     /// Parses and compares a temporal string with TiDB's maximum FSP.
@@ -304,7 +297,7 @@ impl Time {
     ) -> Result<Ordering, TimeError> {
         let other = crate::parse_time(
             input,
-            self.kind,
+            self.kind(),
             6,
             false,
             allow_zero_in_date,
@@ -317,12 +310,12 @@ impl Time {
 
     /// Returns the exact packed `uint64` representation of Go `types.Time`.
     pub const fn go_raw(self) -> u64 {
-        let metadata = match self.kind {
+        let metadata = match self.kind() {
             TimeType::Date => 0b1110,
-            TimeType::DateTime => (self.fsp as u64) << 1,
-            TimeType::Timestamp => ((self.fsp as u64) << 1) | 1,
+            TimeType::DateTime => (self.fsp() as u64) << 1,
+            TimeType::Timestamp => ((self.fsp() as u64) << 1) | 1,
         };
-        self.core.raw() | metadata
+        self.core_time().raw() | metadata
     }
 
     /// Decodes the exact packed `uint64` representation of Go `types.Time`.
@@ -347,30 +340,22 @@ impl Time {
         let metadata = raw & 0b1111;
         let core = CoreTime::from_raw(raw & !0b1111);
         if metadata == 0b1110 {
-            return Self {
-                core,
-                kind: TimeType::Date,
-                fsp: 0,
-            };
+            return Self::from_raw_parts(core, TimeType::Date, 0);
         }
-        Self {
+        Self::from_raw_parts(
             core,
-            kind: if metadata & 1 == 1 {
+            if metadata & 1 == 1 {
                 TimeType::Timestamp
             } else {
                 TimeType::DateTime
             },
-            fsp: (metadata >> 1) as u8,
-        }
+            (metadata >> 1) as u8,
+        )
     }
 
     /// Returns the current local wall-clock value with FSP zero.
     pub fn current(kind: TimeType) -> Self {
-        Self {
-            core: core_time_from_datetime(Local::now()),
-            kind,
-            fsp: 0,
-        }
+        Self::from_raw_parts(core_time_from_datetime(Local::now()), kind, 0)
     }
 
     /// Converts this wall-clock value between two timezone authorities.
@@ -382,8 +367,8 @@ impl Time {
         if self.is_zero() {
             return Ok(());
         }
-        let source = self.core.to_datetime(from)?;
-        self.core = core_time_from_datetime(source.with_timezone(to));
+        let source = self.core_time().to_datetime(from)?;
+        self.set_core_time(core_time_from_datetime(source.with_timezone(to)));
         Ok(())
     }
 
@@ -410,8 +395,11 @@ impl Time {
 
     /// Returns whether this value lies outside TiDB's temporal storage bounds.
     pub fn is_overflow<TZ: TimeZone>(self, timezone: &TZ) -> Result<bool, TimeError> {
-        if self.kind == TimeType::Timestamp {
-            let instant = self.core.adjusted_datetime(timezone)?.with_timezone(&Utc);
+        if self.kind() == TimeType::Timestamp {
+            let instant = self
+                .core_time()
+                .adjusted_datetime(timezone)?
+                .with_timezone(&Utc);
             let lower = Utc.timestamp_opt(1, 0).single().expect("valid timestamp");
             let upper = Utc
                 .timestamp_opt(2_147_483_647, 999_999_000)
@@ -421,8 +409,8 @@ impl Time {
         }
         let minimum = CoreTime::from_date(1, 1, 1, 0, 0, 0, 0);
         let maximum = CoreTime::from_date(9999, 12, 31, 23, 59, 59, 999_999);
-        Ok(self.core.compare(minimum) == Ordering::Less
-            || self.core.compare(maximum) == Ordering::Greater)
+        Ok(self.core_time().compare(minimum) == Ordering::Less
+            || self.core_time().compare(maximum) == Ordering::Greater)
     }
 
     /// Serializes the exact JSON number emitted by Go `types.Time`.
@@ -449,8 +437,8 @@ impl Time {
     pub fn to_duration(self) -> Result<MySqlDuration, TimeError> {
         let (nanoseconds, fsp) =
             tidb_query_datatype::codec::mysql::duration::native_duration_from_time(
-                self.core.raw(),
-                i64::from(self.fsp),
+                self.core_time().raw(),
+                i64::from(self.fsp()),
             )?;
         Ok(MySqlDuration::from_raw_parts(nanoseconds, fsp))
     }
@@ -468,42 +456,46 @@ impl Time {
     /// Subtracts two temporal values using instant semantics for TIMESTAMP and
     /// calendar-field semantics for DATE/DATETIME.
     pub fn sub<TZ: TimeZone>(self, other: Self, timezone: &TZ) -> Result<MySqlDuration, TimeError> {
-        let nanoseconds = if self.kind == TimeType::Timestamp && other.kind == TimeType::Timestamp {
-            let left = self.core.to_datetime(timezone)?;
-            let right = other.core.to_datetime(timezone)?;
-            let nonnegative = left >= right;
-            left.signed_duration_since(right)
-                .num_nanoseconds()
-                .unwrap_or(if nonnegative { i64::MAX } else { i64::MIN })
-        } else {
-            let difference = self.core.time_diff(other.core, 1);
-            let magnitude = difference
-                .seconds
-                .saturating_mul(1_000_000_000)
-                .saturating_add(i64::from(difference.microseconds) * 1_000);
-            if difference.negative {
-                -magnitude
+        let nanoseconds =
+            if self.kind() == TimeType::Timestamp && other.kind() == TimeType::Timestamp {
+                let left = self.core_time().to_datetime(timezone)?;
+                let right = other.core_time().to_datetime(timezone)?;
+                let nonnegative = left >= right;
+                left.signed_duration_since(right)
+                    .num_nanoseconds()
+                    .unwrap_or(if nonnegative { i64::MAX } else { i64::MIN })
             } else {
-                magnitude
-            }
-        };
-        MySqlDuration::from_nanoseconds(nanoseconds, i64::from(self.fsp.max(other.fsp)))
+                let difference = self.core_time().time_diff(other.core_time(), 1);
+                let magnitude = difference
+                    .seconds
+                    .saturating_mul(1_000_000_000)
+                    .saturating_add(i64::from(difference.microseconds) * 1_000);
+                if difference.negative {
+                    -magnitude
+                } else {
+                    magnitude
+                }
+            };
+        MySqlDuration::from_nanoseconds(nanoseconds, i64::from(self.fsp().max(other.fsp())))
             .map_err(TimeError::InvalidFsp)
     }
 
     /// Adds a MySQL duration to the calendar fields.
     pub fn add_duration(self, duration: MySqlDuration) -> Result<Self, TimeError> {
-        let mut core = self.core.add_duration(duration.nanoseconds());
-        if self.kind == TimeType::Date {
+        let mut core = self.core_time().add_duration(duration.nanoseconds());
+        if self.kind() == TimeType::Date {
             core = CoreTime::from_date(core.year() as u16, core.month(), core.day(), 0, 0, 0, 0);
         }
-        Self::new(core, self.kind, i64::from(self.fsp).max(duration.fsp()))
+        Self::new(core, self.kind(), i64::from(self.fsp()).max(duration.fsp()))
     }
 
     /// Formats this value with TiDB's MySQL `DATE_FORMAT` conversion rules.
     pub fn date_format(self, layout: &str) -> Result<String, TimeError> {
-        tidb_query_datatype::codec::mysql::Time::native_core_date_format(self.core.raw(), layout)
-            .ok_or(TimeError::InvalidDate)
+        tidb_query_datatype::codec::mysql::Time::native_core_date_format(
+            self.core_time().raw(),
+            layout,
+        )
+        .ok_or(TimeError::InvalidDate)
     }
 
     /// Validates DATE/DATETIME/TIMESTAMP using TiDB's conversion flags.
@@ -523,12 +515,10 @@ impl Time {
         // not revalidate calendar or clock fields; validation belongs to
         // `Time.Check`/conversion callers. Keep this storage boundary
         // infallible for synthetic CoreTime values as well.
-        let ymd = ((self.core.year() as u64 * 13 + self.core.month() as u64) << 5)
-            | self.core.day() as u64;
-        let hms = (self.core.hour() as u64) << 12
-            | (self.core.minute() as u64) << 6
-            | self.core.second() as u64;
-        Ok(((ymd << 17 | hms) << 24) | self.core.microsecond() as u64)
+        let core = self.core_time();
+        let ymd = ((core.year() as u64 * 13 + core.month() as u64) << 5) | core.day() as u64;
+        let hms = (core.hour() as u64) << 12 | (core.minute() as u64) << 6 | core.second() as u64;
+        Ok(((ymd << 17 | hms) << 24) | core.microsecond() as u64)
     }
 
     /// Decodes TiDB's packed temporal storage representation.
@@ -551,9 +541,9 @@ impl Time {
 impl fmt::Display for Time {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         tidb_query_datatype::codec::mysql::Time::write_native_core_display(
-            self.core.raw(),
-            self.kind == TimeType::Date,
-            self.fsp,
+            self.core_time().raw(),
+            self.kind() == TimeType::Date,
+            self.fsp(),
             formatter,
         )
     }
