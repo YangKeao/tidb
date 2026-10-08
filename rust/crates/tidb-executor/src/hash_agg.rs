@@ -2718,6 +2718,7 @@ pub struct StreamAggExec<C: Columns> {
     input_modes: Vec<AggInputMode>,
     child: Box<dyn Executor>,
     ctx: C,
+    ready_values: ReadyValueCache,
     child_chunk: Chunk,
     states: Vec<AggState>,
     truncated: Vec<bool>,
@@ -2753,6 +2754,7 @@ impl<C: Columns> StreamAggExec<C> {
             input_modes,
             child,
             ctx,
+            ready_values: ReadyValueCache::new(),
             child_chunk,
             states,
             truncated,
@@ -2790,15 +2792,21 @@ impl<C: Columns + Send> Executor for StreamAggExec<C> {
             }
             self.child_returned_empty = false;
             let inputs = input::bind_inputs(&self.input_modes, &self.child_chunk);
-            for row_index in 0..rows {
-                input::update_row(
-                    &inputs,
-                    &self.agg_funcs,
-                    &self.ctx,
-                    &mut self.states,
-                    self.child_chunk.get_row(row_index),
-                )?;
-            }
+            let agg_funcs = &self.agg_funcs;
+            let states = &mut self.states;
+            let child_chunk = &self.child_chunk;
+            self.ready_values.with_columns(&self.ctx, |ctx| {
+                for row_index in 0..rows {
+                    input::update_row(
+                        &inputs,
+                        agg_funcs,
+                        ctx,
+                        states,
+                        child_chunk.get_row(row_index),
+                    )?;
+                }
+                Ok::<_, ExecError>(())
+            })?;
             drop(inputs);
             self.child_chunk.reset();
         }
@@ -2867,6 +2875,7 @@ pub struct GroupedStreamAggExec<C: Columns> {
     output_positions: Vec<usize>,
     child: Box<dyn Executor>,
     ctx: C,
+    ready_values: ReadyValueCache,
     child_chunk: Chunk,
     child_at: usize,
     states: Vec<AggState>,
@@ -2916,6 +2925,7 @@ impl<C: Columns> GroupedStreamAggExec<C> {
             output_positions,
             child,
             ctx,
+            ready_values: ReadyValueCache::new(),
             child_chunk,
             child_at: 0,
             states,
@@ -2933,10 +2943,12 @@ impl<C: Columns> GroupedStreamAggExec<C> {
         if !self.output_group_keys {
             return Ok(Vec::new());
         }
-        self.group_by
-            .iter()
-            .map(|expr| expr.eval(&self.ctx, row).map_err(ExecError::from))
-            .collect()
+        self.ready_values.with_columns(&self.ctx, |ctx| {
+            self.group_by
+                .iter()
+                .map(|expr| expr.eval(ctx, row).map_err(ExecError::from))
+                .collect()
+        })
     }
 
     /// Go `appendResult2Chunk`: the open group's result row, then every
@@ -3011,9 +3023,9 @@ impl<C: Columns + Send> Executor for GroupedStreamAggExec<C> {
                     return Ok(());
                 }
                 self.child_returned_empty = false;
-                let same_as_prev = self
-                    .group_checker
-                    .split_into_groups(&self.ctx, &self.child_chunk)?;
+                let same_as_prev = self.ready_values.with_columns(&self.ctx, |ctx| {
+                    self.group_checker.split_into_groups(ctx, &self.child_chunk)
+                })?;
                 self.group_end = self.group_checker.get_next_group().1;
                 if self.group_open && !same_as_prev {
                     self.finish_group(req)?;
@@ -3029,10 +3041,16 @@ impl<C: Columns + Send> Executor for GroupedStreamAggExec<C> {
             }
             let end = self.group_end;
             let inputs = input::bind_inputs(&self.input_modes, &self.child_chunk);
-            for row_index in self.child_at..end {
-                let row = self.child_chunk.get_row(row_index);
-                input::update_row(&inputs, &self.agg_funcs, &self.ctx, &mut self.states, row)?;
-            }
+            let agg_funcs = &self.agg_funcs;
+            let states = &mut self.states;
+            let child_chunk = &self.child_chunk;
+            self.ready_values.with_columns(&self.ctx, |ctx| {
+                for row_index in self.child_at..end {
+                    let row = child_chunk.get_row(row_index);
+                    input::update_row(&inputs, agg_funcs, ctx, states, row)?;
+                }
+                Ok::<_, ExecError>(())
+            })?;
             drop(inputs);
             self.child_at = end;
             if end < self.child_chunk.num_rows() {

@@ -1349,6 +1349,8 @@ pub struct HashJoinV2Exec {
     pub ctx: HashJoinCtxV2,
     /// Go `BuildWorkers`.
     pub build_workers: Vec<BuildWorkerV2>,
+    /// One expression-worker cache per build lane.
+    build_ready_values: Vec<std::sync::Mutex<tidb_expr::ReadyValueCache>>,
     /// Go `hashTableContext`.
     pub hash_table_context: HashTableContext,
 }
@@ -1374,10 +1376,14 @@ impl HashJoinV2Exec {
                 )
             })
             .collect();
+        let build_ready_values = (0..ctx.concurrency)
+            .map(|_| std::sync::Mutex::new(tidb_expr::ReadyValueCache::new()))
+            .collect();
         let hash_table_context = ctx.init_hash_table_context();
         Self {
             ctx,
             build_workers,
+            build_ready_values,
             hash_table_context,
         }
     }
@@ -1496,7 +1502,9 @@ impl HashJoinV2Exec {
         build_context: &mut BuildContext<'_>,
     ) -> Result<(), HashJoinV2Error> {
         let consumed_before = build_context.consumed_memory;
-        let ready_values = tidb_expr::ReadyValueCache::new();
+        let ready_values = self.build_ready_values[worker_id]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let result = self.build_workers[worker_id].process_one_chunk(
             &ready_values,
             chunk,

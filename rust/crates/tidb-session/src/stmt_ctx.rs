@@ -1327,10 +1327,6 @@ impl Session {
                 if let Some(parameters) = &self.prepared_params {
                     let _ = ctx.with_prepared_params(Arc::clone(parameters));
                 }
-                #[cfg(test)]
-                if let Some(execution) = self.ready_value_runtime.execution() {
-                    let _ = ctx.with_ready_value_execution(execution.clone());
-                }
             });
         }
         let (increment, offset) = self.auto_increment_step();
@@ -1469,10 +1465,6 @@ impl Session {
             }
             if let Some(latest_index_schema) = latest_index_schema {
                 let _ = ctx.with_latest_index_schema(latest_index_schema);
-            }
-            #[cfg(test)]
-            if let Some(execution) = self.ready_value_runtime.execution() {
-                let _ = ctx.with_ready_value_execution(execution.clone());
             }
         })
     }

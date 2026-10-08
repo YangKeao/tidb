@@ -3,6 +3,8 @@
 > 报告基线：TiDB `364aef2bab5cc633ecb76a775ae8f36f86a6687d`、TiKV `548812e1ef57aef077a2062a9cc356640a6347f5`
 > 当前实现：TiDB `a3cf8821f63bcb39460d4d7fc80db336b63fc3f9`、TiKV `196f8025f03f250bd70fe39553bb3c5e4ff74e5a`
 > 报告检查点：`architecture-performance-report-217`
+>
+> 后续架构状态（`lane-cache-only-runtime-220`）：本报告中的 pool/execution 性能与生命周期段落保留为当时实验记录，不再描述当前实现。共享 `ReadyValuePoolPolicy/Owner/Execution/Scope`、slot/lease 状态机和 session/request runtime 已删除；当前由每个 executor evaluation lane 直接持有 operation→worker `ReadyValueCache`，未绑定调用使用 stack-local one-shot cache。
 
 ## 1. 摘要
 
@@ -22,7 +24,7 @@
 | 表达式执行 | official RPN wrapper、local compiler、严格 selector、fixed recipe、batch/selection driver | AST/PB/typed expression 的接入、argument demand、结果投影 |
 | 类型 | kernel 所需的 `FieldType`/`ScalarValue`/`VectorValue` 表示与检查 | 完整 SQL `FieldType`：flags、flen、decimal、charset/collation、ENUM/SET、array 等 |
 | 上下文与副作用 | 接收显式传入的时区、precision、cache invocation、typed host request | SQL mode、statement clock、packet limit、warning sink、sysvar、identity、参数和相关列 |
-| 生命周期 | worker/program/frame 的创建、执行、清理和资源限制 | session/request 级 pool、独立 statement execution、Drop/异常关闭 |
+| 生命周期 | worker/program/frame 的创建、执行、清理和资源限制 | executor evaluation lane 直接持有 operation→worker cache；statement/session 不持有 worker pool |
 | 错误 | 结构化 admission/runtime/resource 错误及真实 TiKV cause | 转换成 TiDB SQL error/warning，保留错误时机和 warning 顺序 |
 
 这一边界刻意区分“算法”和“宿主 effect”。例如字符串转整数前的 SQL coercion、TIMESTAMP 的 session timezone、deprecated JSON warning、未访问分支是否求值，都不是一个纯 kernel 能自行推断的；它们必须由 TiDB 明确选择或传入。相反，完成 coercion 后的比较、hash、Decimal 算术或 JSON primitive 不应在 TiDB 再实现一次。
@@ -122,7 +124,7 @@ worker 在执行前校验 operation、shape、type 和 role；NULL 也进入真�
 - `ReadyValueScope`：一次词法调用的 affine scope；
 - `evaluate_prepared_args_in` / `evaluate_args_in` / `evaluate_bytes_in`：准备参数、租借 worker、执行并投影结果。
 
-`ScopedReadyValueColumns` 只覆盖 scope/execution capability，其余 `Columns` 方法全部转发给原 context，避免 adapter 丢掉时区、SQL mode、warning sink、参数、identity 等宿主信息。
+`ScopedReadyValueColumns` 只覆盖 lane-local `ready_value_cache` capability，其余 `Columns` 方法全部转发给原 context，避免 adapter 丢掉时区、SQL mode、warning sink、参数、identity 等宿主信息。
 
 family-specific glue 位于 `tidb-expr/src/tikv/{cast_*,date_arithmetic,interval,extremum,in_list,extract,...}.rs`。原 SQL frontend 仍在 `ops.rs`、`func.rs`、`scalar_function.rs`、`builtin_ext/`、`time_fn/` 中决定 demand、coercion、metadata 和 effect；最终 family kernel 进入 TiKV，TiDB glue 仍可按 TiKV staged request 执行宿主 coercion/effect，并通过共享 comparison/cast 路径完成所需子操作。
 

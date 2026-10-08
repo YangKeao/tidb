@@ -12,30 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Closed ready-argument caller sharing one scoped pool across its fixed operations.
-//! Public ready-value capabilities expose the shared closed operation router.
+//! Ready-argument bridge backed by an executor-lane operation→worker cache.
 //!
 //! The real C4 worker is the only computation path. Native children/transcode
-//! precede this value boundary; original return coercion follows it. Public
-//! native-only capabilities bind a scope without installing statement lifetimes
-//! or propagating through existing business-context wrappers automatically.
-//!
-//! PINNED ACCOUNTING CONTRACT: PoolArcAllocation requires an independent
-//! caller-specific allocation-request receipt for the exact payload/compiler.
-//! A config-Arc receipt or this proxy's own size does not measure PoolCore.
-//! Revalidate that external basis after layout/toolchain changes; the ledger
-//! is conditional accounting, NOT a portable or whole-process byte cap.
-//! Creation reservations also do not measure factory transient high water.
-//! The pool owns its control block, slot slab and boxed workers. Caller-owned
-//! handle/scope storage and native coercion allocations are outside this ledger;
-//! ready input/driver temporaries belong to C4's separate per-call allowance.
+//! precede this value boundary; original return coercion follows it. Each lane
+//! exclusively owns its prepared workers; no session or statement pool exists.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt;
-use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tidb_datatype::tikv_compat::value::{from_scalar, BridgeError, ValueMetadata};
@@ -59,54 +43,6 @@ use super::runtime_failure::{ExpressionRuntimeFailure, ExpressionRuntimeFailureP
 use crate::context::{BlockEncryptionMode, ErrorLevel, SessionTimeZone};
 use crate::{Columns, EvalError};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum OwnerErrorKind {
-    Policy,
-    Resource,
-    Closed,
-    Poisoned,
-    Contract,
-}
-
-/// TiDB-only configuration/lifecycle failure; no KV type is exposed here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReadyValueOwnerError {
-    kind: OwnerErrorKind,
-    message: &'static str,
-}
-
-impl ReadyValueOwnerError {
-    pub(super) fn kind(&self) -> OwnerErrorKind {
-        self.kind
-    }
-
-    fn new(kind: OwnerErrorKind, message: &'static str) -> Self {
-        Self { kind, message }
-    }
-    fn resource(message: &'static str) -> Self {
-        Self::new(OwnerErrorKind::Resource, message)
-    }
-    fn closed() -> Self {
-        Self::new(OwnerErrorKind::Closed, "ready-value execution is closed")
-    }
-    fn poisoned() -> Self {
-        Self::new(
-            OwnerErrorKind::Poisoned,
-            "ready-value owner accounting is poisoned",
-        )
-    }
-    fn contract(message: &'static str) -> Self {
-        Self::new(OwnerErrorKind::Contract, message)
-    }
-}
-
-impl fmt::Display for ReadyValueOwnerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message)
-    }
-}
-impl std::error::Error for ReadyValueOwnerError {}
-
 /// Private structured handoff. Actual C4 failures capture their known phase at
 /// the producing call; adapter failures never impersonate a LocalError.
 #[derive(Debug)]
@@ -114,7 +50,6 @@ pub(super) enum ReadyValueBoundaryError {
     Frontend(EvalError),
     Kernel(ExpressionRuntimeFailure),
     Metadata(BridgeError),
-    Owner(ReadyValueOwnerError),
     Scope {
         kind: ScopeFailureKind,
         reason: &'static str,
@@ -129,947 +64,9 @@ impl ReadyValueBoundaryError {
             Self::Metadata(error) => {
                 EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_bridge(error))
             }
-            Self::Owner(error) => {
-                EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_owner(error))
-            }
             Self::Scope { kind, reason } => EvalError::ExpressionAdapterFailure(
                 ExpressionAdapterFailure::from_scope(kind, reason),
             ),
-        }
-    }
-}
-
-impl From<ReadyValueOwnerError> for ReadyValueBoundaryError {
-    fn from(error: ReadyValueOwnerError) -> Self {
-        Self::Owner(error)
-    }
-}
-
-/// Explicit, immutable limits for the closed ready-value worker; no default policy.
-///
-/// The pool ledger uses conditional retained/request-size accounting for a
-/// validated, fixed compiler/layout cohort. It is not a physical-heap cap, a
-/// factory transient-peak measurement, or an allocation/OOM recovery guarantee.
-/// Creation reservations are allowances, not measured construction peaks.
-/// Caller handles/scopes, native coercion and native error-carrier allocations
-/// are outside this ledger; driver temporaries have a separate call allowance.
-#[derive(Clone, Copy, Debug)]
-pub struct ReadyValuePoolPolicy {
-    max_workers: usize,
-    max_creating: usize,
-    max_pool_bytes: usize,
-    worker_retained_cap: usize,
-    creation_reservation: usize,
-    max_steps: u64,
-    max_frame_depth: usize,
-    max_call_retained_bytes: usize,
-}
-
-impl ReadyValuePoolPolicy {
-    /// Checks explicit limits and the conditional control-storage charge.
-    ///
-    /// This does not prepare a worker or certify physical heap usage, factory
-    /// transients or OOM recovery. See the accounting exclusions on this type.
-    /// Zero worker/creating slots are valid for a dormant binding; admission
-    /// occurs only when an evaluated value demands the closed ready-value worker.
-    ///
-    /// # Errors
-    /// Returns a native configuration/resource error for inconsistent limits or
-    /// an overflowing/excessive control-storage charge.
-    pub fn checked(
-        max_workers: usize,
-        max_creating: usize,
-        max_pool_bytes: usize,
-        worker_retained_cap: usize,
-        creation_reservation: usize,
-        max_steps: u64,
-        max_frame_depth: usize,
-        max_call_retained_bytes: usize,
-    ) -> Result<Self, ReadyValueOwnerError> {
-        if max_creating > max_workers || creation_reservation < worker_retained_cap {
-            return Err(ReadyValueOwnerError::new(
-                OwnerErrorKind::Policy,
-                "ready-value creation slots/reservation contradict worker limits",
-            ));
-        }
-        // Extent checks precede allocation. Zero available slots are valid:
-        // merely binding an unused scope must not perform runtime admission.
-        let base = base_charge(max_workers)?;
-        if base > max_pool_bytes {
-            return Err(ReadyValueOwnerError::resource(
-                "ready-value owner control budget exceeded",
-            ));
-        }
-        Ok(Self {
-            max_workers,
-            max_creating,
-            max_pool_bytes,
-            worker_retained_cap,
-            creation_reservation,
-            max_steps,
-            max_frame_depth,
-            max_call_retained_bytes,
-        })
-    }
-
-    fn execution_limits(self) -> ExecutionLimits {
-        ExecutionLimits {
-            max_steps: self.max_steps,
-            max_frame_depth: self.max_frame_depth,
-            max_active_tasks: 0, // this exact closed recipe has no Host provider
-            max_retained_bytes: self.max_call_retained_bytes,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SlotToken {
-    index: usize,
-    serial: u64,
-    execution_id: u64,
-}
-
-struct ExecutionState {
-    id: u64,
-    closed: AtomicBool,
-}
-
-impl ExecutionState {
-    fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
-    }
-}
-
-enum Slot {
-    Empty,
-    Creating(SlotToken),
-    Leased(SlotToken),
-    Idle {
-        token: SlotToken,
-        execution: Arc<ExecutionState>,
-        worker: Box<EvaluatedBytesWorker>,
-        observed_bytes: usize,
-    },
-    Retiring {
-        token: SlotToken,
-        charge: usize,
-        uncertain: bool,
-    },
-}
-
-struct PoolState {
-    slots: Vec<Slot>,
-    next_execution_id: u64,
-    next_serial: u64,
-    base_bytes: usize,
-    reserved_bytes: usize,
-    factory_attempts: u64,
-    factory_successes: u64,
-    retired: u64,
-}
-
-struct PoolCore {
-    policy: ReadyValuePoolPolicy,
-    poisoned: AtomicBool,
-    uncertain: AtomicUsize,
-    state: Mutex<PoolState>,
-}
-
-// ACCOUNTING ONLY, no pointer casts or layout-dependent access. This mirrors
-// the pinned Arc allocation-request convention, not a portable std ABI. It
-// MUST be checked against an independent actual PoolCore allocation receipt.
-// In particular, comparing this proxy's size with itself proves nothing.
-#[repr(C, align(2))]
-struct PoolArcAllocation {
-    _strong: AtomicUsize,
-    _weak: AtomicUsize,
-    _data: PoolCore,
-}
-
-fn base_charge(capacity: usize) -> Result<usize, ReadyValueOwnerError> {
-    capacity
-        .checked_mul(mem::size_of::<Slot>())
-        .and_then(|slots| slots.checked_add(mem::size_of::<PoolArcAllocation>()))
-        .ok_or_else(|| {
-            ReadyValueOwnerError::resource("ready-value control/container extent overflow")
-        })
-}
-
-/// Reservation diagnostics, not a simultaneous measurement of leased workers
-/// owned by other threads. The Arc basis always requires external pinned-cohort
-/// validation; the boolean below does not certify or invalidate such a receipt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PoolSnapshot {
-    live: usize,
-    idle: usize,
-    creating: usize,
-    retiring: usize,
-    uncertain: usize,
-    reserved_bytes: usize,
-    base_bytes: usize,
-    idle_observed_bytes: usize,
-    factory_attempts: u64,
-    factory_successes: u64,
-    retired: u64,
-    caller_arc_measurement_required: bool,
-}
-
-/// Cloneable, synchronized accounting root for explicit ready-value executions.
-///
-/// Clones share outstanding creation/lease/retirement charges across executions.
-/// Accounting is conditional on the fixed-pin allocation-request/retained-size
-/// basis, not a physical-heap or transient-peak/OOM guarantee. Caller handles,
-/// scopes, native coercion and native error-carrier allocations are excluded;
-/// see [`ReadyValuePoolPolicy`]. This owner installs no SQL or statement lifecycle.
-#[derive(Clone)]
-pub struct ReadyValuePoolOwner {
-    core: Arc<PoolCore>,
-}
-
-/// Cloneable, synchronized token for one independent execution of a
-/// [`ReadyValuePoolOwner`].
-///
-/// Cloning does not begin an execution or clone a worker. The lifecycle owner
-/// must explicitly close this execution; dropping a borrowed token does not do so.
-#[derive(Clone)]
-pub struct ReadyValueExecution {
-    core: Arc<PoolCore>,
-    state: Arc<ExecutionState>,
-}
-
-impl ReadyValuePoolOwner {
-    /// Allocates the accounting root and slot container, not a ready-value worker.
-    ///
-    /// Uses only the caller's checked policy. Its conditional fixed-pin request
-    /// accounting has the exclusions and non-guarantees on [`ReadyValuePoolPolicy`];
-    /// notably ordinary Arc/Box allocations do not promise OOM recovery.
-    ///
-    /// # Errors
-    /// Returns a native resource error if the slot reservation fails or its
-    /// observed container capacity exceeds the control-storage allowance.
-    pub fn new(policy: ReadyValuePoolPolicy) -> Result<Self, ReadyValueOwnerError> {
-        let mut slots = Vec::new();
-        slots.try_reserve_exact(policy.max_workers).map_err(|_| {
-            ReadyValueOwnerError::resource("ready-value slot-container allocation failed")
-        })?;
-        let base_bytes = base_charge(slots.capacity())?;
-        if base_bytes > policy.max_pool_bytes {
-            return Err(ReadyValueOwnerError::resource(
-                "ready-value actual container budget exceeded",
-            ));
-        }
-        slots.resize_with(policy.max_workers, || Slot::Empty);
-        Ok(Self {
-            core: Arc::new(PoolCore {
-                policy,
-                poisoned: AtomicBool::new(false),
-                uncertain: AtomicUsize::new(0),
-                state: Mutex::new(PoolState {
-                    slots,
-                    next_execution_id: 0,
-                    next_serial: 0,
-                    base_bytes,
-                    reserved_bytes: base_bytes,
-                    factory_attempts: 0,
-                    factory_successes: 0,
-                    retired: 0,
-                }),
-            }),
-        })
-    }
-
-    /// Begins a checked, independently closable execution on this accounting root.
-    ///
-    /// Existing executions remain live and retain their statement-owned workers.
-    /// No worker is prepared here; this is a lifecycle operation, not a row
-    /// entrypoint. The caller owns the matching [`ReadyValueExecution::close`].
-    ///
-    /// # Errors
-    /// Returns a native lifecycle/contract error if the owner is poisoned or
-    /// the execution identifier is exhausted.
-    pub fn begin_execution(&self) -> Result<ReadyValueExecution, ReadyValueOwnerError> {
-        let id = {
-            let mut state = self.core.lock()?;
-            let Some(id) = state.next_execution_id.checked_add(1) else {
-                self.core.poison();
-                return Err(ReadyValueOwnerError::contract(
-                    "ready-value execution identifier exhausted",
-                ));
-            };
-            state.next_execution_id = id;
-            id
-        };
-        Ok(ReadyValueExecution {
-            core: Arc::clone(&self.core),
-            state: Arc::new(ExecutionState {
-                id,
-                closed: AtomicBool::new(false),
-            }),
-        })
-    }
-
-    fn snapshot(&self) -> Result<PoolSnapshot, ReadyValueOwnerError> {
-        self.core.snapshot()
-    }
-}
-
-impl PoolCore {
-    fn poison(&self) {
-        self.poisoned.store(true, Ordering::SeqCst);
-    }
-
-    fn lock(&self) -> Result<MutexGuard<'_, PoolState>, ReadyValueOwnerError> {
-        let state = self.state.lock().map_err(|_| {
-            self.poison();
-            ReadyValueOwnerError::poisoned()
-        })?;
-        if self.poisoned.load(Ordering::SeqCst) {
-            return Err(ReadyValueOwnerError::poisoned());
-        }
-        Ok(state)
-    }
-
-    // Recovery is disposal-only. No admission uses a poisoned mutex's contents.
-    fn cleanup_lock(&self) -> MutexGuard<'_, PoolState> {
-        self.state.lock().unwrap_or_else(|error| {
-            self.poison();
-            error.into_inner()
-        })
-    }
-
-    fn check_execution(&self, execution: &ExecutionState) -> Result<(), ReadyValueOwnerError> {
-        if self.state.is_poisoned() || self.poisoned.load(Ordering::SeqCst) {
-            // A cached lease need not acquire the state mutex again. Observe
-            // its sticky poison directly, then permanently close this root.
-            self.poison();
-            Err(ReadyValueOwnerError::poisoned())
-        } else if execution.id == 0 || execution.is_closed() {
-            Err(ReadyValueOwnerError::closed())
-        } else if {
-            // Timing-only one-shot rendezvous for the structural snapshot-race
-            // regression. No production callback or PoolCore field is added.
-            #[cfg(test)]
-            tests::after_execution_read_for_test();
-            self.uncertain.load(Ordering::SeqCst) != 0
-        } {
-            Err(ReadyValueOwnerError::resource(
-                "ready-value uncertain retirement debt remains",
-            ))
-        } else if execution.is_closed() {
-            Err(ReadyValueOwnerError::closed())
-        } else if self.state.is_poisoned() || self.poisoned.load(Ordering::SeqCst) {
-            self.poison();
-            Err(ReadyValueOwnerError::poisoned())
-        } else {
-            // Execution identifiers are root-local, never reused and checked
-            // against wrap. Equal liveness reads bracket the debt observation;
-            // no pool mutex is held across a kernel or native callback.
-            Ok(())
-        }
-    }
-
-    fn snapshot(&self) -> Result<PoolSnapshot, ReadyValueOwnerError> {
-        let state = self.lock()?;
-        let mut out = PoolSnapshot {
-            live: 0,
-            idle: 0,
-            creating: 0,
-            retiring: 0,
-            uncertain: self.uncertain.load(Ordering::SeqCst),
-            reserved_bytes: state.reserved_bytes,
-            base_bytes: state.base_bytes,
-            idle_observed_bytes: 0,
-            factory_attempts: state.factory_attempts,
-            factory_successes: state.factory_successes,
-            retired: state.retired,
-            caller_arc_measurement_required: true,
-        };
-        // Count is bounded by the checked, allocated slot extent.
-        for slot in &state.slots {
-            match slot {
-                Slot::Empty => {}
-                Slot::Creating(_) => out.creating += 1,
-                Slot::Leased(_) => out.live += 1,
-                Slot::Retiring { .. } => out.retiring += 1,
-                Slot::Idle { observed_bytes, .. } => {
-                    out.idle += 1;
-                    out.idle_observed_bytes = out
-                        .idle_observed_bytes
-                        .checked_add(*observed_bytes)
-                        .ok_or_else(|| {
-                            ReadyValueOwnerError::resource("ready-value observation overflow")
-                        })?;
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    fn release_creation(&self, token: SlotToken, had_worker: bool) {
-        let mut state = self.cleanup_lock();
-        if !matches!(state.slots.get(token.index), Some(Slot::Creating(t)) if *t == token) {
-            self.poison();
-            return;
-        }
-        let Some(bytes) = state
-            .reserved_bytes
-            .checked_sub(self.policy.creation_reservation)
-        else {
-            self.poison();
-            return;
-        };
-        let retired = if had_worker {
-            state.retired.checked_add(1)
-        } else {
-            Some(state.retired)
-        };
-        let Some(retired) = retired else {
-            self.poison();
-            return;
-        };
-        state.slots[token.index] = Slot::Empty;
-        state.reserved_bytes = bytes;
-        state.retired = retired;
-    }
-
-    fn start_retirement(&self, token: SlotToken, uncertain: bool) -> bool {
-        let mut state = self.cleanup_lock();
-        if !matches!(state.slots.get(token.index), Some(Slot::Leased(t)) if *t == token) {
-            self.poison();
-            return false;
-        }
-        if uncertain {
-            let Some(next) = self.uncertain.load(Ordering::SeqCst).checked_add(1) else {
-                self.poison();
-                return false;
-            };
-            self.uncertain.store(next, Ordering::SeqCst);
-        }
-        state.slots[token.index] = Slot::Retiring {
-            token,
-            charge: self.policy.worker_retained_cap,
-            uncertain,
-        };
-        true
-    }
-
-    fn finish_retirement(&self, token: SlotToken) {
-        let mut state = self.cleanup_lock();
-        let Some(Slot::Retiring {
-            token: stored,
-            charge,
-            uncertain,
-        }) = state.slots.get(token.index)
-        else {
-            self.poison();
-            return;
-        };
-        if *stored != token {
-            self.poison();
-            return;
-        }
-        let Some(bytes) = state.reserved_bytes.checked_sub(*charge) else {
-            self.poison();
-            return;
-        };
-        let Some(retired) = state.retired.checked_add(1) else {
-            self.poison();
-            return;
-        };
-        if *uncertain {
-            let Some(next) = self.uncertain.load(Ordering::SeqCst).checked_sub(1) else {
-                self.poison();
-                return;
-            };
-            self.uncertain.store(next, Ordering::SeqCst);
-        }
-        state.slots[token.index] = Slot::Empty;
-        state.reserved_bytes = bytes;
-        state.retired = retired;
-    }
-
-    fn retire_execution_idle(self: &Arc<Self>, execution_id: u64) {
-        loop {
-            let detached = {
-                let mut state = self.cleanup_lock();
-                let Some(index) = state.slots.iter().position(
-                    |slot| matches!(slot, Slot::Idle { token, .. } if token.execution_id == execution_id),
-                ) else {
-                    return;
-                };
-                let Slot::Idle {
-                    token,
-                    execution,
-                    worker,
-                    ..
-                } = mem::replace(&mut state.slots[index], Slot::Empty)
-                else {
-                    unreachable!("matched idle slot");
-                };
-                // The allocation stays charged while detached; no Vec of
-                // retired workers is allocated and no destructor runs locked.
-                state.slots[index] = Slot::Retiring {
-                    token,
-                    charge: self.policy.worker_retained_cap,
-                    uncertain: false,
-                };
-                Retirement {
-                    core: Arc::clone(self),
-                    token,
-                    execution: Some(execution),
-                    worker: Some(worker),
-                    recorded: true,
-                }
-            };
-            drop(detached);
-        }
-    }
-}
-
-impl ReadyValueExecution {
-    /// Creates an affine scope without checkout, compilation or admission.
-    ///
-    /// A closed execution is refused only when a value demands its worker.
-    /// Scopes can move between threads but cannot share mutable worker state.
-    pub fn scope(&self) -> ReadyValueScope {
-        ReadyValueScope {
-            execution: self.clone(),
-            lease: RefCell::new(None),
-            busy: Cell::new(false),
-            poisoned: Cell::new(false),
-        }
-    }
-
-    /// Idempotently closes only this execution on the shared root.
-    ///
-    /// Existing live leases/creations remain charged until their disposal.
-    /// Only the execution's lifecycle owner, not a borrowing operator, should
-    /// close it. This does not wait for outstanding native work to finish.
-    pub fn close(&self) {
-        {
-            // Serialize the liveness transition with checkout/publication/return.
-            let _pool = self.core.cleanup_lock();
-            self.state.closed.store(true, Ordering::SeqCst);
-        }
-        self.core.retire_execution_idle(self.state.id);
-    }
-
-    /// Reports this execution's monotonic lifecycle state without admission.
-    pub fn is_closed(&self) -> bool {
-        self.state.is_closed()
-    }
-
-    // Split reservation/preparation is a closed internal seam, useful for
-    // deterministic race tests. No caller supplies a replacement factory.
-    fn checkout(&self) -> Result<Checkout, ReadyValueOwnerError> {
-        self.checkout_for(EvaluatedBytesOp::Ascii)
-    }
-
-    fn checkout_for(&self, operation: EvaluatedBytesOp) -> Result<Checkout, ReadyValueOwnerError> {
-        // Bounded eviction even if other threads continually refill this
-        // execution's idle slots. Workers are never reused across executions.
-        let mut evictions_left = self.core.policy.max_workers;
-        loop {
-            let mut state = self.core.lock()?;
-            self.core.check_execution(&self.state)?;
-            if let Some(index) = state.slots.iter().position(|slot| {
-                matches!(slot, Slot::Idle { token, worker, .. }
-                    if token.execution_id == self.state.id && worker.operation() == operation)
-            }) {
-                let Slot::Idle {
-                    token,
-                    execution,
-                    worker,
-                    ..
-                } = mem::replace(&mut state.slots[index], Slot::Empty)
-                else {
-                    unreachable!("matched idle slot");
-                };
-                if !Arc::ptr_eq(&execution, &self.state) {
-                    self.core.poison();
-                    return Err(ReadyValueOwnerError::contract(
-                        "ready-value idle execution identity changed",
-                    ));
-                }
-                state.slots[index] = Slot::Leased(token);
-                return Ok(Checkout::Idle(ReadyValueLease {
-                    core: Arc::clone(&self.core),
-                    execution,
-                    token,
-                    worker: Some(worker),
-                }));
-            }
-            let creating = state
-                .slots
-                .iter()
-                .filter(|slot| matches!(slot, Slot::Creating(_)))
-                .count();
-            if creating >= self.core.policy.max_creating {
-                return Err(ReadyValueOwnerError::resource(
-                    "ready-value creating-worker limit exceeded",
-                ));
-            }
-            let empty = state
-                .slots
-                .iter()
-                .position(|slot| matches!(slot, Slot::Empty));
-            let bytes = state
-                .reserved_bytes
-                .checked_add(self.core.policy.creation_reservation)
-                .filter(|bytes| *bytes <= self.core.policy.max_pool_bytes);
-            if let (Some(index), Some(bytes)) = (empty, bytes) {
-                let serial = state.next_serial.checked_add(1).ok_or_else(|| {
-                    ReadyValueOwnerError::resource("ready-value slot serial exhausted")
-                })?;
-                let token = SlotToken {
-                    index,
-                    serial,
-                    execution_id: self.state.id,
-                };
-                state.next_serial = serial;
-                state.reserved_bytes = bytes;
-                state.slots[index] = Slot::Creating(token);
-                return Ok(Checkout::Create(Creation {
-                    core: Arc::clone(&self.core),
-                    execution: Arc::clone(&self.state),
-                    token,
-                    operation,
-                    worker: None,
-                    active: true,
-                }));
-            }
-            if evictions_left != 0 {
-                if let Some(index) = state.slots.iter().position(|slot| {
-                    matches!(slot, Slot::Idle { token, worker, .. }
-                        if token.execution_id == self.state.id && worker.operation() != operation)
-                }) {
-                    let Slot::Idle {
-                        token,
-                        execution,
-                        worker,
-                        ..
-                    } = mem::replace(&mut state.slots[index], Slot::Empty)
-                    else {
-                        unreachable!("matched idle slot");
-                    };
-                    if !Arc::ptr_eq(&execution, &self.state) {
-                        self.core.poison();
-                        return Err(ReadyValueOwnerError::contract(
-                            "ready-value eviction execution identity changed",
-                        ));
-                    }
-                    // Reuse the real retirement path; do not release bytes or
-                    // the slot until the detached worker is actually destroyed.
-                    state.slots[index] = Slot::Leased(token);
-                    let retired = ReadyValueLease {
-                        core: Arc::clone(&self.core),
-                        execution,
-                        token,
-                        worker: Some(worker),
-                    };
-                    drop(state);
-                    drop(retired);
-                    evictions_left -= 1;
-                    continue;
-                }
-            }
-            return Err(ReadyValueOwnerError::resource(if empty.is_none() {
-                "ready-value worker-slot limit exceeded"
-            } else {
-                "ready-value owner reservation budget exceeded"
-            }));
-        }
-    }
-}
-
-enum Checkout {
-    Idle(ReadyValueLease),
-    Create(Creation),
-}
-
-impl Checkout {
-    fn ready(self) -> Result<ReadyValueLease, ReadyValueBoundaryError> {
-        match self {
-            Self::Idle(lease) => {
-                lease.validate()?;
-                Ok(lease)
-            }
-            Self::Create(creation) => creation.prepare(),
-        }
-    }
-}
-
-struct Creation {
-    core: Arc<PoolCore>,
-    execution: Arc<ExecutionState>,
-    token: SlotToken,
-    operation: EvaluatedBytesOp,
-    worker: Option<Box<EvaluatedBytesWorker>>,
-    active: bool,
-}
-
-impl Creation {
-    fn prepare(mut self) -> Result<ReadyValueLease, ReadyValueBoundaryError> {
-        self.build_worker()?;
-        self.publish()
-    }
-
-    // Keeping these two closed phases separate permits a test to close an
-    // execution AFTER real preparation but BEFORE publication. Neither phase
-    // accepts a factory, callback, program, context or substituted worker.
-    fn build_worker(&mut self) -> Result<(), ReadyValueBoundaryError> {
-        if self.worker.is_some() {
-            return Err(
-                ReadyValueOwnerError::contract("ready-value creation already prepared").into(),
-            );
-        }
-        {
-            let mut state = self.core.lock()?;
-            self.core.check_execution(&self.execution)?;
-            if !matches!(state.slots.get(self.token.index), Some(Slot::Creating(t)) if *t == self.token)
-            {
-                self.core.poison();
-                return Err(
-                    ReadyValueOwnerError::contract("ready-value creation token changed").into(),
-                );
-            }
-            state.factory_attempts = state.factory_attempts.checked_add(1).ok_or_else(|| {
-                ReadyValueOwnerError::resource("ready-value factory counter exhausted")
-            })?;
-        }
-        // The full creating reservation predates ALL factory/prewarm/Box work.
-        let worker = prepare_evaluated_bytes(
-            self.operation,
-            LocalCompileContext {
-                limits: CompileLimits {
-                    // Widen only the exact closed recipes needing additional
-                    // argument nodes. All retain the original depth allowance.
-                    max_nodes: match self.operation {
-                        EvaluatedBytesOp::RegexpSubstrNative
-                        | EvaluatedBytesOp::IntDivDecimalSignedNative
-                        | EvaluatedBytesOp::IntDivDecimalUnsignedNative => 6,
-                        EvaluatedBytesOp::RegexpInstrNative
-                        | EvaluatedBytesOp::RegexpReplaceNative => 7,
-                        EvaluatedBytesOp::LpadBytesNative
-                        | EvaluatedBytesOp::RpadBytesNative
-                        | EvaluatedBytesOp::LpadUtf8Native
-                        | EvaluatedBytesOp::RpadUtf8Native
-                        | EvaluatedBytesOp::Insert
-                        | EvaluatedBytesOp::InsertUtf8Native
-                        | EvaluatedBytesOp::Locate3Native
-                        | EvaluatedBytesOp::ConvertUsingNative
-                        | EvaluatedBytesOp::DateArithmeticHeadNative
-                        | EvaluatedBytesOp::DateArithmeticDurationHeadNative => 5,
-                        _ => 4,
-                    },
-                    max_depth: 3,
-                },
-            },
-            self.core.policy.execution_limits(),
-            self.core.policy.worker_retained_cap,
-        )
-        .map_err(|error| {
-            ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
-                error,
-                Some(ExpressionRuntimeFailurePhase::Prepare),
-            ))
-        })?;
-        self.worker = Some(Box::new(worker));
-        let worker = self.worker.as_ref().expect("just prepared worker");
-        let observed = worker
-            .retained_storage()
-            .map_err(|error| {
-                ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
-                    error,
-                    Some(ExpressionRuntimeFailurePhase::Observe),
-                ))
-            })?
-            .total_bytes();
-        if worker.operation() != self.operation
-            || !worker.is_healthy()
-            || observed > self.core.policy.worker_retained_cap
-        {
-            return Err(ReadyValueOwnerError::contract(
-                "ready-value factory published unhealthy storage",
-            )
-            .into());
-        }
-        {
-            let mut state = self.core.lock()?;
-            // Count real successful factory returns, including one invalidated
-            // by a concurrent close. Do not label a cache lookup as preparation.
-            state.factory_successes = state.factory_successes.checked_add(1).ok_or_else(|| {
-                ReadyValueOwnerError::resource("ready-value factory counter exhausted")
-            })?;
-        }
-        Ok(())
-    }
-
-    fn publish(mut self) -> Result<ReadyValueLease, ReadyValueBoundaryError> {
-        let worker = self.worker.as_ref().ok_or(ReadyValueBoundaryError::Scope {
-            kind: ScopeFailureKind::Contract,
-            reason: "ready-value publication before preparation",
-        })?;
-        let observed = worker
-            .retained_storage()
-            .map_err(|error| {
-                ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
-                    error,
-                    Some(ExpressionRuntimeFailurePhase::Observe),
-                ))
-            })?
-            .total_bytes();
-        if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
-            return Err(
-                ReadyValueOwnerError::contract("ready-value publication is not healthy").into(),
-            );
-        }
-        {
-            let mut state = self.core.lock()?;
-            self.core.check_execution(&self.execution)?;
-            if !matches!(state.slots.get(self.token.index), Some(Slot::Creating(t)) if *t == self.token)
-            {
-                self.core.poison();
-                return Err(ReadyValueOwnerError::contract(
-                    "ready-value publication token changed",
-                )
-                .into());
-            }
-            let bytes = state
-                .reserved_bytes
-                .checked_sub(self.core.policy.creation_reservation)
-                .and_then(|bytes| bytes.checked_add(self.core.policy.worker_retained_cap))
-                .ok_or_else(|| {
-                    ReadyValueOwnerError::contract("ready-value publication reservation changed")
-                })?;
-            state.reserved_bytes = bytes;
-            state.slots[self.token.index] = Slot::Leased(self.token);
-        }
-        // All factory temporaries are gone before F is exchanged for W.
-        self.active = false;
-        Ok(ReadyValueLease {
-            core: Arc::clone(&self.core),
-            execution: Arc::clone(&self.execution),
-            token: self.token,
-            worker: self.worker.take(),
-        })
-    }
-}
-
-impl Drop for Creation {
-    fn drop(&mut self) {
-        if self.active {
-            let had_worker = self.worker.is_some();
-            drop(self.worker.take()); // before returning even a single credit
-            self.core.release_creation(self.token, had_worker);
-        }
-    }
-}
-
-struct ReadyValueLease {
-    core: Arc<PoolCore>,
-    execution: Arc<ExecutionState>,
-    token: SlotToken,
-    worker: Option<Box<EvaluatedBytesWorker>>,
-}
-
-impl ReadyValueLease {
-    fn validate(&self) -> Result<usize, ReadyValueBoundaryError> {
-        let worker = self.worker.as_ref().ok_or(ReadyValueBoundaryError::Scope {
-            kind: ScopeFailureKind::Contract,
-            reason: "missing ready-value worker",
-        })?;
-        let observed = worker
-            .retained_storage()
-            .map_err(|error| {
-                ReadyValueBoundaryError::Kernel(ExpressionRuntimeFailure::from_local_eval(
-                    error,
-                    Some(ExpressionRuntimeFailurePhase::Observe),
-                ))
-            })?
-            .total_bytes();
-        if !worker.is_healthy() || observed > self.core.policy.worker_retained_cap {
-            return Err(ReadyValueOwnerError::contract(
-                "ready-value worker ownership is not healthy",
-            )
-            .into());
-        }
-        self.core.check_execution(&self.execution)?;
-        Ok(observed)
-    }
-
-    fn detach_retirement(&mut self) -> Option<Retirement> {
-        let worker = self.worker.take()?;
-        let uncertain = worker.retained_storage().map_or(true, |storage| {
-            storage.total_bytes() > self.core.policy.worker_retained_cap
-        });
-        let recorded = self.core.start_retirement(self.token, uncertain);
-        Some(Retirement {
-            core: Arc::clone(&self.core),
-            token: self.token,
-            execution: Some(Arc::clone(&self.execution)),
-            worker: Some(worker),
-            recorded,
-        })
-    }
-
-    fn into_retirement(mut self) -> Retirement {
-        self.detach_retirement().expect("owned lease has a worker")
-    }
-
-    fn return_to_pool(mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let Ok(observed_bytes) = self.validate() else {
-            return;
-        };
-        {
-            let Ok(mut state) = self.core.lock() else {
-                return;
-            };
-            if self.core.check_execution(&self.execution).is_err() {
-                return;
-            }
-            if !matches!(state.slots.get(self.token.index), Some(Slot::Leased(t)) if *t == self.token)
-            {
-                self.core.poison();
-                return;
-            }
-            let worker = self.worker.take().expect("validated owned worker");
-            state.slots[self.token.index] = Slot::Idle {
-                token: self.token,
-                execution: Arc::clone(&self.execution),
-                worker,
-                observed_bytes,
-            };
-        }
-        // Drop sees no worker. The unique Box moved into the same execution slot.
-    }
-}
-
-impl Drop for ReadyValueLease {
-    fn drop(&mut self) {
-        // Default destruction NEVER recycles. Only explicit normal scope
-        // completion may choose return_to_pool after all health checks.
-        drop(self.detach_retirement());
-    }
-}
-
-struct Retirement {
-    core: Arc<PoolCore>,
-    token: SlotToken,
-    execution: Option<Arc<ExecutionState>>,
-    worker: Option<Box<EvaluatedBytesWorker>>,
-    recorded: bool,
-}
-
-impl Drop for Retirement {
-    fn drop(&mut self) {
-        drop(self.worker.take()); // no pool lock; byte/slot debt is still live
-        drop(self.execution.take());
-        if self.recorded {
-            self.core.finish_retirement(self.token);
         }
     }
 }
@@ -1129,10 +126,10 @@ fn prepare_cache_worker(
         || !worker.is_healthy()
         || observed > READY_VALUE_CACHE_WORKER_RETAINED_CAP
     {
-        return Err(ReadyValueOwnerError::contract(
-            "ready-value cache factory published unhealthy storage",
-        )
-        .into());
+        return Err(ReadyValueBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "ready-value cache factory published unhealthy storage",
+        });
     }
     Ok(Box::new(worker))
 }
@@ -1172,10 +169,7 @@ impl ReadyValueCache {
     ) -> R {
         let cache = native.ready_value_cache().unwrap_or(self);
         let mut guard = CacheNativeGuard::new(cache);
-        let columns = ScopedReadyValueColumns {
-            native,
-            authority: ReadyValueAuthorityRef::Cache(cache),
-        };
+        let columns = ScopedReadyValueColumns { native, cache };
         let result = body(&columns);
         guard.disarm();
         result
@@ -1292,10 +286,10 @@ impl<'a> CacheInvocation<'a> {
             self.armed = false;
             return match result {
                 Err(primary) => Err(primary),
-                Ok(_) => Err(ReadyValueOwnerError::contract(
-                    "ready-value cache worker failed postflight",
-                )
-                .into()),
+                Ok(_) => Err(ReadyValueBoundaryError::Scope {
+                    kind: ScopeFailureKind::Contract,
+                    reason: "ready-value cache worker failed postflight",
+                }),
             };
         }
         let worker = self.worker.take().expect("healthy cache worker");
@@ -1331,136 +325,16 @@ impl Drop for CacheInvocation<'_> {
     }
 }
 
-/// Affine worker scope. RefCell/Cell intentionally make this Send, not Sync.
-/// It contains no native Columns/row/SQL descriptor or invocation value.
-///
-/// A healthy worker is reused within the scope and returned to its same-execution
-/// pool slot on ordinary drop. Unwind poison is sticky: it never permits native
-/// replay or silently creates a replacement execution.
-pub struct ReadyValueScope {
-    execution: ReadyValueExecution,
-    lease: RefCell<Option<ReadyValueLease>>,
-    busy: Cell<bool>,
-    poisoned: Cell<bool>,
-}
-
-impl ReadyValueScope {
-    /// Lexically binds a capability while preserving native Columns behavior.
-    ///
-    /// An already active scope on `native` wins, including its execution token
-    /// and unwind guard. If discovery itself panics, only the requested scope
-    /// can be quarantined; an undisclosed native scope is not known. Otherwise
-    /// this scope is used when no active scope exists. Binding itself does not
-    /// check out or prepare a worker, perform admission, or supply defaults.
-    /// The sized borrowing wrapper also supports existing `C: Columns` callers;
-    /// neither `native` nor the callback needs `Send`, `Sync` or `'static`.
-    ///
-    /// Put this call INSIDE the caller's panic catcher and encompass native
-    /// child/return work: the guard poisons the effective scope on unwind but
-    /// does not catch it. This API alone does not wire business forwarders or
-    /// statement lifetimes. Callback/handle/coercion/error-carrier allocations
-    /// are outside the conditional fixed-pin pool ledger; neither this binding
-    /// nor that ledger guarantees physical heap, transient peaks or OOM recovery.
-    pub fn with_columns<'a, R>(
-        &'a self,
-        native: &'a dyn Columns,
-        body: impl FnOnce(&ScopedReadyValueColumns<'a, 'a>) -> R,
-    ) -> R {
-        // Capability discovery is a native virtual call and can itself unwind.
-        // Protect the requested scope until the effective guard is armed; a
-        // scope the getter fails to disclose cannot be identified here.
-        let mut discovery_guard = NativeGuard::new(self);
-        let scope = native.ready_value_scope().unwrap_or(self);
-        // This guard must be INSIDE the existing caller's panic catcher. It
-        // catches no panic itself; Drop marks poison while unwinding.
-        let mut guard = NativeGuard::new(scope);
-        discovery_guard.disarm();
-        let scoped = ScopedReadyValueColumns {
-            native,
-            authority: ReadyValueAuthorityRef::Scope(scope),
-        };
-        let result = body(&scoped);
-        guard.disarm();
-        result
-    }
-
-    /// Computes ASCII from one already evaluated native value using only the
-    /// existing closed C4 worker, including for SQL NULL.
-    ///
-    /// This is a value/coercion boundary, NOT a SQL frontend: the caller must
-    /// already have evaluated children, checked arity, and applied the native
-    /// context-dependent argument casts/transcoding. This method performs the
-    /// existing final byte coercion, invokes C4, and materializes its owned Int
-    /// or NULL; the caller still owns native return-type coercion afterwards.
-    /// No policy, execution, native fallback or general evaluator is synthesized.
-    ///
-    /// Native byte-coercion and error-carrier allocations are outside the pool
-    /// ledger. Its fixed-pin request/retained accounting is conditional, not a
-    /// physical-heap cap, factory transient-peak or allocation/OOM guarantee.
-    /// Use [`Self::with_columns`] to guard surrounding native child/return work.
-    ///
-    /// # Errors
-    /// Original frontend coercion errors precede runtime admission. Actual C4
-    /// errors preserve their cause and known phase; pool/scope/bridge errors
-    /// have the distinct native adapter origin. No failure is replayed natively.
-    pub fn evaluate_ascii_value(&self, value: &Datum) -> Result<Datum, EvalError> {
-        evaluate_ascii_value(self, value).map_err(ReadyValueBoundaryError::into_eval_error)
-    }
-
-    fn poison(&self) {
-        self.poisoned.set(true);
-        if let Ok(mut parked) = self.lease.try_borrow_mut() {
-            let lease = parked.take();
-            drop(parked);
-            drop(lease);
-        }
-        // Busy invocations own their lease outside the cell; their armed guard
-        // handles disposal. Never panic again in an unwind cleanup path.
-    }
-}
-
-impl Drop for ReadyValueScope {
-    fn drop(&mut self) {
-        let lease = self.lease.get_mut().take();
-        if let Some(lease) = lease {
-            if !self.poisoned.get() && !self.busy.get() && !std::thread::panicking() {
-                lease.return_to_pool();
-            } else {
-                drop(lease);
-            }
-        }
-    }
-}
-
-struct NativeGuard<'a> {
-    scope: &'a ReadyValueScope,
-    armed: bool,
-}
-impl<'a> NativeGuard<'a> {
-    fn new(scope: &'a ReadyValueScope) -> Self {
-        Self { scope, armed: true }
-    }
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-impl Drop for NativeGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.scope.poison();
-        }
-    }
-}
-
 fn eval_worker_args(
     worker: &mut EvaluatedBytesWorker,
     operation: EvaluatedBytesOp,
     ready: EvaluatedArgs,
 ) -> Result<ComputedValue, ReadyValueBoundaryError> {
     if worker.operation() != operation {
-        return Err(
-            ReadyValueOwnerError::contract("closed Bytes worker operation mismatch").into(),
-        );
+        return Err(ReadyValueBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "closed Bytes worker operation mismatch",
+        });
     }
     // Test-only facade-entry observation, not a substitute for C4's real
     // function-pointer witness. No observer is passed into the worker.
@@ -1791,159 +665,9 @@ fn eval_worker_args(
     })
 }
 
-struct Invocation<'a> {
-    scope: &'a ReadyValueScope,
-    lease: Option<ReadyValueLease>,
-    armed: bool,
-}
-
-impl<'a> Invocation<'a> {
-    fn enter(scope: &'a ReadyValueScope) -> Result<Self, ReadyValueBoundaryError> {
-        if scope.poisoned.get() {
-            return Err(ReadyValueBoundaryError::Scope {
-                kind: ScopeFailureKind::Poisoned,
-                reason: "ready-value scope is poisoned",
-            });
-        }
-        if scope.busy.get() {
-            return Err(ReadyValueBoundaryError::Scope {
-                kind: ScopeFailureKind::Reentry,
-                reason: "reentrant ready-value runtime borrow",
-            });
-        }
-        let mut parked =
-            scope
-                .lease
-                .try_borrow_mut()
-                .map_err(|_| ReadyValueBoundaryError::Scope {
-                    kind: ScopeFailureKind::Reentry,
-                    reason: "ready-value scope cell is already borrowed",
-                })?;
-        let lease = parked.take();
-        scope.busy.set(true);
-        Ok(Self {
-            scope,
-            lease,
-            armed: true,
-        })
-    }
-
-    fn run(&mut self, ready: ReadyAsciiBytes) -> Result<ComputedInt, ReadyValueBoundaryError> {
-        require_computed_int(self.run_for(EvaluatedBytesOp::Ascii, ready)?)
-    }
-
-    fn run_for(
-        &mut self,
-        operation: EvaluatedBytesOp,
-        ready: ReadyAsciiBytes,
-    ) -> Result<ComputedValue, ReadyValueBoundaryError> {
-        self.run_args(operation, EvaluatedArgs::Bytes(ready.0))
-    }
-
-    fn run_args(
-        &mut self,
-        operation: EvaluatedBytesOp,
-        ready: EvaluatedArgs,
-    ) -> Result<ComputedValue, ReadyValueBoundaryError> {
-        if let Some(lease) = self.lease.as_ref() {
-            lease.validate()?;
-            if lease.worker.as_ref().expect("validated worker").operation() != operation {
-                // This affine scope has one cache entry. Replacing its operation
-                // destroys the old worker before any new creating reservation.
-                drop(self.lease.take());
-            }
-        }
-        if self.lease.is_none() {
-            self.lease = Some(self.scope.execution.checkout_for(operation)?.ready()?);
-        }
-        let lease = self.lease.as_mut().expect("checked out worker");
-        lease.validate()?;
-        // No cell/pool borrow or native callback enters the C4 driver.
-        let worker = lease.worker.as_mut().expect("validated worker");
-        eval_worker_args(worker, operation, ready)
-    }
-
-    fn finish<T>(
-        mut self,
-        result: Result<T, ReadyValueBoundaryError>,
-    ) -> Result<T, ReadyValueBoundaryError> {
-        let postflight = self
-            .lease
-            .as_ref()
-            .map_or(Ok(()), |lease| lease.validate().map(|_| ()));
-        let result = match (result, postflight) {
-            (Err(primary), secondary) => {
-                if secondary.is_err() {
-                    self.scope.poisoned.set(true);
-                    drop(self.lease.take());
-                }
-                Err(primary) // never replace the original owned engine error
-            }
-            (Ok(_), Err(error)) => {
-                self.scope.poisoned.set(true);
-                drop(self.lease.take());
-                Err(error)
-            }
-            (Ok(value), Ok(())) => Ok(value),
-        };
-        let restore = if let Some(lease) = self.lease.take() {
-            match self.scope.lease.try_borrow_mut() {
-                Ok(mut parked) if parked.is_none() => {
-                    *parked = Some(lease);
-                    Ok(())
-                }
-                _ => {
-                    self.scope.poisoned.set(true);
-                    drop(lease);
-                    Err(ReadyValueBoundaryError::Scope {
-                        kind: ScopeFailureKind::Contract,
-                        reason: "ready-value lease restore conflict",
-                    })
-                }
-            }
-        } else {
-            Ok(())
-        };
-        self.scope.busy.set(false);
-        self.armed = false;
-        match result {
-            Err(primary) => Err(primary),
-            Ok(value) => restore.map(|()| value),
-        }
-    }
-}
-
-impl Drop for Invocation<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.scope.poisoned.set(true);
-            drop(self.lease.take()); // before a surviving caller catches unwind
-            self.scope.busy.set(false);
-        }
-    }
-}
-
-struct ReadyAsciiBytes(Option<Vec<u8>>);
-
 struct NativeComputedInt {
     value: Option<i64>,
     metadata: ValueMetadata,
-}
-
-fn coerce_ready(value: &Datum) -> Result<ReadyAsciiBytes, ReadyValueBoundaryError> {
-    crate::coerce::coerce_str_bytes(value)
-        .map(ReadyAsciiBytes)
-        .map_err(ReadyValueBoundaryError::Frontend)
-}
-
-fn eval_ready(
-    scope: &ReadyValueScope,
-    ready: ReadyAsciiBytes,
-) -> Result<NativeComputedInt, ReadyValueBoundaryError> {
-    let mut invocation = Invocation::enter(scope)?;
-    let result = invocation.run(ready);
-    let computed = invocation.finish(result)?;
-    Ok(own_computed_int(computed))
 }
 
 fn own_computed_int(computed: ComputedInt) -> NativeComputedInt {
@@ -1973,21 +697,6 @@ pub(crate) fn native_time_result_contract_error() -> EvalError {
     result_kind_error().into_eval_error()
 }
 
-fn require_computed_int(computed: ComputedValue) -> Result<ComputedInt, ReadyValueBoundaryError> {
-    match computed {
-        ComputedValue::Int(value) => Ok(value),
-        ComputedValue::Bytes(_)
-        | ComputedValue::Ieee754Bits(_)
-        | ComputedValue::Decimal(_)
-        | ComputedValue::Int128(_)
-        | ComputedValue::Uncompress(_)
-        | ComputedValue::JsonReport(_)
-        | ComputedValue::NativeVector(_)
-        | ComputedValue::DecimalFast(_)
-        | ComputedValue::DecimalDivision(_) => Err(result_kind_error()),
-    }
-}
-
 impl NativeComputedInt {
     fn into_datum(self) -> Result<Datum, ReadyValueBoundaryError> {
         from_scalar(
@@ -1996,28 +705,6 @@ impl NativeComputedInt {
             &self.metadata,
         )
         .map_err(ReadyValueBoundaryError::Metadata)
-    }
-}
-
-pub(super) fn evaluate_ascii_value(
-    scope: &ReadyValueScope,
-    value: &Datum,
-) -> Result<Datum, ReadyValueBoundaryError> {
-    // Also cover a direct private helper's coercion/materialization. The outer
-    // with_columns guard covers native child/return work beyond this function.
-    let mut guard = NativeGuard::new(scope);
-    let result = (|| eval_ready(scope, coerce_ready(value)?)?.into_datum())();
-    guard.disarm(); // ordinary Result::Err is not an unwind
-    result
-}
-
-// Only the isolated one-shot path owns a close. A borrowed execution above a
-// temporary operation scope must remain open for its actual lifecycle owner.
-struct OneShotReadyValueExecution(ReadyValueExecution);
-
-impl Drop for OneShotReadyValueExecution {
-    fn drop(&mut self) {
-        self.0.close();
     }
 }
 
@@ -2863,27 +1550,6 @@ fn evaluate_cached_args<T>(
     result
 }
 
-fn evaluate_scoped_args<T>(
-    scope: &ReadyValueScope,
-    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult, &ReadyValueScope) -> Result<T, EvalError>,
-) -> Result<T, ReadyValueBoundaryError> {
-    let mut guard = NativeGuard::new(scope);
-    let result = (|| {
-        // Frontend coercion and closed recipe selection happen exactly once,
-        // before taking/replacing a lease, under the original scope guard.
-        let (operation, ready) = prepare().map_err(ReadyValueBoundaryError::Frontend)?;
-        let mut invocation = Invocation::enter(scope)?;
-        let result = invocation.run_args(operation, ready);
-        let computed = invocation.finish(result)?;
-        // No worker/cell/mutex borrow surrounds original native result packing.
-        pack(materialize_computed(operation, computed)?, scope)
-            .map_err(ReadyValueBoundaryError::Frontend)
-    })();
-    guard.disarm(); // ordinary Result::Err is never an unwind or native replay
-    result
-}
-
 pub(crate) fn evaluate_prepared_args_in<T>(
     ctx: &dyn Columns,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
@@ -2892,11 +1558,11 @@ pub(crate) fn evaluate_prepared_args_in<T>(
     route_prepared_args_in(ctx, prepare, |computed, _columns| pack(computed))
 }
 
-/// Lend the selected authority to a dependent stage after the first lease has
-/// finished and its result is owned. The existing guard and one-shot owner
+/// Lend the selected lane cache to a dependent stage after the first worker call
+/// has finished and its result is owned. The existing guard and one-shot cache
 /// remain alive through this callback; no worker borrow crosses it.
 ///
-/// Bind directly rather than rediscovering a possibly different scope through
+/// Bind directly rather than rediscovering a possibly different cache through
 /// `with_columns`. Callers must use these columns for their dependent stage.
 pub(crate) fn evaluate_prepared_args_scoped_in<T>(
     ctx: &dyn Columns,
@@ -2927,7 +1593,7 @@ fn route_prepared_args_in<T>(
             |computed| {
                 let columns = ScopedReadyValueColumns {
                     native: ctx,
-                    authority: ReadyValueAuthorityRef::Cache(&cache),
+                    cache: &cache,
                 };
                 pack(computed, &columns)
             },
@@ -2938,8 +1604,8 @@ fn route_prepared_args_in<T>(
 
 /// One closed operation router, sharing the ready-value capabilities.
 /// Neither frontend callback enters C4: coercion precedes admission, and native
-/// packing follows the exclusive invocation. Existing scopes guard both; the
-/// no-capability route retains its original preparation-before-pool precedence.
+/// packing follows the exclusive invocation. The lane cache guards both; the
+/// no-capability route retains its original preparation-before-cache precedence.
 /// Only the native packed result is generic; arguments and lifecycle stay closed.
 pub(crate) fn evaluate_args_in<T>(
     operation: EvaluatedBytesOp,
@@ -3209,7 +1875,7 @@ pub fn eval_legacy_date_in(core: Option<u64>, ctx: &dyn Columns) -> Result<Optio
     )
 }
 
-/// Compare the actual full-width legacy integer pair under the caller's scope.
+/// Compare the actual full-width legacy integer pair through the caller's lane cache.
 pub fn eval_legacy_integer_comparison_in(
     operation: ComparisonOp,
     args: LegacyBinaryArgs<i128>,
@@ -3764,7 +2430,7 @@ pub enum LegacyLikeArgs {
     },
 }
 
-/// Evaluate legacy LIKE under the caller's scope without native matching.
+/// Evaluate legacy LIKE through the caller's lane cache without native matching.
 /// Missing children and an actual NULL witness enter their own closed recipes;
 /// a non-NULL witness is refused before worker admission.
 pub fn eval_legacy_like_in(
@@ -3970,7 +2636,7 @@ pub(crate) fn evaluate_logical_in(
     )
 }
 
-/// Compatible single-Bytes entry; all shapes use the same context/pool driver.
+/// Compatible single-Bytes entry; all shapes use the same context/cache driver.
 pub(crate) fn evaluate_bytes_in(
     operation: EvaluatedBytesOp,
     ctx: &dyn Columns,
@@ -3990,22 +2656,13 @@ pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datu
     )
 }
 
-/// Opaque, sized lexical Columns binding created by [`ReadyValueScope::with_columns`].
+/// Opaque lexical Columns binding created by [`ReadyValueCache::with_columns`].
 ///
-/// Borrows the original native context and effective scope, with no ownership
-/// or `'static` requirement on that context. Ordinary methods forward to the
-/// original context; only the two ready-value capability methods are overridden.
-/// The wrapper cannot share the scope between threads and does not establish
-/// business-wrapper propagation or statement/executor lifecycle ownership.
-#[derive(Clone, Copy)]
-enum ReadyValueAuthorityRef<'a> {
-    Cache(&'a ReadyValueCache),
-    Scope(&'a ReadyValueScope),
-}
-
-pub struct ScopedReadyValueColumns<'native, 'scope> {
+/// It borrows the original native context and one executor-lane cache. Ordinary
+/// methods forward unchanged; only `ready_value_cache` is overridden.
+pub struct ScopedReadyValueColumns<'native, 'cache> {
     native: &'native dyn Columns,
-    authority: ReadyValueAuthorityRef<'scope>,
+    cache: &'cache ReadyValueCache,
 }
 
 // One local forwarding list, not a general context/delegation framework.
@@ -4020,24 +2677,7 @@ macro_rules! forward_columns {
 
 impl Columns for ScopedReadyValueColumns<'_, '_> {
     fn ready_value_cache(&self) -> Option<&ReadyValueCache> {
-        match self.authority {
-            ReadyValueAuthorityRef::Cache(cache) => Some(cache),
-            ReadyValueAuthorityRef::Scope(_) => self.native.ready_value_cache(),
-        }
-    }
-
-    fn ready_value_scope(&self) -> Option<&ReadyValueScope> {
-        match self.authority {
-            ReadyValueAuthorityRef::Scope(scope) => Some(scope),
-            ReadyValueAuthorityRef::Cache(_) => self.native.ready_value_scope(),
-        }
-    }
-
-    fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
-        match self.authority {
-            ReadyValueAuthorityRef::Scope(scope) => Some(&scope.execution),
-            ReadyValueAuthorityRef::Cache(_) => self.native.ready_value_execution(),
-        }
+        Some(self.cache)
     }
 
     forward_columns! {

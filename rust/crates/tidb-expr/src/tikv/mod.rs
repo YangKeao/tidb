@@ -155,9 +155,8 @@ pub use ready_value::{
     eval_legacy_json_output_none_in, eval_legacy_json_replace_in, eval_legacy_like_in,
     eval_legacy_microsecond_in, eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in,
     eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, LegacyBinaryArgs,
-    LegacyIntegerArithmetic, LegacyLikeArgs, ReadyValueCache, ReadyValueExecution,
-    ReadyValueOwnerError, ReadyValuePoolOwner, ReadyValuePoolPolicy, ReadyValueScope,
-    RegexpLegacyInput, ScopedReadyValueColumns,
+    LegacyIntegerArithmetic, LegacyLikeArgs, ReadyValueCache, RegexpLegacyInput,
+    ScopedReadyValueColumns,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::NativeJsonError;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;

@@ -455,8 +455,6 @@ pub struct Session {
     /// fresh child below these roots, so an open cursor remains counted when
     /// the client starts its next command.
     session_memory: tidb_executor::SessionMemory,
-    #[cfg(test)]
-    ready_value_runtime: ready_value_runtime::SessionReadyValueRuntime,
     /// The current statement's actual result-retention authority.
     ///
     /// Go retains `SessionVars.StmtCtx` until the next statement reset and a
@@ -852,8 +850,6 @@ impl Session {
                 tidb_executor::OomAction::Cancel,
                 0,
             ),
-            #[cfg(test)]
-            ready_value_runtime: ready_value_runtime::SessionReadyValueRuntime::default(),
             statement_result_authority: std::cell::RefCell::new(None),
             current_sql_digest_key: String::new(),
             statement_normalized_sql: None,
@@ -941,27 +937,6 @@ impl Session {
         }
     }
 
-    /// Installs an explicit experimental ready-value pool policy exactly once.
-    ///
-    /// `Ok(false)` means a policy is already installed or a lexical statement
-    /// operation is active, including an operation without an installed pool.
-    /// Rejection occurs before constructing a pool and leaves the existing root
-    /// unchanged. The session creates and retains its own root; callers cannot
-    /// install a shared owner or reconfigure away outstanding worker debt.
-    ///
-    /// This supplies no default policy and does not activate SQL ASCII dispatch.
-    /// Contexts only carry executions admitted by the statement entrypoints;
-    /// parameter binding and metadata-only planning remain pre-admission work.
-    /// The pool's fixed-pin conditional accounting still excludes caller handles,
-    /// session ownership bookkeeping, native coercion and error-carrier storage.
-    #[cfg(test)]
-    pub fn try_install_ready_value_policy(
-        &mut self,
-        policy: tidb_executor::ReadyValuePoolPolicy,
-    ) -> Result<bool, tidb_executor::ReadyValueOwnerError> {
-        self.ready_value_runtime.try_install(policy)
-    }
-
     fn breakpoint_notify_func(&self) -> Option<Arc<dyn Fn(String) + Send + Sync + 'static>> {
         self.context_values
             .get(tidb_util::breakpoint::NOTIFY_BREAK_POINT_FUNC_KEY)
@@ -1037,8 +1012,6 @@ impl Default for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        #[cfg(test)]
-        self.ready_value_runtime.shutdown();
         if let Some(collector) = &self.session_index_usage_collector {
             collector
                 .lock()
@@ -1085,8 +1058,6 @@ mod noop;
 mod prepared_ast;
 mod prepared_plan_cache;
 mod prepared_statements;
-#[cfg(test)]
-mod ready_value_runtime;
 mod record_set;
 use record_set::StatementCompletion;
 pub use record_set::{OpenedStatement, SessionRecordSet, StatementExecution, StatementRecordSet};

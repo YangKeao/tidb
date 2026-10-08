@@ -531,22 +531,6 @@ pub trait Columns {
         None
     }
 
-    /// The currently bound affine ready-value scope, when explicitly bound.
-    /// Adapters preserve this capability rather than starting a second scope.
-    /// Ordinary unbound contexts remain source-compatible and stateless. This
-    /// is a pure borrowed lookup, not an expression-evaluation/resource hook.
-    fn ready_value_scope(&self) -> Option<&crate::ReadyValueScope> {
-        None
-    }
-
-    /// The reusable execution behind this context, if its owner supplied one.
-    /// An active scope's execution takes precedence in a scoped wrapper. Merely
-    /// exposing this capability does not begin or close an execution.
-    /// Implementations only return or forward a borrowed capability here.
-    fn ready_value_execution(&self) -> Option<&crate::ReadyValueExecution> {
-        None
-    }
-
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
 

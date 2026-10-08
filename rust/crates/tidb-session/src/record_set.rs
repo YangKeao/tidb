@@ -173,11 +173,6 @@ impl StatementRecordSet {
         self.query.record_set.new_chunk()
     }
 
-    #[cfg(test)]
-    pub(crate) fn context_for_test(&self) -> &StmtContext {
-        &self.query.context
-    }
-
     /// Retains a failure from an outer transaction's Finish for CloseRecordSet.
     pub fn record_error(&mut self, error: DriverError) {
         self.last_error.get_or_insert(error);
@@ -206,10 +201,7 @@ impl StatementRecordSet {
             }
             Ok(())
         } else {
-            let result = self.query.record_set.next(req);
-            #[cfg(test)]
-            native_epilogue_for_test(NativeEpilogue::Next);
-            result
+            self.query.record_set.next(req)
         };
         session.drain_eval_warnings(&self.query.context);
         match &result {
@@ -241,10 +233,7 @@ impl StatementRecordSet {
                 let next = req.renew(req.required_rows());
                 chunks.push_back(std::mem::replace(&mut req, next));
             }
-            let result = self.query.record_set.finish();
-            #[cfg(test)]
-            native_epilogue_for_test(NativeEpilogue::Retain);
-            result
+            self.query.record_set.finish()
         })();
         session.drain_eval_warnings(&self.query.context);
         if let Err(error) = &result {
@@ -264,8 +253,6 @@ impl StatementRecordSet {
         }
         self.finished = true;
         let result = self.query.finish(session);
-        #[cfg(test)]
-        native_epilogue_for_test(NativeEpilogue::Finish);
         if let Err(error) = &result {
             self.last_error.get_or_insert_with(|| error.clone());
         }
@@ -362,50 +349,6 @@ impl From<&StmtOutput> for StatementCompletion {
             StmtOutput::Affected(rows) => Self::Affected(*rows),
             StmtOutput::Done(_) => Self::Done,
         }
-    }
-}
-
-// This one-shot probe runs only AFTER the real native operation has returned.
-// It proves native-epilogue unwind cleanup, not an executor panic escaping the
-// existing inner recovery wrappers. Take the hook before invoking user code.
-#[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeEpilogue {
-    Next,
-    Finish,
-    Retain,
-}
-
-#[cfg(test)]
-thread_local! {
-    static NATIVE_EPILOGUE_HOOK: std::cell::RefCell<Option<(NativeEpilogue, Box<dyn FnOnce()>)>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn set_native_epilogue_for_test(phase: NativeEpilogue, hook: impl FnOnce() + 'static) {
-    NATIVE_EPILOGUE_HOOK.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        assert!(slot.is_none(), "native epilogue hook was not consumed");
-        *slot = Some((phase, Box::new(hook)));
-    });
-}
-
-#[cfg(test)]
-fn native_epilogue_for_test(phase: NativeEpilogue) {
-    let hook = NATIVE_EPILOGUE_HOOK.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot
-            .as_ref()
-            .is_some_and(|(expected, _)| *expected == phase)
-        {
-            slot.take().map(|(_, hook)| hook)
-        } else {
-            None
-        }
-    });
-    if let Some(hook) = hook {
-        hook();
     }
 }
 

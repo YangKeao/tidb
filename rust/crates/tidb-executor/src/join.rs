@@ -2068,10 +2068,12 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         scratch.append_partial_row(0, left);
         scratch.append_partial_row(left.len(), right);
         let row = scratch.get_row(0);
-        Ok(fold_verdict(
-            self.kind,
-            crate::joiner::eval_bool(&self.ctx, &self.conditions, row)?,
-        ))
+        self.ready_values.with_columns(&self.ctx, |ctx| {
+            Ok(fold_verdict(
+                self.kind,
+                crate::joiner::eval_bool(ctx, &self.conditions, row)?,
+            ))
+        })
     }
 
     /// Emits every output row one outer row produces, given the inner rows
@@ -3017,6 +3019,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
         tracker: &Arc<Tracker>,
         memory: &StatementMemory,
         ctx: &C,
+        ready_values: &ReadyValueCache,
         filters: &[Expression],
     ) -> Result<(), ExecError> {
         side.group_len = 0;
@@ -3037,11 +3040,14 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                 return Ok(());
             }
             side.selected.clear();
-            for index in 0..side.chunk.num_rows() {
-                side.selected
-                    .push(crate::joiner::eval_bool(ctx, filters, side.chunk.get_row(index))?.0);
-            }
-            side.group_checker.split_into_groups(ctx, &side.chunk)?;
+            ready_values.with_columns(ctx, |ctx| {
+                for index in 0..side.chunk.num_rows() {
+                    side.selected
+                        .push(crate::joiner::eval_bool(ctx, filters, side.chunk.get_row(index))?.0);
+                }
+                side.group_checker.split_into_groups(ctx, &side.chunk)?;
+                Ok::<_, ExecError>(())
+            })?;
         }
 
         let (begin, end) = side.group_checker.get_next_group();
@@ -3440,6 +3446,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> JoinExec<C> {
                     &tracker,
                     &memory,
                     &self.ctx,
+                    &self.ready_values,
                     &self.outer_filter,
                 )?;
             }

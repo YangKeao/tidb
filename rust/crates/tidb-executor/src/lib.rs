@@ -297,12 +297,7 @@ pub use tidb_expr::{
     eval_in, like_match_with_collation, like_match_with_collation_in, truthy_of,
     BlockEncryptionMode, Columns, EvalError, JsonError, MysqlRng, SessionTimeZone,
 };
-/// Explicit native runtime capabilities and adapter diagnostics for session
-/// lifecycle ownership; reexporting them installs no default runtime or scope.
-pub use tidb_expr::{
-    ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ReadyValueExecution,
-    ReadyValueOwnerError, ReadyValuePoolOwner, ReadyValuePoolPolicy, ReadyValueScope,
-};
+pub use tidb_expr::{ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin};
 pub use topn::TopNExec;
 pub use view::{
     resolve_view_definition, run_alter_view_in, run_create_view_in, run_drop_view_in,

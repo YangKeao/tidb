@@ -17,8 +17,6 @@
 use std::sync::{Arc, Mutex};
 use tidb_datatype::{Datum, SessionTimeZone};
 use tidb_expr::{Columns, ErrorLevel};
-#[cfg(test)]
-use tidb_expr::{ReadyValueExecution, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 use tidb_model::flags::*;
 
 pub(super) struct RequestEvalContext {
@@ -27,8 +25,6 @@ pub(super) struct RequestEvalContext {
     pub(super) flags: u64,
     pub(super) column_types: Vec<tidb_datatype::FieldType>,
     warnings: Mutex<Vec<(u16, String)>>,
-    #[cfg(test)]
-    ready_value_execution: Option<ReadyValueExecution>,
 }
 
 impl std::fmt::Debug for RequestEvalContext {
@@ -51,30 +47,7 @@ impl RequestEvalContext {
             flags,
             column_types: Vec::new(),
             warnings: Mutex::new(Vec::new()),
-            #[cfg(test)]
-            ready_value_execution: None,
         }
-    }
-
-    #[cfg(test)]
-    fn new_with_ready_value_execution(
-        zone: SessionTimeZone,
-        division_precision: u32,
-        flags: u64,
-    ) -> Result<Self, String> {
-        let policy =
-            ReadyValuePoolPolicy::checked(1, 1, 16 << 20, 4 << 20, 4 << 20, 64, 8, 4 << 20)
-                .map_err(|error| error.to_string())?;
-        let owner = ReadyValuePoolOwner::new(policy).map_err(|error| error.to_string())?;
-        let ready_value_execution = owner.begin_execution().map_err(|error| error.to_string())?;
-        Ok(Self {
-            zone,
-            division_precision,
-            flags,
-            column_types: Vec::new(),
-            warnings: Mutex::new(Vec::new()),
-            ready_value_execution: Some(ready_value_execution),
-        })
     }
 
     pub(super) fn condition_value(&self, value: &Datum) -> Result<i128, String> {
@@ -99,21 +72,7 @@ impl RequestEvalContext {
     }
 }
 
-#[cfg(test)]
-impl Drop for RequestEvalContext {
-    fn drop(&mut self) {
-        if let Some(execution) = self.ready_value_execution.as_ref() {
-            execution.close();
-        }
-    }
-}
-
 impl Columns for RequestEvalContext {
-    #[cfg(test)]
-    fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
-        self.ready_value_execution.as_ref()
-    }
-
     fn get(&self, _: &[String]) -> Option<Datum> {
         None
     }
@@ -268,7 +227,14 @@ mod tests {
             &ctx,
         )
         .unwrap();
-        assert_eq!(topn.evaluate(&row).unwrap(), [expected.clone()]);
+        assert_eq!(
+            topn.evaluate(
+                &row,
+                std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
+            )
+            .unwrap(),
+            [expected.clone()]
+        );
         let mut agg = RegionAggregator::build(
             &tipb::Aggregation {
                 agg_func: vec![tipb::Expr {
@@ -280,6 +246,7 @@ mod tests {
             },
             &[],
             &ctx,
+            std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
         )
         .unwrap();
         agg.update(&row).unwrap();
@@ -377,25 +344,5 @@ mod tests {
             }
             assert!(ctx.take_warnings().is_empty());
         }
-    }
-
-    #[test]
-    fn request_context_owns_ready_value_execution_lifetime() {
-        let zone = SessionTimeZone::Named(chrono_tz::Asia::Shanghai);
-        let ownerless = RequestEvalContext::new(zone.clone(), 8, 0);
-        assert!(ownerless.ready_value_execution().is_none());
-
-        let owned = RequestEvalContext::new_with_ready_value_execution(zone, 8, 0).unwrap();
-        assert!(owned.ready_value_execution().is_some());
-        let execution = owned.ready_value_execution().unwrap().clone();
-        drop(owned);
-
-        assert!(matches!(
-            execution
-                .scope()
-                .evaluate_ascii_value(&Datum::Bytes(b"ascii".to_vec())),
-            Err(tidb_expr::EvalError::ExpressionAdapterFailure(failure))
-                if failure.class() == tidb_expr::ExpressionAdapterFailureClass::PoolClosed
-        ));
     }
 }

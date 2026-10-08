@@ -14,7 +14,7 @@
 
 //! Native opaque ownership of a ready-value adapter failure, not a backend error.
 //!
-//! Pool, scope and result-bridge failures retain their actual origin and original
+//! Lane-scope and result-bridge failures retain their actual origin and original
 //! cause. They are not reconstructed as `LocalError`, SQL overflow or query OOM.
 //! Frontend errors pass through unchanged and do not belong in this envelope.
 //! Neither this carrier nor its fixed message accessor activates SQL dispatch.
@@ -24,21 +24,9 @@ use std::sync::Arc;
 
 use tidb_datatype::tikv_compat::value::BridgeError;
 
-use super::ready_value::{OwnerErrorKind, ReadyValueOwnerError};
-
 /// Native adapter failure classes, independent of backend error codes or text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpressionAdapterFailureClass {
-    /// The explicit pool policy is inconsistent.
-    PoolPolicy,
-    /// The pool refused a local resource demand.
-    PoolResource,
-    /// The independently owned execution is closed.
-    PoolClosed,
-    /// The pool has been poisoned.
-    PoolPoisoned,
-    /// A pool lifecycle or accounting contract was violated.
-    PoolContract,
     /// The operation scope has been poisoned.
     ScopePoisoned,
     /// The scope was reentered while its runtime was borrowed.
@@ -50,16 +38,6 @@ pub enum ExpressionAdapterFailureClass {
 }
 
 impl ExpressionAdapterFailureClass {
-    fn from_owner_kind(kind: OwnerErrorKind) -> Self {
-        match kind {
-            OwnerErrorKind::Policy => Self::PoolPolicy,
-            OwnerErrorKind::Resource => Self::PoolResource,
-            OwnerErrorKind::Closed => Self::PoolClosed,
-            OwnerErrorKind::Poisoned => Self::PoolPoisoned,
-            OwnerErrorKind::Contract => Self::PoolContract,
-        }
-    }
-
     const fn from_scope_kind(kind: ScopeFailureKind) -> Self {
         match kind {
             ScopeFailureKind::Poisoned => Self::ScopePoisoned,
@@ -70,11 +48,6 @@ impl ExpressionAdapterFailureClass {
 
     const fn client_message(self) -> &'static str {
         match self {
-            Self::PoolPolicy => "Expression runtime pool policy failure",
-            Self::PoolResource => "Expression runtime pool resource limit exceeded",
-            Self::PoolClosed => "Expression runtime execution is closed",
-            Self::PoolPoisoned => "Expression runtime pool is poisoned",
-            Self::PoolContract => "Expression runtime pool contract failure",
             Self::ScopePoisoned => "Expression runtime scope is poisoned",
             Self::ScopeReentry => "Expression runtime scope reentry",
             Self::ScopeContract => "Expression runtime scope contract failure",
@@ -86,8 +59,6 @@ impl ExpressionAdapterFailureClass {
 /// The native component that supplied the original adapter failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpressionAdapterFailureOrigin {
-    /// Pool policy, resource or lifecycle management.
-    Pool,
     /// The affine operation scope.
     Scope,
     /// Checked result-representation transport.
@@ -107,7 +78,6 @@ pub(super) enum ScopeFailureKind {
 // No Clone or Debug: the original typed causes stay behind the opaque handle.
 // BridgeError may contain backend EvalType values; none is publicly exposed.
 enum AdapterFailureCause {
-    Owner(ReadyValueOwnerError),
     Scope {
         kind: ScopeFailureKind,
         reason: &'static str,
@@ -124,20 +94,12 @@ enum AdapterFailureCause {
 /// Construction is private to the adaptation boundary. There is no public
 /// constructor, raw-cause accessor, `Display`, `Error`/`source` or downcast hook.
 /// Capturing allocates an ordinary Arc on the error path; this is not a claim of
-/// allocation-failure recovery or inclusion in the pool/worker byte ledger.
+/// allocation-failure recovery or inclusion in the worker byte ledger.
 pub struct ExpressionAdapterFailure {
     cause: Arc<AdapterFailureCause>,
 }
 
 impl ExpressionAdapterFailure {
-    /// Moves a native pool failure without cloning or reclassifying its text.
-    #[must_use]
-    pub(super) fn from_owner(cause: ReadyValueOwnerError) -> Self {
-        Self {
-            cause: Arc::new(AdapterFailureCause::Owner(cause)),
-        }
-    }
-
     /// Captures an explicitly classified scope failure with its original reason.
     #[must_use]
     pub(super) fn from_scope(kind: ScopeFailureKind, reason: &'static str) -> Self {
@@ -158,9 +120,6 @@ impl ExpressionAdapterFailure {
     #[must_use]
     pub fn class(&self) -> ExpressionAdapterFailureClass {
         match self.cause.as_ref() {
-            AdapterFailureCause::Owner(cause) => {
-                ExpressionAdapterFailureClass::from_owner_kind(cause.kind())
-            }
             AdapterFailureCause::Scope { kind, .. } => {
                 ExpressionAdapterFailureClass::from_scope_kind(*kind)
             }
@@ -172,7 +131,6 @@ impl ExpressionAdapterFailure {
     #[must_use]
     pub fn origin(&self) -> ExpressionAdapterFailureOrigin {
         match self.cause.as_ref() {
-            AdapterFailureCause::Owner(_) => ExpressionAdapterFailureOrigin::Pool,
             AdapterFailureCause::Scope { .. } => ExpressionAdapterFailureOrigin::Scope,
             AdapterFailureCause::Bridge(_) => ExpressionAdapterFailureOrigin::Bridge,
         }
@@ -213,19 +171,6 @@ impl fmt::Debug for ExpressionAdapterFailure {
     }
 }
 
-impl ReadyValueOwnerError {
-    /// Retains this native lifecycle/configuration cause for evaluation diagnostics.
-    ///
-    /// This explicit conversion accepts only the opaque native owner error, not
-    /// backend or bridge errors, and does not change generic error inference via
-    /// a new From implementation. It never creates SQL arithmetic status. Its
-    /// Arc allocation is outside the pool ledger, as with other adapter captures.
-    #[must_use]
-    pub fn into_eval_error(self) -> crate::EvalError {
-        crate::EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_owner(self))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::mem;
@@ -234,116 +179,11 @@ mod tests {
     use tidb_datatype::{DatumKind, FieldTypeCode};
     use tidb_query_datatype::EvalType;
 
-    use super::super::ready_value::ReadyValuePoolPolicy;
     use super::{
         AdapterFailureCause, BridgeError, ExpressionAdapterFailure,
         ExpressionAdapterFailureClass as Class, ExpressionAdapterFailureOrigin as Origin,
-        OwnerErrorKind, ScopeFailureKind,
+        ScopeFailureKind,
     };
-
-    #[test]
-    fn public_owner_error_conversion_retains_the_native_cause() {
-        let cause =
-            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
-        let expected = cause.clone();
-        let native = cause.into_eval_error();
-        let crate::EvalError::ExpressionAdapterFailure(failure) = native else {
-            panic!("native owner error must retain its adapter origin");
-        };
-        assert_eq!(failure.class(), Class::PoolPolicy);
-        assert_eq!(failure.origin(), Origin::Pool);
-        let AdapterFailureCause::Owner(original) = failure.cause.as_ref() else {
-            panic!("native conversion changed the cause variant");
-        };
-        assert_eq!(original, &expected);
-        assert_eq!(failure.clone(), failure);
-        assert_eq!(
-            failure.client_message(),
-            "Expression runtime pool policy failure"
-        );
-    }
-
-    #[test]
-    fn all_owner_kinds_have_distinct_native_classes_and_fixed_messages() {
-        // Classification-policy coverage, not a claim that the public API can
-        // manufacture poisoned or contract-violating owner states.
-        for (kind, class, message) in [
-            (
-                OwnerErrorKind::Policy,
-                Class::PoolPolicy,
-                "Expression runtime pool policy failure",
-            ),
-            (
-                OwnerErrorKind::Resource,
-                Class::PoolResource,
-                "Expression runtime pool resource limit exceeded",
-            ),
-            (
-                OwnerErrorKind::Closed,
-                Class::PoolClosed,
-                "Expression runtime execution is closed",
-            ),
-            (
-                OwnerErrorKind::Poisoned,
-                Class::PoolPoisoned,
-                "Expression runtime pool is poisoned",
-            ),
-            (
-                OwnerErrorKind::Contract,
-                Class::PoolContract,
-                "Expression runtime pool contract failure",
-            ),
-        ] {
-            assert_eq!(Class::from_owner_kind(kind), class);
-            assert_eq!(class.client_message(), message);
-        }
-    }
-
-    #[test]
-    fn real_policy_failure_retains_the_original_owner_capture() {
-        // Real policy validation produces the private cause; no owner-error
-        // constructor or test-only factory is exposed for this test.
-        let cause =
-            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
-        let expected =
-            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
-        let failure = ExpressionAdapterFailure::from_owner(cause);
-        let address = failure.cause.as_ref() as *const _;
-        let cloned = failure.clone();
-        assert_eq!(failure, cloned);
-        drop(failure);
-        assert!(ptr::eq(cloned.cause.as_ref(), address));
-        let AdapterFailureCause::Owner(original) = cloned.cause.as_ref() else {
-            panic!("owner cause changed origin");
-        };
-        assert_eq!(original, &expected);
-        assert_eq!(original.kind(), OwnerErrorKind::Policy);
-        assert_eq!(cloned.class(), Class::PoolPolicy);
-        assert_eq!(cloned.origin(), Origin::Pool);
-        assert_eq!(
-            cloned.client_message(),
-            "Expression runtime pool policy failure"
-        );
-        let independent = ExpressionAdapterFailure::from_owner(expected);
-        assert_ne!(cloned, independent);
-    }
-
-    #[test]
-    fn real_control_budget_failure_stays_native_pool_resource() {
-        let cause = ReadyValuePoolPolicy::checked(0, 0, 0, 1, 1, 64, 16, usize::MAX).unwrap_err();
-        assert_eq!(cause.kind(), OwnerErrorKind::Resource);
-        let failure = ExpressionAdapterFailure::from_owner(cause);
-        assert_eq!(failure.class(), Class::PoolResource);
-        assert_eq!(failure.origin(), Origin::Pool);
-        assert_eq!(
-            failure.client_message(),
-            "Expression runtime pool resource limit exceeded"
-        );
-        let AdapterFailureCause::Owner(original) = failure.cause.as_ref() else {
-            panic!("pool failure was reclassified");
-        };
-        assert_eq!(original.kind(), OwnerErrorKind::Resource);
-    }
 
     #[test]
     fn scope_kinds_preserve_reason_without_parsing_it() {
@@ -475,10 +315,7 @@ mod tests {
 
     #[test]
     fn debug_reveals_only_native_class_and_origin_for_every_source() {
-        let owner =
-            ReadyValuePoolPolicy::checked(0, 1, usize::MAX, 1, 1, 64, 16, usize::MAX).unwrap_err();
         let failures = [
-            ExpressionAdapterFailure::from_owner(owner),
             ExpressionAdapterFailure::from_scope(
                 ScopeFailureKind::Contract,
                 "private TiKV detail code=1690",

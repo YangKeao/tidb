@@ -476,156 +476,10 @@ fn update_and_delete_through_the_session() {
     );
 }
 
-// Explicit test limits, not production defaults. The activation regressions
-// below exercise real SQL columns; the remaining lifecycle probes also use the
-// already-evaluated value API. Neither is whole-family migration evidence.
-fn ready_value_session_policy(workers: usize) -> tidb_executor::ReadyValuePoolPolicy {
-    tidb_executor::ReadyValuePoolPolicy::checked(
-        workers,
-        workers.min(1),
-        1 << 24,
-        1 << 20,
-        1 << 20,
-        64,
-        16,
-        1 << 20,
-    )
-    .unwrap()
-}
-
-fn ready_value_session_execution(
-    context: &tidb_executor::StmtContext,
-) -> tidb_executor::ReadyValueExecution {
-    context.ready_value_execution().unwrap().clone()
-}
-
-fn ready_value_session_rows(session: &mut Session, sql: &str) -> StatementRecordSet {
-    let statement = session.parse_statement(sql).unwrap();
-    match session.open_record_set_parsed(statement, sql).unwrap() {
-        OpenedStatement::Rows(rows) => rows,
-        OpenedStatement::Complete(_) => panic!("expected a real opened query"),
-    }
-}
-
-fn assert_ready_value_session_failure(
-    execution: &tidb_executor::ReadyValueExecution,
-    expected: tidb_executor::ExpressionAdapterFailureClass,
-) {
-    // Never probe an old held worker for staleness: doing so would actively
-    // dispose of its cached worker and invalidate the late-debt experiment.
-    match execution.scope().evaluate_ascii_value(&Datum::Null) {
-        Err(tidb_executor::EvalError::ExpressionAdapterFailure(failure)) => {
-            assert_eq!(failure.class(), expected);
-            assert_eq!(
-                failure.origin(),
-                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-            );
-        }
-        other => panic!("expected a typed pool failure, got {other:?}"),
-    }
-}
-
-fn assert_ready_value_session_live(execution: &tidb_executor::ReadyValueExecution) {
-    assert_eq!(
-        execution
-            .scope()
-            .evaluate_ascii_value(&Datum::Null)
-            .unwrap(),
-        Datum::Null
-    );
-}
-
 #[test]
-fn ready_value_session_installation_is_busy_safe_and_zero_slots_reject_sql() {
+fn ready_value_sql_columns_use_lane_cache_for_null_empty_binary_and_utf8() {
     let mut session = Session::new();
-    for is_dml in [false, true] {
-        assert!(session
-            .statement_context(is_dml)
-            .ready_value_execution()
-            .is_none());
-    }
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE ascii_zero_slots (id INT PRIMARY KEY, v VARBINARY(8))")
-        .unwrap();
-    session
-        .run("INSERT INTO ascii_zero_slots VALUES (1,NULL),(2,X''),(3,X'FF'),(4,X'C3A9'),(5,X'E4B8AD'),(6,X'41')")
-        .unwrap();
-    session
-        .run_with_columns_using("SELECT 1", false, |session| {
-            assert!(!session
-                .try_install_ready_value_policy(ready_value_session_policy(0))
-                .unwrap());
-            for is_dml in [false, true] {
-                assert!(session
-                    .statement_context(is_dml)
-                    .ready_value_execution()
-                    .is_none());
-            }
-            session.execute_statement("SELECT 1")
-        })
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    assert!(!session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    assert!(session
-        .ready_value_runtime
-        .latest_execution_for_test()
-        .is_none());
-
-    // Activation changes the previous dormant expectation: an explicitly
-    // installed zero-slot pool must reject real SQL evaluation. No native or
-    // missing-capability one-shot route may bypass this admission decision.
-    // Probe NULL separately too: it must be computed, not short-circuited.
-    for id in 1..=6 {
-        let sql = format!("SELECT ASCII(v) FROM ascii_zero_slots WHERE id={id}");
-        let error = session
-            .run_with_columns(&sql)
-            .expect_err("zero slots must reject SQL ASCII");
-        let mysql = error.clone().to_mysql_error();
-        match error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-                assert_eq!(mysql.message, failure.client_message());
-            }
-            other => panic!("SQL must retain the typed pool cause: {other:?}"),
-        }
-        assert_eq!(mysql.code, 1105);
-        assert_eq!(mysql.state, *b"HY000");
-        assert!(mysql.is_from_evaluation());
-    }
-    assert!(session
-        .statement_context(false)
-        .ready_value_execution()
-        .is_none());
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-}
-
-#[test]
-fn ready_value_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
-    let mut session = Session::new();
-    // One serial executor worker fits the explicit one-slot test policy; this
-    // is not a claim that one pool slot supports arbitrary operator parallelism.
+    // The serial projection lane owns and reuses its operation workers.
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
         .unwrap();
@@ -635,9 +489,6 @@ fn ready_value_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
     session
         .run("INSERT INTO ascii_one_slot VALUES (1,NULL),(2,X''),(3,X'FF'),(4,X'C3A9'),(5,X'E4B8AD'),(6,X'41')")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // v is a stored column, not a foldable literal. Multibyte values answer the
     // first encoded byte (195/228), not the Unicode code point (233/20013).
@@ -662,628 +513,34 @@ fn ready_value_sql_columns_use_one_slot_for_null_empty_binary_and_utf8() {
     }
 }
 
-#[test]
-fn ready_value_session_contexts_and_cow_borrow_one_live_execution() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let mut saved = Vec::new();
-    session
-        .run_with_columns_using("SELECT 1", false, |session| {
-            let query = session.statement_context(false);
-            let dml = session.statement_context(true);
-            let original_sizes = query.executor_chunk_sizes();
-            let cow = query.clone().with_executor_chunk_sizes(7, 23);
-            let configured = query.clone().configure(|context| {
-                let _ = context.with_max_allowed_packet(128);
-            });
-            let held = query.ready_value_execution().unwrap().scope();
-            assert_eq!(
-                held.evaluate_ascii_value(&Datum::Bytes(b"A".to_vec()))
-                    .unwrap(),
-                Datum::Int(65)
-            );
-            let repeated = session.statement_context(false);
-            drop(session.statement_context(true));
-            assert_eq!(
-                held.evaluate_ascii_value(&Datum::Null).unwrap(),
-                Datum::Null
-            );
-            drop(held);
-            assert_eq!(query.executor_chunk_sizes(), original_sizes);
-            assert_eq!(cow.executor_chunk_sizes(), (7, 23));
-            for context in [query.clone(), query, dml, cow, configured, repeated] {
-                let columns: &dyn tidb_executor::Columns = &context;
-                assert!(columns.ready_value_scope().is_none());
-                assert!(std::ptr::eq(
-                    columns.ready_value_execution().unwrap(),
-                    context.ready_value_execution().unwrap()
-                ));
-                let scope = context.ready_value_execution().unwrap().scope();
-                assert_eq!(
-                    scope.evaluate_ascii_value(&Datum::Null).unwrap(),
-                    Datum::Null
-                );
-                assert_eq!(
-                    scope
-                        .evaluate_ascii_value(&Datum::Bytes(vec![255]))
-                        .unwrap(),
-                    Datum::Int(255)
-                );
-                saved.push(context);
-            }
-            session.execute_statement("SELECT 1")
-        })
-        .unwrap();
-    for context in saved {
-        assert_ready_value_session_failure(
-            context.ready_value_execution().unwrap(),
-            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-        );
-    }
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[test]
-fn ready_value_real_execute_and_import_borrow_the_outer_execution() {
-    let mut session = Session::new();
-    session
-        .run("CREATE TABLE ascii_updates (id INT PRIMARY KEY, v INT)")
-        .unwrap();
-    session
-        .run("INSERT INTO ascii_updates VALUES (1,10),(2,20)")
-        .unwrap();
-    session
-        .run("CREATE TABLE ascii_imported (id INT PRIMARY KEY, v INT)")
-        .unwrap();
-    session
-        .run("PREPARE ascii_update FROM 'UPDATE ascii_updates SET v=? WHERE id=?'")
-        .unwrap();
-    session.run("SET @v=11, @id=1").unwrap();
-    session.run("EXECUTE ascii_update USING @v,@id").unwrap();
-    session.run("SET @v=22, @id=2").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    for (sql, affected) in [
-        ("EXECUTE ascii_update USING @v,@id", 1),
-        (
-            "IMPORT INTO ascii_imported FROM SELECT * FROM ascii_updates",
-            2,
-        ),
-    ] {
-        let mut captured = None;
-        let (output, _) = session
-            .run_with_columns_using(sql, false, |session| {
-                let execution = ready_value_session_execution(&session.statement_context(false));
-                let held = execution.scope();
-                assert_eq!(
-                    held.evaluate_ascii_value(&Datum::Null).unwrap(),
-                    Datum::Null
-                );
-                let output = session.execute_statement(sql)?;
-                if sql.starts_with("EXECUTE") {
-                    assert!(
-                        session.found_in_plan_cache,
-                        "exercise the cached UPDATE branch"
-                    );
-                }
-                // IMPORT executes both its COUNT precheck and INSERT SELECT through
-                // self.run; none of those inner reset/finish calls owns this execution.
-                assert_eq!(
-                    held.evaluate_ascii_value(&Datum::Bytes(b"Z".to_vec()))
-                        .unwrap(),
-                    Datum::Int(90)
-                );
-                captured = Some(execution);
-                Ok(output)
-            })
-            .unwrap();
-        assert!(matches!(output, StmtOutput::Affected(count) if count == affected));
-        assert_ready_value_session_failure(
-            &captured.unwrap(),
-            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-        );
-    }
-    assert_eq!(
-        row_text(session.run("SELECT id,v FROM ascii_imported ORDER BY id")),
-        [["1", "11"], ["2", "22"]]
-    );
-}
-
-#[test]
-fn ready_value_stream_next_eof_and_cancellation_do_not_close() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let mut rows = ready_value_session_rows(&mut session, "SELECT 1");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    let mut chunk = rows.new_chunk();
-    rows.next(&mut session, &mut chunk).unwrap();
-    assert_eq!(chunk.num_rows(), 1);
-    assert_ready_value_session_live(&execution);
-    rows.next(&mut session, &mut chunk).unwrap();
-    assert_eq!(chunk.num_rows(), 0);
-    assert_ready_value_session_live(&execution);
-    let cancellation = session.begin_query_cancellation();
-    cancellation.cancel();
-    // The record set is NOT finished: this is the real native cancellation
-    // error, not Next's separate post-finish 1317 fast path.
-    assert_eq!(
-        rows.next(&mut session, &mut chunk)
-            .unwrap_err()
-            .to_mysql_error()
-            .code,
-        1317
-    );
-    assert_ready_value_session_live(&execution);
-    drop(cancellation);
-    rows.finish(&mut session).unwrap();
-    assert_ready_value_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    rows.finish(&mut session).unwrap();
-    rows.close(&mut session).unwrap();
-    rows.close(&mut session).unwrap();
-}
-
-#[test]
-fn ready_value_retain_and_finish_native_errors_still_close() {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    let mut session = Session::new();
-    session
-        .run("CREATE TABLE ascii_finish_error (id INT)")
-        .unwrap();
-    session
-        .run("INSERT INTO ascii_finish_error VALUES (1)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let mut rows = ready_value_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    assert_ready_value_session_live(&execution);
-    let cancellation = session.begin_query_cancellation();
-    cancellation.cancel();
-    assert_eq!(
-        rows.retain_chunks(&mut session)
-            .unwrap_err()
-            .to_mysql_error()
-            .code,
-        1317
-    );
-    assert_ready_value_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    drop(cancellation);
-    rows.close(&mut session).unwrap();
-
-    let mut rows = ready_value_session_rows(&mut session, "SELECT id FROM ascii_finish_error");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    assert_ready_value_session_live(&execution);
-    // A real native transaction-finish error, not a substituted RS or C4
-    // factory: AutocommitRead cannot acquire this deliberately poisoned catalog.
-    let catalog = session.shared_catalog();
-    assert!(catch_unwind(AssertUnwindSafe(|| {
-        let _lock = catalog.lock().unwrap();
-        panic!("native catalog poison");
-    }))
-    .is_err());
-    assert!(matches!(
-        rows.finish(&mut session),
-        Err(DriverError::CatalogPoisoned)
-    ));
-    assert_ready_value_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    rows.finish(&mut session).unwrap();
-    drop(rows);
-}
-
-#[test]
-fn ready_value_detached_executions_close_in_isolation_and_preserve_late_worker_debt() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let mut old_rows = ready_value_session_rows(&mut session, "SELECT 1");
-    let old_execution = ready_value_session_execution(old_rows.context_for_test());
-    let held = old_execution.scope();
-    assert_eq!(
-        held.evaluate_ascii_value(&Datum::Null).unwrap(),
-        Datum::Null
-    );
-    let mut new_rows = ready_value_session_rows(&mut session, "SELECT 2");
-    let new_execution = ready_value_session_execution(new_rows.context_for_test());
-    assert_eq!(
-        held.evaluate_ascii_value(&Datum::Null).unwrap(),
-        Datum::Null
-    );
-    assert_ready_value_session_failure(
-        &new_execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolResource,
-    );
-    old_rows.close(&mut session).unwrap();
-    assert_ready_value_session_failure(
-        &old_execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    assert_ready_value_session_failure(
-        &new_execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolResource,
-    );
-    // Closing E1 cannot release a worker still owned by a late affine scope.
-    drop(held);
-    assert_ready_value_session_live(&new_execution);
-    drop(old_rows);
-    assert_ready_value_session_live(&new_execution);
-    new_rows.close(&mut session).unwrap();
-    assert_ready_value_session_failure(
-        &new_execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-}
-
-#[test]
-fn ready_value_attached_detached_and_session_drop_close_all_captured_executions() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(2))
-        .unwrap());
-    let rows = ready_value_session_rows(&mut session, "SELECT 1");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    assert_ready_value_session_live(&execution);
-    drop(OpenedStatement::Rows(rows).attach(&mut session));
-    assert_ready_value_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    let rows = ready_value_session_rows(&mut session, "SELECT 2");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    assert_ready_value_session_live(&execution);
-    drop(rows);
-    assert_ready_value_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    let first_rows = ready_value_session_rows(&mut session, "SELECT 3");
-    let first_context = first_rows.context_for_test().clone();
-    let first_execution = ready_value_session_execution(&first_context);
-    assert_ready_value_session_live(&first_execution);
-    let second_rows = ready_value_session_rows(&mut session, "SELECT 4");
-    let second_context = second_rows.context_for_test().clone();
-    let second_execution = ready_value_session_execution(&second_context);
-    assert_ready_value_session_live(&second_execution);
-    assert_ready_value_session_live(&first_execution);
-    drop(session);
-    for execution in [&first_execution, &second_execution] {
-        assert_ready_value_session_failure(
-            execution,
-            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-        );
-    }
-    for context in [&first_context, &second_context] {
-        assert_ready_value_session_failure(
-            context.ready_value_execution().unwrap(),
-            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-        );
-    }
-    drop(first_rows);
-    drop(second_rows);
-}
-
-#[test]
-fn ready_value_real_point_get_none_fallback_closes_its_attempt() {
-    let mut session = Session::new();
-    session
-        .run("CREATE TABLE ascii_point (id INT PRIMARY KEY, v INT)")
-        .unwrap();
-    session.run("INSERT INTO ascii_point VALUES (1,9)").unwrap();
-    let sql = "SELECT v FROM ascii_point WHERE id=?";
-    let prepared = session.prepare_ast(sql).unwrap();
-    let plan = prepared.point_get_plan().unwrap();
-    let execution = session
-        .bind_cached_prepared_point_get(&plan, &[Datum::Int(1)])
-        .unwrap();
-    session
-        .run("ALTER TABLE ascii_point ADD COLUMN added INT")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    assert!(session
-        .open_prepared_point_get(execution, prepared.statement(), sql)
-        .unwrap()
-        .is_none());
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    let output = session.run_with_params(sql, &[Datum::Int(1)]).unwrap();
-    let StmtOutput::Rows { rows, .. } = output else {
-        panic!("expected fallback rows")
-    };
-    assert_eq!(rows, vec![vec![Datum::Int(9)]]);
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-}
-
-#[test]
-fn ready_value_admission_rejections_preserve_detached_execution() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let rows = ready_value_session_rows(&mut session, "SELECT 1");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    assert_ready_value_session_live(&execution);
-    let metadata_statement = session.parse_statement("SELECT 9").unwrap();
-    assert_eq!(
-        session
-            .plan_bound_prepared_columns(metadata_statement)
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_ready_value_session_live(&execution);
-    assert!(session.run_with_params("SELECT ?", &[]).is_err());
-    assert_ready_value_session_live(&execution);
-    session.enable_sandbox_mode();
-    assert_eq!(
-        session.run("SELECT 1").unwrap_err().to_mysql_error().code,
-        1820
-    );
-    assert_ready_value_session_live(&execution);
-    // Syntax parsing is post-admission (sandbox lets syntax errors through).
-    assert!(session.run("SELECT (").is_err());
-    assert_ready_value_session_live(&execution);
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    drop(rows);
-}
-
-#[test]
-fn ready_value_materialization_closes_live_execution_before_retained_replay() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let mut old_rows = ready_value_session_rows(&mut session, "SELECT 7");
-    let execution = ready_value_session_execution(old_rows.context_for_test());
-    let authority = session.result_materialization_authority();
-    assert_ready_value_session_live(&execution);
-    old_rows.retain_chunks(&mut session).unwrap();
-    assert_ready_value_session_failure(
-        &execution,
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    let mut new_rows = ready_value_session_rows(&mut session, "SELECT 8");
-    let new_execution = ready_value_session_execution(new_rows.context_for_test());
-    let mut chunk = old_rows.new_chunk();
-    old_rows.next(&mut session, &mut chunk).unwrap();
-    assert_eq!(chunk.num_rows(), 1);
-    old_rows.next(&mut session, &mut chunk).unwrap();
-    assert_eq!(chunk.num_rows(), 0);
-    assert_ready_value_session_live(&new_execution);
-    old_rows.close(&mut session).unwrap();
-    drop(old_rows);
-    drop(authority);
-    assert_ready_value_session_live(&new_execution);
-    new_rows.close(&mut session).unwrap();
-}
-
-#[test]
-fn ready_value_native_epilogue_unwinds_close_live_owning_results() {
-    use crate::record_set::{set_native_epilogue_for_test, NativeEpilogue};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    for phase in [
-        NativeEpilogue::Next,
-        NativeEpilogue::Finish,
-        NativeEpilogue::Retain,
-    ] {
-        let mut rows = ready_value_session_rows(&mut session, "SELECT 1");
-        let execution = ready_value_session_execution(rows.context_for_test());
-        assert_ready_value_session_live(&execution);
-        let probe = execution.clone();
-        set_native_epilogue_for_test(phase, move || {
-            // The real native operation has returned; its epilogue can still
-            // use the live C4 capability before unwinding through our guard.
-            assert_ready_value_session_live(&probe);
-            panic!("ASCII native epilogue");
-        });
-        let outcome = catch_unwind(AssertUnwindSafe(|| match phase {
-            NativeEpilogue::Next => {
-                let mut chunk = rows.new_chunk();
-                let _ = rows.next(&mut session, &mut chunk);
-            }
-            NativeEpilogue::Finish => {
-                let _ = rows.finish(&mut session);
-            }
-            NativeEpilogue::Retain => {
-                let _ = rows.retain_chunks(&mut session);
-            }
-        }));
-        let payload = outcome.unwrap_err();
-        assert_eq!(
-            payload.downcast_ref::<&str>().copied(),
-            Some("ASCII native epilogue")
-        );
-        // The result object is deliberately still alive after the catcher.
-        assert_ready_value_session_failure(
-            &execution,
-            tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-        );
-        rows.finish(&mut session).unwrap();
-        rows.close(&mut session).unwrap();
-    }
-}
-
-#[test]
-fn ready_value_borrowed_result_panic_and_close_do_not_own_outer_execution() {
-    use crate::record_set::{set_native_epilogue_for_test, NativeEpilogue};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let mut captured = None;
-    session
-        .run_with_columns_using("SELECT 1", false, |session| {
-            let execution = ready_value_session_execution(&session.statement_context(false));
-            let held = execution.scope();
-            assert_eq!(
-                held.evaluate_ascii_value(&Datum::Null).unwrap(),
-                Datum::Null
-            );
-            let mut rows = ready_value_session_rows(session, "SELECT 1");
-            set_native_epilogue_for_test(NativeEpilogue::Next, || {
-                panic!("borrowed native epilogue")
-            });
-            let mut chunk = rows.new_chunk();
-            let payload = catch_unwind(AssertUnwindSafe(|| {
-                let _ = rows.next(session, &mut chunk);
-            }))
-            .unwrap_err();
-            assert_eq!(
-                payload.downcast_ref::<&str>().copied(),
-                Some("borrowed native epilogue")
-            );
-            assert_eq!(
-                held.evaluate_ascii_value(&Datum::Null).unwrap(),
-                Datum::Null
-            );
-            rows.finish(session).unwrap();
-            rows.close(session).unwrap();
-            drop(rows);
-            assert_eq!(
-                held.evaluate_ascii_value(&Datum::Null).unwrap(),
-                Datum::Null
-            );
-            captured = Some(execution);
-            Ok(StmtOutput::Done(true))
-        })
-        .unwrap();
-    assert_ready_value_session_failure(
-        &captured.unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-}
-
-#[test]
-fn ready_value_outer_unwind_resets_marker_and_session_roots_are_isolated() {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    let mut session = Session::new();
-    let payload = catch_unwind(AssertUnwindSafe(|| {
-        let _ = session.run_with_columns_using("SELECT 1", false, |session| {
-            assert!(!session
-                .try_install_ready_value_policy(ready_value_session_policy(1))
-                .unwrap());
-            panic!("unconfigured lexical unwind");
-        });
-    }))
-    .unwrap_err();
-    assert_eq!(
-        payload.downcast_ref::<&str>().copied(),
-        Some("unconfigured lexical unwind")
-    );
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    // Independent sessions must not share a root even with identical policy.
-    let mut peer = Session::new();
-    assert!(peer
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let peer_rows = ready_value_session_rows(&mut peer, "SELECT 2");
-    let peer_execution = ready_value_session_execution(peer_rows.context_for_test());
-    let peer_scope = peer_execution.scope();
-    assert_eq!(
-        peer_scope.evaluate_ascii_value(&Datum::Null).unwrap(),
-        Datum::Null
-    );
-    let payload = catch_unwind(AssertUnwindSafe(|| {
-        let _ = session.run_with_columns_using("SELECT 1", false, |session| {
-            assert_ready_value_session_live(&ready_value_session_execution(
-                &session.statement_context(false),
-            ));
-            panic!("configured lexical unwind");
-        });
-    }))
-    .unwrap_err();
-    assert_eq!(
-        payload.downcast_ref::<&str>().copied(),
-        Some("configured lexical unwind")
-    );
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    let rows = ready_value_session_rows(&mut session, "SELECT 3");
-    let execution = ready_value_session_execution(rows.context_for_test());
-    assert_ready_value_session_live(&execution); // stale true marker would borrow the closed execution
-    drop(rows);
-    drop(session);
-    assert_eq!(
-        peer_scope.evaluate_ascii_value(&Datum::Null).unwrap(),
-        Datum::Null
-    );
-    drop(peer_scope);
-    drop(peer_rows);
-}
-
-#[test]
-fn ready_value_unwrapped_public_execute_statement_owns_its_execution() {
-    let mut session = Session::new();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    assert!(matches!(
-        session.execute_statement("SELECT 1").unwrap(),
-        StmtOutput::Rows { .. }
-    ));
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-    assert!(session.execute_statement("SELECT (").is_err());
-    assert_ready_value_session_failure(
-        session
-            .ready_value_runtime
-            .latest_execution_for_test()
-            .unwrap(),
-        tidb_executor::ExpressionAdapterFailureClass::PoolClosed,
-    );
-}
-
-#[test]
-fn ready_value_shared_pool_mixed_string_ops_on_sql_columns() {
+fn ready_value_lane_cache_mixed_string_ops_on_sql_columns() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1299,9 +556,6 @@ fn ready_value_shared_pool_mixed_string_ops_on_sql_columns() {
               (6,X'41','0G'),(7,X'FF',X'FF')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Stored columns prevent constant folding. Alternating integer/byte results
     // exercises op replacement in one slot; OCTET_LENGTH shares LENGTH's op.
@@ -1374,60 +628,10 @@ fn ready_value_shared_pool_mixed_string_ops_on_sql_columns() {
     );
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_all_string_op_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_string_zero (id INT PRIMARY KEY, v VARBINARY(8), h VARBINARY(8))")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_string_zero VALUES (1,NULL,NULL),(2,X'20FF20','F')")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // NULL and non-NULL column calls must both reach the installed pool; neither
-    // native calculation nor a missing-capability one-shot may bypass its limit.
-    for (function, column) in [
-        ("LENGTH", "v"),
-        ("OCTET_LENGTH", "v"),
-        ("BIT_LENGTH", "v"),
-        ("LTRIM", "v"),
-        ("RTRIM", "v"),
-        ("UNHEX", "h"),
-    ] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {function}({column}) FROM shared_string_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("{sql} must retain the typed pool cause: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_crc_reverse_char_length_quote_sql_values() {
+fn ready_value_lane_cache_crc_reverse_char_length_quote_sql_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1446,9 +650,6 @@ fn ready_value_shared_pool_crc_reverse_char_length_quote_sql_values() {
              (3,'123456789',X'C3A9E4B8AD','é中',X'275C001AFF')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Dynamic stored columns distinguish binary byte reversal/counting from
     // UTF-8 character semantics. HEX inspects payloads without confusing Chunk
@@ -1504,63 +705,10 @@ fn ready_value_shared_pool_crc_reverse_char_length_quote_sql_values() {
     // Exhaustive malformed-sequence and PB/legacy cases belong to D's tests.
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_crc_reverse_char_length_quote() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_text_zero (id INT PRIMARY KEY, b VARBINARY(16), \
-             t VARCHAR(16) CHARACTER SET utf8mb4)",
-        )
-        .unwrap();
-    session
-        .run("INSERT INTO shared_text_zero VALUES (1,NULL,NULL),(2,X'C3A9E4B8AD','é中')")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    for (function, column) in [
-        ("CRC32", "b"),
-        ("REVERSE", "b"),
-        ("REVERSE", "t"),
-        ("CHAR_LENGTH", "b"),
-        ("CHARACTER_LENGTH", "t"),
-        ("QUOTE", "b"),
-        ("QUOTE", "t"),
-    ] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {function}({column}) FROM shared_text_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("{sql} bypassed shared-pool admission: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_hex_bin_left_right_replace_sql_values() {
+fn ready_value_lane_cache_hex_bin_left_right_replace_sql_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -1583,9 +731,6 @@ fn ready_value_shared_pool_hex_bin_left_right_replace_sql_values() {
              (5,1,1,'ababa','ababa',99,'aba','Z')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Every expression consumes a stored column. One slot switches between
     // Int(bits), Bytes, BytesInt and Bytes3, including nested migrated HEX.
@@ -1651,73 +796,10 @@ fn ready_value_shared_pool_hex_bin_left_right_replace_sql_values() {
     );
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_hex_bin_left_right_replace() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_shape_zero (id INT PRIMARY KEY, u BIGINT UNSIGNED, \
-             k BIT(16), b VARBINARY(16), t VARCHAR(16) CHARACTER SET utf8mb4, \
-             n BIGINT, f VARBINARY(8), r VARBINARY(8))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_shape_zero VALUES \
-             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
-             (2,9223372036854775808,65,X'C3A9E4B8AD','é中',1,X'C3A9',X'FF')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Do not wrap LEFT/RIGHT/REPLACE in HEX here: HEX's own refusal must not
-    // hide an inner operation that wrongly bypasses shared-pool admission.
-    for expression in [
-        "HEX(u)",
-        "HEX(k)",
-        "HEX(b)",
-        "BIN(u)",
-        "LEFT(b,n)",
-        "RIGHT(b,n)",
-        "LEFT(t,n)",
-        "RIGHT(t,n)",
-        "REPLACE(b,f,r)",
-        "REPLACE(t,'é','X')",
-    ] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {expression} FROM shared_shape_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("unexpected SQL pool diagnostic for {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_bitwise_sql_values_and_original_metadata() {
+fn ready_value_lane_cache_bitwise_sql_values_and_original_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1733,9 +815,6 @@ fn ready_value_shared_pool_bitwise_sql_values_and_original_metadata() {
              (5,1,-1,64),(6,9223372036854775808,0,-1)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Actual operator syntax plus the named BIT_COUNT call, all on columns.
     // The same one-slot root switches between nullable Int and Int2 recipes.
@@ -1818,62 +897,10 @@ fn ready_value_shared_pool_bitwise_sql_values_and_original_metadata() {
     );
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_bitwise_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_bit_zero (id INT PRIMARY KEY, u BIGINT UNSIGNED, s BIGINT, n BIGINT)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_bit_zero VALUES (1,NULL,NULL,NULL),(2,9223372036854775808,-1,63)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct expressions, with no migrated outer function that could conceal
-    // a native fast path. Both NULL and non-NULL columns must reach the pool.
-    for expression in [
-        "u & s",
-        "u | s",
-        "u ^ s",
-        "~s",
-        "u << n",
-        "u >> n",
-        "BIT_COUNT(s)",
-        "BIT_COUNT(u)",
-    ] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {expression} FROM shared_bit_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("{sql} must refuse the installed zero-slot pool: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_predicate_sql_values_and_null_truth_table() {
+fn ready_value_lane_cache_predicate_sql_values_and_null_truth_table() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -1884,9 +911,6 @@ fn ready_value_shared_pool_predicate_sql_values_and_null_truth_table() {
     session
         .run("INSERT INTO shared_pred_ops VALUES (1,NULL),(2,0),(3,2),(4,-3)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // IS [NOT] UNKNOWN is already parsed as IS [NOT] NULL. The internal
     // ISTRUE_WITH_NULL name has no ordinary SQL return-type arm, so its direct
@@ -1939,77 +963,10 @@ fn ready_value_shared_pool_predicate_sql_values_and_null_truth_table() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_predicate_sql_columns_and_filters() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_pred_zero (id INT PRIMARY KEY, v BIGINT)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_pred_zero VALUES (1,NULL),(2,2)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    let mut statements = Vec::new();
-    for expression in [
-        "NOT v",
-        "!v",
-        "ISNULL(v)",
-        "v IS NULL",
-        "v IS NOT NULL",
-        "ISTRUE(v)",
-        "ISFALSE(v)",
-        "v IS TRUE",
-        "v IS NOT TRUE",
-        "v IS FALSE",
-        "v IS NOT FALSE",
-        "v IS UNKNOWN",
-        "v IS NOT UNKNOWN",
-    ] {
-        for id in [1, 2] {
-            // No migrated outer function can mask a direct predicate bypass.
-            statements.push(format!(
-                "SELECT {expression} FROM shared_pred_zero WHERE id={id}"
-            ));
-        }
-    }
-    // Cover the ISNULL bitmap candidate and a NOT filter as well as projection.
-    // Keep NOT on the column: NOT(v = 0) may legitimately optimize to v != 0.
-    statements.extend([
-        "SELECT id FROM shared_pred_zero WHERE v IS NULL".to_owned(),
-        "SELECT id FROM shared_pred_zero WHERE NOT v".to_owned(),
-    ]);
-    for sql in statements {
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("predicate SQL must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
+fn ready_value_lane_cache_md5_sha_sha1_sql_binary_and_text_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2028,9 +985,6 @@ fn ready_value_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
              (4,X'FF','é中'),(5,X'006100FF','A')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let output = session
         .run_with_columns(
@@ -2098,57 +1052,10 @@ fn ready_value_shared_pool_md5_sha_sha1_sql_binary_and_text_values() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_md5_sha_sha1_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_hash_zero (id INT PRIMARY KEY, b VARBINARY(16), \
-             t VARCHAR(16) CHARACTER SET utf8mb4)",
-        )
-        .unwrap();
-    session
-        .run("INSERT INTO shared_hash_zero VALUES (1,NULL,NULL),(2,X'FF','é中')")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct calls on both declared input kinds, not HEX(hash(...)) or another
-    // migrated outer function whose refusal could hide a native hash route.
-    for expression in ["MD5(b)", "SHA(b)", "SHA1(b)", "MD5(t)", "SHA(t)", "SHA1(t)"] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {expression} FROM shared_hash_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("hash SQL must reach the zero-slot pool: {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_logical_sql_full_three_valued_table() {
+fn ready_value_lane_cache_logical_sql_full_three_valued_table() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2164,9 +1071,6 @@ fn ready_value_shared_pool_logical_sql_full_three_valued_table() {
              (7,2,NULL),(8,2,0),(9,2,-3)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Stored nullable operands keep the complete 3x3 truth table live at
     // evaluation; 2 and -3 also cover nonzero values other than boolean 1.
@@ -2197,54 +1101,10 @@ fn ready_value_shared_pool_logical_sql_full_three_valued_table() {
     );
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_logical_sql_left_states() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_logic_zero (id INT PRIMARY KEY, a BIGINT, b BIGINT)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_logic_zero VALUES (1,NULL,-3),(2,0,-3),(3,2,-3)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Each operation gets NULL, zero and nonzero left columns. In particular,
-    // false AND / true OR must delegate their answer even when RHS is not
-    // demanded. Neither the operands nor the target expression are constants.
-    for expression in ["a AND b", "a OR b", "a XOR b"] {
-        for id in [1, 2, 3] {
-            let sql = format!("SELECT {expression} FROM shared_logic_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("logical SQL must reach the zero-slot pool: {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_inet_sql_nullable_text_integer_and_binary_values() {
+fn ready_value_lane_cache_inet_sql_nullable_text_integer_and_binary_values() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2268,9 +1128,6 @@ fn ready_value_shared_pool_inet_sql_nullable_text_integer_and_binary_values() {
              (7,'',0,X'')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let output = session
         .run_with_columns(
@@ -2352,64 +1209,10 @@ fn ready_value_shared_pool_inet_sql_nullable_text_integer_and_binary_values() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_all_inet_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_inet_zero (id INT PRIMARY KEY, t VARCHAR(64), \
-             n BIGINT UNSIGNED, b VARBINARY(16))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_inet_zero VALUES \
-             (1,NULL,NULL,NULL),(2,'127.0.0.1',2130706433,X'7F000001')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct stored-column calls keep every target visible to the pool; no
-    // outer HEX or other migrated function can stand in for INET admission.
-    for expression in [
-        "INET_ATON(t)",
-        "INET_NTOA(n)",
-        "INET6_ATON(t)",
-        "INET6_NTOA(b)",
-    ] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {expression} FROM shared_inet_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("INET SQL must reach the zero-slot pool: {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_math_real_sql_analytical_values_and_metadata() {
+fn ready_value_lane_cache_math_real_sql_analytical_values_and_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -2428,9 +1231,6 @@ fn ready_value_shared_pool_math_real_sql_analytical_values_and_metadata() {
              (5,4,90,1.5707963267948966),(6,-4,360,6.283185307179586)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Every target reads a stored nullable column, including the angle inputs.
     // These are analytical endpoints and square roots, not recorded outputs.
@@ -2533,53 +1333,10 @@ fn ready_value_shared_pool_math_real_sql_analytical_values_and_metadata() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_six_math_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_math_zero (id INT PRIMARY KEY, v DOUBLE)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_math_zero VALUES (1,NULL),(2,1)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // NULL and non-NULL direct calls must each reach the installed pool;
-    // no outer migrated function or constant expression can hide the target.
-    for function in ["ASIN", "ACOS", "SQRT", "SIGN", "RADIANS", "DEGREES"] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {function}(v) FROM shared_math_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("math SQL must reach the zero-slot pool: {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
+fn ready_value_lane_cache_pi_and_ip_predicate_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2602,9 +1359,6 @@ fn ready_value_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
              (6,'1..2.3',X'000102'),(7,'0000.00.0.000',X'')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let output = session
         .run_with_columns(
@@ -2656,64 +1410,10 @@ fn ready_value_shared_pool_pi_and_ip_predicate_sql_values_and_metadata() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_four_ip_predicate_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_ip_pred_zero (id INT PRIMARY KEY, \
-             t VARCHAR(64), b VARBINARY(16))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_ip_pred_zero VALUES \
-             (1,NULL,NULL),(2,'001.002.3.4',X'00000000000000000000FFFF01020304')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct nullable-column calls only. PI is deliberately absent: a legal
-    // constant fold must not be forced to retain its runtime call for this test.
-    for expression in [
-        "IS_IPV4(t)",
-        "IS_IPV6(t)",
-        "IS_IPV4_COMPAT(b)",
-        "IS_IPV4_MAPPED(b)",
-    ] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {expression} FROM shared_ip_pred_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("IP predicate SQL must reach the zero-slot pool: {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_packet_string_sql_values_metadata_and_warnings() {
+fn ready_value_lane_cache_packet_string_sql_values_metadata_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2753,9 +1453,6 @@ fn ready_value_shared_pool_packet_string_sql_values_metadata_and_warnings() {
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let output = session
         .run_with_columns(
@@ -2848,90 +1545,10 @@ fn ready_value_shared_pool_packet_string_sql_values_metadata_and_warnings() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_packet_string_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_packet_zero (id INT PRIMARY KEY, n BIGINT, \
-             t VARCHAR(16), b VARBINARY(16), e VARCHAR(2048))",
-        )
-        .unwrap();
-    let padded_base64 = format!("{}YQ==", " ".repeat(1364));
-    session
-        .run(&format!(
-            "INSERT INTO shared_packet_zero VALUES \
-             (1,NULL,NULL,NULL,NULL),(2,2,'ab',X'616263','YWJj'),\
-             (3,1,'a',X'61','{padded_base64}')"
-        ))
-        .unwrap();
-    session
-        .vars
-        .set_system("max_allowed_packet", "1024".to_owned())
-        .unwrap();
-    assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Eight direct NULL/non-NULL calls, plus one warning-before-refusal case.
-    // Even FROM's over-packet branch must call the real suppressed-result
-    // kernel: returning native NULL after warning would evade this pool.
-    for (expression, id) in [
-        ("SPACE(n)", 1),
-        ("SPACE(n)", 2),
-        ("REPEAT(t,n)", 1),
-        ("REPEAT(t,n)", 2),
-        ("TO_BASE64(b)", 1),
-        ("TO_BASE64(b)", 2),
-        ("FROM_BASE64(e)", 1),
-        ("FROM_BASE64(e)", 2),
-        ("FROM_BASE64(e)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_packet_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("packet string SQL must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if id == 3 {
-            // finish_statement_state does not append evaluation-origin 1105 to
-            // the warning list. The earlier packet warning survives; the separate
-            // returned typed refusal and its origin were checked above.
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1301,
-                    message: "Result of from_base64() was larger than \
-                              max_allowed_packet (1024) - truncated"
-                        .to_owned(),
-                }]
-            );
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_case_sha2_ord_sql_values_and_metadata() {
+fn ready_value_lane_cache_case_sha2_ord_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -2974,9 +1591,6 @@ fn ready_value_shared_pool_case_sha2_ord_sql_values_and_metadata() {
     assert_eq!(input_rows[2][1].to_bytes().unwrap(), vec![0xe4, 0xbd, 0xa0]);
     assert_eq!(input_rows[2][2].to_bytes().unwrap(), vec![0xc3, 0xa9]);
     assert_eq!(input_rows[3][2].to_bytes().unwrap(), vec![0xe2, 0x82, b'A']);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -3080,61 +1694,10 @@ fn ready_value_shared_pool_case_sha2_ord_sql_values_and_metadata() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_case_sha2_ord_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_case_hash_ord_zero (id INT PRIMARY KEY, \
-             t VARCHAR(16), b VARBINARY(8), bits INT)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_case_hash_ord_zero VALUES \
-             (1,NULL,NULL,NULL),(2,'Ab',X'616263',256)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    for expression in ["LOWER(t)", "UPPER(t)", "SHA2(b,bits)", "ORD(t)"] {
-        for id in [1, 2] {
-            let sql = format!("SELECT {expression} FROM shared_case_hash_ord_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => {
-                    panic!("case/SHA2/ORD SQL must reach the zero-slot pool: {sql}: {other:?}")
-                }
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-            // Evaluation-origin 1105 is returned, not an Error warning row.
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_trim_split_pad_sql_values_metadata_and_packet_policy() {
+fn ready_value_lane_cache_trim_split_pad_sql_values_metadata_and_packet_policy() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3163,9 +1726,6 @@ fn ready_value_shared_pool_trim_split_pad_sql_values_metadata_and_packet_policy(
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -3317,89 +1877,10 @@ fn ready_value_shared_pool_trim_split_pad_sql_values_metadata_and_packet_policy(
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_trim_split_pad_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_trim_split_pad_zero (id INT PRIMARY KEY, \
-             t VARCHAR(16), d VARCHAR(8), n BIGINT, p VARCHAR(8))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_trim_split_pad_zero VALUES \
-             (1,NULL,NULL,NULL,NULL),(2,'ab','b',2,'x'),\
-             (3,'ab','b',NULL,'x'),(4,NULL,'b',-1,'x')",
-        )
-        .unwrap();
-    session
-        .vars
-        .set_system("max_allowed_packet", "1024".to_owned())
-        .unwrap();
-    assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Eight direct NULL/non-NULL calls; then a NULL length with non-NULL
-    // source, and a warning-bearing suppressed result whose source is NULL.
-    for (expression, id) in [
-        ("TRIM(t)", 1),
-        ("TRIM(t)", 2),
-        ("SUBSTRING_INDEX(t,d,n)", 1),
-        ("SUBSTRING_INDEX(t,d,n)", 2),
-        ("LPAD(t,n,p)", 1),
-        ("LPAD(t,n,p)", 2),
-        ("RPAD(t,n,p)", 1),
-        ("RPAD(t,n,p)", 2),
-        ("LPAD(t,n,p)", 3),
-        ("RPAD(t,n,p)", 4),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_trim_split_pad_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("trim/split/pad SQL must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        // The typed evaluation-origin 1105 is not a warning-buffer Error row.
-        if id == 4 {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1301,
-                    message: "Result of rpad() was larger than \
-                              max_allowed_packet (1024) - truncated"
-                        .to_owned(),
-                }]
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_log_pow_length_insert_sql_values_metadata_and_warnings() {
+fn ready_value_lane_cache_log_pow_length_insert_sql_values_metadata_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3442,9 +1923,6 @@ fn ready_value_shared_pool_log_pow_length_insert_sql_values_metadata_and_warning
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -3661,107 +2139,10 @@ fn ready_value_shared_pool_log_pow_length_insert_sql_values_metadata_and_warning
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_log_pow_length_insert_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_log_pow_length_insert_zero (id INT PRIMARY KEY, \
-             x DOUBLE, base DOUBLE, e DOUBLE, z VARBINARY(8), t VARCHAR(16), \
-             pos BIGINT, n BIGINT, r VARCHAR(1100))",
-        )
-        .unwrap();
-    let replacement = "中".repeat(342);
-    session
-        .run(&format!(
-            "INSERT INTO shared_log_pow_length_insert_zero VALUES \
-             (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
-             (2,1,2,2,X'FFFFFFFF00','abc',2,1,'{replacement}'),\
-             (3,0,2,2,X'',NULL,NULL,NULL,NULL),\
-             (4,NULL,NULL,NULL,X'000000',NULL,NULL,NULL,NULL)"
-        ))
-        .unwrap();
-    session
-        .vars
-        .set_system("max_allowed_packet", "1024".to_owned())
-        .unwrap();
-    assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Six families, NULL/non-NULL, with both LOG arities represented. The
-    // final two calls retain frontend diagnostics before the typed refusal.
-    for (expression, id) in [
-        ("LN(x)", 1),
-        ("LN(x)", 2),
-        ("LOG(x)", 1),
-        ("LOG(base,x)", 2),
-        ("LOG2(x)", 1),
-        ("LOG2(x)", 2),
-        ("POW(x,e)", 1),
-        ("POW(x,e)", 2),
-        ("UNCOMPRESSED_LENGTH(z)", 1),
-        ("UNCOMPRESSED_LENGTH(z)", 2),
-        ("INSERT(t,pos,n,r)", 1),
-        ("INSERT(t,pos,n,r)", 2),
-        ("LOG(x)", 3),
-        ("UNCOMPRESSED_LENGTH(z)", 4),
-    ] {
-        let sql =
-            format!("SELECT {expression} FROM shared_log_pow_length_insert_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("log/pow/length/insert SQL must reach the zero-slot pool: {sql}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        let expected_warning = match id {
-            3 => Some((3020, "Invalid argument for logarithm")),
-            4 => Some((1259, "ZLIB: Input data corrupted")),
-            _ => None,
-        };
-        if let Some((code, message)) = expected_warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            // INSERT id=2 would compute 1028 bytes, but packet policy is only
-            // read AFTER a successful kernel result. No pre-1301 is allowed.
-            // Evaluation-origin 1105 is returned, never an Error warning row.
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_substring_dispatch_sql_values_metadata_and_diagnostics() {
+fn ready_value_lane_cache_substring_dispatch_sql_values_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -3790,9 +2171,6 @@ fn ready_value_shared_pool_substring_dispatch_sql_values_metadata_and_diagnostic
              (2,'中ab',X'E4B8AD6162',2,1,18446744073709551615,'bad',0xE28241)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let assert_text = |value: &Datum, expected: Option<&str>| match expected {
         None => assert_eq!(value, &Datum::Null),
@@ -3950,84 +2328,10 @@ fn ready_value_shared_pool_substring_dispatch_sql_values_metadata_and_diagnostic
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_substring_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_substring_dispatch_zero (id INT PRIMARY KEY, \
-             t VARCHAR(16), b VARBINARY(16), p BIGINT, n BIGINT, s VARCHAR(8))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_substring_dispatch_zero VALUES \
-             (1,NULL,NULL,2,1,'bad'),(2,'abcd',X'61626364',0,1,'bad'),\
-             (3,'abcd',X'61626364',2,NULL,'bad'),\
-             (4,'abcd',X'61626364',2,9223372036854775807,'bad')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Existing legal NULL, empty, ordinary and overflow-empty results must
-    // still ask for a worker. These are ordinary SQL, not new PB admission.
-    for (expression, id, warns) in [
-        ("SUBSTRING(t,p)", 1, false),
-        ("MID(t,p,n)", 1, false),
-        ("SUBSTR(t,p)", 2, false),
-        ("SUBSTRING(t,p,n)", 2, false),
-        ("SUBSTRING(t,p)", 3, false),
-        ("SUBSTR(t,p,n)", 3, false),
-        ("MID(b,p,n)", 4, false),
-        ("SUBSTRING(t,s)", 2, false),
-        ("SUBSTRING(t,s,n)", 2, true),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_substring_dispatch_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("substring dispatch must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if warns {
-            // Only the pre-existing three-argument diagnostic survives. The
-            // returned evaluation-origin 1105 is not an Error warning row.
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: "Truncated incorrect INTEGER value: 'bad'".to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_collated_search_set_dispatch_sql_values_metadata_and_cache() {
+fn ready_value_lane_cache_collated_search_set_dispatch_sql_values_metadata_and_cache() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4053,9 +2357,6 @@ fn ready_value_shared_pool_collated_search_set_dispatch_sql_values_metadata_and_
              (5,'ẞ','s',X'E1BA9E',X'73',1,'a','a,a')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // One shared root, column-driven calls: no constant folding of a family.
     // INSTR reverses LOCATE's operands; POSITION has its own SQL grammar but
@@ -4122,79 +2423,10 @@ fn ready_value_shared_pool_collated_search_set_dispatch_sql_values_metadata_and_
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_collated_search_set_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_collated_search_set_zero (id INT PRIMARY KEY, \
-             h VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
-             n VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, p BIGINT, \
-             f VARCHAR(16) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
-             v VARCHAR(32) CHARSET utf8mb4 COLLATE utf8mb4_general_ci)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_collated_search_set_zero VALUES \
-             (1,NULL,NULL,NULL,NULL,NULL),\
-             (2,'é','e',1,' ','  , , ,'),(3,'','',1,'','')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Every family is called directly on NULL, ordinary, and empty columns;
-    // neither a legal result nor a constant-list cache hit may bypass C4.
-    // LOCATE3 and the constant-list cache get the same three probes as well.
-    for expression in [
-        "STRCMP(n,h)",
-        "LOCATE(n,h)",
-        "LOCATE(n,h,p)",
-        "INSTR(h,n)",
-        "POSITION(n IN h)",
-        "FIND_IN_SET(f,v)",
-        "FIND_IN_SET(f,'  , , ,')",
-    ] {
-        for id in 1..=3 {
-            let sql =
-                format!("SELECT {expression} FROM shared_collated_search_set_zero WHERE id={id}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => {
-                    panic!("collated search/set must reach the zero-slot pool: {sql}: {other:?}")
-                }
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-            // No cast/packet diagnostics, and the returned evaluation-origin
-            // 1105 is not appended as an Error warning row.
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata() {
+fn ready_value_lane_cache_variadic_oct_elt_dispatch_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4216,9 +2448,6 @@ fn ready_value_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata() {
              (5,'8',16,1,NULL,NULL,'|')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Six actual CONCAT/CONCAT_WS arguments and six ELT candidates, with a
     // stored selector reaching candidates 5 and 6. No SQL child-laziness claim:
@@ -4317,81 +2546,10 @@ fn ready_value_shared_pool_variadic_oct_elt_dispatch_sql_values_and_metadata() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_variadic_oct_elt_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_variadic_oct_elt_zero (id INT PRIMARY KEY, \
-             o VARCHAR(32) CHARSET utf8mb4, u BIGINT UNSIGNED, k BIGINT, \
-             t VARCHAR(8) CHARSET utf8mb4, s VARCHAR(1) CHARSET utf8mb4)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_variadic_oct_elt_zero VALUES \
-             (1,NULL,NULL,NULL,NULL,NULL),\
-             (2,'\u{00a0}8',18446744073709551615,5,'z','|'),\
-             (3,'',0,1,'',''),(4,' ',8,0,'A','|'),(5,'8',16,1,NULL,'|')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Calls are direct and column-driven. Legal NULL and empty results still
-    // demand a worker, including an invalid or selected-NULL ELT result.
-    for (expression, id) in [
-        ("OCT(o)", 1),
-        ("OCT(o)", 2),
-        ("OCT(o)", 3),
-        ("OCT(o)", 4),
-        ("OCT(u)", 2),
-        ("CONCAT(t,'','','','',t)", 1),
-        ("CONCAT(t,'','','','',t)", 2),
-        ("CONCAT(t,'','','','',t)", 3),
-        ("CONCAT_WS(s,t,'','','',t)", 1),
-        ("CONCAT_WS(s,t,'','','',t)", 2),
-        ("CONCAT_WS(s,t,'','','',t)", 3),
-        ("ELT(k,t,'2','3','4','5','6')", 1),
-        ("ELT(k,t,'2','3','4','5','6')", 2),
-        ("ELT(k,t,'2','3','4','5','6')", 3),
-        ("ELT(k,t,'2','3','4','5','6')", 4),
-        ("ELT(k,t,'2','3','4','5','6')", 5),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_variadic_oct_elt_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("variadic/OCT/ELT must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        // These tiny legal operands introduce no cast/packet diagnostic, and
-        // the returned evaluation-origin 1105 is never an Error warning row.
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_field_make_export_dispatch_sql_values_and_metadata() {
+fn ready_value_lane_cache_field_make_export_dispatch_sql_values_and_metadata() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4413,9 +2571,6 @@ fn ready_value_shared_pool_field_make_export_dispatch_sql_values_and_metadata() 
              (5,-1,9223372036854775808,'?',X'3F','Y','N',65)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // FIELD has five/six candidates and MAKE_SET has six, never the old
     // greater-than-64 shift-panic domain. These are value/metadata checks, not
@@ -4533,84 +2688,10 @@ fn ready_value_shared_pool_field_make_export_dispatch_sql_values_and_metadata() 
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_field_make_export_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_field_make_export_zero (id INT PRIMARY KEY, u BIGINT UNSIGNED, \
-             f VARCHAR(8) CHARSET utf8mb4 COLLATE utf8mb4_general_ci, \
-             a VARCHAR(8) CHARSET utf8mb4, z VARCHAR(8) CHARSET utf8mb4, c BIGINT)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_field_make_export_zero VALUES \
-             (1,NULL,NULL,NULL,NULL,NULL),(2,33,'b','Y','N',6),(3,32,'','','',0)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct calls, not another expression masking an unmigrated family.
-    // FIELD(NULL, ...) legally returns 0; MAKE_SET/EXPORT_SET really return
-    // NULL here. With empty labels EXPORT_SET3 still emits 63 commas, while
-    // EXPORT_SET4 and the zero-count EXPORT_SET5 have genuinely empty results.
-    for (expression, id) in [
-        ("FIELD(f,'a','B','c','d','b','')", 1),
-        ("FIELD(f,'a','B','c','d','b','')", 2),
-        ("FIELD(f,'a','B','c','d','b','')", 3),
-        ("FIELD(u,1,2,3,4,u)", 2),
-        ("FIELD(u,1e0,2,3,4,u)", 2),
-        ("MAKE_SET(u,a,'2','3','4','5',z)", 1),
-        ("MAKE_SET(u,a,'2','3','4','5',z)", 2),
-        ("MAKE_SET(u,a,'2','3','4','5',z)", 3),
-        ("EXPORT_SET(u,a,z)", 1),
-        ("EXPORT_SET(u,a,z)", 2),
-        ("EXPORT_SET(u,a,z)", 3),
-        ("EXPORT_SET(u,a,z,'')", 1),
-        ("EXPORT_SET(u,a,z,'')", 2),
-        ("EXPORT_SET(u,a,z,'')", 3),
-        ("EXPORT_SET(u,a,z,'',c)", 1),
-        ("EXPORT_SET(u,a,z,'',c)", 2),
-        ("EXPORT_SET(u,a,z,'',c)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_field_make_export_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("FIELD/MAKE_SET/EXPORT_SET must reach the zero-slot pool: {sql}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        // No coercion diagnostic is expected from these tiny typed operands;
-        // evaluation-origin 1105 is returned, not an Error warning row.
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_and_overflow() {
+fn ready_value_lane_cache_abs_round_decimal_dispatch_sql_values_metadata_and_overflow() {
     use tidb_datatype::FieldTypeCode::{Double, LongLong, NewDecimal};
 
     let mut session = Session::new();
@@ -4633,9 +2714,6 @@ fn ready_value_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_and_ov
              (5,-9223372036854775808,NULL,NULL,NULL,NULL,NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // The MIN row is reserved for the separate ABS diagnostic below. Small
     // declared-wide decimals select the decimal CEIL/FLOOR result domain too;
@@ -4773,79 +2851,10 @@ fn ready_value_shared_pool_abs_round_decimal_dispatch_sql_values_metadata_and_ov
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_abs_round_decimal_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_abs_round_decimal_zero (id INT PRIMARY KEY, i BIGINT, \
-             u BIGINT UNSIGNED, d DECIMAL(10,3), w DECIMAL(24,3), r DOUBLE, k BIGINT)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_abs_round_decimal_zero VALUES \
-             (1,NULL,NULL,NULL,NULL,NULL,NULL),(2,17,17,1.234,1.234,1.25e0,NULL)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // All are direct calls whose old SQL result is genuinely NULL. The last
-    // four have a non-NULL value and a stored NULL scale; neither boundary may
-    // bypass the shared pool. This is not a protobuf child-demand assertion.
-    for (expression, id) in [
-        ("ABS(i)", 1),
-        ("ABS(u)", 1),
-        ("ABS(d)", 1),
-        ("CEIL(d)", 1),
-        ("CEILING(w)", 1),
-        ("FLOOR(w)", 1),
-        ("ROUND(i)", 1),
-        ("ROUND(i,0)", 1),
-        ("ROUND(u,k)", 1),
-        ("ROUND(d,k)", 1),
-        ("ROUND(r)", 1),
-        ("TRUNCATE(u,k)", 1),
-        ("TRUNCATE(d,k)", 1),
-        ("ROUND(u,k)", 2),
-        ("ROUND(d,k)", 2),
-        ("TRUNCATE(u,k)", 2),
-        ("TRUNCATE(d,k)", 2),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_abs_round_decimal_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!(
-                "native numeric/decimal NULL must reach the zero-slot pool: {sql}: {other:?}"
-            ),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostics() {
+fn ready_value_lane_cache_char_conv_dispatch_sql_values_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -4868,9 +2877,6 @@ fn ready_value_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostic
              (5,4294967361,'-18446744073709551615',10,-16,NULL,NULL,NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Stored bases prevent folding the nine-byte binary literal. CONV must
     // preserve that literal through its native base-2 -> from -> to stages,
@@ -5014,80 +3020,10 @@ fn ready_value_shared_pool_char_conv_dispatch_sql_values_metadata_and_diagnostic
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_char_conv_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_char_conv_zero (id INT PRIMARY KEY, n BIGINT, \
-             v VARCHAR(32) CHARSET utf8mb4, f BIGINT, t BIGINT, u BIGINT UNSIGNED, b BIGINT)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_char_conv_zero VALUES \
-             (1,NULL,NULL,10,16,10,1),\
-             (2,65,'18446744073709551615',10,-10,18446744073709551606,1),\
-             (3,0,'',NULL,16,10,1)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct calls only: CHAR's all-NULL list is a genuine empty string;
-    // CONV has NULL digits/bases, an empty prefix returning "0", and a stored
-    // invalid base 1 returning NULL. None may bypass the shared pool. Do not
-    // use UnknownCharset to obscure the prior admission/discovery boundary.
-    for (expression, id) in [
-        ("CHAR(n)", 1),
-        ("CHAR(n)", 2),
-        ("CHAR(n)", 3),
-        ("CHAR(n,n,n,n,n)", 1),
-        ("CHAR(n,n,n,n,n)", 2),
-        ("CHAR(n,n,n,n,n USING utf8)", 1),
-        ("CHAR(n,n,n,n,n USING utf8)", 2),
-        ("CONV(v,f,t)", 1),
-        ("CONV(v,f,t)", 2),
-        ("CONV(v,u,t)", 2),
-        ("CONV(v,u,t)", 3),
-        ("CONV(v,f,t)", 3),
-        ("CONV(v,u,f)", 3),
-        ("CONV(v,b,t)", 2),
-        ("CONV(0x000000000000000020,f,t)", 2),
-        ("CONV(0x000000000000000020,f,t)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_char_conv_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("CHAR/CONV must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow() {
+fn ready_value_lane_cache_go_trig_dispatch_sql_bits_metadata_and_overflow() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5101,9 +3037,6 @@ fn ready_value_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow() {
              (1,NULL,1e0),(2,-1e0,1e0),(3,1e0,1e0),(4,0.5e0,NULL),(5,0e0,0e0)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Three copied sin/cos/tan vectors from math_fn/go_trig.rs's existing
     // Go-bit goldens, not stdlib calls or calls back into the shared kernel.
@@ -5202,71 +3135,10 @@ fn ready_value_shared_pool_go_trig_dispatch_sql_bits_metadata_and_overflow() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_go_trig_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_go_trig_zero (id INT PRIMARY KEY, x DOUBLE, y DOUBLE)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_go_trig_zero VALUES (1,NULL,1e0),(2,-1e0,1e0),(3,0.5e0,NULL)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Every native spelling, including both ATAN arities and ATAN2, must
-    // acquire the real worker for ordinary values and genuine NULL results.
-    // Direct stored-column calls prevent folding or an outer mask from
-    // supplying the failure. The final two calls isolate a NULL second arg.
-    for (expression, id) in [
-        ("SIN(x)", 1),
-        ("COS(x)", 1),
-        ("TAN(x)", 1),
-        ("COT(x)", 1),
-        ("ATAN(x)", 1),
-        ("ATAN(x,y)", 1),
-        ("ATAN2(x,y)", 1),
-        ("SIN(x)", 2),
-        ("COS(x)", 2),
-        ("TAN(x)", 2),
-        ("COT(x)", 2),
-        ("ATAN(x)", 2),
-        ("ATAN(x,y)", 2),
-        ("ATAN2(x,y)", 2),
-        ("ATAN(x,y)", 3),
-        ("ATAN2(x,y)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_go_trig_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("Go trig must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnostics() {
+fn ready_value_lane_cache_exp_log10_dispatch_sql_bits_metadata_and_diagnostics() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -5284,9 +3156,6 @@ fn ready_value_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnostics(
              (3,0e0,100e0,0e0,NULL),(4,0e0,NULL,-1e0,NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT EXP(x),LOG10(n) FROM shared_exp_log10 ORDER BY id")
@@ -5371,81 +3240,10 @@ fn ready_value_shared_pool_exp_log10_dispatch_sql_bits_metadata_and_diagnostics(
     );
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_exp_log10_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_exp_log10_zero (id INT PRIMARY KEY, e VARCHAR(16), n DOUBLE)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_exp_log10_zero VALUES (1,NULL,NULL),(2,'1.5',100e0),(3,'2020-01-01',0e0)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Coercion and LOG10's domain warning precede pool admission. Preserve
-    // those real warnings, then reject even NULL/invalid inputs with the real
-    // typed pool error; neither EXP overflow packing nor an Error warning row
-    // may replace that refusal. Every call uses stored columns, with no mask.
-    for (expression, id, warning) in [
-        ("EXP(e)", 1, None),
-        ("EXP(e)", 2, None),
-        (
-            "EXP(e)",
-            3,
-            Some((1292, "Truncated incorrect DOUBLE value: '2020-01-01'")),
-        ),
-        ("LOG10(n)", 1, None),
-        ("LOG10(n)", 2, None),
-        (
-            "LOG10(n)",
-            3,
-            Some((3020, "Invalid argument for logarithm")),
-        ),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_exp_log10_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("EXP/LOG10 must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if let Some((code, message)) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_and_diagnostics() {
+fn ready_value_lane_cache_compress_uncompress_dispatch_sql_bytes_metadata_and_diagnostics() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5474,9 +3272,6 @@ fn ready_value_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_and_d
              (5,NULL,x'0B0000001234'),(6,NULL,x'{wrong_len}'),(7,NULL,x'{truncated}')"
         ))
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { rows, .. } = session
         .run_with_columns(
@@ -5558,71 +3353,10 @@ fn ready_value_shared_pool_compress_uncompress_dispatch_sql_bytes_metadata_and_d
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_compress_uncompress_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_compress_uncompress_zero (id INT PRIMARY KEY, \
-             v VARBINARY(16), f VARBINARY(64))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_compress_uncompress_zero VALUES \
-             (1,NULL,NULL),(2,x'',x''),\
-             (3,x'68656C6C6F20776F726C64',x'0B000000789CCA48CDC9C95728CF2FCA4901040000FFFF1A0B045D'),\
-             (4,NULL,x'0B0000001234'),\
-             (5,NULL,x'02000000789CCB48CDC9C95728CF2FCA4901001A0B045D')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Do not use HEX or a roundtrip to mask a missed admission. Even NULL,
-    // empty, corrupt and over-limit inputs must reach the real worker. Zlib
-    // 1259/1258 belong to computed dispositions, not a pre-admission scan.
-    for (expression, id) in [
-        ("COMPRESS(v)", 1),
-        ("COMPRESS(v)", 2),
-        ("COMPRESS(v)", 3),
-        ("UNCOMPRESS(f)", 1),
-        ("UNCOMPRESS(f)", 2),
-        ("UNCOMPRESS(f)", 3),
-        ("UNCOMPRESS(f)", 4),
-        ("UNCOMPRESS(f)", 5),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_compress_uncompress_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("compression must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_json_report_dispatch_sql_values_metadata_and_errors() {
+fn ready_value_lane_cache_json_report_dispatch_sql_values_metadata_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5643,9 +3377,6 @@ fn ready_value_shared_pool_json_report_dispatch_sql_values_metadata_and_errors()
              (5,'a',NULL,NULL,NULL),(6,'',NULL,NULL,NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Native document parsing retains the signed i64 maximum and duplicate
     // keys are last-wins: the overwritten {"b":1} branch must not add depth.
@@ -5755,72 +3486,10 @@ fn ready_value_shared_pool_json_report_dispatch_sql_values_metadata_and_errors()
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_json_report_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_json_report_zero (id INT PRIMARY KEY, \
-             v VARCHAR(32) CHARSET utf8mb4, e VARCHAR(32) CHARSET utf8mb4, n BIGINT)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_json_report_zero VALUES \
-             (1,NULL,NULL,NULL),(2,'{\"a\":[1]}','{\"a\":[1]}',42),(3,'a','',42)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // NULL and ordinary text in all three forms, then malformed VALID/DEPTH
-    // and empty TYPE text. Parsing belongs to the actual kernel, so these must
-    // fail admission before any JSON-text error. Other-numeric VALID still
-    // needs the real worker even though its value is ignored by that signature.
-    for (expression, id) in [
-        ("JSON_VALID(v)", 1),
-        ("JSON_TYPE(e)", 1),
-        ("JSON_DEPTH(v)", 1),
-        ("JSON_VALID(v)", 2),
-        ("JSON_TYPE(e)", 2),
-        ("JSON_DEPTH(v)", 2),
-        ("JSON_VALID(v)", 3),
-        ("JSON_TYPE(e)", 3),
-        ("JSON_DEPTH(v)", 3),
-        ("JSON_VALID(n)", 2),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_json_report_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("JSON reports must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_json_storage_quote_dispatch_sql_values_metadata_and_errors() {
+fn ready_value_lane_cache_json_storage_quote_dispatch_sql_values_metadata_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -5840,9 +3509,6 @@ fn ready_value_shared_pool_json_storage_quote_dispatch_sql_values_metadata_and_e
              (7,x'070B3C3E26E280A8E280A9')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -5940,68 +3606,10 @@ fn ready_value_shared_pool_json_storage_quote_dispatch_sql_values_metadata_and_e
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_json_storage_quote_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_json_storage_quote_zero (id INT PRIMARY KEY, \
-             v VARCHAR(16) CHARSET utf8mb4, e VARCHAR(16) CHARSET utf8mb4)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_json_storage_quote_zero VALUES \
-             (1,NULL,NULL),(2,'null','null'),(3,'a','')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Direct calls only: all NULLs still need the worker, and malformed/empty
-    // storage documents cannot be parsed into a JSON error before admission.
-    for (expression, id) in [
-        ("JSON_STORAGE_FREE(v)", 1),
-        ("JSON_STORAGE_SIZE(e)", 1),
-        ("JSON_QUOTE(v)", 1),
-        ("JSON_STORAGE_FREE(v)", 2),
-        ("JSON_STORAGE_SIZE(e)", 2),
-        ("JSON_QUOTE(v)", 2),
-        ("JSON_STORAGE_FREE(v)", 3),
-        ("JSON_STORAGE_SIZE(e)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_json_storage_quote_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("JSON storage/quote must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_date_fields_dispatch_sql_values_metadata_and_coercion() {
+fn ready_value_lane_cache_date_fields_dispatch_sql_values_metadata_and_coercion() {
     let mut session = Session::new();
     session
         .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
@@ -6043,9 +3651,6 @@ fn ready_value_shared_pool_date_fields_dispatch_sql_values_metadata_and_coercion
     // Only ordinary setup SQL cleared the INSERT warning. No evaluation
     // warnings are manually drained or suppressed after installing the policy.
     assert!(warnings_of(&session).is_empty());
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -6138,84 +3743,10 @@ fn ready_value_shared_pool_date_fields_dispatch_sql_values_metadata_and_coercion
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_date_fields_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET sql_mode='STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE'")
-        .unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_date_fields_zero (id INT PRIMARY KEY, \
-             d DATETIME, s VARCHAR(32))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_date_fields_zero VALUES \
-             (1,NULL,NULL),(2,'2024-02-29 12:34:56','not-a-date')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // All four field operations use real nullable DATETIME columns. The last
-    // call keeps the original cast warning BEFORE resource refusal: its NULL
-    // result still needs a worker and must not become a successful SQL NULL.
-    for (expression, id, warning) in [
-        ("YEAR(d)", 1, None),
-        ("MONTH(d)", 1, None),
-        ("DAYOFMONTH(d)", 1, None),
-        ("QUARTER(d)", 1, None),
-        ("YEAR(d)", 2, None),
-        ("MONTH(d)", 2, None),
-        ("DAYOFMONTH(d)", 2, None),
-        ("QUARTER(d)", 2, None),
-        ("YEAR(s)", 2, Some("Incorrect datetime value: 'not-a-date'")),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_date_fields_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("date fields must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if let Some(message) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_policy() {
+fn ready_value_lane_cache_hms_dispatch_sql_values_metadata_and_native_text_policy() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6235,9 +3766,6 @@ fn ready_value_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_poli
         )
         .unwrap();
     assert!(warnings_of(&session).is_empty());
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Original native text rules, not an ETDuration cast or the legacy nanos
     // adapter: overflowing hours clamp the WHOLE clock; fractions do not round;
@@ -6299,62 +3827,10 @@ fn ready_value_shared_pool_hms_dispatch_sql_values_metadata_and_native_text_poli
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_hms_dispatch_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_hms_zero (id INT PRIMARY KEY, v VARCHAR(32))")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_hms_zero VALUES (1,NULL),(2,'10:30:45'),(3,'not a time')")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    // Parse-to-NULL is a computed result, not a pre-admission escape hatch.
-    // All three signatures, including NULL and bad text, use the real pool.
-    for (expression, id) in [
-        ("HOUR(v)", 1),
-        ("MINUTE(v)", 1),
-        ("SECOND(v)", 1),
-        ("HOUR(v)", 2),
-        ("MINUTE(v)", 2),
-        ("SECOND(v)", 2),
-        ("HOUR(v)", 3),
-        ("MINUTE(v)", 3),
-        ("SECOND(v)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_hms_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("HMS must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
 #[test]
-fn ready_value_shared_pool_monthname_time_to_sec_sql_values_metadata_and_warnings() {
+fn ready_value_lane_cache_monthname_time_to_sec_sql_values_metadata_and_warnings() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -6369,9 +3845,6 @@ fn ready_value_shared_pool_monthname_time_to_sec_sql_values_metadata_and_warning
          (6,'not-a-date','2017-12-01 02:00:05',NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Original independent parsers: month-zero is not a raw MONTH lookup;
     // duration overflow is NULL, junk/empty are zero, and fractions never round.
     let StmtOutput::Rows { columns, rows } = session
@@ -6435,73 +3908,10 @@ fn ready_value_shared_pool_monthname_time_to_sec_sql_values_metadata_and_warning
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_monthname_time_to_sec_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_monthname_ttsec_zero (id INT PRIMARY KEY, d VARCHAR(32), s VARCHAR(32))").unwrap();
-    session
-        .run(
-            "INSERT INTO shared_monthname_ttsec_zero VALUES \
-         (1,NULL,NULL),(2,'2017-12-01','-02:00:05.999'),(3,'not-a-date','junk')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // MONTHNAME's pre-cast warning survives refusal; TIME_TO_SEC's would-be
-    // zero is still a computed result and must not bypass the worker.
-    for (expression, id, warned) in [
-        ("MONTHNAME(d)", 1, false),
-        ("TIME_TO_SEC(s)", 1, false),
-        ("MONTHNAME(d)", 2, false),
-        ("TIME_TO_SEC(s)", 2, false),
-        ("MONTHNAME(d)", 3, true),
-        ("TIME_TO_SEC(s)", 3, false),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_monthname_ttsec_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("MONTHNAME/TIME_TO_SEC must reach the zero-slot pool: {sql}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if warned {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: "Incorrect datetime value: 'not-a-date'".to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
 
 #[test]
-fn ready_value_shared_pool_period_get_format_sql_values_metadata_and_errors() {
+fn ready_value_lane_cache_period_get_format_sql_values_metadata_and_errors() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -6521,9 +3931,6 @@ fn ready_value_shared_pool_period_get_format_sql_values_metadata_and_errors() {
              (6,0,3,0,201611,'unknown')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // All arithmetic answers are fixed old period vectors. In row one, a
     // NULL companion must win over invalid period zero in either position.
     let StmtOutput::Rows { columns, rows } = session
@@ -6599,67 +4006,10 @@ fn ready_value_shared_pool_period_get_format_sql_values_metadata_and_errors() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_period_get_format_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_period_format_zero (id INT PRIMARY KEY, \
-             p BIGINT, d BIGINT, a BIGINT, b BIGINT, loc VARCHAR(16))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_period_format_zero VALUES (1,0,NULL,NULL,0,NULL),\
-             (2,201611,2,201701,201611,'USA'),(3,0,3,0,201611,'unknown')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // NULL+invalid, ordinary values, and invalid/unknown all require a real
-    // lease. Neither a would-be NULL nor period 1210 may precede admission.
-    for (expression, id) in [
-        ("PERIOD_ADD(p,d)", 1),
-        ("PERIOD_DIFF(a,b)", 1),
-        ("GET_FORMAT(DATE,loc)", 1),
-        ("PERIOD_ADD(p,d)", 2),
-        ("PERIOD_DIFF(a,b)", 2),
-        ("GET_FORMAT(DATE,loc)", 2),
-        ("PERIOD_ADD(p,d)", 3),
-        ("PERIOD_DIFF(a,b)", 3),
-        ("GET_FORMAT(DATE,loc)", 3),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_period_format_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("period/format must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
-fn ready_value_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero() {
+fn ready_value_lane_cache_weekday_dayname_sql_values_metadata_and_year_zero() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -6674,9 +4024,6 @@ fn ready_value_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero() {
              (3,'0000-01-01'),(4,'2000-02-29'),(5,'2017-00-01'),(6,'2017-01-00')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Preserve the existing ETDatetime cast. Its legal year zero is not a
     // zero date; zero month/day survive the read cast but fail full validation.
     let StmtOutput::Rows { columns, rows } = session
@@ -6765,79 +4112,10 @@ fn ready_value_shared_pool_weekday_dayname_sql_values_metadata_and_year_zero() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_weekday_dayname_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_weekday_dayname_zero (id INT PRIMARY KEY, d VARCHAR(32))")
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_weekday_dayname_zero VALUES \
-             (1,NULL),(2,'2017-12-01'),(3,'not-a-date')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Each invalid text cast keeps its original 1292 before resource refusal;
-    // its resulting NULL must still enter the same worker as an ordinary date.
-    for (expression, id, warned) in [
-        ("DAYOFWEEK(d)", 1, false),
-        ("WEEKDAY(d)", 1, false),
-        ("DAYOFYEAR(d)", 1, false),
-        ("DAYNAME(d)", 1, false),
-        ("DAYOFWEEK(d)", 2, false),
-        ("WEEKDAY(d)", 2, false),
-        ("DAYOFYEAR(d)", 2, false),
-        ("DAYNAME(d)", 2, false),
-        ("DAYOFWEEK(d)", 3, true),
-        ("WEEKDAY(d)", 3, true),
-        ("DAYOFYEAR(d)", 3, true),
-        ("DAYNAME(d)", 3, true),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_weekday_dayname_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("weekday/dayname must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if warned {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: "Incorrect datetime value: 'not-a-date'".to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
 
 #[test]
-fn ready_value_shared_pool_date_serial_tso_logical_sql_values_and_metadata() {
+fn ready_value_lane_cache_date_serial_tso_logical_sql_values_and_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -6858,9 +4136,6 @@ fn ready_value_shared_pool_date_serial_tso_logical_sql_values_and_metadata() {
              (6,NULL,NULL,NULL,NULL,262143)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Text DATEDIFF is civil-date arithmetic and ignores the clock. TO_DAYS
     // and TO_SECONDS use strict datetime parsing and MySQL's day-number epoch;
     // year-zero Feb 29 -> Mar 1 is civil one day, not the legacy raw-core zero.
@@ -6912,85 +4187,10 @@ fn ready_value_shared_pool_date_serial_tso_logical_sql_values_and_metadata() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_date_serial_tso_logical_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_date_serial_zero (id INT PRIMARY KEY, \
-             l VARCHAR(32), r VARCHAR(32), d VARCHAR(32), n BIGINT)",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_date_serial_zero VALUES (1,NULL,NULL,NULL,NULL),\
-             (2,'2004-05-21','2004-01-02','2007-10-07 00:00:59',262144),\
-             (3,NULL,'not-a-date','not-a-date',0)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // DATEDIFF's NULL lhs must not suppress the rhs cast warning. All NULL
-    // terminals, including a non-positive logical TSO, still require a lease.
-    for (expression, id, warned) in [
-        ("DATEDIFF(l,r)", 1, false),
-        ("TO_DAYS(d)", 1, false),
-        ("TO_SECONDS(d)", 1, false),
-        ("TIDB_PARSE_TSO_LOGICAL(n)", 1, false),
-        ("DATEDIFF(l,r)", 2, false),
-        ("TO_DAYS(d)", 2, false),
-        ("TO_SECONDS(d)", 2, false),
-        ("TIDB_PARSE_TSO_LOGICAL(n)", 2, false),
-        ("DATEDIFF(l,r)", 3, true),
-        ("TO_DAYS(d)", 3, true),
-        ("TO_SECONDS(d)", 3, true),
-        ("TIDB_PARSE_TSO_LOGICAL(n)", 3, false),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_date_serial_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("date-serial/logical-TSO must reach the zero-slot pool: {sql}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if warned {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: "Incorrect datetime value: 'not-a-date'".to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
 
 #[test]
-fn ready_value_shared_pool_week_modes_sql_values_metadata_and_probe_order() {
+fn ready_value_lane_cache_week_modes_sql_values_metadata_and_probe_order() {
     let mut session = Session::new();
     session
         .run(
@@ -7008,9 +4208,6 @@ fn ready_value_shared_pool_week_modes_sql_values_metadata_and_probe_order() {
         .unwrap();
     // One slot is sufficient only if the first probe lease is released before
     // mode preparation and the final week worker. Invalid dates never read m.
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
             "SELECT WEEK(d),WEEK(d,m),WEEKOFYEAR(d),YEARWEEK(d),YEARWEEK(d,m) \
@@ -7074,7 +4271,7 @@ fn ready_value_shared_pool_week_modes_sql_values_metadata_and_probe_order() {
 }
 
 #[test]
-fn ready_value_shared_pool_password_sm3_sql_values_metadata_and_deprecation() {
+fn ready_value_lane_cache_password_sm3_sql_values_metadata_and_deprecation() {
     let mut session = Session::new();
     session.run("SET NAMES utf8mb4").unwrap();
     session
@@ -7086,9 +4283,6 @@ fn ready_value_shared_pool_password_sm3_sql_values_metadata_and_deprecation() {
     session
         .run("INSERT INTO shared_password_sm3 VALUES (1,NULL),(2,''),(3,'abc')")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT PASSWORD(v),SM3(v) FROM shared_password_sm3 ORDER BY id")
         .unwrap()
@@ -7141,85 +4335,10 @@ fn ready_value_shared_pool_password_sm3_sql_values_metadata_and_deprecation() {
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_week_password_sm3_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_week_auth_zero (id INT PRIMARY KEY, d VARCHAR(32), m VARBINARY(1), v VARCHAR(3))").unwrap();
-    session
-        .run(
-            "INSERT INTO shared_week_auth_zero VALUES (1,NULL,x'FF',NULL),\
-         (2,'2008-02-20',x'FF',''),(3,'not-a-date',x'FF','abc')",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    let date_warning = Some((1292, "Incorrect datetime value: 'not-a-date'"));
-    let password_warning = Some((
-        1681,
-        "PASSWORD is deprecated and will be removed in a future release.",
-    ));
-    // A valid date plus invalid UTF-8 mode must hit the probe's resource error
-    // before mode coercion. PASSWORD always emits its own warning first.
-    for (expression, id, warning) in [
-        ("WEEK(d,m)", 1, None),
-        ("WEEKOFYEAR(d)", 1, None),
-        ("YEARWEEK(d,m)", 1, None),
-        ("WEEK(d,m)", 2, None),
-        ("WEEKOFYEAR(d)", 2, None),
-        ("YEARWEEK(d,m)", 2, None),
-        ("WEEK(d,m)", 3, date_warning),
-        ("WEEKOFYEAR(d)", 3, date_warning),
-        ("YEARWEEK(d,m)", 3, date_warning),
-        ("PASSWORD(v)", 1, password_warning),
-        ("PASSWORD(v)", 2, password_warning),
-        ("PASSWORD(v)", 3, password_warning),
-        ("SM3(v)", 1, None),
-        ("SM3(v)", 2, None),
-        ("SM3(v)", 3, None),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_week_auth_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("week/auth must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if let Some((code, message)) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
 
 #[test]
-fn ready_value_shared_pool_make_date_from_days_sql_typed_dates_and_metadata() {
+fn ready_value_lane_cache_make_date_from_days_sql_typed_dates_and_metadata() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -7235,9 +4354,6 @@ fn ready_value_shared_pool_make_date_from_days_sql_typed_dates_and_metadata() {
          (5,-1,1,3652499),(6,10000,1,3652500)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
             "SELECT MAKEDATE(y,d),FROM_DAYS(n) FROM shared_date_constructors ORDER BY id",
@@ -7280,7 +4396,7 @@ fn ready_value_shared_pool_make_date_from_days_sql_typed_dates_and_metadata() {
 }
 
 #[test]
-fn ready_value_shared_pool_make_time_sec_to_time_sql_typed_durations_and_warnings() {
+fn ready_value_lane_cache_make_time_sec_to_time_sql_typed_durations_and_warnings() {
     let mut session = Session::new();
     session
         .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
@@ -7304,9 +4420,6 @@ fn ready_value_shared_pool_make_time_sec_to_time_sql_typed_durations_and_warning
         .unwrap();
     // MAKETIME's total-seconds call must release the one slot before its
     // independent FSP/formatter call; all outputs still pass the old TIME cast.
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
             "SELECT MAKETIME(h,m,s),SEC_TO_TIME(n),SEC_TO_TIME(r) \
@@ -7393,508 +4506,13 @@ fn ready_value_shared_pool_make_time_sec_to_time_sql_typed_durations_and_warning
     }
 }
 
-#[test]
-fn ready_value_shared_pool_zero_slots_reject_temporal_constructors_sql_columns() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_temporal_constructors_zero (id INT PRIMARY KEY, y BIGINT, \
-         d BIGINT, n BIGINT, h BIGINT, m BIGINT, s VARCHAR(16), v VARBINARY(16))",
-        )
-        .unwrap();
-    session.run(
-        "INSERT INTO shared_temporal_constructors_zero VALUES (1,NULL,NULL,NULL,NULL,NULL,NULL,NULL),\
-         (2,69,1,734927,12,15,'30.1','123.4'),(3,-1,1,3652425,12,60,'0','abc'),\
-         (4,NULL,1,0,NULL,0,'abc',x'FF')",
-    ).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    let bad_number = Some("Truncated incorrect DOUBLE value: 'abc'");
-    for (expression, id, warning) in [
-        ("MAKEDATE(y,d)", 1, None),
-        ("FROM_DAYS(n)", 1, None),
-        ("MAKETIME(h,m,s)", 1, None),
-        ("SEC_TO_TIME(v)", 1, None),
-        ("MAKEDATE(y,d)", 2, None),
-        ("FROM_DAYS(n)", 2, None),
-        ("MAKETIME(h,m,s)", 2, None),
-        ("SEC_TO_TIME(v)", 2, None),
-        ("MAKEDATE(y,d)", 3, None),
-        ("FROM_DAYS(n)", 3, None),
-        ("MAKETIME(h,m,s)", 3, None),
-        ("SEC_TO_TIME(v)", 3, bad_number),
-        ("FROM_DAYS(n)", 4, None),
-        ("MAKETIME(h,m,s)", 4, bad_number),
-        ("SEC_TO_TIME(v)", 4, None),
-    ] {
-        let sql =
-            format!("SELECT {expression} FROM shared_temporal_constructors_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("temporal constructors must reach the zero-slot pool: {sql}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if let Some(message) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
-#[test]
-fn ready_value_shared_pool_date_format_sql_values_context_and_refusals() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    let create =
-        "CREATE TABLE shared_date_format (id INT PRIMARY KEY, d VARCHAR(32), f VARBINARY(64))";
-    let insert = "INSERT INTO shared_date_format VALUES \
-         (1,'2023-07-14 09:30:00','%Y/%m/%d %H:%i'),(2,'2023-07-14','%W %M %e'),\
-         (3,NULL,'%Y'),(4,'2023-07-14',''),(5,'2023-07-14','trailing%'),\
-         (6,'not-a-date','%Y'),(7,'2007-10-07 23:59:61','%T'),\
-         (8,NULL,x'FF'),(9,'2023-07-14',x'FF')";
-    session.run(create).unwrap();
-    session.run(insert).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let StmtOutput::Rows { columns, rows } = session
-        .run_with_columns("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id<=5 ORDER BY id")
-        .unwrap()
-    else {
-        panic!("expected DATE_FORMAT rows")
-    };
-    assert_eq!(columns.len(), 1);
-    let field = &columns[0].1;
-    assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
-    assert_eq!((field.flen(), field.decimal()), (-1, -1));
-    assert_eq!(field.charset_name(), "utf8mb4");
-    assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
-    assert!(!field.is_unsigned());
-    assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
-    let text = |s: &str| {
-        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
-    };
-    // The first two answers are the old date_format_datediff_source fixtures.
-    // Empty/trailing masks retain calendar::date_format's native SQL profile,
-    // not the separate public raw-Time formatter's trailing-percent behavior.
-    assert_eq!(
-        rows,
-        vec![
-            vec![text("2023/07/14 09:30")],
-            vec![text("Friday July 14")],
-            vec![Datum::Null],
-            vec![text("")],
-            vec![text("trailing%")],
-        ]
-    );
-    assert!(warnings_of(&session).is_empty());
-    session
-        .run("SET collation_connection='utf8mb4_general_ci'")
-        .unwrap();
-    let StmtOutput::Rows { columns, rows } = session
-        .run_with_columns("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id=1")
-        .unwrap()
-    else {
-        panic!("expected connection-collated DATE_FORMAT")
-    };
-    assert_eq!(columns[0].1.charset_name(), "utf8mb4");
-    assert_eq!(
-        columns[0].1.collation(),
-        tidb_datatype::Collation::Utf8Mb4GeneralCi
-    );
-    assert_eq!(
-        rows,
-        vec![vec![Datum::new_collation_string(
-            b"2023/07/14 09:30".to_vec(),
-            tidb_datatype::Collation::Utf8Mb4GeneralCi,
-        )]]
-    );
-    assert!(warnings_of(&session).is_empty());
-    // The typed SQL argument cast runs before the formatter: unlike the
-    // untyped body's midnight fallback, a bad clock is NULL with native 8034.
-    for (id, code, message) in [
-        (6, 1292, "Incorrect datetime value: 'not-a-date'"),
-        (7, 8034, "Incorrect datetime value: '2007-10-07 23:59:61'"),
-    ] {
-        let sql = format!("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id={id}");
-        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
-            panic!("expected native date-cast NULL: {sql}")
-        };
-        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
-        assert_eq!(
-            session.warnings(),
-            &[SqlWarning {
-                level: WarningLevel::Warning,
-                code,
-                message: message.to_owned(),
-            }],
-            "{sql}"
-        );
-    }
-    // Both text coercions are demanded, even when the left datum is NULL.
-    for id in [8, 9] {
-        let sql = format!("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        assert!(
-            matches!(
-                &error,
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::Unsupported(message)
-                )) if message.starts_with("invalid UTF-8")
-            ),
-            "{sql}: {error:?}"
-        );
-    }
-    // Policy installation is one-shot; use a fresh session for real refusals.
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run(create).unwrap();
-    session.run(insert).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for (id, warning) in [
-        (1, None),
-        (3, None),
-        (4, None),
-        (6, Some((1292, "Incorrect datetime value: 'not-a-date'"))),
-        (
-            7,
-            Some((8034, "Incorrect datetime value: '2007-10-07 23:59:61'")),
-        ),
-    ] {
-        let sql = format!("SELECT DATE_FORMAT(d,f) FROM shared_date_format WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("DATE_FORMAT must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        // The pool's evaluation-origin 1105 adds no Error warning row.
-        if let Some((code, message)) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
 
-#[test]
-fn ready_value_shared_pool_time_format_sql_probe_order_metadata_and_refusals() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    let create =
-        "CREATE TABLE shared_time_format (id INT PRIMARY KEY, t VARCHAR(32), f VARBINARY(64))";
-    let insert = "INSERT INTO shared_time_format VALUES \
-         (1,'23:00:00','%H %k %h %I %l'),(2,'25:30:00','%H %i'),\
-         (3,'10:20:30.123456','%H %i %s %f'),(4,NULL,x'FF'),(5,'900:00:00',x'FF'),\
-         (6,'12:34:56',''),(7,'-25:30:00','%H|%k|%T|%h|%I|%l|%r|%p'),\
-         (8,'25:30:00','%H|%k|%T|%h|%I|%l|%r|%p'),(9,'23:00:00',x'FF')";
-    session.run(create).unwrap();
-    session.run(insert).unwrap();
-    // The probe must release its lease before the final formatter takes the
-    // only slot. Invalid/NULL durations must never decode the format column.
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let StmtOutput::Rows { columns, rows } = session
-        .run_with_columns("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id<=6 ORDER BY id")
-        .unwrap()
-    else {
-        panic!("expected TIME_FORMAT rows")
-    };
-    assert_eq!(columns.len(), 1);
-    let field = &columns[0].1;
-    assert_eq!(field.code(), tidb_datatype::FieldTypeCode::VarString);
-    assert_eq!((field.flen(), field.decimal()), (352, -1));
-    assert_eq!(field.charset_name(), "utf8mb4");
-    assert_eq!(field.collation(), tidb_datatype::Collation::Utf8Mb4Bin);
-    assert!(!field.is_unsigned());
-    assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
-    let text = |s: &str| {
-        Datum::new_collation_string(s.as_bytes().to_vec(), tidb_datatype::Collation::Utf8Mb4Bin)
-    };
-    // Old TestTimeFormat, duration_functions_source and fractional_duration_source.
-    assert_eq!(
-        rows,
-        vec![
-            vec![text("23 23 11 11 11")],
-            vec![text("25 30")],
-            vec![text("10 20 30 123456")],
-            vec![Datum::Null],
-            vec![Datum::Null],
-            vec![Datum::Null],
-        ]
-    );
-    // TIME_FORMAT's text-duration probe has no native ETDuration cast/warning.
-    assert!(warnings_of(&session).is_empty());
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns(
-            "SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id IN (7,8) ORDER BY id",
-        )
-        .unwrap()
-    else {
-        panic!("expected signed wide-hour formatting")
-    };
-    assert_eq!(rows.len(), 2);
-    let negative = cell_text(&rows[0][0]);
-    let positive = cell_text(&rows[1][0]);
-    let negative: Vec<_> = negative.split('|').collect();
-    let positive: Vec<_> = positive.split('|').collect();
-    assert_eq!(negative.len(), 8);
-    assert_eq!(positive.len(), 8);
-    // Source-body invariants: only H/k/T carry a sign; >24-hour p/r stay PM,
-    // unlike the separate public raw-duration formatter's periodic AM path.
-    for index in 0..3 {
-        assert_eq!(negative[index], format!("-{}", positive[index]));
-    }
-    assert_eq!(&negative[3..], &positive[3..]);
-    assert_eq!(positive[7], "PM");
-    assert!(positive[6].ends_with(" PM"));
-    assert!(warnings_of(&session).is_empty());
-    let error = session
-        .run_with_columns("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id=9")
-        .expect_err("valid duration must demand the invalid UTF-8 format");
-    assert!(
-        matches!(
-            &error,
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::Unsupported(message)
-            )) if message.starts_with("invalid UTF-8")
-        ),
-        "{error:?}"
-    );
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run(create).unwrap();
-    session.run(insert).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Includes NULL, invalid, empty-format and valid-plus-invalid-UTF8-format:
-    // even a NULL probe result must acquire the real pool before returning.
-    for id in [1, 4, 5, 6, 7, 9] {
-        let sql = format!("SELECT TIME_FORMAT(t,f) FROM shared_time_format WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("TIME_FORMAT must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
-#[test]
-fn ready_value_shared_pool_last_day_sql_typed_dates_warnings_and_refusals() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    let create = "CREATE TABLE shared_last_day (id INT PRIMARY KEY, d VARCHAR(40), n BIGINT)";
-    let insert = "INSERT INTO shared_last_day VALUES (1,'2003-02-05',950501),\
-         (2,'2004-02-05',NULL),(3,'2004-01-01 01:01:01',NULL),\
-         (4,'\u{2003}2004-02-05\u{2003}',NULL),(5,NULL,NULL),\
-         (6,'2007-10-07 23:59:61',NULL),(7,'not-a-date',NULL)";
-    session.run(create).unwrap();
-    session.run(insert).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    let StmtOutput::Rows { columns, rows } = session
-        .run_with_columns("SELECT LAST_DAY(d) FROM shared_last_day WHERE id<=5 ORDER BY id")
-        .unwrap()
-    else {
-        panic!("expected typed LAST_DAY rows")
-    };
-    assert_eq!(columns.len(), 1);
-    let field = &columns[0].1;
-    assert_eq!(field.code(), tidb_datatype::FieldTypeCode::Date);
-    assert_eq!((field.flen(), field.decimal()), (10, 0));
-    assert_eq!(field.charset_name(), "binary");
-    assert_eq!(field.collation(), tidb_datatype::Collation::Binary);
-    assert!(!field.is_unsigned());
-    assert!(!field.has_flag(tidb_datatype::FieldTypeFlags::IS_BOOLEAN));
-    // Original TestLastDay answers, including the same leap date after trim.
-    let expected = [
-        "2003-02-28",
-        "2004-02-29",
-        "2004-01-31",
-        "2004-02-29",
-        "NULL",
-    ];
-    assert_eq!(rows.len(), expected.len());
-    for (row, expected) in rows.iter().zip(expected) {
-        assert_eq!(row.len(), 1);
-        assert!(matches!(&row[0], Datum::Null | Datum::Time(_)));
-        assert_eq!(cell_text(&row[0]), expected);
-    }
-    assert!(warnings_of(&session).is_empty());
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns("SELECT LAST_DAY(n) FROM shared_last_day WHERE id=1")
-        .unwrap()
-    else {
-        panic!("expected compact numeric date")
-    };
-    assert!(matches!(&rows[0][0], Datum::Time(_)));
-    assert_eq!(cell_text(&rows[0][0]), "1995-05-31");
-    assert!(warnings_of(&session).is_empty());
-    for (id, code, message) in [
-        (6, 8034, "Incorrect datetime value: '2007-10-07 23:59:61'"),
-        (7, 1292, "Incorrect datetime value: 'not-a-date'"),
-    ] {
-        let sql = format!("SELECT LAST_DAY(d) FROM shared_last_day WHERE id={id}");
-        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap() else {
-            panic!("expected invalid date/clock NULL: {sql}")
-        };
-        assert_eq!(rows, vec![vec![Datum::Null]], "{sql}");
-        assert_eq!(
-            session.warnings(),
-            &[SqlWarning {
-                level: WarningLevel::Warning,
-                code,
-                message: message.to_owned(),
-            }],
-            "{sql}"
-        );
-    }
-    // Policy installation is one-shot; use a fresh session for real refusals.
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run(create).unwrap();
-    session.run(insert).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for (id, warning) in [
-        (1, None),
-        (4, None),
-        (5, None),
-        (
-            6,
-            Some((8034, "Incorrect datetime value: '2007-10-07 23:59:61'")),
-        ),
-        (7, Some((1292, "Incorrect datetime value: 'not-a-date'"))),
-    ] {
-        let sql = format!("SELECT LAST_DAY(d) FROM shared_last_day WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("LAST_DAY must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        // Preserve only pre-admission cast diagnostics, never an Error 1105 row.
-        if let Some((code, message)) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
+
+
+
 
 #[test]
 fn ready_value_uuid_translate_uuid_values_metadata_and_diagnostics() {
@@ -7917,9 +4535,6 @@ fn ready_value_uuid_translate_uuid_values_metadata_and_diagnostics() {
          (9,'abc','1','a'),(10,' 6ccd780c-baba-1026-9564-5b8c656024db',NULL,'a')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session.run_with_columns(
         "SELECT IS_UUID(u),UUID_VERSION(u),UUID_TIMESTAMP(u) FROM shared_uuid_values WHERE id<=6 ORDER BY id",
     ).unwrap() else { panic!("expected UUID scalar rows") };
@@ -8094,9 +4709,6 @@ fn ready_value_uuid_translate_byte_rune_results_and_null_demand() {
          (4,NULL,'a','b',NULL,x'FF',x'FF',0xFF)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session.run_with_columns(
         "SELECT TRANSLATE(s,f,t),TRANSLATE(s,bf,t),TRANSLATE(bs,f,bt) FROM shared_translate_values ORDER BY id",
     ).unwrap() else { panic!("expected byte/rune TRANSLATE rows") };
@@ -8158,87 +4770,7 @@ fn ready_value_uuid_translate_byte_rune_results_and_null_demand() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_uuid_translate_zero_slots_preserve_resources_and_flag_warnings() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run(
-        "CREATE TABLE shared_uuid_translate_zero (id INT PRIMARY KEY, u VARCHAR(64), b VARBINARY(16), \
-         flag VARCHAR(8), s VARCHAR(16), f VARCHAR(16), t VARCHAR(16), l VARCHAR(8) CHARSET latin1)",
-    ).unwrap();
-    session.run(
-        "INSERT INTO shared_uuid_translate_zero VALUES \
-         (1,'6ccd780c-baba-1026-9564-5b8c656024db',x'6CCD780CBABA102695645B8C656024DB','0','abcabc','ab','xy',0xFF),\
-         (2,NULL,NULL,'a',NULL,'ab','xy',0xFF)",
-    ).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for (expression, id, warned) in [
-        ("IS_UUID(u)", 1, false),
-        ("UUID_VERSION(u)", 1, false),
-        ("UUID_TIMESTAMP(u)", 1, false),
-        ("UUID_TO_BIN(u,flag)", 1, false),
-        ("BIN_TO_UUID(b,flag)", 1, false),
-        ("TRANSLATE(s,f,t)", 1, false),
-        ("IS_UUID(u)", 2, false),
-        ("UUID_VERSION(u)", 2, false),
-        ("UUID_TIMESTAMP(u)", 2, false),
-        ("UUID_TO_BIN(u,flag)", 2, false),
-        ("BIN_TO_UUID(b,flag)", 2, true),
-        ("TRANSLATE(s,l,t)", 2, false),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_uuid_translate_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("UUID/TRANSLATE must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if warned {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: "Truncated incorrect INTEGER value: 'a'".to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-    // The same nonbinary FF column is demanded for a non-NULL source: the
-    // original preparation error, not a substituted pool failure, must win.
-    let error = session
-        .run_with_columns("SELECT TRANSLATE(s,l,t) FROM shared_uuid_translate_zero WHERE id=1")
-        .expect_err("demanded UTF-8 preparation must precede pool admission");
-    assert!(matches!(
-        &error,
-        DriverError::Exec(tidb_executor::ExecError::Eval(
-            tidb_executor::EvalError::Unsupported("invalid UTF-8 string datum")
-        ))
-    ));
-    assert!(warnings_of(&session).is_empty());
-}
+
 
 #[test]
 fn ready_value_crypt_hash_format_stream_direction_values_and_metadata() {
@@ -8255,9 +4787,6 @@ fn ready_value_crypt_hash_format_stream_direction_values_and_metadata() {
          (4,'pingcap',x'CE5C02A5010010','密匙'),(5,'data',x'0001',NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns("SELECT ENCODE(c,p),DECODE(d,p) FROM shared_crypt_stream ORDER BY id")
         .unwrap()
@@ -8322,9 +4851,6 @@ fn ready_value_crypt_hash_format_numeric_values_metadata_and_coercion() {
          (8,NULL,1023,999,NULL,NULL),(9,NULL,1024,1000,NULL,NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
             "SELECT TIDB_SHARD(h),VITESS_HASH(h),FORMAT_BYTES(b),FORMAT_NANO_TIME(n) \
@@ -8488,95 +5014,7 @@ fn ready_value_crypt_hash_format_numeric_values_metadata_and_coercion() {
     }
 }
 
-#[test]
-fn ready_value_crypt_hash_format_zero_slots_preserve_resources_and_warnings() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_crypt_hash_format_zero (id INT PRIMARY KEY, d VARBINARY(32), \
-         c VARBINARY(32), p VARBINARY(32), h VARCHAR(32), b VARCHAR(32), n VARCHAR(32))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_crypt_hash_format_zero VALUES \
-         (1,'pingcap',x'2C35B5A4ADF391','1234567890123456','abc','abc','1e9999'),\
-         (2,NULL,NULL,x'FF',NULL,NULL,NULL),(3,'data',x'0001',NULL,NULL,NULL,NULL)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for (expression, id, warning) in [
-        ("ENCODE(c,p)", 1, None),
-        ("DECODE(d,p)", 1, None),
-        (
-            "TIDB_SHARD(h)",
-            1,
-            Some("Truncated incorrect INTEGER value: 'abc'"),
-        ),
-        (
-            "VITESS_HASH(h)",
-            1,
-            Some("Truncated incorrect INTEGER value: 'abc'"),
-        ),
-        (
-            "FORMAT_BYTES(b)",
-            1,
-            Some("Truncated incorrect DOUBLE value: 'abc'"),
-        ),
-        (
-            "FORMAT_NANO_TIME(n)",
-            1,
-            Some("Truncated incorrect DOUBLE value: '1e9999'"),
-        ),
-        ("ENCODE(c,p)", 2, None),
-        ("DECODE(d,p)", 3, None),
-        ("TIDB_SHARD(h)", 2, None),
-        ("VITESS_HASH(h)", 2, None),
-        ("FORMAT_BYTES(b)", 2, None),
-        ("FORMAT_NANO_TIME(n)", 2, None),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_crypt_hash_format_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("crypt/hash/format must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        if let Some(message) = warning {
-            assert_eq!(
-                session.warnings(),
-                &[SqlWarning {
-                    level: WarningLevel::Warning,
-                    code: 1292,
-                    message: message.to_owned(),
-                }],
-                "{sql}"
-            );
-        } else {
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
 
 #[test]
 fn ready_value_vector_stored_values_metadata_and_native_formatting() {
@@ -8593,9 +5031,6 @@ fn ready_value_vector_stored_values_metadata_and_native_formatting() {
          (4,'[-0,0]','[1,0]','[-0,1e-8,1e10]'),(5,'[3e38]','[-3e38]',NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { columns, rows } = session.run_with_columns(
         "SELECT VEC_AS_TEXT(a),VEC_FROM_TEXT(t),VEC_DIMS(a),VEC_L1_DISTANCE(a,b),\
          VEC_L2_DISTANCE(a,b),VEC_NEGATIVE_INNER_PRODUCT(a,b),VEC_COSINE_DISTANCE(a,b),VEC_L2_NORM(a) \
@@ -8737,9 +5172,6 @@ fn ready_value_vector_sql_errors_preserve_left_first_demand() {
          (2,'abc',NULL,'abc'),(3,'[1]','[1,2]','[-1e39,1e39]')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let StmtOutput::Rows { rows, .. } = session
         .run_with_columns(
             "SELECT VEC_L1_DISTANCE(l,r),VEC_L2_DISTANCE(l,r),VEC_NEGATIVE_INNER_PRODUCT(l,r),\
@@ -8802,70 +5234,7 @@ fn ready_value_vector_sql_errors_preserve_left_first_demand() {
     }
 }
 
-#[test]
-fn ready_value_vector_zero_slots_reject_all_eight_families_and_nulls() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run(
-        "CREATE TABLE shared_vector_zero (id INT PRIMARY KEY, a VECTOR, b VECTOR, t VARCHAR(64), raw VARBINARY(64))",
-    ).unwrap();
-    session
-        .run(
-            "INSERT INTO shared_vector_zero VALUES (1,'[3,4]','[0,0]','[1,2]','[1,2]'),\
-         (2,NULL,NULL,NULL,'abc'),(3,'[3,4]',NULL,'abc',x'FF'),(4,'[1]','[1,2]',NULL,NULL)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Eight non-NULL inputs and eight actual NULL paths. The FROM_TEXT and
-    // L2 non-NULL cases deliberately make errors that belong to the worker:
-    // pool refusal must win over its UTF-8 parser and dimension comparison.
-    for (expression, id) in [
-        ("VEC_AS_TEXT(a)", 1),
-        ("VEC_FROM_TEXT(raw)", 3),
-        ("VEC_DIMS(a)", 1),
-        ("VEC_L1_DISTANCE(a,b)", 1),
-        ("VEC_L2_DISTANCE(a,b)", 4),
-        ("VEC_NEGATIVE_INNER_PRODUCT(a,b)", 1),
-        ("VEC_COSINE_DISTANCE(a,b)", 1),
-        ("VEC_L2_NORM(a)", 1),
-        ("VEC_AS_TEXT(a)", 2),
-        ("VEC_FROM_TEXT(t)", 2),
-        ("VEC_DIMS(a)", 2),
-        ("VEC_L1_DISTANCE(a,raw)", 2),
-        ("VEC_L2_DISTANCE(a,raw)", 2),
-        ("VEC_NEGATIVE_INNER_PRODUCT(a,b)", 3),
-        ("VEC_COSINE_DISTANCE(a,b)", 3),
-        ("VEC_L2_NORM(a)", 2),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_vector_zero WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("vectors must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_regexp_sql_values_metadata_and_demand_order() {
@@ -8886,9 +5255,6 @@ fn ready_value_regexp_sql_values_metadata_and_demand_order() {
          (2,'你好啊','好','的',2,1,''),(3,'seafood fool','foo(.?)','z\\\\12',3,0,'')",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Literal and per-row column patterns share one pool, not one regex cache.
     let StmtOutput::Rows { columns, rows } = session
         .run_with_columns(
@@ -9058,57 +5424,7 @@ fn invalid_constant_regexp_is_compiled_only_in_a_demanded_control_branch() {
     );
 }
 
-#[test]
-fn ready_value_regexp_zero_slots_reject_named_calls_and_null_paths() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_regexp_zero (id INT PRIMARY KEY, s VARCHAR(32), p VARCHAR(32), repl VARCHAR(8))").unwrap();
-    session
-        .run("INSERT INTO shared_regexp_zero VALUES (1,'abc abd','ab.','X')")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for expression in [
-        "REGEXP_LIKE(s,p)",
-        "REGEXP_SUBSTR(s,p)",
-        "REGEXP_INSTR(s,p)",
-        "REGEXP_REPLACE(s,p,repl)",
-        "REGEXP_LIKE(s,p,NULL)",
-        "REGEXP_SUBSTR(s,p,0,1,NULL)",
-        "REGEXP_INSTR(s,p,0,1,0,NULL)",
-        "REGEXP_REPLACE(s,p,repl,0,0,NULL)",
-        // return_option validation belongs to the worker; an unadmitted call
-        // cannot report that SQL failure or pretend the undemanded flags won.
-        "REGEXP_INSTR(s,p,0,1,2,NULL)",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_regexp_zero WHERE id=1");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("named regexps must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
@@ -9121,9 +5437,6 @@ fn ready_value_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
         .run("CREATE TABLE shared_like_sql (id INT PRIMARY KEY, s VARCHAR(16), p VARCHAR(16))")
         .unwrap();
     session.run("INSERT INTO shared_like_sql VALUES (1,'ABC','a%'),(2,'ü','Ü'),(3,'%','A%'),(4,NULL,'a%'),(5,'a',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Dynamic patterns and context-cached literal patterns use the same actual
     // statement pool. ILIKE only lowers ASCII; collated LIKE also folds ü/Ü.
     for _ in 0..2 {
@@ -9178,267 +5491,9 @@ fn ready_value_like_ilike_sql_columns_cache_unicode_escape_and_nulls() {
     }
 }
 
-#[test]
-fn ready_value_like_ilike_zero_slots_reject_columns_cache_and_nulls() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE shared_like_zero (id INT PRIMARY KEY, s VARCHAR(16), p VARCHAR(16))")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_like_zero VALUES (1,'ABC','a%'),(2,NULL,'a%'),(3,'a',NULL)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // SHOW has a real candidate; empty metadata cannot establish admission.
-    let mut queries = vec![
-        "SHOW TABLES LIKE 'shared_like_zero'".to_owned(),
-        "SHOW TABLES WHERE Tables_in_test LIKE 'shared_like_zero'".to_owned(),
-    ];
-    for id in 1..=3 {
-        for expression in [
-            "s LIKE p",
-            "s ILIKE p",
-            "s NOT LIKE p",
-            "s NOT ILIKE p",
-            "s LIKE 'a%'",
-            "s ILIKE 'a%'",
-            "s ILIKE p ESCAPE 'A'",
-        ] {
-            queries.push(format!(
-                "SELECT {expression} FROM shared_like_zero WHERE id={id}"
-            ));
-        }
-    }
-    for sql in queries {
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("LIKE/ILIKE must reach the actual zero-slot scope: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
 
-#[test]
-fn ready_value_unary_sql_preserves_identity_negation_and_overflow_domains() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run(
-            "CREATE TABLE shared_unary_sql (id INT PRIMARY KEY, i BIGINT, u BIGINT UNSIGNED, \
-         d DECIMAL(6,2), r DOUBLE, s VARCHAR(16))",
-        )
-        .unwrap();
-    session
-        .run(
-            "INSERT INTO shared_unary_sql VALUES \
-         (1,2,3,1.25,1.5e0,'2.5'),(2,0,0,0.00,0.0e0,'-0.0'),\
-         (3,-9223372036854775808,9223372036854775808,-2.50,0.0e0,'1界'),\
-         (4,1,9223372036854775809,2.00,2.0e0,'0'),(5,NULL,NULL,NULL,NULL,NULL)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
-    // Original rewriter unary-plus is the argument itself. Minus keeps each
-    // numeric domain, while its string arm uses the original real coercion.
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns(
-            "SELECT -i,-u,+d,-d,+r,-r,+s,-s FROM shared_unary_sql \
-         WHERE id IN (1,2,5) ORDER BY id",
-        )
-        .unwrap()
-    else {
-        panic!("expected stored unary rows")
-    };
-    assert_eq!(rows.len(), 3);
-    for row in &rows {
-        assert_eq!(row.len(), 8);
-    }
-    for (value, expected) in rows[0]
-        .iter()
-        .zip(["-2", "-3", "1.25", "-1.25", "1.5", "-1.5", "2.5", "-2.5"])
-    {
-        assert_eq!(cell_text(value), expected);
-    }
-    for index in [0, 1] {
-        assert!(matches!(&rows[0][index], Datum::Int(_)));
-    }
-    for index in [2, 3] {
-        assert!(matches!(&rows[0][index], Datum::Decimal(_)));
-    }
-    for index in [4, 5, 7] {
-        assert!(matches!(&rows[0][index], Datum::Real(_)));
-    }
-    assert!(matches!(&rows[0][6], Datum::String(_)));
-    assert_eq!(rows[1][0], Datum::Int(0));
-    assert_eq!(rows[1][1], Datum::Int(0));
-    assert_eq!(cell_text(&rows[1][2]), "0.00");
-    assert_eq!(cell_text(&rows[1][3]), "0.00");
-    assert_eq!(cell_text(&rows[1][6]), "-0.0");
-    // Hand-derived from unary f64 negation and StrToFloat: +0 -> -0;
-    // the stored text -0.0 first parses to -0, then negates to +0.
-    for (index, bits) in [
-        (4, 0.0_f64.to_bits()),
-        (5, (-0.0_f64).to_bits()),
-        (7, 0.0_f64.to_bits()),
-    ] {
-        assert!(matches!(&rows[1][index], Datum::Real(value) if value.to_bits() == bits));
-    }
-    assert_eq!(rows[2], vec![Datum::Null; 8]);
-    assert!(warnings_of(&session).is_empty());
 
-    // Old source vectors: unsigned 2^63 can negate to signed MIN; only
-    // overflowing CONSTANTS promote to Decimal (builtin_op's typeInfer).
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns(
-            "SELECT +7,-7,+'3',-'3',-9223372036854775808,\
-         -(-9223372036854775808),-9223372036854775809",
-        )
-        .unwrap()
-    else {
-        panic!("expected original unary constant domains")
-    };
-    assert_eq!(rows.len(), 1);
-    let row = &rows[0];
-    assert_eq!(row.len(), 7);
-    assert_eq!(row[0], Datum::Int(7));
-    assert_eq!(row[1], Datum::Int(-7));
-    assert!(matches!(&row[2], Datum::String(_)));
-    assert_eq!(cell_text(&row[2]), "3");
-    assert_eq!(row[3], Datum::Real(-3.0));
-    assert_eq!(row[4], Datum::Int(i64::MIN));
-    for (index, expected) in [(5, "9223372036854775808"), (6, "-9223372036854775809")] {
-        assert!(matches!(&row[index], Datum::Decimal(_)));
-        assert_eq!(cell_text(&row[index]), expected);
-    }
-    assert!(warnings_of(&session).is_empty());
-
-    // Source-derived UTF-8 combination: the byte-prefix scan stops at 界,
-    // so only minus coerces 1界 to 1 and emits one original 1292 warning.
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns("SELECT -u,+i,+s,-s FROM shared_unary_sql WHERE id=3")
-        .unwrap()
-    else {
-        panic!("expected unsigned boundary and string coercion")
-    };
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0][0], Datum::Int(i64::MIN));
-    assert_eq!(rows[0][1], Datum::Int(i64::MIN));
-    assert!(matches!(&rows[0][2], Datum::String(_)));
-    assert_eq!(cell_text(&rows[0][2]), "1界");
-    assert_eq!(rows[0][3], Datum::Real(-1.0));
-    assert_eq!(
-        session.warnings(),
-        &[SqlWarning {
-            level: WarningLevel::Warning,
-            code: 1292,
-            message: "Truncated incorrect DOUBLE value: '1界'".to_owned(),
-        }]
-    );
-
-    // Unlike ABS, old unary integer overflow quotes the negated VALUE, not
-    // the column name. The signed minimum consequently carries two minuses.
-    for (column, id, operand) in [
-        ("i", 3, "--9223372036854775808"),
-        ("u", 4, "-9223372036854775809"),
-    ] {
-        let sql = format!("SELECT -{column} FROM shared_unary_sql WHERE id={id}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        assert!(
-            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
-            tidb_executor::EvalError::DataOutOfRange { value: "BIGINT", expression }
-        )) if expression.as_str() == operand),
-            "{sql}: {error:?}"
-        );
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1690, "{sql}");
-        assert_eq!(mysql.state, *b"22003", "{sql}");
-        assert_eq!(
-            mysql.message,
-            format!("BIGINT value is out of range in '{operand}'"),
-            "{sql}"
-        );
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-
-    let mut zero = Session::new();
-    zero.run("SET NAMES utf8mb4").unwrap();
-    zero.run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    zero.run("CREATE TABLE shared_unary_zero (i BIGINT, u BIGINT UNSIGNED, d DECIMAL(6,2), r DOUBLE, s VARCHAR(16), n BIGINT)").unwrap();
-    zero.run("INSERT INTO shared_unary_zero VALUES (2,3,1.25,1.5e0,'2.5',NULL)")
-        .unwrap();
-    assert!(zero
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // SQL plus is eliminated even for strings/NULL, not a fabricated runtime
-    // worker call. Do not demand PoolResource or a plus trace for this identity.
-    let StmtOutput::Rows { rows, .. } = zero
-        .run_with_columns("SELECT +i,+u,+d,+r,+s,+n FROM shared_unary_zero")
-        .unwrap()
-    else {
-        panic!("expected plus identity without a worker")
-    };
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].len(), 6);
-    for (value, expected) in rows[0].iter().zip(["2", "3", "1.25", "1.5", "2.5", "NULL"]) {
-        assert_eq!(cell_text(value), expected);
-    }
-    assert_eq!(rows[0][0], Datum::Int(2));
-    assert_eq!(rows[0][1], Datum::UInt(3));
-    assert!(matches!(&rows[0][4], Datum::String(_)));
-    assert!(warnings_of(&zero).is_empty());
-    for column in ["i", "u", "d", "r", "s", "n"] {
-        let sql = format!("SELECT -{column} FROM shared_unary_zero");
-        let error = zero.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("stored unary minus must reach the zero-slot pool: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&zero).is_empty(), "{sql}");
-    }
-}
 
 #[test]
 fn shared_scalar_datum_preserves_json_float_and_hybrid_numeric_consumers() {
@@ -9447,9 +5502,6 @@ fn shared_scalar_datum_preserves_json_float_and_hybrid_numeric_consumers() {
     session
         .run("INSERT INTO shared_scalar_datum_sql VALUES ('2.5','word','a,c',b'0011')")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9492,9 +5544,6 @@ fn shared_decimal_context_preserves_temporal_arguments_and_fractional_projection
         )
         .unwrap();
     session.run("INSERT INTO shared_decimal_context_sql VALUES ('2024-02-03 04:05:06.125','11:22:33.125',1.0000)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9538,9 +5587,6 @@ fn shared_integer_argument_preserves_json_prefix_hybrid_and_unsigned_source_rule
     session
         .run("INSERT INTO shared_arg_integer_sql VALUES ('3.5','word','a,c',1.0)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9574,9 +5620,6 @@ fn shared_decimal_datum_preserves_unsigned_hybrid_bit_and_json_consumers() {
     let mut session = Session::new();
     session.run("CREATE TABLE shared_decimal_datum_sql (e ENUM('other','word'), s SET('a','b','c'), b BIT(64), j JSON)").unwrap();
     session.run("INSERT INTO shared_decimal_datum_sql VALUES ('word','a,c',x'ffffffffffffffff','18446744073709551615')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9612,9 +5655,6 @@ fn shared_argument_string_preserves_binary_names_float_display_and_widths() {
     session
         .run("INSERT INTO shared_arg_string_sql VALUES (b'11111111','word',1e30,1.20,x'ff00')")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9651,9 +5691,6 @@ fn shared_datetime_controller_preserves_source_parsers_date_clock_and_diagnostic
         .unwrap();
     session.run("CREATE TABLE shared_datetime_control_sql (s VARCHAR(64), n DECIMAL(12,4), u BIGINT UNSIGNED, bad VARCHAR(16), edge VARCHAR(64))").unwrap();
     session.run("INSERT INTO shared_datetime_control_sql VALUES ('2024-02-29 12:34:56.123456',121212.1111,18446744073709551615,'bad','2011-03-13 01:59:59.9999999')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9708,9 +5745,6 @@ fn shared_year_controller_preserves_clock_date_prefix_and_unsigned_fallback() {
     session.run("SET timestamp=1609459200").unwrap();
     session.run("CREATE TABLE shared_year_control_sql (d TIME(3), date_text VARCHAR(32), prefix_text VARCHAR(32), u BIGINT UNSIGNED)").unwrap();
     session.run("INSERT INTO shared_year_control_sql VALUES ('00:20:12.250','2024-01-02','42tail',18446744073709551615)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9751,9 +5785,6 @@ fn native_signed_datum_preserves_hybrid_ordinals_and_temporal_carry_in_sql() {
     session.run("SET time_zone='America/Los_Angeles'").unwrap();
     session.run("CREATE TABLE native_signed_datum_sql (e ENUM('other','word'), s SET('a','b','c'), t DATETIME(6), d TIME(6))").unwrap();
     session.run("INSERT INTO native_signed_datum_sql VALUES ('word','a,c','2011-03-13 01:59:59.999999','11:59:59.999999')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -9812,9 +5843,6 @@ fn native_temporal_calendar_preserves_statement_clock_year_fields_and_dst_bounda
     session
         .run("CREATE TABLE native_temporal_gap_sql (ts TIMESTAMP)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // The actual SET timestamp API fixes 2021-01-01 00:00:00 UTC. YEAR uses
     // the normal false-concat mode; DATETIME's existing duration controller
     // uses now()'s fixed offset. Neither is a numeric rendering of 00:20:12.
@@ -10014,9 +6042,6 @@ fn native_duration_control_preserves_sql_source_rounding_overflow_and_storage() 
             ),
         ]
     );
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     type Cell = Option<(i64, &'static str)>;
     let cases: [(&str, &[Cell], &[(u16, &str)]); 4] = [
         (
@@ -10143,9 +6168,6 @@ fn native_json_source_policy_preserves_year_unsigned_and_hybrid_name_modes() {
     session
         .run(r#"INSERT INTO native_json_source_sql VALUES (2024,18446744073709551615,'1','true','bad','1','true','1,true','1','"1"','"bad"','"1,true"')"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let expected_json: &[(u8, &[u8])] = &[
         (0x0a, &[0xe8, 7, 0, 0, 0, 0, 0, 0]),
         (0x0a, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
@@ -10266,9 +6288,6 @@ fn native_json_coercion_preserves_sql_boolean_bit_document_and_value_policies() 
     session
         .run(r#"INSERT INTO native_json_coercion_sql VALUES (1,1,0.1,1.25,'2024-01-02 03:04:05.006','00:00:01.250','ab','ab',b'101','1','"1"','null','{}','1',NULL)"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     type JsonCell = Option<(u8, &'static [u8])>;
     let cases: [(&str, &[JsonCell]); 4] = [
         (
@@ -10428,9 +6447,6 @@ fn native_json_parse_preserves_storage_surrogates_and_strict_expression_boundary
     session
         .run(r#"INSERT INTO native_json_parse_sql VALUES ('"\\ud800"','"\\ud800"','"\\udc00"','"\\udc00"','"\\ud83d\\ude00"','"\\ud83d\\ude00"','{"z":[1,1.25,null],"a":"\\ud800"}')"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     enum Expected {
         Text(&'static str),
         Json(u8, &'static [u8]),
@@ -10611,9 +6627,6 @@ fn native_json_construction_preserves_sql_tags_opaque_temporals_and_value_coerci
     session
         .run(r#"INSERT INTO native_json_construction_sql VALUES ('ab','ab',1,1.25,'2024-01-02 03:04:05.006','00:00:01.250','1','"1"','null',NULL,'1','not-json')"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     type JsonCell = Option<(u8, &'static [u8], &'static str)>;
     let cases: [(&str, &[JsonCell]); 3] = [
         (
@@ -10757,9 +6770,6 @@ fn native_vector_cast_policy_preserves_stored_domains_dimensions_and_typed_error
     session
         .run("INSERT INTO native_vector_cast_policy_sql VALUES ('[1,2.5]',0x5B312C322E355D,'[3,4]',NULL,NULL,0xFF,'not-a-vector',7)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let cases: [(&str, &[Option<&[f32]>], &[i64]); 2] = [
         (
             "CAST(s AS VECTOR),CAST(s AS VECTOR(2)),CAST(valid_bytes AS VECTOR(2))",
@@ -10885,9 +6895,6 @@ fn native_datum_sql_string_preserves_stored_cast_formatting_and_exact_payloads()
     session
         .run(r#"INSERT INTO native_datum_string_sql VALUES (1e-7,1e20,0.1,12.3400,'2024-02-29','2024-02-29 01:02:03.120000','-26:07:08.125','"x"','[1,2]','null',NULL,'你好\0x',0xFF0041)"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let cases: [(&str, &[Option<&[u8]>], &[bool]); 4] = [
         (
             "CAST(small_r AS CHAR),CAST(large_r AS CHAR),CAST(f AS CHAR),CAST(d AS CHAR)",
@@ -10998,9 +7005,6 @@ fn native_string_cast_policy_preserves_sql_year_bytes_decode_order_and_packet_pa
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
     assert_eq!(session.max_allowed_packet(), 1024);
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     type Cell = (C, i64, &'static str, &'static str, Option<Vec<u8>>);
     let cases: [(&str, Vec<Cell>, &[(u16, &str)]); 5] = [
         (
@@ -11139,9 +7143,6 @@ fn native_float_cast_policy_preserves_sql_source_parsing_narrowing_and_error_ord
     session
         .run(r#"INSERT INTO native_float_cast_policy_sql VALUES (0.1,0.1,12.50,'0.1',1e300,NULL,' 12.5tail ','5e','\0 12','',0x31FF,'12.5','"12.5"','true','null','1e999x','1e300x')"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Ordinary DOUBLE/FLOAT policy, not a new runtime Head or admission gate.
     // Each ScalarFunction completes its own typed finish before its parent
     // evaluates: same_eval_family rejects Real under a Float result type,
@@ -11285,9 +7286,6 @@ fn native_integer_cast_policy_preserves_sql_domains_complements_and_warning_orde
     session
         .run("INSERT INTO native_integer_cast_policy_sql VALUES (-5,18446744073709551615,2.5,2.5,2.5,'18446744073709551615','-5','-5x','18446744073709551615x',-1.5,-1.5,-0.4,'2024-01-31 23:59:59.500000','11:59:59.500000','12.5','[]',NULL)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // The integer cast control policy is native/shared; the already-admitted
     // REAL-to-UNSIGNED worker remains its own unchanged child. These normal
     // one-slot statements make no new Head, zero-slot or facade-count claim.
@@ -11388,9 +7386,6 @@ fn native_decimal_cast_policy_preserves_sql_source_domains_and_warning_order() {
     session
         .run(r#"INSERT INTO native_decimal_cast_policy_sql VALUES (-7,18446744073709551615,0.1,0.1,'12.5','"7.50tail"','null',NULL,'1e300',1.25)"#)
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Ordinary DECIMAL cast policy only: no new Head, zero-slot, PB, UNION,
     // or whole-CAST credit. The previous digit-parser test separately guards
     // raw-value parsing versus Unicode-trimmed warning parsing.
@@ -11505,9 +7500,6 @@ fn native_decimal_digit_parsing_preserves_sql_cast_diagnostics_scale_and_storage
         .run("INSERT INTO native_decimal_digits_sql VALUES ('  +00012.3400','-000.000','1.25e3','1.25e-2',' 12.50tail ','oops','9.995','123456','0000012.3400','\n1.25','\t1.25')")
         .unwrap();
     assert!(warnings_of(&session).is_empty());
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // String CAST sources call Decimal::parse_mysql for their diagnostic
     // and value, then retain the existing precision/scale production policy.
     // REAL's separate native decimal_prefix pre-parser is not exercised or
@@ -11641,9 +7633,6 @@ fn native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths()
         plan.contains("eq(") && plan.contains("or("),
         "SQL row IN is deliberately equality/OR rewrite coverage: {plan}"
     );
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // This pure control-plane migration keeps the original Eq workers and
     // facade demand. A strict string-cache hit can require no Eq worker at
     // all, so there is deliberately no novel Head or zero-slot assertion.
@@ -11756,703 +7745,13 @@ fn native_in_policy_preserves_sql_numeric_cache_prepared_and_row_rewrite_paths()
     session.run("DEALLOCATE PREPARE native_in_rebind").unwrap();
 }
 
-#[test]
-fn ready_value_typed_in_preserves_sql_domains_eager_casts_and_root_refusals() {
-    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
 
-    let create = "CREATE TABLE shared_in_typed_sql (dt DATETIME(3), dt_hit DATETIME(3), dt_miss DATETIME(3), dt_null DATETIME(3), ts TIMESTAMP(3), ts_hit TIMESTAMP(3), ts_miss TIMESTAMP(3), tm TIME(3), tm_hit TIME(3), tm_miss TIME(3), tm_null TIME(3), j_num JSON, j_string JSON, j_jsonnull JSON, j_sqlnull JSON, j_two JSON, s_one VARCHAR(32), s_two VARCHAR(32), s_null VARCHAR(32), bad_text VARCHAR(32))";
-    let insert = r#"INSERT INTO shared_in_typed_sql VALUES ('2024-03-15 02:03:04.125','2024-03-15 02:03:04.125','2024-03-16 02:03:04.125',NULL,'2024-03-15 02:03:04.125','2024-03-15 02:03:04.125','2024-03-16 02:03:04.125','25:03:04.125','25:03:04.125','02:00:00',NULL,'1','"1"','null',NULL,'2','1','2','null','not-a-date')"#;
-    // Stored, statically typed left operands and at least two candidates keep
-    // the real IN node: no single-candidate equality or literal-NULL fold.
-    let cases: [(&str, &[Option<i64>], bool); 4] = [
-        (
-            "dt IN (dt_hit,dt_miss),ts IN (ts_hit,ts_miss),tm IN (tm_hit,tm_miss)",
-            &[Some(1), Some(1), Some(1)],
-            false,
-        ),
-        (
-            "dt IN (dt_miss,dt_null),dt_null IN (dt_hit,dt_miss),tm IN (tm_miss,tm_null)",
-            &[None, None, None],
-            false,
-        ),
-        (
-            "j_num IN (s_one,s_two),j_string IN (s_one,s_two),j_jsonnull IN (j_jsonnull,j_num),j_num IN (j_sqlnull,j_two),j_jsonnull IN (s_null,j_num),j_sqlnull IN (j_jsonnull,j_num)",
-            &[Some(0), Some(1), Some(1), None, Some(0), None],
-            false,
-        ),
-        (
-            "dt IN (dt_hit,bad_text)",
-            &[Some(1)],
-            true,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        if slots == 1 {
-            let plan = row_text(session.run("EXPLAIN SELECT dt IN (dt_hit,dt_miss),ts IN (ts_hit,ts_miss),tm IN (tm_hit,tm_miss),j_num IN (s_one,s_two),dt IN (dt_hit,bad_text) FROM shared_in_typed_sql"))
-                .iter()
-                .map(|row| row.join(" "))
-                .collect::<Vec<_>>()
-                .join("\n")
-                .to_ascii_lowercase();
-            assert!(
-                plan.matches("in(").count() >= 5,
-                "typed domains and the late temporal cast must retain IN in the real plan: {plan}"
-            );
-            assert!(
-                !plan.contains("eq("),
-                "do not credit an equality/OR rewrite as typed IN: {plan}"
-            );
-        }
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        if slots == 1 {
-            for vectorized in [0, 1] {
-                session
-                    .run(&format!(
-                        "SET tidb_enable_vectorized_expression={vectorized}"
-                    ))
-                    .unwrap();
-                for &(projection, expected, warns) in &cases {
-                    let sql = format!("SELECT {projection} FROM shared_in_typed_sql");
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected typed IN rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), expected.len());
-                    assert_eq!(
-                        rows,
-                        vec![expected
-                            .iter()
-                            .map(|value| value.map_or(Datum::Null, Datum::Int))
-                            .collect::<Vec<_>>()],
-                        "{sql}/{vectorized}"
-                    );
-                    for (_, field) in &columns {
-                        // IN has a dedicated boolean result type, not the
-                        // ordinary 20-wide integer helper used by INTERVAL.
-                        assert_eq!(field.code(), FieldTypeCode::LongLong);
-                        assert_eq!((field.flen(), field.decimal()), (1, 0));
-                        assert!(field.has_flag(FieldTypeFlags::IS_BOOLEAN));
-                        assert!(!field.is_unsigned());
-                        assert_eq!(field.charset_name(), "binary");
-                        assert_eq!(field.collation_name(), "binary");
-                    }
-                    // JSON arg0 is a document; string candidates are JSON
-                    // string values, not parsed documents. JSON null is a
-                    // comparable JSON value, distinct from SQL NULL.
-                    // The temporal match must not skip the later implicit
-                    // candidate cast: its one 1292 survives the winning row.
-                    let expected_warnings = if warns {
-                        vec![(1292, "Incorrect datetime value: 'not-a-date'".to_owned())]
-                    } else {
-                        Vec::new()
-                    };
-                    assert_eq!(
-                        warnings_of(&session),
-                        expected_warnings,
-                        "{sql}/{vectorized}"
-                    );
-                }
-            }
-        } else {
-            for (vectorized, projection) in [
-                (0, "dt IN (dt_hit,dt_miss)"),
-                (1, "j_sqlnull IN (j_jsonnull,j_num)"),
-            ] {
-                session
-                    .run(&format!(
-                        "SET tidb_enable_vectorized_expression={vectorized}"
-                    ))
-                    .unwrap();
-                let sql = format!("SELECT {projection} FROM shared_in_typed_sql");
-                let error = session.run_with_columns(&sql).expect_err(&sql);
-                match &error {
-                    DriverError::Exec(tidb_executor::ExecError::Eval(
-                        tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                    )) => {
-                        assert_eq!(
-                            failure.class(),
-                            tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                        );
-                        assert_eq!(
-                            failure.origin(),
-                            tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                        );
-                    }
-                    other => panic!("typed IN root bypassed its pool: {sql}: {other:?}"),
-                }
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1105);
-                assert_eq!(mysql.state, *b"HY000");
-                assert!(mysql.is_from_evaluation());
-                // Homogeneous stored DATETIME/JSON operands need no new
-                // implicit cast nodes, so these two refusals isolate the
-                // typed-IN worker, including its SQL-NULL left operand.
-                // Its admission remains AFTER the original eval-all/cast-all
-                // stages; no pre-child Head or generic/AST-IN claim is made.
-                assert!(warnings_of(&session).is_empty(), "{sql}");
-            }
-            // A failed root does not poison the next statement. This direct
-            // column read proves session reuse, not recovery of worker slots.
-            let StmtOutput::Rows { rows, .. } = session
-                .run_with_columns("SELECT dt FROM shared_in_typed_sql")
-                .unwrap()
-            else {
-                panic!("expected direct-column reuse after pool refusal")
-            };
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].len(), 1);
-            assert_eq!(cell_text(&rows[0][0]), "2024-03-15 02:03:04.125");
-            assert!(warnings_of(&session).is_empty());
-        }
-    }
-}
 
-#[test]
-fn ready_value_date_arithmetic_preserves_sql_domains_fsp_and_distinct_head_routes() {
-    use tidb_datatype::FieldTypeCode;
 
-    let create = "CREATE TABLE shared_date_arithmetic_sql (d DATE, dt DATETIME(3), tm TIME(3), n BIGINT, s VARCHAR(40), one BIGINT, half DECIMAL(4,1), hm VARCHAR(16), sm VARCHAR(16), bad_date VARCHAR(32), dirty_amount VARCHAR(16), hi DATETIME(6), null_date DATE, null_amount BIGINT)";
-    let insert = "INSERT INTO shared_date_arithmetic_sql VALUES ('2024-01-31','2024-01-31 10:20:30.125','10:20:30.125',20240131,'2024-01-31 10:20:30.125',1,0.5,'1:30','1.500000','not-a-date','1x','9999-12-31 23:59:59.999999',NULL,NULL)";
-    // Calendar/Duration ordinary SQL consumers only, not the legacy overload
-    // inventory. Result FSP is fixed for typed temporal input but value-driven
-    // for numeric/string input, whose actual SQL result remains a String.
-    let cases = [
-        (
-            "DATE_ADD(d, INTERVAL one MONTH)",
-            FieldTypeCode::Date,
-            10,
-            0,
-            Some("2024-02-29"),
-            None,
-            false,
-        ),
-        (
-            "DATE_ADD(dt, INTERVAL half SECOND)",
-            FieldTypeCode::Datetime,
-            23,
-            3,
-            Some("2024-01-31 10:20:30.625"),
-            None,
-            false,
-        ),
-        (
-            "DATE_SUB(dt, INTERVAL hm HOUR_MINUTE)",
-            FieldTypeCode::Datetime,
-            23,
-            3,
-            Some("2024-01-31 08:50:30.125"),
-            None,
-            false,
-        ),
-        (
-            "DATE_ADD(tm, INTERVAL half SECOND)",
-            FieldTypeCode::Duration,
-            14,
-            3,
-            Some("10:20:30.625"),
-            None,
-            false,
-        ),
-        (
-            "DATE_SUB(tm, INTERVAL sm SECOND_MICROSECOND)",
-            FieldTypeCode::Duration,
-            17,
-            6,
-            Some("10:20:28.625000"),
-            None,
-            false,
-        ),
-        // The existing caller converts TIME onto the statement date before
-        // CalendarHead, reading date modes and now(). Keep this route separate
-        // from the unambiguous direct-Head refusals below.
-        (
-            "DATE_ADD(tm, INTERVAL one DAY)",
-            FieldTypeCode::Datetime,
-            23,
-            3,
-            Some("2011-11-02 10:20:30.125"),
-            None,
-            true,
-        ),
-        (
-            "DATE_ADD(n, INTERVAL one MONTH)",
-            FieldTypeCode::VarString,
-            29,
-            0,
-            Some("2024-02-29"),
-            None,
-            false,
-        ),
-        (
-            "DATE_ADD(s, INTERVAL half SECOND)",
-            FieldTypeCode::VarString,
-            29,
-            0,
-            Some("2024-01-31 10:20:30.625000"),
-            None,
-            false,
-        ),
-        (
-            "DATE_ADD(bad_date, INTERVAL one DAY)",
-            FieldTypeCode::VarString,
-            29,
-            0,
-            None,
-            Some((1292, "Incorrect datetime value: 'not-a-date'")),
-            false,
-        ),
-        (
-            "DATE_ADD(hi, INTERVAL one MICROSECOND)",
-            FieldTypeCode::Datetime,
-            26,
-            6,
-            None,
-            Some((1441, "Datetime function: datetime field overflow")),
-            false,
-        ),
-        (
-            "DATE_ADD(null_date, INTERVAL one DAY)",
-            FieldTypeCode::Date,
-            10,
-            0,
-            None,
-            None,
-            false,
-        ),
-        (
-            "DATE_SUB(dt, INTERVAL null_amount SECOND)",
-            FieldTypeCode::Datetime,
-            23,
-            3,
-            None,
-            None,
-            false,
-        ),
-        (
-            "DATE_ADD(d, INTERVAL dirty_amount DAY)",
-            FieldTypeCode::Date,
-            10,
-            0,
-            Some("2024-02-01"),
-            Some((1292, "Truncated incorrect DECIMAL value: '1x'")),
-            false,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        // Existing statement-clock fixture: 2011-11-01 in UTC. The internal
-        // TIME-to-DATETIME conversion must not depend on the wall-clock date.
-        session.run("SET timestamp=1320140880").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (expression, code, flen, fsp, expected, warning, pre_cast) in cases {
-                // Stored date and amount operands, no SQL CAST/function child,
-                // filter or sort to stand in for the arithmetic root.
-                let sql = format!("SELECT {expression} FROM shared_date_arithmetic_sql");
-                if slots == 0 {
-                    let route = if pre_cast {
-                        "existing TIME-to-DATETIME pre-cast route"
-                    } else {
-                        "new CalendarHead/DurationHead direct route"
-                    };
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("date arithmetic pool refusal changed: {route}: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{route}: {sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{route}: {sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{route}: {sql}/{vectorized}");
-                    // Conservative attribution: 24 direct Head refusals plus
-                    // two pre-cast-route refusals. Neither classification
-                    // asserts that context getters cannot precede the Head.
-                    assert!(
-                        warnings_of(&session).is_empty(),
-                        "{route}: {sql}/{vectorized}"
-                    );
-                    continue;
-                }
-                let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap()
-                else {
-                    panic!("expected date arithmetic rows: {sql}")
-                };
-                assert_eq!(columns.len(), 1);
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0].len(), 1);
-                let field = &columns[0].1;
-                assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                assert_eq!(
-                    (field.flen(), field.decimal()),
-                    (flen, fsp),
-                    "{sql}/{vectorized}"
-                );
-                assert!(!field.is_unsigned());
-                let (charset, collation) = if code == FieldTypeCode::VarString {
-                    ("utf8mb4", "utf8mb4_bin")
-                } else {
-                    ("binary", "binary")
-                };
-                assert_eq!(field.charset_name(), charset, "{sql}/{vectorized}");
-                assert_eq!(field.collation_name(), collation, "{sql}/{vectorized}");
-                let value = &rows[0][0];
-                if let Some(text) = expected {
-                    match code {
-                        FieldTypeCode::Date | FieldTypeCode::Datetime => {
-                            let Datum::Time(time) = value else {
-                                panic!("expected materialized temporal value: {sql}")
-                            };
-                            assert_eq!(i64::from(time.fsp()), fsp, "{sql}/{vectorized}");
-                        }
-                        FieldTypeCode::Duration => assert!(matches!(value, Datum::Duration(_))),
-                        FieldTypeCode::VarString => assert!(matches!(value, Datum::String(_))),
-                        _ => unreachable!("closed DATE_ADD/DATE_SUB result domains"),
-                    }
-                    assert_eq!(cell_text(value), text, "{sql}/{vectorized}");
-                } else {
-                    assert_eq!(value, &Datum::Null, "{sql}/{vectorized}");
-                }
-                // Only original calendar parse/amount/overflow warnings are
-                // replayed. Do not apply calendar 1441 policy to Duration.
-                let expected_warnings = warning
-                    .map(|(code, message)| vec![(code, message.to_owned())])
-                    .unwrap_or_default();
-                assert_eq!(
-                    warnings_of(&session),
-                    expected_warnings,
-                    "{sql}/{vectorized}"
-                );
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_interval_preserves_nullable_search_demand_and_head_pool_refusals() {
-    use tidb_datatype::FieldTypeCode;
 
-    let create = "CREATE TABLE shared_interval_runtime_sql (i BIGINT NOT NULL, lo BIGINT NOT NULL, hi BIGINT NOT NULL, neg BIGINT NOT NULL, u BIGINT UNSIGNED NOT NULL, uhi BIGINT UNSIGNED NOT NULL, ni BIGINT, null_i BIGINT, r DOUBLE NOT NULL, rhi DOUBLE NOT NULL, bad_nn VARCHAR(8) NOT NULL, nr DOUBLE, nrlo DOUBLE, nrhi DOUBLE, null_r DOUBLE, bad_nullable VARCHAR(8))";
-    let insert = "INSERT INTO shared_interval_runtime_sql VALUES (1,0,2,-1,9223372036854775808,9223372036854775809,1,NULL,1.5,2.5,'bad',1.5,0.5,2.5,NULL,'bad')";
-    // The static NOT_NULL flags, not the row's actual non-NULL values, choose
-    // binary versus linear search. Integer and real signatures both return
-    // the index of the first greater boundary; equal boundaries are passed.
-    let cases = [
-        ("INTERVAL(i,lo,i,hi)", 2, false),
-        ("INTERVAL(ni,lo,null_i,hi)", 2, false),
-        ("INTERVAL(u,neg,u,uhi)", 2, false),
-        // Same real target and boundary values below. The NOT NULL version
-        // probes argument indices 2 then 3, never converting bad_nn at 1.
-        // Even its numeric reading (0) would keep the boundaries sorted.
-        ("INTERVAL(r,bad_nn,r,rhi)", 2, false),
-        // Nullable metadata instead requires the linear scan to visit 1,
-        // converting 'bad' to 0 and publishing exactly one DOUBLE warning.
-        ("INTERVAL(nr,bad_nullable,nr,nrhi)", 2, true),
-        ("INTERVAL(nr,nrlo,null_r,nrhi)", 2, false),
-        // NULL target is -1, not NULL, and demands no boundary conversion.
-        ("INTERVAL(null_i,nrhi,bad_nullable)", -1, false),
-        // Linear search also stops early; the later bad boundary stays quiet.
-        ("INTERVAL(nr,nrhi,bad_nullable)", 0, false),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (expression, expected, warns) in cases {
-                // Stored operands only: no CAST/function child can consume
-                // the pool on behalf of this new INTERVAL Head root.
-                let sql = format!("SELECT {expression} FROM shared_interval_runtime_sql");
-                if slots == 0 {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                            );
-                        }
-                        other => {
-                            panic!("INTERVAL Head bypassed the pool: {sql}/{vectorized}: {other:?}")
-                        }
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    // Sixteen new Head refusals, including NULL target and
-                    // the normally warning-producing linear real search.
-                    // SQL does not separately prove callback read indices or
-                    // isolate the later search worker's pool acquisitions.
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                    continue;
-                }
-                let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap()
-                else {
-                    panic!("expected INTERVAL index rows: {sql}")
-                };
-                assert_eq!(columns.len(), 1);
-                let field = &columns[0].1;
-                // The planner's INTERVAL return type is its ordinary int()
-                // helper: LongLong 20/0, signed even for unsigned operands.
-                assert_eq!(field.code(), FieldTypeCode::LongLong);
-                assert_eq!((field.flen(), field.decimal()), (20, 0));
-                assert!(!field.is_unsigned());
-                assert_eq!(field.charset_name(), "binary");
-                assert_eq!(field.collation_name(), "binary");
-                assert_eq!(rows, vec![vec![Datum::Int(expected)]], "{sql}/{vectorized}");
-                let expected_warnings = if warns {
-                    vec![(1292, "Truncated incorrect DOUBLE value: 'bad'".to_owned())]
-                } else {
-                    Vec::new()
-                };
-                assert_eq!(
-                    warnings_of(&session),
-                    expected_warnings,
-                    "{sql}/{vectorized}"
-                );
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_extremum_preserves_five_domains_and_global_head_pool_demand() {
-    use tidb_datatype::{FieldTypeCode, VectorFloat32};
 
-    let create = "CREATE TABLE shared_extremum_runtime_sql (i BIGINT, d DECIMAL(10,3), dt DATETIME, calendar_date DATE, s VARCHAR(8) COLLATE utf8mb4_general_ci, t VARCHAR(8) COLLATE utf8mb4_general_ci, good_text VARCHAR(32) COLLATE utf8mb4_bin, bad_text VARCHAR(32) COLLATE utf8mb4_bin, null_text VARCHAR(32) COLLATE utf8mb4_bin, v VECTOR, w VECTOR)";
-    let insert = "INSERT INTO shared_extremum_runtime_sql VALUES (-5,2.500,'2020-01-01 10:00:00','2020-01-01','a','B','2020-01-01 05:00:00','invalid_time',NULL,'[1,2]','[1,3]')";
-    let cases = [
-        (
-            "LEAST(i,d)",
-            FieldTypeCode::NewDecimal,
-            23,
-            3,
-            "binary",
-            "binary",
-            Some("-5"),
-        ),
-        (
-            "LEAST(dt,calendar_date)",
-            FieldTypeCode::Datetime,
-            19,
-            0,
-            "binary",
-            "binary",
-            Some("2020-01-01 00:00:00"),
-        ),
-        (
-            "GREATEST(s,t)",
-            FieldTypeCode::Varchar,
-            8,
-            0,
-            "utf8mb4",
-            "utf8mb4_general_ci",
-            Some("B"),
-        ),
-        (
-            "GREATEST(dt,good_text)",
-            FieldTypeCode::VarString,
-            -1,
-            -1,
-            "utf8mb4",
-            "utf8mb4_bin",
-            Some("2020-01-01 10:00:00"),
-        ),
-        (
-            "GREATEST(v,w)",
-            FieldTypeCode::VectorFloat32,
-            -1,
-            -1,
-            "binary",
-            "binary",
-            Some("[1,3]"),
-        ),
-        (
-            "GREATEST(dt,bad_text)",
-            FieldTypeCode::VarString,
-            -1,
-            -1,
-            "utf8mb4",
-            "utf8mb4_bin",
-            Some("invalid_time"),
-        ),
-        (
-            "GREATEST(dt,bad_text,null_text)",
-            FieldTypeCode::VarString,
-            -1,
-            -1,
-            "utf8mb4",
-            "utf8mb4_bin",
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (expression, code, flen, decimal, charset, collation, expected) in cases {
-                // All operands are stored columns, including VECTOR values
-                // inserted before the policy. No nested CAST/function, filter
-                // or sort can claim this GREATEST/LEAST root's pool refusal.
-                let sql = format!("SELECT {expression} FROM shared_extremum_runtime_sql");
-                if slots == 0 {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                            );
-                        }
-                        other => {
-                            panic!("extremum Head bypassed the pool: {sql}/{vectorized}: {other:?}")
-                        }
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    // Fourteen NEW Head refusals, including the global NULL
-                    // and invalid-text calls. These do not independently
-                    // isolate the later domain reducers' pool acquisitions.
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                    continue;
-                }
-                let StmtOutput::Rows { columns, rows } = session.run_with_columns(&sql).unwrap()
-                else {
-                    panic!("expected typed extremum rows: {sql}")
-                };
-                assert_eq!(columns.len(), 1);
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0].len(), 1);
-                let field = &columns[0].1;
-                assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                assert_eq!(
-                    (field.flen(), field.decimal()),
-                    (flen, decimal),
-                    "{sql}/{vectorized}"
-                );
-                assert!(!field.is_unsigned());
-                assert_eq!(field.charset_name(), charset, "{sql}/{vectorized}");
-                assert_eq!(field.collation_name(), collation, "{sql}/{vectorized}");
-                let value = &rows[0][0];
-                if let Some(text) = expected {
-                    match code {
-                        FieldTypeCode::NewDecimal => {
-                            let Datum::Decimal(value) = value else {
-                                panic!("expected numeric decimal winner: {sql}")
-                            };
-                            // Winning BIGINT keeps scale zero despite the
-                            // aggregated DECIMAL(23,3) result header.
-                            assert_eq!(value.scale(), 0);
-                            assert_eq!(value.to_string(), text);
-                        }
-                        FieldTypeCode::Datetime => {
-                            assert!(matches!(value, Datum::Time(_)));
-                            // A winning DATE is stamped as the aggregate's
-                            // DATETIME, not returned as a date-only cell.
-                            assert_eq!(cell_text(value), text);
-                        }
-                        FieldTypeCode::Varchar | FieldTypeCode::VarString => {
-                            assert!(matches!(value, Datum::String(_)));
-                            assert_eq!(cell_text(value), text, "{sql}/{vectorized}");
-                        }
-                        FieldTypeCode::VectorFloat32 => assert_eq!(
-                            value,
-                            &Datum::new_vector_float32(VectorFloat32::must_create(vec![1.0, 3.0])),
-                            "{sql}/{vectorized}"
-                        ),
-                        _ => unreachable!("only the five declared extremum domains are tested"),
-                    }
-                } else {
-                    assert_eq!(value, &Datum::Null, "{sql}/{vectorized}");
-                }
-                // Preserve the original AsTime implementation: a failed
-                // time_conversion_for_gl parse returns the original text
-                // WITHOUT publishing a warning. Its comment is not a license
-                // to add a 1292 here; the global NULL remains quiet as well.
-                assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-            }
-        }
-    }
-}
 
 #[test]
 fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_null() {
@@ -12473,9 +7772,6 @@ fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_nu
             "INSERT INTO native_extremum_policy_sql VALUES (-5,2.500,9223372036854775808,150,NULL)",
         )
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -12560,119 +7856,7 @@ fn native_extremum_policy_preserves_numeric_winner_scale_promotion_and_global_nu
     }
 }
 
-#[test]
-fn ready_value_extract_preserves_stored_source_policy_and_selector_root_demand() {
-    use tidb_datatype::FieldTypeCode;
 
-    let create = "CREATE TABLE shared_extract_runtime_sql (negative_time TIME(6), typed_datetime DATETIME, day_text VARCHAR(32), datetime_text VARCHAR(32), null_time TIME(6), bad_text VARCHAR(32))";
-    let insert = "INSERT INTO shared_extract_runtime_sql VALUES ('-25:03:04.123456','2024-03-15 02:03:04','1 02:03:04','2024-03-15 02:03:04',NULL,'bad')";
-    // Existing source policy: typed calendar values use calendar extraction;
-    // typed TIME retains the duration sign; mixed DAY_* text parses duration
-    // first and prefers a positive-year datetime only if its clock agrees.
-    let cases = [
-        ("YEAR", "typed_datetime", Some(2024), false),
-        ("HOUR", "negative_time", Some(-25), false),
-        ("DAY_HOUR", "day_text", Some(26), false),
-        ("DAY_SECOND", "datetime_text", Some(15_020_304), false),
-        ("DAY_SECOND", "typed_datetime", Some(15_020_304), false),
-        ("HOUR", "null_time", None, false),
-        ("DAY_HOUR", "bad_text", None, true),
-    ];
-    let invalid_time = "Truncated incorrect time value: 'bad'";
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET sql_mode=''").unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (unit, column, expected, invalid) in cases {
-                // Real stored columns only, never a CAST child. The actual
-                // EXTRACT Select worker runs before its own argument casts
-                // and mixed parser, even when the value is NULL or malformed.
-                let sql =
-                    format!("SELECT EXTRACT({unit} FROM {column}) FROM shared_extract_runtime_sql");
-                if slots == 0 {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("EXTRACT Select did not precede its cast/parse: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    // Fourteen NEW Select refusals, including NULL and bad
-                    // text. These are not old NULL witnesses or cast roots,
-                    // and cannot publish the later mixed-parser 1292 first.
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                } else if invalid {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    assert!(
-                        matches!(
-                            &error,
-                            DriverError::Exec(tidb_executor::ExecError::Eval(
-                                tidb_executor::EvalError::Conversion(_)
-                            ))
-                        ),
-                        "expected original mixed EXTRACT hard conversion error: {error:?}"
-                    );
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1292, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"22007", "{sql}/{vectorized}");
-                    assert_eq!(mysql.message, invalid_time);
-                    assert!(mysql.is_from_evaluation());
-                    // This is a hard error, not NULL plus a softened warning.
-                    // Session completion records its 1292 error row once.
-                    assert_eq!(
-                        warnings_of(&session),
-                        vec![(1292, invalid_time.to_owned())],
-                        "{sql}/{vectorized}"
-                    );
-                } else {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected EXTRACT rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        (20, 0),
-                        "{sql}/{vectorized}"
-                    );
-                    assert!(!field.is_unsigned());
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(
-                        rows,
-                        vec![vec![expected.map_or(Datum::Null, Datum::Int)]],
-                        "{sql}/{vectorized}"
-                    );
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                }
-            }
-        }
-    }
-}
 
 #[test]
 fn native_duration_helpers_preserve_stored_cast_and_extract_source_policy() {
@@ -12693,9 +7877,6 @@ fn native_duration_helpers_preserve_stored_cast_and_extract_source_policy() {
     session
         .run("INSERT INTO native_duration_helpers_sql VALUES ('12:59:59.9876',126060,'-25:03:04.123456','1 02:03:04','2024-03-15 02:03:04','2024-03-15 02:03:04')")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for vectorized in [0, 1] {
         session
             .run(&format!(
@@ -12763,693 +7944,15 @@ fn native_duration_helpers_preserve_stored_cast_and_extract_source_policy() {
     }
 }
 
-#[test]
-fn json_sum_crc32_sql_array_refusal_precedes_child_evaluation_and_pool_admission() {
-    // This is a baseline SQL NON-admission witness, not a worker success or
-    // zero-slot runtime-root test. The parser requires AS type ARRAY and
-    // produces an array Cast node, not the manually constructed scalar call
-    // whose already-supported JSON-array domain uses the new worker.
-    let sql = "SELECT JSON_SUM_CRC32(CAST(bad_datetime AS DATETIME) AS SIGNED ARRAY) FROM json_crc32_array_refusal";
-    let refusal = "a CAST with the ARRAY modifier is not supported yet";
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session
-            .run("CREATE TABLE json_crc32_array_refusal (bad_datetime VARCHAR(32))")
-            .unwrap();
-        session
-            .run("INSERT INTO json_crc32_array_refusal VALUES ('not-a-date')")
-            .unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            // The typed rewriter refuses ARRAY before rewriting its child.
-            // Neither the invalid datetime conversion nor JSON_SUM_CRC32's
-            // new value worker may run, regardless of the available slots.
-            let error = session.run_with_columns(sql).expect_err(sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::Unsupported(reason),
-                )) => assert_eq!(*reason, refusal, "mode {vectorized}/slots={slots}"),
-                other => panic!("SQL ARRAY refusal changed or a child/pool ran first: mode {vectorized}/slots={slots}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "mode {vectorized}/slots={slots}");
-            assert_eq!(mysql.state, *b"HY000");
-            assert_eq!(mysql.message, refusal);
-            // The driver wraps plan Eval errors in Exec(Eval) and marks them
-            // from_evaluation. That flag is NOT evidence of runtime admission;
-            // the exact Unsupported variant above excludes PoolResource.
-            assert!(mysql.is_from_evaluation());
-            assert!(
-                warnings_of(&session).is_empty(),
-                "child conversion must not publish warnings: mode {vectorized}/slots={slots}"
-            );
-        }
-    }
-}
 
-#[test]
-fn ready_value_str_to_date_preserves_stored_formats_modes_and_distinct_pool_paths() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    let create = "CREATE TABLE shared_str_to_date_sql (punct_text VARCHAR(32), datetime_text VARCHAR(40), fraction_time VARCHAR(32), plain_time VARCHAR(32), bad_month VARCHAR(32), year_only VARCHAR(32), null_text VARCHAR(32), time_format VARCHAR(32))";
-    let insert = "INSERT INTO shared_str_to_date_sql VALUES ('2024¿02¿29','2024-02-29 12:34:56.123456','12:34:56.123456','12:34:56','2024-99-29','2024',NULL,'%H:%i:%s')";
-    // Constant formats select DATE, DATETIME or Duration. A stored format
-    // selects DATETIME(6) even when its actual text describes only a clock.
-    // Complete Unicode-punctuation DATE input avoids the pre-existing typed
-    // day-zero mismatch; this test does not change that older boundary.
-    let cases = [
-        (
-            "punct_text,'%Y%.%m%.%d'",
-            FieldTypeCode::Date,
-            (10, 0),
-            Some("2024-02-29"),
-            None,
-            "NO_ZERO_DATE",
-            false,
-        ),
-        (
-            "datetime_text,'%Y-%m-%d %H:%i:%s.%f'",
-            FieldTypeCode::Datetime,
-            (26, 6),
-            Some("2024-02-29 12:34:56.123456"),
-            None,
-            "NO_ZERO_DATE",
-            false,
-        ),
-        (
-            "fraction_time,'%H:%i:%s.%f'",
-            FieldTypeCode::Duration,
-            (17, 6),
-            Some("12:34:56.123456"),
-            None,
-            "NO_ZERO_DATE",
-            false,
-        ),
-        (
-            "bad_month,'%Y-%m-%d'",
-            FieldTypeCode::Date,
-            (10, 0),
-            None,
-            Some((1292, "Incorrect datetime value: '0000-00-00 00:00:00'")),
-            "NO_ZERO_DATE",
-            false,
-        ),
-        (
-            "year_only,'%Y'",
-            FieldTypeCode::Date,
-            (10, 0),
-            None,
-            Some((
-                1411,
-                "Incorrect datetime value: '2024' for function str_to_date",
-            )),
-            "NO_ZERO_DATE",
-            false,
-        ),
-        (
-            "null_text,'%Y-%m-%d'",
-            FieldTypeCode::Date,
-            (10, 0),
-            None,
-            None,
-            "NO_ZERO_DATE",
-            true,
-        ),
-        (
-            "plain_time,time_format",
-            FieldTypeCode::Datetime,
-            (26, 6),
-            None,
-            None,
-            "NO_ZERO_DATE",
-            false,
-        ),
-        (
-            "plain_time,time_format",
-            FieldTypeCode::Datetime,
-            (26, 6),
-            Some("0000-00-00 12:34:56.000000"),
-            None,
-            "",
-            false,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, code, shape, expected, warning, sql_mode, caller_null) in cases {
-                session.run(&format!("SET sql_mode='{sql_mode}'")).unwrap();
-                // Input text and dynamic format are actual stored strings.
-                // Constant format classification and string pass-through do
-                // not spend a worker slot before the new Head.
-                let sql = format!("SELECT STR_TO_DATE({args}) FROM shared_str_to_date_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected STR_TO_DATE rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}/{sql_mode}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}/{sql_mode}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        shape,
-                        "{sql}/{vectorized}/{sql_mode}"
-                    );
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}/{sql_mode}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}/{sql_mode}");
-                    if let Some(expected) = expected {
-                        match (&rows[0][0], code) {
-                            (Datum::Time(time), FieldTypeCode::Date) => {
-                                assert_eq!(time.kind(), TimeType::Date);
-                                assert_eq!(time.fsp(), 0);
-                            }
-                            (Datum::Time(time), FieldTypeCode::Datetime) => {
-                                assert_eq!(time.kind(), TimeType::DateTime);
-                                assert_eq!(time.fsp(), 6);
-                            }
-                            (Datum::Duration(_), FieldTypeCode::Duration) => {}
-                            other => {
-                                panic!("STR_TO_DATE changed its typed carrier: {sql}: {other:?}")
-                            }
-                        }
-                        assert_eq!(
-                            cell_text(&rows[0][0]),
-                            expected,
-                            "{sql}/{vectorized}/{sql_mode}"
-                        );
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}/{sql_mode}");
-                    }
-                    let expected_warnings = warning
-                        .map(|(code, message)| vec![(code, message.to_owned())])
-                        .unwrap_or_default();
-                    assert_eq!(
-                        warnings_of(&session),
-                        expected_warnings,
-                        "{sql}/{vectorized}/{sql_mode}"
-                    );
-                } else {
-                    // Fourteen zero-slot probes reach the NEW non-NULL Head,
-                    // even when parsing or the late typed mode yields NULL.
-                    // Only two input-NULL probes use the OLD DateDiff witness;
-                    // neither those nor a later typed NULL cast proves Head.
-                    let stage = if caller_null {
-                        "existing input-NULL DateDiff witness"
-                    } else {
-                        "STR_TO_DATE non-NULL Head"
-                    };
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource,
-                                "{stage}: {sql}/{vectorized}/{sql_mode}"
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool,
-                                "{stage}: {sql}/{vectorized}/{sql_mode}"
-                            );
-                        }
-                        other => panic!(
-                            "{stage} bypassed its pool: {sql}/{vectorized}/{sql_mode}: {other:?}"
-                        ),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{stage}: {sql}/{vectorized}/{sql_mode}");
-                    assert_eq!(
-                        mysql.state, *b"HY000",
-                        "{stage}: {sql}/{vectorized}/{sql_mode}"
-                    );
-                    assert!(
-                        mysql.is_from_evaluation(),
-                        "{stage}: {sql}/{vectorized}/{sql_mode}"
-                    );
-                    // Refusal precedes both old diagnostic projections.
-                    assert!(
-                        warnings_of(&session).is_empty(),
-                        "{stage}: {sql}/{vectorized}/{sql_mode}"
-                    );
-                }
-                session.run("SET sql_mode=''").unwrap();
-            }
-            if slots == 1 {
-                // Positive DATE consumer only; this does not prove a Finish
-                // refusal or count the late mode getter. No PB/legacy claim.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT 1 FROM shared_str_to_date_sql WHERE STR_TO_DATE(punct_text,'%Y%.%m%.%d')='2024-02-29'")
-                    .unwrap()
-                else {
-                    panic!("expected STR_TO_DATE predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_convert_using_preserves_charset_bytes_and_distinct_null_pool_paths() {
-    use tidb_datatype::{Collation, FieldTypeCode};
 
-    let create = "CREATE TABLE shared_convert_using_sql (s_one VARCHAR(8) CHARACTER SET utf8mb4, s_pair VARCHAR(8) CHARACTER SET utf8mb4, s_emoji VARCHAR(8) CHARACTER SET utf8mb4, b_gbk VARBINARY(8), b_utf8 VARBINARY(8), b_bad VARBINARY(8), s_null VARCHAR(8) CHARACTER SET utf8mb4, gbk_col VARCHAR(8) CHARACTER SET gbk)";
-    let insert = "INSERT INTO shared_convert_using_sql VALUES ('一','一列','😉',X'D2BBC1D0',X'E4B880E58897',X'FF',NULL,'一列')";
-    // Original charset tests pin character-to-character retag/replacement
-    // and GBK boundary bytes. Binary inputs instead decode; malformed UTF-8
-    // produces NULL without a warning, distinct from a NULL input shortcut.
-    let cases = [
-        ("s_one", "ascii", Collation::AsciiBin, Some("?"), false),
-        (
-            "s_pair",
-            "gbk",
-            Collation::GbkChineseCi,
-            Some("一列"),
-            false,
-        ),
-        ("s_emoji", "gbk", Collation::GbkChineseCi, Some("?"), false),
-        ("b_gbk", "gbk", Collation::GbkChineseCi, Some("一列"), false),
-        (
-            "b_utf8",
-            "utf8mb4",
-            Collation::Utf8Mb4Bin,
-            Some("一列"),
-            false,
-        ),
-        ("s_pair", "binary", Collation::Binary, Some("一列"), false),
-        ("b_bad", "utf8mb4", Collation::Utf8Mb4Bin, None, false),
-        ("s_null", "ascii", Collation::AsciiBin, None, true),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (column, charset, collation, expected, caller_null) in cases {
-                // Stored string-family values/types pass through the original
-                // cast_arg_as_string unchanged: no earlier cast worker. Every
-                // non-NULL branch (including binary encoding) belongs to the
-                // single ConvertUsing profile, not a second ToBinary scope.
-                let sql = format!(
-                    "SELECT CONVERT({column} USING {charset}) FROM shared_convert_using_sql"
-                );
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected CONVERT USING rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    // ConvertUsing constructs its own VarString, not a clone
-                    // of the input column's declared width/decimal.
-                    assert_eq!(field.code(), FieldTypeCode::VarString, "{sql}/{vectorized}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        (-1, -1),
-                        "{sql}/{vectorized}"
-                    );
-                    assert_eq!(field.charset_name(), charset, "{sql}/{vectorized}");
-                    assert_eq!(
-                        field.collation_name(),
-                        collation.name(),
-                        "{sql}/{vectorized}"
-                    );
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        // Chunk materialization returns a collation-tagged
-                        // String even for binary metadata or a helper's Bytes
-                        // result. The bytes are UTF-8 here, not GBK wire bytes.
-                        assert!(
-                            matches!(&rows[0][0], Datum::String(_)),
-                            "{sql}/{vectorized}"
-                        );
-                        assert_eq!(
-                            rows[0][0],
-                            Datum::new_collation_string(expected.as_bytes().to_vec(), collation),
-                            "{sql}/{vectorized}"
-                        );
-                        assert_eq!(
-                            rows[0][0].to_bytes().unwrap(),
-                            expected.as_bytes(),
-                            "{sql}/{vectorized}"
-                        );
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    // Fourteen refusals are NEW ConvertUsing roots, including
-                    // non-NULL invalid bytes whose computed answer is NULL.
-                    // The two caller-NULL refusals are the OLD generic
-                    // DateDiffNullNative witness, not new-selector evidence.
-                    let stage = if caller_null {
-                        "existing caller-NULL DateDiff witness"
-                    } else {
-                        "ConvertUsing non-NULL byte worker"
-                    };
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource,
-                                "{stage}: {sql}/{vectorized}"
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool,
-                                "{stage}: {sql}/{vectorized}"
-                            );
-                        }
-                        other => panic!("{stage} bypassed its pool: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{stage}: {sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{stage}: {sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{stage}: {sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Positive integration only: HEX's stored GBK operand gains
-                // its implicit ToBinary wrapper. The predicate has Convert
-                // and equality of its own; do not count any of these as a
-                // zero-slot Convert root or invent explicit to/from SQL calls.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT HEX(gbk_col) FROM shared_convert_using_sql WHERE CONVERT(s_one USING ascii)='?'")
-                    .unwrap()
-                else {
-                    panic!("expected charset-boundary predicate rows")
-                };
-                assert_eq!(rows.len(), 1, "mode {vectorized}");
-                assert_eq!(rows[0].len(), 1, "mode {vectorized}");
-                assert_eq!(cell_text(&rows[0][0]), "D2BBC1D0", "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_timestampdiff_preserves_stored_calendar_text_and_runtime_root_demand() {
-    use tidb_datatype::FieldTypeCode;
 
-    // Dedicated TimestampDiff AST syntax supplies the unit, not a stored
-    // expression. Unknown units are not admitted by that grammar; this test
-    // does not manufacture SQL admission for direct-worker-only inputs.
-    let create = "CREATE TABLE shared_timestampdiff_sql (day_lo DATETIME, day_hi DATETIME, month_lo DATETIME(6), month_hi DATETIME(6), fraction_lo DATETIME(6), fraction_hi DATETIME(6), leap_lo DATETIME, leap_hi DATETIME, null_lo DATETIME, null_hi DATETIME)";
-    let insert = "INSERT INTO shared_timestampdiff_sql VALUES ('2020-01-01 00:00:00','2020-01-03 00:00:00','2020-01-31 12:00:00.123456','2020-03-31 12:00:00.123455','2020-01-01 00:00:00.123456','2020-01-01 00:00:00.654321','2000-02-28 00:00:00','2000-03-01 00:00:00',NULL,NULL)";
-    // The original civil delta is right minus left. Whole-unit results
-    // truncate toward zero; a month is incomplete until its entire clock
-    // (including microseconds) reaches the starting date's clock.
-    let cases = [
-        ("DAY,day_lo,day_hi", Some(2)),
-        ("DAY,day_hi,day_lo", Some(-2)),
-        ("MONTH,month_lo,month_hi", Some(1)),
-        ("SECOND,fraction_hi,fraction_lo", Some(0)),
-        ("MICROSECOND,fraction_lo,fraction_hi", Some(530_865)),
-        ("DAY,leap_lo,leap_hi", Some(2)),
-        ("DAY,null_lo,day_hi", None),
-        ("DAY,day_lo,null_hi", None),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, expected) in cases {
-                // Stored Time/NULL passes through both original datetime
-                // casts. The family then consumes the actual Display text,
-                // not a replacement raw-core comparison/calculation. These
-                // DATETIME(6) columns expose all six fractional digits.
-                let sql = format!("SELECT TIMESTAMPDIFF({args}) FROM shared_timestampdiff_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected TIMESTAMPDIFF rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        (20, 0),
-                        "{sql}/{vectorized}"
-                    );
-                    assert!(!field.is_unsigned(), "{sql}/{vectorized}");
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(
-                        rows[0][0],
-                        expected.map_or(Datum::Null, Datum::Int),
-                        "{sql}/{vectorized}"
-                    );
-                } else {
-                    // All sixteen refusals, including four NULL-endpoint
-                    // probes, belong to the new nullable Bytes3 text profile.
-                    // No child caster/comparison or old NULL witness is used
-                    // as a substitute for this family's runtime-root demand.
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("TIMESTAMPDIFF text worker bypassed its pool: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Positive consumer only; outer equality is not root proof.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT 1 FROM shared_timestampdiff_sql WHERE TIMESTAMPDIFF(DAY,day_lo,day_hi)=2")
-                    .unwrap()
-                else {
-                    panic!("expected TIMESTAMPDIFF predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_bounded_staleness_preserves_sql_lower_bounds_and_distinct_pool_paths() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    // SQL's production Columns implementation currently leaves SafeTS absent.
-    // Valid windows therefore return the lower bound; this test does NOT
-    // supply storage SafeTS or claim coverage of its getter count/clamping.
-    let create = "CREATE TABLE shared_bounded_staleness_sql (lo DATETIME, hi DATETIME, fraction_lo DATETIME(6), fraction_hi DATETIME(6), null_lo DATETIME, null_hi DATETIME)";
-    let insert = "INSERT INTO shared_bounded_staleness_sql VALUES ('2015-09-21 09:53:04','2025-01-02 10:00:00','2020-06-07 08:09:10.123456','2020-06-07 08:09:10.654321',NULL,NULL)";
-    let cases = [
-        ("lo,hi", Some(("2015-09-21 09:53:04.000", 0)), false),
-        (
-            "fraction_lo,fraction_hi",
-            Some(("2020-06-07 08:09:10.123", 123_456)),
-            false,
-        ),
-        ("lo,lo", Some(("2015-09-21 09:53:04.000", 0)), false),
-        ("hi,lo", None, false),
-        ("null_lo,hi", None, true),
-        ("lo,null_hi", None, true),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, expected, null_witness) in cases {
-                // Both original datetime argument casts still run BEFORE the
-                // family. Stored Time/NULL takes their pure pass-through, so
-                // neither a child caster nor a comparison spends a slot first.
-                let sql = format!(
-                    "SELECT TIDB_BOUNDED_STALENESS({args}) FROM shared_bounded_staleness_sql"
-                );
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected bounded-staleness rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), FieldTypeCode::Datetime, "{sql}/{vectorized}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        (23, 3),
-                        "{sql}/{vectorized}"
-                    );
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some((text, microsecond)) = expected {
-                        let Datum::Time(time) = &rows[0][0] else {
-                            panic!("expected bounded-staleness Time: {sql}: {:?}", rows[0][0])
-                        };
-                        assert_eq!(time.kind(), TimeType::DateTime);
-                        assert_eq!(time.fsp(), 3);
-                        // Finish stamps kind/FSP only: .123 is the display,
-                        // while the stored .123456 core remains intact.
-                        assert_eq!(
-                            time.core_time().microsecond(),
-                            microsecond,
-                            "{sql}/{vectorized}"
-                        );
-                        assert_eq!(time.to_string(), text, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    // Eight zero-slot probes reach the NEW family Head.
-                    // Four genuine-NULL probes instead reach the EXISTING
-                    // DateDiffNullNative witness: do not credit them to Head.
-                    let stage = if null_witness {
-                        "existing DateDiff genuine-NULL witness"
-                    } else {
-                        "bounded-staleness Head"
-                    };
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource,
-                                "{stage}: {sql}/{vectorized}"
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool,
-                                "{stage}: {sql}/{vectorized}"
-                            );
-                        }
-                        other => panic!("{stage} bypassed its pool: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{stage}: {sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{stage}: {sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{stage}: {sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Positive consumer only, not another Head/Finish admission
-                // proof: its outer equality has its own existing worker.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT 1 FROM shared_bounded_staleness_sql WHERE TIDB_BOUNDED_STALENESS(lo,hi)=lo")
-                    .unwrap()
-                else {
-                    panic!("expected bounded-staleness predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
+
 
 #[test]
 fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
@@ -13469,9 +7972,6 @@ fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
     session
         .run("INSERT INTO native_type_helpers_sql VALUES (123456,-123456,9.995,0,1.5,123.45,2.5,-1.5,1e300)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // cast.rs applies cast_to_precision and then report_decimal_production:
     // overflow suppresses truncation, whose text otherwise retains the
     // ORIGINAL decimal. No diagnostic is invented by the new helper.
@@ -13595,2096 +8095,27 @@ fn native_type_helpers_preserve_decimal_cast_values_and_float_diagnostics() {
     }
 }
 
-#[test]
-fn ready_value_real_unsigned_cast_slice_preserves_rounding_warnings_and_pool_refusals() {
-    use tidb_datatype::FieldTypeCode;
 
-    // Partial Real/Float32 -> UNSIGNED slice ONLY. This grants no whole-CAST
-    // family coverage: NULL fast paths, in-union negative handling and every
-    // other source/target remain outside this test, as do PB admission rules.
-    let create = "CREATE TABLE shared_real_unsigned_sql (double_even DOUBLE, double_odd DOUBLE, double_negative DOUBLE, double_small_negative DOUBLE, double_boundary DOUBLE, double_huge DOUBLE, float_even FLOAT, float_negative FLOAT)";
-    let insert = "INSERT INTO shared_real_unsigned_sql VALUES (2.5,3.5,-1.5,-0.4,18446744073709551616e0,1e300,2.5,-1.5)";
-    // Original cast.rs RoundToEven / ConvertFloatToUint cases and formatter
-    // literals: warnings print the ROUNDED float, not the input spelling.
-    let cases = [
-        ("double_even", 2_u64, None),
-        ("double_odd", 4_u64, None),
-        (
-            "double_negative",
-            18_446_744_073_709_551_614_u64,
-            Some("constant -2 overflows bigint"),
-        ),
-        ("double_small_negative", 0_u64, None),
-        (
-            "double_boundary",
-            18_446_744_073_709_551_615_u64,
-            Some("constant 1.8446744073709552e+19 overflows bigint"),
-        ),
-        (
-            "double_huge",
-            18_446_744_073_709_551_615_u64,
-            Some("constant 1e+300 overflows bigint"),
-        ),
-        ("float_even", 2_u64, None),
-        (
-            "float_negative",
-            18_446_744_073_709_551_614_u64,
-            Some("constant -2 overflows bigint"),
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (column, expected, warning) in cases {
-                // Actual stored floating carriers, not DECIMAL literals or a
-                // nested CAST. No condition/WHERE/sort supplies a prior worker.
-                let sql =
-                    format!("SELECT CAST({column} AS UNSIGNED) FROM shared_real_unsigned_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected Real/Float32 unsigned CAST rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), FieldTypeCode::LongLong, "{sql}/{vectorized}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        (20, 0),
-                        "{sql}/{vectorized}"
-                    );
-                    assert!(field.is_unsigned(), "{sql}/{vectorized}");
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(
-                        rows,
-                        vec![vec![Datum::UInt(expected)]],
-                        "{sql}/{vectorized}"
-                    );
-                    let expected_warnings = warning
-                        .map(|message| vec![(1690, message.to_owned())])
-                        .unwrap_or_default();
-                    assert_eq!(
-                        warnings_of(&session),
-                        expected_warnings,
-                        "{sql}/{vectorized}"
-                    );
-                } else {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("Real/Float32 unsigned CAST bypassed its slice worker: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    // The worker computes u64 + optional overflow evidence
-                    // before the caller formats/appends 1690. Refusal cannot
-                    // expose the old native computation's warning first.
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                }
-            }
-            if slots == 1 {
-                // append_warning is not a strict-mode error upgrade. The
-                // controlled finite 2^64 input still returns MAX with 1690.
-                session.run("SET sql_mode='STRICT_ALL_TABLES'").unwrap();
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns(
-                        "SELECT CAST(double_boundary AS UNSIGNED) FROM shared_real_unsigned_sql",
-                    )
-                    .unwrap()
-                else {
-                    panic!("strict mode must retain the unsigned overflow value")
-                };
-                assert_eq!(
-                    rows,
-                    vec![vec![Datum::UInt(18_446_744_073_709_551_615_u64)]]
-                );
-                assert_eq!(
-                    warnings_of(&session),
-                    vec![(
-                        1690,
-                        "constant 1.8446744073709552e+19 overflows bigint".to_owned()
-                    )]
-                );
-                session.run("SET sql_mode=''").unwrap();
-                // A non-overflowing consumer with a small integer literal;
-                // the predicate is not used as zero-slot root evidence.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT 1 FROM shared_real_unsigned_sql WHERE CAST(double_even AS UNSIGNED)=2")
-                    .unwrap()
-                else {
-                    panic!("expected unsigned CAST predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_nullif_preserves_eager_sql_values_and_comparison_pool_refusals() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    // SQL's existing Expr::Func rewrite constructs ScalarFunction directly;
-    // this test does not add a registry entry or change FunctionBuilder's
-    // separate refusal. Both arguments remain eagerly evaluated.
-    let create = "CREATE TABLE shared_nullif_sql (lhs_i BIGINT, rhs_equal BIGINT, rhs_unequal BIGINT, null_i BIGINT, lhs_d DECIMAL(8,1), rhs_d DECIMAL(10,3), lhs_s VARCHAR(8), rhs_s VARCHAR(12), lhs_t DATETIME, rhs_t DATETIME(3), lhs_j JSON, rhs_j JSON, subject VARCHAR(8), bad_pattern VARCHAR(8))";
-    let insert = "INSERT INTO shared_nullif_sql VALUES (1,1,2,NULL,1.5,123.123,'abc','xyz','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]','x','[')";
-    // Fixed original NULLIF rule: equality returns NULL, otherwise the actual
-    // first value survives. Its type is arg0's, NOT a merged CASE branch type.
-    let cases = [
-        (
-            "lhs_i,rhs_equal",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            None,
-        ),
-        (
-            "lhs_i,rhs_unequal",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("1"),
-        ),
-        ("null_i,lhs_i", FieldTypeCode::LongLong, Some((20, 0)), None),
-        (
-            "lhs_i,null_i",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("1"),
-        ),
-        (
-            "lhs_d,rhs_d",
-            FieldTypeCode::NewDecimal,
-            Some((8, 1)),
-            Some("1.5"),
-        ),
-        // DDL fills VARCHAR's default decimal with 0. NULLIF clones that
-        // column type, without the control-family String reset to -1.
-        (
-            "lhs_s,rhs_s",
-            FieldTypeCode::Varchar,
-            Some((8, 0)),
-            Some("abc"),
-        ),
-        (
-            "lhs_t,rhs_t",
-            FieldTypeCode::Datetime,
-            Some((19, 0)),
-            Some("2020-10-10 12:59:59"),
-        ),
-        ("lhs_j,rhs_j", FieldTypeCode::Json, None, Some("[1]")),
-    ];
-    // IMPORTANT: the zero-slot half below proves the EXISTING comparison
-    // stage refuses. EQ runs before NULLIF's new selector for these domains;
-    // these refusals give NO selector-specific admission/root credit.
-    for comparison_slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(comparison_slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, code, shape, expected) in cases {
-                let sql = format!("SELECT NULLIF({args}) FROM shared_nullif_sql");
-                if comparison_slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected NULLIF rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    if let Some(shape) = shape {
-                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    }
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        match (&rows[0][0], code) {
-                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
-                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
-                                assert_eq!(decimal.declared_shape(), Some((8, 1)));
-                            }
-                            (Datum::String(_), FieldTypeCode::Varchar) => {
-                                assert_eq!(field.charset_name(), "utf8mb4");
-                                assert_eq!(field.collation_name(), "utf8mb4_bin");
-                            }
-                            (Datum::Time(time), FieldTypeCode::Datetime) => {
-                                assert_eq!(time.kind(), TimeType::DateTime);
-                                assert_eq!(time.fsp(), 0);
-                            }
-                            (Datum::Json(_), FieldTypeCode::Json) => {}
-                            other => panic!(
-                                "NULLIF changed its surviving first carrier: {sql}: {other:?}"
-                            ),
-                        }
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    // Plain columns isolate the comparison from other child
-                    // operators, but cannot isolate NULLIF's later selector.
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("NULLIF's existing comparison bypassed its pool: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/comparison_slots={comparison_slots}"
-                );
-            }
-            if comparison_slots == 1 {
-                // Unlike IFNULL, even a NULL lhs cannot suppress RHS evaluation.
-                // All operands are stored, so neither invalid pattern folds.
-                for lhs in ["lhs_i", "null_i"] {
-                    let sql = format!(
-                        "SELECT NULLIF({lhs},subject REGEXP bad_pattern) FROM shared_nullif_sql"
-                    );
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    assert!(
-                        matches!(
-                            &error,
-                            DriverError::Exec(tidb_executor::ExecError::Eval(
-                                tidb_executor::EvalError::Unsupported(
-                                    "invalid regular expression pattern"
-                                )
-                            ))
-                        ),
-                        "{error:?}"
-                    );
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105);
-                    assert_eq!(mysql.state, *b"HY000");
-                    assert_eq!(mysql.message, "invalid regular expression pattern");
-                }
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns(
-                        "SELECT 1 FROM shared_nullif_sql WHERE NULLIF(lhs_i,rhs_unequal)=1",
-                    )
-                    .unwrap()
-                else {
-                    panic!("expected NULLIF predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_case_preserves_sql_branch_casts_lazy_selection_and_runtime_roots() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    let create = "CREATE TABLE shared_case_sql (c_true BIGINT, c_other_true BIGINT, c_false BIGINT, c_null BIGINT, base_value BIGINT, when_first BIGINT, when_late BIGINT, i_first BIGINT, i_late BIGINT, i_else BIGINT, n_int BIGINT, d_first DECIMAL(8,1), d_late DECIMAL(10,3), s_first VARCHAR(8), s_late VARCHAR(12), t_first DATETIME, t_late DATETIME(3), j_first JSON, j_late JSON, subject VARCHAR(8), bad_pattern VARCHAR(8))";
-    let insert = "INSERT INTO shared_case_sql VALUES (1,1,0,NULL,11,12,11,1,2,3,NULL,1.5,123.123,'abc','n','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]','x','[')";
-    // Original control.rs CASE order/NULL rules with fixed input literals.
-    // The SQL rewriter wraps Decimal and temporal result branches in the FULL
-    // merged target. Thus 1.5 becomes 1.500 and DATETIME(0) becomes FSP 3 here:
-    // this is the existing branch cast, NOT a COALESCE-style CASE stamp.
-    let cases = [
-        (
-            "CASE WHEN c_true THEN i_first WHEN c_other_true THEN i_late ELSE i_else END",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("1"),
-            None,
-        ),
-        (
-            "CASE WHEN c_false THEN i_first WHEN c_null THEN i_late ELSE i_else END",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("3"),
-            None,
-        ),
-        (
-            "CASE WHEN c_true THEN d_first WHEN c_other_true THEN d_late ELSE d_late END",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some("1.500"),
-            None,
-        ),
-        (
-            "CASE WHEN c_false THEN d_first WHEN c_true THEN d_late ELSE d_first END",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some("123.123"),
-            None,
-        ),
-        (
-            "CASE WHEN c_true THEN s_first WHEN c_other_true THEN s_late ELSE s_late END",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some("abc"),
-            None,
-        ),
-        (
-            "CASE WHEN c_false THEN s_first WHEN c_true THEN s_late ELSE s_first END",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some("n"),
-            None,
-        ),
-        (
-            "CASE WHEN c_true THEN t_first WHEN c_other_true THEN t_late ELSE t_late END",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10 12:59:59.000"),
-            Some(3),
-        ),
-        (
-            "CASE WHEN c_false THEN t_first WHEN c_true THEN t_late ELSE t_first END",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10 12:59:59.123"),
-            Some(3),
-        ),
-        (
-            "CASE WHEN c_true THEN j_first WHEN c_other_true THEN j_late ELSE j_late END",
-            FieldTypeCode::Json,
-            None,
-            Some("[1]"),
-            None,
-        ),
-        (
-            "CASE WHEN c_false THEN j_first WHEN c_true THEN j_late ELSE j_first END",
-            FieldTypeCode::Json,
-            None,
-            Some("[2]"),
-            None,
-        ),
-        // A taken THEN returning NULL stops; the next true WHEN must not run.
-        (
-            "CASE WHEN c_true THEN n_int WHEN c_other_true THEN i_late ELSE i_else END",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            None,
-            None,
-        ),
-        // All conditions false/NULL and no ELSE: actual empty completion.
-        (
-            "CASE WHEN c_false THEN i_first WHEN c_null THEN i_late END",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            None,
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (expression, code, shape, expected, value_fsp) in cases {
-                // Searched CASE conditions are plain stored columns, so no
-                // comparison/function condition or WHERE/sort can supply the
-                // zero-slot error before the CASE head. The existing implicit
-                // branch casts above are evaluated only after a head chooses.
-                let sql = format!("SELECT {expression} FROM shared_case_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected CASE rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    if let Some(shape) = shape {
-                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    }
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        match (&rows[0][0], code) {
-                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
-                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
-                                assert_eq!(decimal.declared_shape(), Some((10, 3)));
-                            }
-                            (Datum::String(_), FieldTypeCode::Varchar) => {
-                                assert_eq!(field.charset_name(), "utf8mb4");
-                                assert_eq!(field.collation_name(), "utf8mb4_bin");
-                            }
-                            (Datum::Time(time), FieldTypeCode::Datetime) => {
-                                assert_eq!(time.kind(), TimeType::DateTime);
-                                assert_eq!(time.fsp(), value_fsp.unwrap());
-                            }
-                            (Datum::Json(_), FieldTypeCode::Json) => {}
-                            other => panic!("CASE changed its selected carrier: {sql}: {other:?}"),
-                        }
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                            );
-                        }
-                        other => panic!(
-                            "CASE bypassed its condition worker: {sql}/{vectorized}: {other:?}"
-                        ),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Real condition/result columns prevent constant-folding the
-                // invalid later branch. These are positive-pool-only probes.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT CASE WHEN c_true THEN i_first WHEN c_other_true THEN subject REGEXP bad_pattern ELSE i_else END FROM shared_case_sql")
-                    .unwrap()
-                else {
-                    panic!("expected CASE to skip the invalid later result")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]]);
-                assert!(warnings_of(&session).is_empty());
-                let error = session
-                    .run_with_columns("SELECT CASE WHEN c_false THEN i_first WHEN c_true THEN subject REGEXP bad_pattern ELSE i_else END FROM shared_case_sql")
-                    .expect_err("CASE must evaluate the selected invalid result");
-                assert!(
-                    matches!(
-                        &error,
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::Unsupported(
-                                "invalid regular expression pattern"
-                            )
-                        ))
-                    ),
-                    "{error:?}"
-                );
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1105);
-                assert_eq!(mysql.state, *b"HY000");
-                assert_eq!(mysql.message, "invalid regular expression pattern");
-                // Simple CASE is lowered to per-WHEN equality expressions.
-                // Its comparisons may run before CASE's head, so this filter
-                // is NOT zero-slot root proof or AST base-once evidence.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT 1 FROM shared_case_sql WHERE CASE base_value WHEN when_first THEN i_first WHEN when_late THEN i_late ELSE i_else END=2")
-                    .unwrap()
-                else {
-                    panic!("expected simple CASE predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_coalesce_preserves_iterative_selection_temporal_stamps_and_runtime_roots() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    let create = "CREATE TABLE shared_coalesce_sql (i_first BIGINT, i_late BIGINT, i_null BIGINT, i_null2 BIGINT, i_null3 BIGINT, d_first DECIMAL(8,1), d_late DECIMAL(10,3), d_null DECIMAL(10,3), s_first VARCHAR(8), s_late VARCHAR(12), s_null VARCHAR(12), t_first DATETIME, t_late DATETIME(3), t_null DATETIME(3), j_first JSON, j_late JSON, j_null JSON, date_first DATE, subject VARCHAR(8), bad_pattern VARCHAR(8))";
-    let insert = "INSERT INTO shared_coalesce_sql VALUES (0,2,NULL,NULL,NULL,1.5,123.123,NULL,'abc','n',NULL,'2020-10-10 12:59:59','2020-10-10 12:59:59.123',NULL,'[1]','[2]',NULL,'2020-10-10','x','[')";
-    // Fixed selected input literals and the original test_coalesce /
-    // test_coalesce_fraction_promotion rules. Every query has three stored
-    // candidates, including a third-position winner and complete exhaustion.
-    let cases = [
-        // Numeric zero is non-NULL and must win, independently of truthiness.
-        (
-            "i_first,i_late,i_null",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("0"),
-            None,
-        ),
-        (
-            "i_null,i_null2,i_late",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("2"),
-            None,
-        ),
-        (
-            "d_first,d_late,d_null",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some("1.5"),
-            None,
-        ),
-        (
-            "d_null,d_late,d_first",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some("123.123"),
-            None,
-        ),
-        (
-            "s_first,s_late,s_null",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some("abc"),
-            None,
-        ),
-        (
-            "s_null,s_late,s_first",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some("n"),
-            None,
-        ),
-        // Unlike IF/IFNULL, COALESCE stamps a selected DATETIME(0) with the
-        // merged FSP 3. Its clock is unchanged, not rounded or reconstructed.
-        (
-            "t_first,t_late,t_null",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10 12:59:59.000"),
-            Some((TimeType::DateTime, 3)),
-        ),
-        (
-            "t_null,t_late,t_first",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10 12:59:59.123"),
-            Some((TimeType::DateTime, 3)),
-        ),
-        (
-            "j_first,j_late,j_null",
-            FieldTypeCode::Json,
-            None,
-            Some("[1]"),
-            None,
-        ),
-        (
-            "j_null,j_late,j_first",
-            FieldTypeCode::Json,
-            None,
-            Some("[2]"),
-            None,
-        ),
-        (
-            "i_null,i_null2,i_null3",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            None,
-            None,
-        ),
-        // The existing special Time branch returns after set_fsp. DATE's
-        // setter leaves its kind/FSP unchanged even under a DATETIME header.
-        (
-            "date_first,t_late,t_null",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10"),
-            Some((TimeType::Date, 0)),
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, code, shape, expected, temporal) in cases {
-                // Pure stored-column roots: no CAST, WHERE, sort or function
-                // child can provide a substitute zero-slot failure. SQL's
-                // existing minimum arity remains one; no zero-arg SQL claim.
-                let sql = format!("SELECT COALESCE({args}) FROM shared_coalesce_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected COALESCE rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    if let Some(shape) = shape {
-                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    }
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        match (&rows[0][0], code) {
-                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
-                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
-                                // Same-family Decimal remains at its actual
-                                // scale; only its declared chunk shape widens.
-                                assert_eq!(decimal.declared_shape(), Some((10, 3)));
-                            }
-                            (Datum::String(_), FieldTypeCode::Varchar) => {
-                                assert_eq!(field.charset_name(), "utf8mb4");
-                                assert_eq!(field.collation_name(), "utf8mb4_bin");
-                            }
-                            (Datum::Time(time), FieldTypeCode::Datetime) => {
-                                let (kind, fsp) = temporal.unwrap();
-                                assert_eq!(time.kind(), kind, "{sql}/{vectorized}");
-                                assert_eq!(time.fsp(), fsp, "{sql}/{vectorized}");
-                            }
-                            (Datum::Json(_), FieldTypeCode::Json) => {}
-                            other => {
-                                panic!("COALESCE changed its selected carrier: {sql}: {other:?}")
-                            }
-                        }
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("COALESCE bypassed its first candidate worker: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Stored first candidates and invalid pattern cannot fold.
-                // These child-bearing calls prove laziness only, not zero-slot
-                // root admission or the number of intermediate worker stages.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns("SELECT COALESCE(i_first,i_null,subject REGEXP bad_pattern) FROM shared_coalesce_sql")
-                    .unwrap()
-                else {
-                    panic!("expected COALESCE to skip its invalid stored candidate")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(0)]]);
-                assert!(warnings_of(&session).is_empty());
-                let error = session
-                    .run_with_columns("SELECT COALESCE(i_null,i_null2,subject REGEXP bad_pattern) FROM shared_coalesce_sql")
-                    .expect_err("COALESCE must demand the invalid candidate after its NULL prefix");
-                assert!(
-                    matches!(
-                        &error,
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::Unsupported(
-                                "invalid regular expression pattern"
-                            )
-                        ))
-                    ),
-                    "{error:?}"
-                );
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1105);
-                assert_eq!(mysql.state, *b"HY000");
-                assert_eq!(mysql.message, "invalid regular expression pattern");
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns(
-                        "SELECT 1 FROM shared_coalesce_sql WHERE COALESCE(i_null,i_null2,i_late)=2",
-                    )
-                    .unwrap()
-                else {
-                    panic!("expected COALESCE predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_if_preserves_stored_conditions_branch_frames_and_runtime_root_demand() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    // All three condition states are stored in one row, so each zero-slot
-    // query reaches the intended condition without a filter or scan-order
-    // assumption. Only THEN/ELSE participate in IF's result-type inference.
-    let create = "CREATE TABLE shared_if_sql (c_true BIGINT, c_false BIGINT, c_null BIGINT, i_then BIGINT, i_else BIGINT, d_then DECIMAL(8,1), d_else DECIMAL(10,3), s_then VARCHAR(8), s_else VARCHAR(12), t_then DATETIME, t_else DATETIME(3), j_then JSON, j_else JSON, n_value BIGINT, subject VARCHAR(8), bad_pattern VARCHAR(8))";
-    let insert = "INSERT INTO shared_if_sql VALUES (1,0,NULL,1,2,1.5,123.123,'abc','n','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]',NULL,'x','[')";
-    // Fixed selected input literals, using the original control.rs IF rules
-    // and InferType4ControlFuncs widths. The original return coercion keeps
-    // same-family Decimal scales and Time FSP, rather than padding to headers.
-    let cases = [
-        (
-            "c_true,i_then,i_else",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("1"),
-            None,
-        ),
-        (
-            "c_false,i_then,i_else",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("2"),
-            None,
-        ),
-        (
-            "c_true,d_then,d_else",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some("1.5"),
-            None,
-        ),
-        (
-            "c_false,d_then,d_else",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some("123.123"),
-            None,
-        ),
-        (
-            "c_true,s_then,s_else",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some("abc"),
-            None,
-        ),
-        (
-            "c_false,s_then,s_else",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some("n"),
-            None,
-        ),
-        (
-            "c_true,t_then,t_else",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10 12:59:59"),
-            Some(0),
-        ),
-        (
-            "c_false,t_then,t_else",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some("2020-10-10 12:59:59.123"),
-            Some(3),
-        ),
-        (
-            "c_true,j_then,j_else",
-            FieldTypeCode::Json,
-            None,
-            Some("[1]"),
-            None,
-        ),
-        (
-            "c_false,j_then,j_else",
-            FieldTypeCode::Json,
-            None,
-            Some("[2]"),
-            None,
-        ),
-        // NULL conditions select ELSE, not NULL unconditionally. A selected
-        // NULL remains NULL but retains its declared BIGINT result type.
-        (
-            "c_null,i_then,i_else",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some("2"),
-            None,
-        ),
-        (
-            "c_null,i_then,n_value",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            None,
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, code, shape, expected, value_fsp) in cases {
-                // No function condition, CAST, WHERE or sort can supply a
-                // substitute worker failure for these pure column IF roots.
-                let sql = format!("SELECT IF({args}) FROM shared_if_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected IF rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    if let Some(shape) = shape {
-                        assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    }
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        match (&rows[0][0], code) {
-                            (Datum::Int(_), FieldTypeCode::LongLong) => {}
-                            (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
-                                assert_eq!(decimal.declared_shape(), Some((10, 3)));
-                            }
-                            (Datum::String(_), FieldTypeCode::Varchar) => {
-                                assert_eq!(field.charset_name(), "utf8mb4");
-                                assert_eq!(field.collation_name(), "utf8mb4_bin");
-                            }
-                            (Datum::Time(time), FieldTypeCode::Datetime) => {
-                                assert_eq!(time.kind(), TimeType::DateTime);
-                                assert_eq!(time.fsp(), value_fsp.unwrap());
-                            }
-                            (Datum::Json(_), FieldTypeCode::Json) => {}
-                            other => panic!("IF changed its selected carrier: {sql}: {other:?}"),
-                        }
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                            );
-                        }
-                        other => {
-                            panic!("IF bypassed its head worker: {sql}/{vectorized}: {other:?}")
-                        }
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Both the condition and invalid-regexp operands are columns,
-                // so neither the condition nor the dead RHS can be folded.
-                // These child-bearing queries are positive-pool-only evidence.
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns(
-                        "SELECT IF(c_true,i_then,subject REGEXP bad_pattern) FROM shared_if_sql",
-                    )
-                    .unwrap()
-                else {
-                    panic!("expected IF to skip its invalid stored RHS")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]]);
-                assert!(warnings_of(&session).is_empty());
-                let error = session
-                    .run_with_columns(
-                        "SELECT IF(c_false,i_then,subject REGEXP bad_pattern) FROM shared_if_sql",
-                    )
-                    .expect_err("IF must evaluate the chosen invalid stored RHS");
-                assert!(
-                    matches!(
-                        &error,
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::Unsupported(
-                                "invalid regular expression pattern"
-                            )
-                        ))
-                    ),
-                    "{error:?}"
-                );
-                // Preserve native regexp::compile_error and the existing
-                // Unsupported mapping, rather than inventing Go's 1139 here.
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1105);
-                assert_eq!(mysql.state, *b"HY000");
-                assert_eq!(mysql.message, "invalid regular expression pattern");
-                let StmtOutput::Rows { rows, .. } = session
-                    .run_with_columns(
-                        "SELECT 1 FROM shared_if_sql WHERE IF(c_false,i_then,i_else)=2",
-                    )
-                    .unwrap()
-                else {
-                    panic!("expected IF predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_ifnull_preserves_stored_frames_lazy_errors_and_runtime_root_demand() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    // Two rows per table have distinct payloads. The five value families
-    // have non-NULL first arguments in the left table and NULL in the right;
-    // the separate typed-NULL pair is NULL in both. Zero-slot proof therefore
-    // does not depend on which row a scan visits first.
-    let schema = "(i_left BIGINT, i_right BIGINT, d_left DECIMAL(8,1), d_right DECIMAL(10,3), s_left VARCHAR(8), s_right VARCHAR(12), t_left DATETIME, t_right DATETIME(3), j_left JSON, j_right JSON, n_left BIGINT, n_right BIGINT, subject VARCHAR(8), bad_pattern VARCHAR(8))";
-    let left_rows = "(1,2,1.5,123.123,'abc','n','2020-10-10 12:59:59','2020-10-10 12:59:59.123','[1]','[2]',NULL,NULL,'x','['),(3,4,2.5,456.456,'xyz','z','2024-01-01 00:00:00','2024-01-01 00:00:00.456','[3]','[4]',NULL,NULL,'x','[')";
-    let right_rows = "(NULL,2,NULL,123.123,NULL,'n',NULL,'2020-10-10 12:59:59.123',NULL,'[2]',NULL,NULL,'x','['),(NULL,4,NULL,456.456,NULL,'z',NULL,'2024-01-01 00:00:00.456',NULL,'[4]',NULL,NULL,'x','[')";
-    // Original control.rs / compare_control_source.rs selection rules, with
-    // fixed literal payloads. InferType4ControlFuncs merges widths/scales,
-    // while the existing outer coerce keeps values already in that family.
-    let cases = [
-        (
-            "i_left,i_right",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            Some([["1", "3"], ["2", "4"]]),
-        ),
-        (
-            "d_left,d_right",
-            FieldTypeCode::NewDecimal,
-            Some((10, 3)),
-            Some([["1.5", "2.5"], ["123.123", "456.456"]]),
-        ),
-        (
-            "s_left,s_right",
-            FieldTypeCode::Varchar,
-            Some((12, -1)),
-            Some([["abc", "xyz"], ["n", "z"]]),
-        ),
-        (
-            "t_left,t_right",
-            FieldTypeCode::Datetime,
-            Some((23, 3)),
-            Some([
-                ["2020-10-10 12:59:59", "2024-01-01 00:00:00"],
-                ["2020-10-10 12:59:59.123", "2024-01-01 00:00:00.456"],
-            ]),
-        ),
-        (
-            "j_left,j_right",
-            FieldTypeCode::Json,
-            None,
-            Some([["[1]", "[3]"], ["[2]", "[4]"]]),
-        ),
-        // NULL values in typed BIGINT columns still have a BIGINT result
-        // header, unlike two untyped NULL constants folded at planning.
-        (
-            "n_left,n_right",
-            FieldTypeCode::LongLong,
-            Some((20, 0)),
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        for (table, values) in [
-            ("shared_ifnull_left", left_rows),
-            ("shared_ifnull_right", right_rows),
-        ] {
-            session
-                .run(&format!("CREATE TABLE {table} {schema}"))
-                .unwrap();
-            session
-                .run(&format!("INSERT INTO {table} VALUES {values}"))
-                .unwrap();
-        }
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (table, first_null) in
-                [("shared_ifnull_left", false), ("shared_ifnull_right", true)]
-            {
-                for (args, code, shape, expected) in cases {
-                    // Pure two-column IFNULL: no child function, WHERE or
-                    // ORDER BY can supply a substitute zero-slot failure.
-                    let sql = format!("SELECT IFNULL({args}) FROM {table}");
-                    if slots == 1 {
-                        let StmtOutput::Rows { columns, rows } =
-                            session.run_with_columns(&sql).unwrap()
-                        else {
-                            panic!("expected IFNULL rows: {sql}")
-                        };
-                        assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                        let field = &columns[0].1;
-                        assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                        if let Some(shape) = shape {
-                            assert_eq!(
-                                (field.flen(), field.decimal()),
-                                shape,
-                                "{sql}/{vectorized}"
-                            );
-                        }
-                        assert_eq!(rows.len(), 2, "{sql}/{vectorized}");
-                        for row in &rows {
-                            assert_eq!(row.len(), 1);
-                            if expected.is_none() {
-                                assert_eq!(row[0], Datum::Null, "{sql}/{vectorized}");
-                                continue;
-                            }
-                            match (&row[0], code) {
-                                (Datum::Int(_), FieldTypeCode::LongLong) => {}
-                                (Datum::Decimal(decimal), FieldTypeCode::NewDecimal) => {
-                                    assert_eq!(decimal.declared_shape(), Some((10, 3)));
-                                }
-                                (Datum::String(_), FieldTypeCode::Varchar) => {
-                                    assert_eq!(field.charset_name(), "utf8mb4");
-                                    assert_eq!(field.collation_name(), "utf8mb4_bin");
-                                }
-                                (Datum::Time(time), FieldTypeCode::Datetime) => {
-                                    assert_eq!(time.kind(), TimeType::DateTime);
-                                    // IFNULL does not perform COALESCE's
-                                    // special merged-FSP stamp on a Time.
-                                    assert_eq!(time.fsp(), if first_null { 3 } else { 0 });
-                                }
-                                (Datum::Json(_), FieldTypeCode::Json) => {}
-                                other => {
-                                    panic!("IFNULL changed the selected carrier: {sql}: {other:?}")
-                                }
-                            }
-                        }
-                        if let Some(expected) = expected {
-                            let mut actual: Vec<_> =
-                                rows.iter().map(|row| cell_text(&row[0])).collect();
-                            // Compare a fixed multiset without inserting a SQL
-                            // sort worker into the root-demand query itself.
-                            actual.sort();
-                            assert_eq!(
-                                actual,
-                                expected[usize::from(first_null)],
-                                "{sql}/{vectorized}"
-                            );
-                        }
-                    } else {
-                        let error = session.run_with_columns(&sql).expect_err(&sql);
-                        match &error {
-                            DriverError::Exec(tidb_executor::ExecError::Eval(
-                                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                            )) => {
-                                assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                                assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                            }
-                            other => panic!("IFNULL used a native picker instead of its worker: {sql}/{vectorized}: {other:?}"),
-                        }
-                        let mysql = error.to_mysql_error();
-                        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    }
-                    assert!(
-                        warnings_of(&session).is_empty(),
-                        "{sql}/{vectorized}/slots={slots}"
-                    );
-                }
-                if slots == 1 {
-                    // The original IFNULL dead-regexp case, now with ALL
-                    // operands stored. The invalid pattern cannot be folded
-                    // into an earlier constant error. These child-bearing
-                    // queries are not claimed as zero-slot root evidence.
-                    let sql =
-                        format!("SELECT IFNULL(i_left, subject REGEXP bad_pattern) FROM {table}");
-                    if first_null {
-                        let error = session.run_with_columns(&sql).expect_err(&sql);
-                        assert!(
-                            matches!(
-                                &error,
-                                DriverError::Exec(tidb_executor::ExecError::Eval(
-                                    tidb_executor::EvalError::Unsupported(
-                                        "invalid regular expression pattern"
-                                    )
-                                ))
-                            ),
-                            "{error:?}"
-                        );
-                        // The existing native compile_error maps InvalidPattern
-                        // to Unsupported: preserve 1105, not Go's nominal 1139.
-                        let mysql = error.to_mysql_error();
-                        assert_eq!(mysql.code, 1105);
-                        assert_eq!(mysql.state, *b"HY000");
-                        assert_eq!(mysql.message, "invalid regular expression pattern");
-                    } else {
-                        let StmtOutput::Rows { rows, .. } = session.run_with_columns(&sql).unwrap()
-                        else {
-                            panic!("expected IFNULL to skip the invalid stored pattern")
-                        };
-                        let mut actual: Vec<_> =
-                            rows.iter().map(|row| cell_text(&row[0])).collect();
-                        actual.sort();
-                        assert_eq!(actual, ["1", "3"]);
-                        assert!(warnings_of(&session).is_empty());
-                    }
-                }
-            }
-            if slots == 1 {
-                let sql = "SELECT 1 FROM shared_ifnull_right WHERE IFNULL(i_left,i_right)=2";
-                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
-                    panic!("expected IFNULL predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_temporal_literal_rewrite_uses_the_executing_session_pool() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    // Session execution owns a pool before table-query planning starts.
-    // These are rewrite-time literal workers, NOT per-row literal evaluation
-    // or standalone prepare_ast(&self) calls without an execution owner.
-    let cases = [
-        (
-            "DATE '2024-01-01'",
-            "2024-01-01",
-            FieldTypeCode::Date,
-            (10, 0),
-            TimeType::Date,
-        ),
-        (
-            "TIMESTAMP '2024-01-01 01:02:03.123'",
-            "2024-01-01 01:02:03.123",
-            FieldTypeCode::Datetime,
-            (23, 3),
-            TimeType::DateTime,
-        ),
-        // The original time_literal offset case normalizes +02:00 into UTC;
-        // ODBC syntax reaches the same TimestampLiteral rewrite branch.
-        (
-            "{ts '2024-01-01 14:00:00+02:00'}",
-            "2024-01-01 12:00:00",
-            FieldTypeCode::Datetime,
-            (19, 0),
-            TimeType::DateTime,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session
-            .run("CREATE TABLE shared_literal_rewrite_scope (id INT)")
-            .unwrap();
-        session
-            .run("INSERT INTO shared_literal_rewrite_scope VALUES (7)")
-            .unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            // Binding a zero-slot owner must not globally forbid planning or
-            // scanning ordinary stored columns. This succeeds before the
-            // baseline's first zero-slot literal unexpectedly succeeds.
-            let StmtOutput::Rows { rows, .. } = session
-                .run_with_columns("SELECT id FROM shared_literal_rewrite_scope")
-                .unwrap()
-            else {
-                panic!("expected ordinary column rows with slots={slots}")
-            };
-            assert_eq!(rows, vec![vec![Datum::Int(7)]]);
-            assert!(warnings_of(&session).is_empty());
-            for (literal, expected, code, shape, kind) in cases {
-                let sql = format!("SELECT {literal} FROM shared_literal_rewrite_scope");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected folded temporal literal rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    let Datum::Time(time) = &rows[0][0] else {
-                        panic!("rewrite lost the native temporal literal: {sql}")
-                    };
-                    assert_eq!(time.kind(), kind, "{sql}/{vectorized}");
-                    assert_eq!(i64::from(time.fsp()), shape.1, "{sql}/{vectorized}");
-                    assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                } else {
-                    // A fresh NoColumns one-shot pool incorrectly succeeds
-                    // here; the actual executing session's pool must refuse.
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("literal rewrite lost the session-pool refusal: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                assert!(
-                    warnings_of(&session).is_empty(),
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // Preserve the known PlanScopeResolver date_modes DEFAULT
-                // behavior despite sql_mode=''. Owner forwarding must not
-                // silently fix that separate compatibility gap.
-                let error = session
-                    .run_with_columns("SELECT DATE '0000-00-00' FROM shared_literal_rewrite_scope")
-                    .expect_err("the existing resolver default still rejects an all-zero DATE");
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1292);
-                assert_eq!(mysql.state, *b"22007");
-                assert_eq!(mysql.message, "Incorrect date value: '0000-00-00'");
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_from_unixtime_preserves_sql_wrappers_staged_layouts_and_runtime_roots() {
-    use tidb_datatype::{Collation, FieldTypeCode, TimeType};
 
-    let create = "CREATE TABLE shared_from_unixtime_sql (integer_seconds BIGINT, decimal_seconds DECIMAL(20,7), bad_text VARCHAR(64), overflow_text VARCHAR(64), unsigned_seconds BIGINT UNSIGNED, negative_real DOUBLE, prefix_text VARCHAR(64), carry_text VARCHAR(64), format_text VARCHAR(8), null_format VARCHAR(8))";
-    let insert = "INSERT INTO shared_from_unixtime_sql VALUES (1,1.1234567,'a','18446744073709551615',18446744073709551615,-0.1,'1.123456789x','32536771199.9999999','%f',NULL)";
-    // Fixed results derived from the original session_tz::unix_arg_nanos /
-    // from_unixtime policies and original from_unixtime_goeval_vectors. The
-    // ordinary SQL wrapper reparses one-arg results at their STATIC FSP; the
-    // two-arg layout result remains a string. No leaf output is an oracle.
-    let cases = [
-        (
-            "integer_seconds",
-            Some("1970-01-01 00:00:01"),
-            FieldTypeCode::Datetime,
-            (19, 0),
-            None,
-        ),
-        (
-            "decimal_seconds",
-            Some("1970-01-01 00:00:01.123457"),
-            FieldTypeCode::Datetime,
-            (26, 6),
-            None,
-        ),
-        (
-            "bad_text",
-            Some("1970-01-01 00:00:00.000000"),
-            FieldTypeCode::Datetime,
-            (26, 6),
-            Some("Truncated incorrect DECIMAL value: 'a'"),
-        ),
-        (
-            "overflow_text",
-            Some("1970-01-01 00:00:00.000000"),
-            FieldTypeCode::Datetime,
-            (26, 6),
-            Some("Truncated incorrect DECIMAL value: '18446744073709551615'"),
-        ),
-        // The identical unsigned numeric value is NULL, with no truncation
-        // warning and no live layout stage, rather than the text epoch path.
-        (
-            "unsigned_seconds,null_format",
-            None,
-            FieldTypeCode::VarString,
-            (-1, -1),
-            None,
-        ),
-        // Preserve the original negative-zero spelling bug: '-0' parses as
-        // integer zero and its positive fraction survives at the real FSP 6.
-        (
-            "negative_real",
-            Some("1970-01-01 00:00:00.100000"),
-            FieldTypeCode::Datetime,
-            (26, 6),
-            None,
-        ),
-        // Only the first nine fraction characters are inspected. The 'x'
-        // beyond them is ignored, not a new invalid-numeric rejection.
-        (
-            "prefix_text",
-            Some("1970-01-01 00:00:01.123457"),
-            FieldTypeCode::Datetime,
-            (26, 6),
-            None,
-        ),
-        // MAX_UNIX_SECS is checked before rounding, not again after carry.
-        (
-            "carry_text",
-            Some("3001-01-19 00:00:00.000000"),
-            FieldTypeCode::Datetime,
-            (26, 6),
-            None,
-        ),
-        (
-            "decimal_seconds,format_text",
-            Some("123457"),
-            FieldTypeCode::VarString,
-            (-1, -1),
-            None,
-        ),
-        (
-            "decimal_seconds,null_format",
-            None,
-            FieldTypeCode::VarString,
-            (-1, -1),
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session
-            .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-            .unwrap();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, expected, code, shape, warning) in cases {
-                let sql = format!("SELECT FROM_UNIXTIME({args}) FROM shared_from_unixtime_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected FROM_UNIXTIME rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    if code == FieldTypeCode::Datetime {
-                        assert_eq!(field.charset_name(), "binary");
-                        assert_eq!(field.collation_name(), "binary");
-                    } else {
-                        assert_eq!(field.charset_name(), "utf8mb4");
-                        assert_eq!(field.collation_name(), "utf8mb4_bin");
-                    }
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        if code == FieldTypeCode::Datetime {
-                            let Datum::Time(time) = &rows[0][0] else {
-                                panic!("one-arg FROM_UNIXTIME lost its native temporal cell: {sql}")
-                            };
-                            assert_eq!(time.kind(), TimeType::DateTime, "{sql}/{vectorized}");
-                            assert_eq!(i64::from(time.fsp()), shape.1, "{sql}/{vectorized}");
-                            assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                        } else {
-                            assert_eq!(
-                                rows[0][0],
-                                Datum::new_collation_string(expected, Collation::Utf8Mb4Bin),
-                                "{sql}/{vectorized}"
-                            );
-                        }
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                    let expected_warnings = warning
-                        .map(|message| vec![(1292, message.to_owned())])
-                        .unwrap_or_default();
-                    assert_eq!(
-                        warnings_of(&session),
-                        expected_warnings,
-                        "{sql}/{vectorized}"
-                    );
-                } else {
-                    // Every operand is a stored column, with no filter, sort
-                    // or function child supplying a substitute failure. There
-                    // is no argument-cast mask: even handle_truncate follows
-                    // the first head worker and cannot warn on this refusal.
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                            );
-                        }
-                        other => panic!(
-                            "FROM_UNIXTIME bypassed its head worker: {sql}/{vectorized}: {other:?}"
-                        ),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                }
-            }
-            if slots == 1 {
-                // A consumer of the same Decimal case, not zero-slot evidence
-                // for either the head root or its conditional layout stage.
-                let sql = "SELECT 1 FROM shared_from_unixtime_sql WHERE FROM_UNIXTIME(decimal_seconds)='1970-01-01 00:00:01.123457'";
-                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
-                    panic!("expected FROM_UNIXTIME predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_unix_timestamp_preserves_source_shapes_zero_dates_and_runtime_roots() {
-    use tidb_datatype::FieldTypeCode;
 
-    let create = "CREATE TABLE shared_unix_timestamp_sql (epoch_dt DATETIME(3), epoch_text VARCHAR(64), packed_num DECIMAL(9,1), packed_text VARCHAR(32), whole_zero VARCHAR(64), partial_zero VARCHAR(64), null_text VARCHAR(64), bad_text VARCHAR(64), epoch_whole DATETIME, gap_dt DATETIME)";
-    let insert = "INSERT INTO shared_unix_timestamp_sql VALUES ('1970-01-01 00:00:01.123','1970-01-01 00:00:01.123',19700101.5,'19700101.5','0000-00-00 00:00:00.123','2017-00-02 00:00:00.123',NULL,'not-a-date','1970-01-01 00:00:01','2025-03-30 02:30:00')";
-    // Original session_tz and calendar-source rows plus their packed parser
-    // rule: a numeric date-only fraction is ignored, while the STRING '.5'
-    // is hour 5 (18000 seconds after the UTC epoch). No provider is an oracle.
-    // Existing Decimal-family results retain their actual fractional digits;
-    // the SQL header and chunk declared_shape do not rescale that payload.
-    let cases = [
-        (
-            "epoch_dt",
-            "+00:00",
-            Some("1.123"),
-            FieldTypeCode::NewDecimal,
-            (15, 3),
-            None,
-        ),
-        (
-            "epoch_text",
-            "+00:00",
-            Some("1.123"),
-            FieldTypeCode::NewDecimal,
-            (18, 6),
-            None,
-        ),
-        (
-            "packed_num",
-            "+00:00",
-            Some("0.0"),
-            FieldTypeCode::NewDecimal,
-            (13, 1),
-            None,
-        ),
-        (
-            "packed_text",
-            "+00:00",
-            Some("18000.0"),
-            FieldTypeCode::NewDecimal,
-            (18, 6),
-            None,
-        ),
-        // All Y/M/D zero is NULL even with nonzero fractional seconds.
-        (
-            "whole_zero",
-            "+00:00",
-            None,
-            FieldTypeCode::NewDecimal,
-            (18, 6),
-            None,
-        ),
-        // A partial zero date instead keeps the parsed FSP in numeric zero.
-        (
-            "partial_zero",
-            "+00:00",
-            Some("0.000"),
-            FieldTypeCode::NewDecimal,
-            (18, 6),
-            None,
-        ),
-        (
-            "null_text",
-            "+00:00",
-            None,
-            FieldTypeCode::NewDecimal,
-            (18, 6),
-            None,
-        ),
-        (
-            "bad_text",
-            "+00:00",
-            None,
-            FieldTypeCode::NewDecimal,
-            (18, 6),
-            Some("Incorrect datetime value: 'not-a-date'"),
-        ),
-        (
-            "epoch_whole",
-            "+00:00",
-            Some("1"),
-            FieldTypeCode::LongLong,
-            (11, 0),
-            None,
-        ),
-        // Original Paris transition oracle: the missing 02:30 maps to 01:00Z.
-        (
-            "gap_dt",
-            "Europe/Paris",
-            Some("1743296400"),
-            FieldTypeCode::LongLong,
-            (11, 0),
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (column, zone, expected, code, shape, warning) in cases {
-                session.run(&format!("SET time_zone='{zone}'")).unwrap();
-                // No implicit ETDatetime mask exists for UNIX_TIMESTAMP;
-                // parsing belongs to this actual runtime root, not a child.
-                let sql = format!("SELECT UNIX_TIMESTAMP({column}) FROM shared_unix_timestamp_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected UNIX_TIMESTAMP rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), code, "{sql}/{vectorized}");
-                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        if code == FieldTypeCode::NewDecimal {
-                            let Datum::Decimal(decimal) = &rows[0][0] else {
-                                panic!("UNIX_TIMESTAMP lost its SQL decimal carrier: {sql}")
-                            };
-                            assert_eq!(decimal.declared_shape(), Some(shape), "{sql}/{vectorized}");
-                        } else {
-                            assert!(matches!(&rows[0][0], Datum::Int(_)), "{sql}/{vectorized}");
-                        }
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                    let expected_warnings = warning
-                        .map(|message| vec![(1292, message.to_owned())])
-                        .unwrap_or_default();
-                    assert_eq!(
-                        warnings_of(&session),
-                        expected_warnings,
-                        "{sql}/{vectorized}"
-                    );
-                } else {
-                    // Real column calls without WHERE, ORDER BY or other
-                    // function children: every path must enter its first
-                    // worker before parsing can warn or yield NULL/zero.
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("UNIX_TIMESTAMP bypassed its runtime root: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                }
-            }
-            if slots == 1 {
-                session.run("SET time_zone='+00:00'").unwrap();
-                let sql = "SELECT 1 FROM shared_unix_timestamp_sql WHERE UNIX_TIMESTAMP(epoch_text)=1.123";
-                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
-                    panic!("expected UNIX_TIMESTAMP predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
 
-                // Exercise the real statement-clock getter without wall-clock
-                // flakiness. Change its controlled input for the second mode;
-                // this deferred zero-arg call is not column-root zero-slot proof.
-                let clock = 1_700_000_000 + i64::from(vectorized);
-                session.run(&format!("SET timestamp={clock}")).unwrap();
-                let StmtOutput::Rows { columns, rows } = session
-                    .run_with_columns("SELECT UNIX_TIMESTAMP() FROM shared_unix_timestamp_sql")
-                    .unwrap()
-                else {
-                    panic!("expected statement-clock UNIX_TIMESTAMP rows")
-                };
-                assert_eq!(columns.len(), 1);
-                assert_eq!(columns[0].1.code(), FieldTypeCode::LongLong);
-                assert_eq!((columns[0].1.flen(), columns[0].1.decimal()), (11, 0));
-                assert_eq!(rows, vec![vec![Datum::Int(clock)]]);
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_timestamp_preserves_source_kinds_staged_roots_and_declared_fsp() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
 
-    let create = "CREATE TABLE shared_timestamp_sql (packed_num DECIMAL(9,1), packed_str VARCHAR(32), base_dt DATETIME(3), negative_duration TIME(1), base_text VARCHAR(32), day_duration VARCHAR(32), date_duration VARCHAR(32), null_text VARCHAR(32), bad_text VARCHAR(32), zero_year VARCHAR(32), one_year VARCHAR(32), long_duration VARCHAR(32))";
-    let insert = "INSERT INTO shared_timestamp_sql VALUES (20240315.5,'20240315.5','2020-01-01 00:00:00.000','-01:00:00.0','2020-01-01','1 05:00:00','2020-01-01 05:00:00',NULL,'bad','0000-12-31 00:00:00','0001-01-01 00:00:00','838:00:00')";
-    // Fixed original tests/datetime and builtin_time_calendars_source rows.
-    // Header FSP is max(time_argument_fsp): DECIMAL scale 1, temporal scales
-    // 3/1, and VARCHAR's unspecified scale clamped to 0. By contrast, the
-    // scalar wrapper's postparse uses None and preserves the value's own FSP.
-    let cases = [
-        (
-            "packed_num",
-            Some("2024-03-15 00:00:00.0"),
-            (21, 1),
-            1,
-            None,
-        ),
-        (
-            "packed_str",
-            Some("2024-03-15 05:00:00.0"),
-            (19, 0),
-            1,
-            None,
-        ),
-        // The original midnight-minus-one-hour case, with stored temporal
-        // scales making max(3, 1) observable in both the header and the value.
-        (
-            "base_dt,negative_duration",
-            Some("2019-12-31 23:00:00.000"),
-            (23, 3),
-            3,
-            None,
-        ),
-        (
-            "base_text,day_duration",
-            Some("2020-01-02 05:00:00"),
-            (19, 0),
-            0,
-            None,
-        ),
-        ("base_text,date_duration", None, (19, 0), 0, None),
-        ("null_text", None, (19, 0), 0, None),
-        ("base_text,null_text", None, (19, 0), 0, None),
-        (
-            "bad_text,null_text",
-            None,
-            (19, 0),
-            0,
-            Some("Incorrect datetime value: 'bad'"),
-        ),
-        // Adding 838 hours would cross into year 1, but the original year-0
-        // gate rejects before adding; the neighbouring year-1 row succeeds.
-        ("zero_year,long_duration", None, (19, 0), 0, None),
-        (
-            "one_year,long_duration",
-            Some("0001-02-04 22:00:00"),
-            (19, 0),
-            0,
-            None,
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, expected, shape, value_fsp, warning) in cases {
-                // Ordinary TIMESTAMP(), not a typed literal: all operands
-                // are columns and the target itself must run. Child expression
-                // evaluation is still eager; this is not a lazy-child claim.
-                let sql = format!("SELECT TIMESTAMP({args}) FROM shared_timestamp_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected ordinary TIMESTAMP rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    assert_eq!(field.code(), FieldTypeCode::Datetime, "{sql}/{vectorized}");
-                    assert_eq!((field.flen(), field.decimal()), shape, "{sql}/{vectorized}");
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        let Datum::Time(time) = &rows[0][0] else {
-                            panic!("ordinary TIMESTAMP lost its native DATETIME cell: {sql}")
-                        };
-                        assert_eq!(time.kind(), TimeType::DateTime, "{sql}/{vectorized}");
-                        assert_eq!(time.fsp(), value_fsp, "{sql}/{vectorized}");
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                    let expected_warnings = warning
-                        .map(|message| vec![(1292, message.to_owned())])
-                        .unwrap_or_default();
-                    assert_eq!(
-                        warnings_of(&session),
-                        expected_warnings,
-                        "{sql}/{vectorized}"
-                    );
-                } else {
-                    // No filter, sort or function child can supply the error.
-                    // Even bad-left parsing is inside the first worker: unlike
-                    // CONVERT_TZ's pre-cast, it cannot warn before this refusal.
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(failure.class(), tidb_executor::ExpressionAdapterFailureClass::PoolResource);
-                            assert_eq!(failure.origin(), tidb_executor::ExpressionAdapterFailureOrigin::Pool);
-                        }
-                        other => panic!("ordinary TIMESTAMP bypassed its first worker: {sql}/{vectorized}: {other:?}"),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                    assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-                }
-            }
-            if slots == 1 {
-                // Reuse the packed STRING value as one ordinary predicate
-                // consumer; this is not used as zero-slot root evidence.
-                let sql = "SELECT 1 FROM shared_timestamp_sql WHERE TIMESTAMP(packed_str)='2024-03-15 05:00:00.0'";
-                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
-                    panic!("expected ordinary TIMESTAMP predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
-#[test]
-fn ready_value_convert_tz_preserves_typed_sql_values_and_runtime_root_demand() {
-    use tidb_datatype::{FieldTypeCode, TimeType};
-
-    // All three arguments are stored STRING columns, not folded literals.
-    // The scalar caller retains its ETDatetime input cast and typed output
-    // cast; this test does not attribute those casts' context reads to the
-    // timezone-conversion worker itself.
-    let create = "CREATE TABLE shared_convert_tz_sql (dt VARCHAR(64), fraction_dt VARCHAR(64), east_dt VARCHAR(64), paris_dt VARCHAR(64), gap_dt VARCHAR(64), bad_dt VARCHAR(64), zero_zone VARCHAR(64), minus_zero_zone VARCHAR(64), ten_zone VARCHAR(64), fraction_zone VARCHAR(64), east_zone VARCHAR(64), paris_zone VARCHAR(64), utc_zone VARCHAR(64), unknown_zone VARCHAR(64), invalid_zone VARCHAR(64), empty_zone VARCHAR(64), null_text VARCHAR(64))";
-    let insert = "INSERT INTO shared_convert_tz_sql VALUES ('2004-01-01 12:00:00','2004-01-01 12:00:00.11111111111','2007-11-04 01:30:00','2025-10-26 02:30:00','2007-03-11 02:30:00','not-a-date','+00:00','-00:00','+10:00','+12:34','US/Eastern','Europe/Paris','UTC','bogus/zone','-12:88','',NULL)";
-    // Fixed original convert_tz::test_convert_tz/goeval_pinned_vectors/nulls
-    // cases. The SQL wrapper reparses the worker's string at the nonconstant
-    // argument's declared result FSP 6, so these are native DATETIME cells.
-    let cases = [
-        (
-            "dt,zero_zone,ten_zone",
-            Some("2004-01-01 22:00:00.000000"),
-            None,
-        ),
-        (
-            "fraction_dt,minus_zero_zone,fraction_zone",
-            Some("2004-01-02 00:34:00.111111"),
-            None,
-        ),
-        (
-            "east_dt,east_zone,utc_zone",
-            Some("2007-11-04 05:30:00.000000"),
-            None,
-        ),
-        (
-            "paris_dt,paris_zone,utc_zone",
-            Some("2025-10-26 01:30:00.000000"),
-            None,
-        ),
-        (
-            "gap_dt,east_zone,utc_zone",
-            Some("2007-03-11 07:00:00.000000"),
-            None,
-        ),
-        ("null_text,zero_zone,ten_zone", None, None),
-        ("dt,null_text,ten_zone", None, None),
-        ("dt,zero_zone,null_text", None, None),
-        ("dt,unknown_zone,zero_zone", None, None),
-        ("dt,minus_zero_zone,invalid_zone", None, None),
-        ("dt,empty_zone,utc_zone", None, None),
-        // The existing ETDatetime cast warns and supplies NULL, but does not
-        // skip the CONVERT_TZ root. Its diagnostic precedes zero-slot refusal.
-        (
-            "bad_dt,zero_zone,ten_zone",
-            None,
-            Some("Incorrect datetime value: 'not-a-date'"),
-        ),
-    ];
-    for slots in [1, 0] {
-        let mut session = Session::new();
-        session.run("SET time_zone='+00:00'").unwrap();
-        session.run("SET sql_mode=''").unwrap();
-        session
-            .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-            .unwrap();
-        session.run(create).unwrap();
-        session.run(insert).unwrap();
-        assert!(session
-            .try_install_ready_value_policy(ready_value_session_policy(slots))
-            .unwrap());
-        for vectorized in [0, 1] {
-            session
-                .run(&format!(
-                    "SET tidb_enable_vectorized_expression={vectorized}"
-                ))
-                .unwrap();
-            for (args, expected, warning) in cases {
-                // No filter, sort, explicit CAST, or other scalar child can
-                // stand in for the conversion root in the zero-slot probes.
-                let sql = format!("SELECT CONVERT_TZ({args}) FROM shared_convert_tz_sql");
-                if slots == 1 {
-                    let StmtOutput::Rows { columns, rows } =
-                        session.run_with_columns(&sql).unwrap()
-                    else {
-                        panic!("expected CONVERT_TZ rows: {sql}")
-                    };
-                    assert_eq!(columns.len(), 1, "{sql}/{vectorized}");
-                    let field = &columns[0].1;
-                    // convert_tz_return_type's nonconstant branch selects 6;
-                    // datetime_return_type explicitly writes width 26.
-                    assert_eq!(field.code(), FieldTypeCode::Datetime, "{sql}/{vectorized}");
-                    assert_eq!(
-                        (field.flen(), field.decimal()),
-                        (26, 6),
-                        "{sql}/{vectorized}"
-                    );
-                    assert_eq!(field.charset_name(), "binary");
-                    assert_eq!(field.collation_name(), "binary");
-                    assert_eq!(rows.len(), 1, "{sql}/{vectorized}");
-                    assert_eq!(rows[0].len(), 1, "{sql}/{vectorized}");
-                    if let Some(expected) = expected {
-                        let Datum::Time(time) = &rows[0][0] else {
-                            panic!("CONVERT_TZ SQL result was not native DATETIME: {sql}")
-                        };
-                        assert_eq!(time.kind(), TimeType::DateTime, "{sql}/{vectorized}");
-                        assert_eq!(time.fsp(), 6, "{sql}/{vectorized}");
-                        assert_eq!(cell_text(&rows[0][0]), expected, "{sql}/{vectorized}");
-                    } else {
-                        assert_eq!(rows[0][0], Datum::Null, "{sql}/{vectorized}");
-                    }
-                } else {
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    match &error {
-                        DriverError::Exec(tidb_executor::ExecError::Eval(
-                            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                        )) => {
-                            assert_eq!(
-                                failure.class(),
-                                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                            );
-                            assert_eq!(
-                                failure.origin(),
-                                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                            );
-                        }
-                        other => panic!(
-                            "CONVERT_TZ root bypassed its worker: {sql}/{vectorized}: {other:?}"
-                        ),
-                    }
-                    let mysql = error.to_mysql_error();
-                    assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-                    assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-                    assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-                }
-                let expected_warnings = warning
-                    .map(|message| vec![(1292, message.to_owned())])
-                    .unwrap_or_default();
-                assert_eq!(
-                    warnings_of(&session),
-                    expected_warnings,
-                    "{sql}/{vectorized}/slots={slots}"
-                );
-            }
-            if slots == 1 {
-                // One ordinary WHERE consumer of the same third, earlier-
-                // overlap case. This is not used as zero-slot root evidence.
-                let sql = "SELECT 1 FROM shared_convert_tz_sql WHERE CONVERT_TZ(east_dt,east_zone,utc_zone)='2007-11-04 05:30:00.000000'";
-                let StmtOutput::Rows { rows, .. } = session.run_with_columns(sql).unwrap() else {
-                    panic!("expected CONVERT_TZ predicate rows")
-                };
-                assert_eq!(rows, vec![vec![Datum::Int(1)]], "mode {vectorized}");
-                assert!(warnings_of(&session).is_empty());
-            }
-        }
-    }
-}
 
 #[test]
 fn ready_value_temporal_literals_preserve_rewrite_folding_types_modes_and_zones() {
@@ -15907,9 +8338,6 @@ fn ready_value_json_search_preserves_native_patterns_paths_and_string_results() 
     // Raw SQL plus NO_BACKSLASH_ESCAPES makes the stored JSON and pattern
     // backslashes explicit, without a CHAR/CAST/function child in any probe.
     session.run(r#"INSERT INTO shared_json_search_sql VALUES ('["abc", [{"k":"10"}, "def"], {"x":"abc"}, {"y":"bcd"}]','["abc", [{"k":"10"}, "def"], {"x":"ab%d"}, {"y":"abcd"}]','{"*":"x","a":{"a":"x","b":"x"},"n":7,"t":true}','["é中","É中"]','["\\x"]','OnE','AlL','wrong','abc','ab\%d','ab中%d','é_','x','\','ghi','中','',NULL,'$."*"','$.*','$**.a','$.a','$[0].a','$','not_a_path',NULL)"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Fixed native search.rs / original TestJSONSearch values. These are JSON
     // path TEXT cells, not Datum::Json and not another evaluator as an oracle.
     let cases = [
@@ -16001,60 +8429,7 @@ fn ready_value_json_search_preserves_native_patterns_paths_and_string_results() 
     }
 }
 
-#[test]
-fn ready_value_json_search_zero_slots_require_hits_no_hits_and_actual_nulls() {
-    let mut session = Session::new();
-    session.run("SET sql_mode='NO_BACKSLASH_ESCAPES'").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_json_search_zero (doc_main VARCHAR(256), doc_keys VARCHAR(256), mode_one VARCHAR(8), mode_all VARCHAR(8), pattern_text VARCHAR(16), pattern_x VARCHAR(4), pattern_miss VARCHAR(8), null_text VARCHAR(64), esc_null VARCHAR(4), path_array VARCHAR(32))").unwrap();
-    session.run(r#"INSERT INTO shared_json_search_zero VALUES ('["abc", [{"k":"10"}, "def"], {"x":"abc"}, {"y":"bcd"}]','{"*":"x","a":{"a":"x","b":"x"},"n":7,"t":true}','OnE','AlL','abc','x','ghi',NULL,NULL,'$[0].a')"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // The no-hit nullable byte result is distinct from actual-NULL preparation.
-    // Both must acquire a worker, with plain columns and no child function,
-    // CAST, WHERE or ORDER BY able to supply a substitute failure.
-    for (vectorized, args) in [
-        (0, "doc_main,mode_one,pattern_text"),
-        (0, "doc_main,mode_all,pattern_text"),
-        (0, "doc_main,mode_all,pattern_miss"),
-        (0, "null_text,mode_all,pattern_text"),
-        (0, "doc_main,null_text,pattern_text"),
-        (0, "doc_main,mode_all,null_text"),
-        (1, "doc_main,mode_all,pattern_text,esc_null,null_text"),
-        (1, "doc_keys,mode_all,pattern_x,esc_null,path_array"),
-    ] {
-        session
-            .run(&format!(
-                "SET tidb_enable_vectorized_expression={vectorized}"
-            ))
-            .unwrap();
-        let sql = format!("SELECT JSON_SEARCH({args}) FROM shared_json_search_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("JSON_SEARCH root bypassed its worker: {sql}/{vectorized}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-    }
-}
+
 
 #[test]
 fn ready_value_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() {
@@ -16071,9 +8446,6 @@ fn ready_value_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() 
         .unwrap();
     session.run("CREATE TABLE shared_timestampadd_sql (one BIGINT, tiny_amount DECIMAL(12,10), half_amount DECIMAL(2,1), null_amount BIGINT, jan DATETIME, leap_day DATETIME, base DATETIME, zero_date DATETIME, max_date DATETIME)").unwrap();
     session.run("INSERT INTO shared_timestampadd_sql VALUES (1,0.0000099999,1.5,NULL,'2024-01-31 00:00:00','2020-02-29 00:00:00','1995-05-01 00:00:00','0000-00-00 00:00:00','9999-12-31 23:59:59')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Bare units are syntax, not column expressions. Already-typed DATETIME
     // operands pass through the argument cast layer, preserving the leaf's
     // own invalid-base diagnostic rather than substituting a VARCHAR cast.
@@ -16147,61 +8519,7 @@ fn ready_value_timestampadd_preserves_calendar_rounding_nulls_and_diagnostics() 
     ));
 }
 
-#[test]
-fn ready_value_timestampadd_zero_slots_require_values_prefix_null_and_date_roots() {
-    let mut session = Session::new();
-    session.run("SET time_zone='+00:00'").unwrap();
-    session.run("SET sql_mode=''").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_timestampadd_zero (one BIGINT, tiny_amount DECIMAL(12,10), half_amount DECIMAL(2,1), null_amount BIGINT, jan DATETIME, leap_day DATETIME, base DATETIME, null_date DATETIME, zero_date DATETIME)").unwrap();
-    session.run("INSERT INTO shared_timestampadd_zero VALUES (1,0.0000099999,1.5,NULL,'2024-01-31 00:00:00','2020-02-29 00:00:00','1995-05-01 00:00:00',NULL,'0000-00-00 00:00:00')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // The amount-NULL carrier concerns only the leaf's preparation. Outer
-    // evaluation still reads all children and applies wrap_datetime_args;
-    // these Time/NULL datums take its clone path, not another worker root.
-    for (vectorized, args) in [
-        (0, "MONTH,one,jan"),
-        (0, "QUARTER,one,jan"),
-        (0, "YEAR,one,leap_day"),
-        (0, "SECOND,tiny_amount,base"),
-        (0, "MINUTE,half_amount,base"),
-        (0, "DAY,null_amount,base"),
-        (1, "DAY,one,null_date"),
-        (1, "DAY,one,zero_date"),
-    ] {
-        session
-            .run(&format!(
-                "SET tidb_enable_vectorized_expression={vectorized}"
-            ))
-            .unwrap();
-        let sql = format!("SELECT TIMESTAMPADD({args}) FROM shared_timestampadd_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("TIMESTAMPADD root bypassed its worker: {sql}/{vectorized}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-    }
-}
+
 
 #[test]
 fn ready_value_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split() {
@@ -16217,9 +8535,6 @@ fn ready_value_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split(
         .unwrap();
     session.run("CREATE TABLE shared_add_sub_time_sql (dt DATETIME(3), date_val DATE, delta TIME(6), dur TIME(6), delta_text VARCHAR(40), dur_delta VARCHAR(40), s_dur VARCHAR(40), s_delta VARCHAR(40), s_dt VARCHAR(40), bad VARCHAR(40), n VARCHAR(40))").unwrap();
     session.run("INSERT INTO shared_add_sub_time_sql VALUES ('2024-11-01 00:00:00.000','2024-11-01','12:00:01.341300','03:00:00.999999','12:00:01.341300','02:00:00.999998','01:00:00.000001','02:00:00.000001','2020-01-01 10:00:00','xxcvadfgasd',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let text = |value: &str| Datum::new_collation_string(value, Collation::Utf8Mb4Bin);
     // DATETIME + DURATION's column body preserves the left value FSP (3),
     // although the declared result metadata takes max(3, 6). The existing
@@ -16364,62 +8679,7 @@ fn ready_value_addtime_subtime_preserve_static_kinds_fsp_and_constant_row_split(
     }
 }
 
-#[test]
-fn ready_value_addtime_subtime_zero_slots_require_values_nulls_and_parse_errors() {
-    let mut session = Session::new();
-    session.run("SET time_zone='+00:00'").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_add_sub_time_zero (dt DATETIME(3), delta TIME(6), s_dur VARCHAR(40), s_delta VARCHAR(40), bad VARCHAR(40), n VARCHAR(40))").unwrap();
-    session.run("INSERT INTO shared_add_sub_time_zero VALUES ('2024-11-01 00:00:00.000','12:00:01.341300','01:00:00.000001','02:00:00.000001','xxcvadfgasd',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Success, true NULL, statically-selected NULL and parser failure must
-    // each acquire the function's worker. No child CAST/function/filter/sort
-    // can substitute for a root failure; warning replay follows admission.
-    for (vectorized, expression) in [
-        (0, "ADDTIME(dt,delta)"),
-        (0, "SUBTIME(dt,delta)"),
-        (0, "ADDTIME(n,s_delta)"),
-        (0, "SUBTIME(n,s_delta)"),
-        (0, "ADDTIME(bad,dt)"),
-        (0, "SUBTIME(bad,dt)"),
-        (1, "ADDTIME(s_dur,bad)"),
-        (1, "SUBTIME(s_dur,bad)"),
-    ] {
-        session
-            .run(&format!(
-                "SET tidb_enable_vectorized_expression={vectorized}"
-            ))
-            .unwrap();
-        let sql = format!("SELECT {expression} FROM shared_add_sub_time_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("ADDTIME/SUBTIME root bypassed its worker: {sql}/{vectorized}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-    }
-}
+
 
 #[test]
 fn ready_value_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnostics() {
@@ -16432,9 +8692,6 @@ fn ready_value_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnosti
         .unwrap();
     session.run("CREATE TABLE shared_time_microsecond_sql (good_time TIME(6), negative_time TIME(6), day_text VARCHAR(40), compact_text VARCHAR(40), bad_text VARCHAR(40), tail_text VARCHAR(40), over_text VARCHAR(40), null_text VARCHAR(40))").unwrap();
     session.run("INSERT INTO shared_time_microsecond_sql VALUES ('12:34:56.123456','-00:00:00.123456','1 12:34:56.123456','20171231235959.9999999','2011-11-11 10:10:10.11.12','12:34:56tail','839:00:00',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // TIME's native leaf returns text, but the SQL scalar boundary converts it
     // to the declared Duration type. TIME(6) columns retain six fraction digits;
@@ -16534,62 +8791,7 @@ fn ready_value_time_microsecond_preserve_sql_duration_shapes_and_parse_diagnosti
     }
 }
 
-#[test]
-fn ready_value_time_microsecond_zero_slots_require_valid_invalid_and_null_roots() {
-    let mut session = Session::new();
-    session.run("SET time_zone='+00:00'").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_time_microsecond_zero (good_time TIME(6), bad_text VARCHAR(40), over_text VARCHAR(40), null_text VARCHAR(40))").unwrap();
-    session.run("INSERT INTO shared_time_microsecond_zero VALUES ('12:34:56.123456','2011-11-11 10:10:10.11.12','839:00:00',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Direct columns only: neither a CAST child nor another function can stand
-    // in for the root. Even invalid TIME must acquire its worker before native
-    // warning replay; both functions must also acquire for a NULL input.
-    for (vectorized, expression) in [
-        (0, "TIME(good_time)"),
-        (0, "MICROSECOND(good_time)"),
-        (0, "TIME(bad_text)"),
-        (0, "MICROSECOND(bad_text)"),
-        (0, "TIME(null_text)"),
-        (0, "MICROSECOND(null_text)"),
-        (1, "TIME(over_text)"),
-        (1, "MICROSECOND(over_text)"),
-    ] {
-        session
-            .run(&format!(
-                "SET tidb_enable_vectorized_expression={vectorized}"
-            ))
-            .unwrap();
-        let sql = format!("SELECT {expression} FROM shared_time_microsecond_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("TIME/MICROSECOND root bypassed its worker: {sql}/{vectorized}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-    }
-}
+
 
 #[test]
 fn ready_value_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
@@ -16603,9 +8805,6 @@ fn ready_value_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
         .unwrap();
     session.run("CREATE TABLE shared_decimal_div_sql (f DECIMAL(10,2), fd DECIMAL(10,2), b DECIMAL(20,4), bd DECIMAL(20,4), u DECIMAL(22,2) UNSIGNED, ud DECIMAL(22,2), neg DECIMAL(10,2), eleven DECIMAL(10,2), small_neg DECIMAL(10,2), ueleven DECIMAL(10,2) UNSIGNED, n DECIMAL(10,2), z DECIMAL(10,2))").unwrap();
     session.run("INSERT INTO shared_decimal_div_sql VALUES (11.01,1.10,0.3000,0.1000,18446744073709551615.00,1.50,-13.00,11.00,-1.00,11.00,NULL,0.00)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Matching storage scales 2 fit the existing i128 fast policy. Scale 4
     // deliberately selects bounded DecimalDiv instead; both operands are
@@ -16655,64 +8854,7 @@ fn ready_value_decimal_div_preserves_fast_bounded_unsigned_and_null_values() {
     }
 }
 
-#[test]
-fn ready_value_decimal_div_zero_slots_require_fast_bounded_and_null_roots() {
-    let mut session = Session::new();
-    session
-        .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
-        .unwrap();
-    session.run("SET div_precision_increment=4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_decimal_div_zero (f DECIMAL(10,2), fd DECIMAL(10,2), b DECIMAL(20,4), bd DECIMAL(20,4), u DECIMAL(22,2) UNSIGNED, ud DECIMAL(22,2), n DECIMAL(10,2), z DECIMAL(10,2))").unwrap();
-    session.run("INSERT INTO shared_decimal_div_zero VALUES (11.01,1.10,0.3000,0.1000,18446744073709551615.00,1.50,NULL,0.00)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Six scalar roots and two vector routes. All operands are direct typed
-    // columns; no CAST, other function, unary minus, WHERE or ORDER BY can
-    // provide a substitute failure. Division-by-zero warning replay follows a
-    // worker result, so admission refusal must leave even that case warning-free.
-    for (vectorized, expression) in [
-        (0, "f DIV fd"),
-        (0, "b DIV bd"),
-        (0, "u DIV ud"),
-        (0, "f DIV z"),
-        (0, "n DIV fd"),
-        (0, "f DIV n"),
-        (1, "b DIV bd"),
-        (1, "n DIV fd"),
-    ] {
-        session
-            .run(&format!(
-                "SET tidb_enable_vectorized_expression={vectorized}"
-            ))
-            .unwrap();
-        let sql = format!("SELECT {expression} FROM shared_decimal_div_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("decimal DIV root bypassed its worker: {sql}/{vectorized}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-    }
-}
+
 
 #[test]
 fn ready_value_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
@@ -16725,9 +8867,6 @@ fn ready_value_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
         .unwrap();
     session.run("CREATE TABLE shared_integer_div_sql (a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, umax BIGINT UNSIGNED, uone BIGINT UNSIGNED, neg BIGINT, neg_one BIGINT, neg_two BIGINT, n BIGINT, z BIGINT, min_i BIGINT)").unwrap();
     session.run("INSERT INTO shared_integer_div_sql VALUES (13,11,13,11,18446744073709551615,1,-13,-1,-2,NULL,0,-9223372036854775808)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Only the existing integer DIV slice: SS/US/SU/UU, including present
     // UINT64_MAX bits and negative quotients truncated toward zero. Decimal DIV
@@ -16794,63 +8933,7 @@ fn ready_value_integer_div_preserves_signedness_nulls_and_query_diagnostics() {
     );
 }
 
-#[test]
-fn ready_value_integer_div_zero_slots_require_signed_pairs_and_null_routes() {
-    let mut session = Session::new();
-    session
-        .run("SET sql_mode='STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO'")
-        .unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_integer_div_zero (a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, umax BIGINT UNSIGNED, uone BIGINT UNSIGNED, n BIGINT, z BIGINT)").unwrap();
-    session.run("INSERT INTO shared_integer_div_zero VALUES (13,11,13,11,18446744073709551615,1,NULL,0)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Seven scalar roots plus the vector integer-NULL route. Plain columns
-    // cannot hide the root behind CAST, arithmetic children, WHERE or ORDER BY.
-    // Zero-divisor diagnostics follow the worker result, so admission failure
-    // must precede the native 1365 replay and leave the warning buffer empty.
-    for (vectorized, expression) in [
-        (0, "a DIV b"),
-        (0, "u DIV b"),
-        (0, "a DIV v"),
-        (0, "umax DIV uone"),
-        (0, "n DIV b"),
-        (0, "a DIV n"),
-        (0, "a DIV z"),
-        (1, "n DIV b"),
-    ] {
-        session
-            .run(&format!(
-                "SET tidb_enable_vectorized_expression={vectorized}"
-            ))
-            .unwrap();
-        let sql = format!("SELECT {expression} FROM shared_integer_div_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("integer DIV root bypassed its worker: {sql}/{vectorized}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}/{vectorized}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}/{vectorized}");
-        assert!(mysql.is_from_evaluation(), "{sql}/{vectorized}");
-        assert!(warnings_of(&session).is_empty(), "{sql}/{vectorized}");
-    }
-}
+
 
 #[test]
 fn ready_value_tso_timediff_preserve_native_values_metadata_and_zone() {
@@ -16863,9 +8946,6 @@ fn ready_value_tso_timediff_preserve_native_values_metadata_and_zone() {
         .unwrap();
     session.run("CREATE TABLE shared_tso_timediff_sql (tso BIGINT, tso_text VARCHAR(30), one_tso BIGINT, zero_tso BIGINT, negative_tso BIGINT, null_tso BIGINT, a DATETIME(3), b DATETIME(3), x TIME, y TIME, nd DATETIME(3))").unwrap();
     session.run("INSERT INTO shared_tso_timediff_sql VALUES (404411537129996288,'404411537129996288',1,0,-1,NULL,'2024-01-02 00:00:00.123','2024-01-01 23:59:59.120','10:10:10','10:09:00',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Original tidb_parse_tso_source integration pins: the SQL return type is
     // DATETIME(0), flen 10, while the actual native Time deliberately has FSP 6.
@@ -16947,57 +9027,7 @@ fn ready_value_tso_timediff_preserve_native_values_metadata_and_zone() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_tso_timediff_zero_slots_require_direct_roots() {
-    let mut session = Session::new();
-    session.run("SET time_zone='+00:00'").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_tso_timediff_zero (tso BIGINT, one_tso BIGINT, zero_tso BIGINT, negative_tso BIGINT, null_tso BIGINT, a DATETIME(3), b DATETIME(3), x TIME, y TIME, nd DATETIME(3))").unwrap();
-    session.run("INSERT INTO shared_tso_timediff_zero VALUES (404411537129996288,1,0,-1,NULL,'2024-01-02 00:00:00.123','2024-01-01 23:59:59.120','10:10:10','10:09:00',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // TSO's ETInt wrapper passes Int/NULL through; TIMEDIFF has no argument
-    // cast wrapper. Its existing typed Duration post-cast runs only after the
-    // root returns. No other function, arithmetic, filter or sort can mask it.
-    for expression in [
-        "TIDB_PARSE_TSO(tso)",
-        "TIDB_PARSE_TSO(one_tso)",
-        "TIDB_PARSE_TSO(zero_tso)",
-        "TIDB_PARSE_TSO(negative_tso)",
-        "TIDB_PARSE_TSO(null_tso)",
-        "TIMEDIFF(a,b)",
-        "TIMEDIFF(x,y)",
-        "TIMEDIFF(a,x)",
-        "TIMEDIFF(nd,b)",
-        "TIMEDIFF(a,nd)",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_tso_timediff_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("TSO/TIMEDIFF root bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_identity_values_preserve_types_labels_and_name_const_gate() {
@@ -17016,9 +9046,6 @@ fn ready_value_identity_values_preserve_types_labels_and_name_const_gate() {
         .unwrap();
     session.run("CREATE TABLE shared_identity_sql (i BIGINT, u BIGINT UNSIGNED, r DOUBLE, f FLOAT, dec_value DECIMAL(8,3), s VARCHAR(8) COLLATE utf8mb4_general_ci, b VARBINARY(3), dt DATETIME(6), tm TIME(6), j JSON, en ENUM('a','b') COLLATE utf8mb4_bin, st SET('a','b') COLLATE utf8mb4_bin, bits BIT(8), nullable_value INT)").unwrap();
     session.run("INSERT INTO shared_identity_sql VALUES (-153,18446744073709551615,3.1415926,1.5,123.123,'TiDB',X'00ff80','2024-01-02 03:04:05.600000','12:34:56.700000','{\"a\":1}','b','a,b',b'00000001',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
 
     // Fixed identity vectors, not answers obtained from another evaluator.
     // Existing SQL boundary: generic post-derivation overwrites these string
@@ -17158,63 +9185,7 @@ fn ready_value_identity_values_preserve_types_labels_and_name_const_gate() {
     }
 }
 
-#[test]
-fn ready_value_identity_zero_slots_require_each_root() {
-    let mut session = Session::new();
-    session
-        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-        .unwrap();
-    session.run("SET time_zone='+00:00'").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_identity_zero (i BIGINT, dec_value DECIMAL(8,3), s VARCHAR(8), b VARBINARY(3), dt DATETIME(6), j JSON, en ENUM('a','b'), nullable_value INT)").unwrap();
-    session.run("INSERT INTO shared_identity_zero VALUES (-153,123.123,'TiDB',X'00ff80','2024-01-02 03:04:05.600000','{\"a\":1}','b',NULL)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Eight genuine typed operands, including SQL NULL, for each fixed worker
-    // profile. Unary plus creates no child worker; there are no CAST, HEX,
-    // formatting, filter or sort expressions to mask either identity root.
-    for column in [
-        "i",
-        "dec_value",
-        "s",
-        "b",
-        "dt",
-        "j",
-        "en",
-        "nullable_value",
-    ] {
-        for expression in [
-            format!("aNy_VaLuE({column})"),
-            format!("nAmE_cOnSt('named',+{column})"),
-        ] {
-            let sql = format!("SELECT {expression} AS kept FROM shared_identity_zero");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("identity root bypassed its worker: {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "{sql}");
-            assert_eq!(mysql.state, *b"HY000", "{sql}");
-            assert!(mysql.is_from_evaluation(), "{sql}");
-            assert!(warnings_of(&session).is_empty(), "{sql}");
-        }
-    }
-}
+
 
 #[test]
 fn ready_value_weight_string_format_preserve_typed_columns_padding_locales_and_warnings() {
@@ -17238,9 +9209,6 @@ fn ready_value_weight_string_format_preserve_typed_columns_padding_locales_and_w
         .unwrap();
     session.run("CREATE TABLE shared_weight_format_sql (s VARCHAR(8) COLLATE utf8mb4_bin, npad VARCHAR(8) COLLATE utf8mb4_0900_bin, ci VARCHAR(8) COLLATE utf8mb4_general_ci, uni VARCHAR(8) COLLATE utf8mb4_bin, ns VARCHAR(8), i INT, n DECIMAL(20,3), p INT, de VARCHAR(16), india VARCHAR(16), unknown_locale VARCHAR(16), null_locale VARCHAR(16), nn DECIMAL(20,3), pn INT, neg DECIMAL(2,1), zp INT)").unwrap();
     session.run("INSERT INTO shared_weight_format_sql VALUES ('ab','ab','A','中文',NULL,7,1234567.891,2,'de_DE','en_IN','not_REAL',NULL,NULL,NULL,-2.5,0)").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Literal byte vectors from the original WEIGHT_STRING source tests.
     // Typed numeric AS BINARY overrides the numeric NULL signature; the AST
     // value-only policy is different and must not be imported into this path.
@@ -17333,68 +9301,7 @@ fn ready_value_weight_string_format_preserve_typed_columns_padding_locales_and_w
     }
 }
 
-#[test]
-fn ready_value_weight_string_format_zero_slots_require_direct_roots() {
-    let mut session = Session::new();
-    session
-        .run("SET NAMES utf8mb4 COLLATE utf8mb4_bin")
-        .unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_weight_format_zero (s VARCHAR(8), empty_s VARCHAR(8), ns VARCHAR(8), i INT, n DECIMAL(20,3), p INT, de VARCHAR(16), nn DECIMAL(20,3), pn INT, null_locale VARCHAR(16), unknown_locale VARCHAR(16))").unwrap();
-    session.run("INSERT INTO shared_weight_format_zero VALUES ('ab','',NULL,7,1234567.891,2,'de_DE',NULL,NULL,NULL,'not_REAL')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Eight WEIGHT_STRING roots, four ordinary FORMAT roots and two locale
-    // timing witnesses. No HEX, CAST, key expression, WHERE or ORDER BY can
-    // supply an unrelated worker failure. AS clauses are builtin parameters.
-    for (expression, warning) in [
-        ("WEIGHT_STRING(s)", None),
-        ("WEIGHT_STRING(s AS CHAR(4))", None),
-        ("WEIGHT_STRING(s AS BINARY(4))", None),
-        ("WEIGHT_STRING(empty_s)", None),
-        ("WEIGHT_STRING(ns)", None),
-        ("WEIGHT_STRING(i)", None),
-        ("WEIGHT_STRING(i AS CHAR(2))", None),
-        ("WEIGHT_STRING(i AS BINARY(2))", None),
-        ("FORMAT(n,p)", None),
-        ("FORMAT(n,p,de)", None),
-        ("FORMAT(nn,p)", None),
-        ("FORMAT(n,pn)", None),
-        // NULL locale warns after successful number/precision preparation,
-        // before admission; unknown non-NULL locale warns only after a result.
-        ("FORMAT(n,p,null_locale)", Some("Unknown locale: 'NULL'")),
-        ("FORMAT(n,p,unknown_locale)", None),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_weight_format_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("weight/FORMAT root bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        let expected_warnings = warning
-            .map(|message| vec![(1649, message.to_owned())])
-            .unwrap_or_default();
-        assert_eq!(warnings_of(&session), expected_warnings, "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_date_preserves_typed_casts_zero_modes_and_metadata() {
@@ -17406,9 +9313,6 @@ fn ready_value_date_preserves_typed_casts_zero_modes_and_metadata() {
         .unwrap();
     session.run("CREATE TABLE shared_date_sql (dt DATETIME(6), d DATE, ts TIMESTAMP(6), txt VARCHAR(40), num BIGINT, nd DATETIME, z DATETIME, p DATETIME)").unwrap();
     session.run("INSERT INTO shared_date_sql VALUES ('2024-03-05 14:30:45.123456','2024-02-29','2024-03-04 23:30:00','2024-02-29 23:59:59.654321',20240315123045,NULL,'0000-00-00 00:00:00','2024-00-05 12:34:56')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // DATE's original ETDatetime adaptation passes temporal/NULL values
     // through; VARCHAR and BIGINT exercise its existing implicit casts.
     let StmtOutput::Rows { columns, rows, .. } = session.run_with_columns(
@@ -17469,47 +9373,7 @@ fn ready_value_date_preserves_typed_casts_zero_modes_and_metadata() {
     );
 }
 
-#[test]
-fn ready_value_date_zero_slots_require_direct_temporal_inputs() {
-    let mut session = Session::new();
-    session.run("SET time_zone='+00:00'").unwrap();
-    session.run("SET sql_mode=''").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_date_zero (dt DATETIME(6), d DATE, ts TIMESTAMP(6), nd DATETIME, z DATETIME, p DATETIME)").unwrap();
-    session.run("INSERT INTO shared_date_zero VALUES ('2024-03-05 14:30:45.123456','2024-02-29','2024-03-04 23:30:00',NULL,'0000-00-00 00:00:00','2024-00-05 12:34:56')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Exactly six direct roots. cast_arg_as_datetime passes Datum::Time and
-    // Datum::Null through, so no cast worker can supply this refusal. The
-    // permissive mode also keeps pre-admission mode diagnostics out of scope.
-    for column in ["dt", "d", "ts", "nd", "z", "p"] {
-        let sql = format!("SELECT DATE({column}) FROM shared_date_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("DATE bypassed its own worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_clock_now_date_sysdate_preserves_pinned_context_and_types() {
@@ -17522,9 +9386,6 @@ fn ready_value_clock_now_date_sysdate_preserves_pinned_context_and_types() {
     session.run("SET time_zone='+08:00'").unwrap();
     session.run("SET timestamp=1700000000.654321").unwrap();
     session.run("SET tidb_sysdate_is_now=ON").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // The source f64 timestamp split gives 654320955ns. NOW and aliased
     // SYSDATE truncate to .654320, not UTC_TIMESTAMP's .654321 rounding.
     // The fixed +08 offset moves the local date into November 15.
@@ -17598,69 +9459,7 @@ fn ready_value_clock_now_date_sysdate_preserves_pinned_context_and_types() {
     assert!(warnings_of(&session).is_empty());
 }
 
-#[test]
-fn ready_value_clock_now_date_sysdate_zero_slots_cover_aliases_and_live_mode() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("SET time_zone='+08:00'").unwrap();
-    session.run("SET timestamp=1700000000.654321").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Ten direct calls under ON exercise NOW/CURDATE and their aliases;
-    // three additional OFF calls must reach the real SYSDATE worker. No
-    // formatter, CAST, comparison or unrelated worker can mask these roots.
-    // OFF uses a captured live instant, so no fixed wall-time oracle is used.
-    let modes: [(&str, &[&str]); 2] = [
-        (
-            "ON",
-            &[
-                "NOW()",
-                "NOW(0)",
-                "NOW(6)",
-                "CURRENT_TIMESTAMP(6)",
-                "LOCALTIME(3)",
-                "LOCALTIMESTAMP(6)",
-                "CURDATE()",
-                "CURRENT_DATE()",
-                "SYSDATE()",
-                "SYSDATE(6)",
-            ],
-        ),
-        ("OFF", &["SYSDATE()", "SYSDATE(0)", "SYSDATE(6)"]),
-    ];
-    for (mode, expressions) in modes {
-        session
-            .run(&format!("SET tidb_sysdate_is_now={mode}"))
-            .unwrap();
-        for expression in expressions {
-            let sql = format!("SELECT {expression}");
-            let error = session.run_with_columns(&sql).expect_err(&sql);
-            match &error {
-                DriverError::Exec(tidb_executor::ExecError::Eval(
-                    tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                )) => {
-                    assert_eq!(
-                        failure.class(),
-                        tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                    );
-                    assert_eq!(
-                        failure.origin(),
-                        tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                    );
-                }
-                other => panic!("local-clock worker bypass: mode {mode}, {sql}: {other:?}"),
-            }
-            let mysql = error.to_mysql_error();
-            assert_eq!(mysql.code, 1105, "mode {mode}: {sql}");
-            assert_eq!(mysql.state, *b"HY000", "mode {mode}: {sql}");
-            assert!(mysql.is_from_evaluation(), "mode {mode}: {sql}");
-            assert!(warnings_of(&session).is_empty(), "mode {mode}: {sql}");
-        }
-    }
-}
+
 
 #[test]
 fn ready_value_json_merge_preserves_order_null_domains_errors_and_warning() {
@@ -17671,9 +9470,6 @@ fn ready_value_json_merge_preserves_order_null_domains_errors_and_warning() {
         .unwrap();
     session.run("CREATE TABLE shared_json_merge_sql (a JSON, patch_doc JSON, last_doc JSON, arr1 JSON, arr2 JSON, jnull JSON, nil JSON, obj JSON, bad VARCHAR(16), num INT)").unwrap();
     session.run(r#"INSERT INTO shared_json_merge_sql VALUES ('{"a":1,"b":2}','{"a":null}','{"a":3}','[1,2]','[3]','null',NULL,'{"c":4}','nope',3)"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let json = |text: &str| Datum::Json(tidb_datatype::BinaryJSON::parse(text).unwrap());
     // One stored row, twelve literal output pins. SQL NULL truncation is not
     // interchangeable with JSON null, and PATCH can recover from the former
@@ -17758,61 +9554,7 @@ fn ready_value_json_merge_preserves_order_null_domains_errors_and_warning() {
     }
 }
 
-#[test]
-fn ready_value_json_merge_zero_slots_require_each_root() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_json_merge_zero (a JSON, last_doc JSON, arr1 JSON, arr2 JSON, nil JSON, obj JSON, jnull JSON)").unwrap();
-    session.run(r#"INSERT INTO shared_json_merge_zero VALUES ('{"a":1,"b":2}','{"a":3}','[1,2]','[3]',NULL,'{"c":4}','null')"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Thirteen direct-column calls, without CAST/EXTRACT/WHERE/ORDER or any
-    // other worker. Malformed text/type preparation errors are not part of
-    // this admission matrix. Even deprecated MERGE must leave no warning on
-    // an infrastructure failure, whether its business value is NULL or JSON.
-    for expression in [
-        "JSON_MERGE(a,last_doc)",
-        "JSON_MERGE(arr1,arr2)",
-        "JSON_MERGE(nil,obj)",
-        "JSON_MERGE(a,jnull)",
-        "JSON_MERGE_PRESERVE(a,last_doc)",
-        "JSON_MERGE_PRESERVE(arr1,arr2)",
-        "JSON_MERGE_PRESERVE(nil,obj)",
-        "JSON_MERGE_PRESERVE(a,jnull)",
-        "JSON_MERGE_PATCH(a,last_doc)",
-        "JSON_MERGE_PATCH(arr1,arr2)",
-        "JSON_MERGE_PATCH(nil,obj)",
-        "JSON_MERGE_PATCH(a,jnull)",
-        "JSON_MERGE_PATCH(nil,jnull,obj)",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_json_merge_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("merge family bypassed its own worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(warnings_of(&session).is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
@@ -17822,9 +9564,6 @@ fn ready_value_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
         .unwrap();
     session.run("SET time_zone='+08:00'").unwrap();
     session.run("SET timestamp=1700000000.654321").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // SET timestamp's source f64 split gives 654320955 nanoseconds. The two
     // duration families first truncate to microseconds before explicit-FSP
     // rounding, whereas UTC_TIMESTAMP rounds the original nanoseconds.
@@ -17911,57 +9650,7 @@ fn ready_value_clock_context_preserves_pinned_time_zone_fsp_and_lifecycle() {
     assert!(!mysql.is_from_evaluation());
 }
 
-#[test]
-fn ready_value_clock_context_zero_slots_require_each_family() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("SET time_zone='+08:00'").unwrap();
-    session.run("SET timestamp=1700000000.654321").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Eleven direct calls cover exactly four families and their six SQL-value
-    // profiles, including CURRENT_TIME. The seventh NULL profile is unit-only.
-    // No formatting/cast wrapper or unrelated clock can mask root admission.
-    for expression in [
-        "CURTIME()",
-        "CURTIME(0)",
-        "CURTIME(6)",
-        "CURRENT_TIME()",
-        "CURRENT_TIME(3)",
-        "UTC_TIME()",
-        "UTC_TIME(0)",
-        "UTC_TIME(6)",
-        "UTC_DATE()",
-        "UTC_TIMESTAMP()",
-        "UTC_TIMESTAMP(6)",
-    ] {
-        let sql = format!("SELECT {expression}");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("current-clock family bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_json_unquote_preserves_stored_text_and_json_policies() {
@@ -17977,9 +9666,6 @@ fn ready_value_json_unquote_preserves_stored_text_and_json_policies() {
     session
         .run("UPDATE shared_json_unquote_sql SET jpayload=encoded_doc")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Both quoted_text and jpayload's decoded string carry 22 5c 6e 22.
     // Native SQL text parses the escape once; native typed JSON returns its
     // four payload bytes verbatim, unlike BinaryJSON::unquote's second decode.
@@ -18016,59 +9702,7 @@ fn ready_value_json_unquote_preserves_stored_text_and_json_policies() {
     }
 }
 
-#[test]
-fn ready_value_json_unquote_zero_slots_require_direct_input_workers() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_json_unquote_zero (quoted_text VARCHAR(32), encoded_doc VARCHAR(64), jpayload JSON, plain_text VARCHAR(32), incomplete_text VARCHAR(32), empty_text VARCHAR(1), object_doc JSON, null_doc JSON, null_text VARCHAR(32), null_json JSON)").unwrap();
-    session.run(r#"INSERT INTO shared_json_unquote_zero VALUES (X'225c6e22',X'225c225c5c6e5c2222',NULL,'{bad',X'2278','','{"b":2,"a":1}','null',NULL,NULL)"#).unwrap();
-    session
-        .run("UPDATE shared_json_unquote_zero SET jpayload=encoded_doc")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Exactly nine direct, single-column probes. No CAST, QUOTE, EXTRACT,
-    // WHERE or ORDER BY can contribute an unrelated worker failure. Strict
-    // invalid quoted text is intentionally outside this admission matrix.
-    for column in [
-        "quoted_text",
-        "jpayload",
-        "plain_text",
-        "incomplete_text",
-        "empty_text",
-        "object_doc",
-        "null_doc",
-        "null_text",
-        "null_json",
-    ] {
-        let sql = format!("SELECT JSON_UNQUOTE({column}) FROM shared_json_unquote_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("UNQUOTE bypassed its own worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_json_paths_preserve_native_selection_mutation_and_errors() {
@@ -18079,9 +9713,6 @@ fn ready_value_json_paths_preserve_native_selection_mutation_and_errors() {
         .unwrap();
     session.run("CREATE TABLE shared_json_paths_sql (d JSON, arr JSON, scalar_doc JSON, child_doc JSON, nd JSON, pa VARCHAR(32), pn VARCHAR(32), deep_path VARCHAR(32), missing VARCHAR(32), pzero VARCHAR(32), pone VARCHAR(32), np VARCHAR(32), badpath VARCHAR(32), wild VARCHAR(32), rootpath VARCHAR(32), txt VARCHAR(16), vb VARBINARY(8), v INT, w INT, nv INT)").unwrap();
     session.run(r#"INSERT INTO shared_json_paths_sql VALUES ('{"a":1,"b":[2,3]}','[1,2,3]','1','{"x":1}',NULL,'$.a','$.new','$.absent.child','$.absent','$[0]','$[1]',NULL,'bad path','$.*','$','[9]','ab',9,8,NULL)"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Literal goldens follow tests_json::json_mutation_functions and the native
     // JSON source vectors. These assert native policies, NOT legacy APPEND's
     // non-array rejection or raw extraction's different duplicate policy.
@@ -18137,76 +9768,7 @@ fn ready_value_json_paths_preserve_native_selection_mutation_and_errors() {
     }
 }
 
-#[test]
-fn ready_value_json_paths_zero_slots_cover_dynamic_cached_null_and_noop_inputs() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_json_paths_zero (d JSON, arr JSON, nd JSON, pa VARCHAR(32), pzero VARCHAR(32), missing VARCHAR(32), deep_path VARCHAR(32), np VARCHAR(32), v INT, nv INT)").unwrap();
-    session.run(r#"INSERT INTO shared_json_paths_zero VALUES ('{"a":1}','[1,2]',NULL,'$.a','$[0]','$.absent','$.absent.child',NULL,9,NULL)"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // No WHERE, ORDER BY, CAST or unrelated worker can mask the root family.
-    // Constant paths exercise the context cache with real stored documents.
-    for expression in [
-        "JSON_EXTRACT(d,pa)",
-        "JSON_EXTRACT(nd,pa)",
-        "JSON_EXTRACT(d,np)",
-        "JSON_EXTRACT(d,missing)",
-        "JSON_SET(d,pa,v)",
-        "JSON_SET(d,'$.a',nv)",
-        "JSON_SET(nd,'$.a',v)",
-        "JSON_SET(d,NULL,v)",
-        "JSON_SET(d,deep_path,v)",
-        "JSON_INSERT(d,pa,v)",
-        "JSON_INSERT(d,'$.new',nv)",
-        "JSON_INSERT(nd,'$.a',v)",
-        "JSON_INSERT(d,np,v)",
-        "JSON_REPLACE(d,pa,v)",
-        "JSON_REPLACE(d,'$.a',nv)",
-        "JSON_REPLACE(nd,'$.a',v)",
-        "JSON_REPLACE(d,NULL,v)",
-        "JSON_REPLACE(d,missing,v)",
-        "JSON_REMOVE(arr,pzero)",
-        "JSON_REMOVE(nd,pa)",
-        "JSON_REMOVE(d,np)",
-        "JSON_REMOVE(d,missing)",
-        "JSON_ARRAY_APPEND(arr,pzero,nv)",
-        "JSON_ARRAY_APPEND(nd,pa,v)",
-        "JSON_ARRAY_APPEND(d,np,v)",
-        "JSON_ARRAY_APPEND(d,missing,v)",
-        "JSON_ARRAY_INSERT(arr,pzero,nv)",
-        "JSON_ARRAY_INSERT(nd,pzero,v)",
-        "JSON_ARRAY_INSERT(arr,np,v)",
-        "JSON_ARRAY_INSERT(d,'$.a[1]',v)",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_json_paths_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("JSON path family bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_json_values_preserve_constructors_keys_pretty_and_types() {
@@ -18217,9 +9779,6 @@ fn ready_value_json_values_preserve_constructors_keys_pretty_and_types() {
         .unwrap();
     session.run("CREATE TABLE shared_json_values_sql (ival INT, other INT, vb VARBINARY(8), fb BINARY(3), bl BLOB, doc JSON, s VARCHAR(32), n INT, nj JSON, jnull JSON, p VARCHAR(32), missing VARCHAR(32), wild VARCHAR(32), badpath VARCHAR(32), np VARCHAR(32), ka VARCHAR(8), kb VARCHAR(8), firstval INT, lastval INT, emptyarr JSON, emptyobj JSON, floats JSON, badtext VARCHAR(8))").unwrap();
     session.run(r#"INSERT INTO shared_json_values_sql VALUES (1,2,'ab','ab','ab','{"a":{"z":1,"A":2},"b":[1,2]}','[1]',NULL,NULL,'null','$.a','$.missing','$.*','bad path',NULL,'z','A',1,3,'[]','{}','[1.0,1e15,1e-16,0.000000000000001]','nope')"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // These are literal fixtures, not another provider used as an oracle.
     // Constructor/opaque/key vectors come from the immutable native JSON
     // tables; PRETTY spacing and float cutoffs follow text.rs's source policy.
@@ -18276,69 +9835,7 @@ fn ready_value_json_values_preserve_constructors_keys_pretty_and_types() {
     }
 }
 
-#[test]
-fn ready_value_json_values_zero_slots_require_constructor_keys_pretty_workers() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_json_values_zero (d JSON, nj JSON, jnull JSON, emptyobj JSON, emptyarr JSON, p VARCHAR(32), missing VARCHAR(32), np VARCHAR(32), k VARCHAR(8), s VARCHAR(8), vb VARBINARY(8), n INT)").unwrap();
-    session.run(r#"INSERT INTO shared_json_values_zero VALUES ('{"a":{"z":1}}',NULL,'null','{}','[]','$.a','$.missing',NULL,'key','[1]','ab',NULL)"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    // Each SELECT names only the family under test over stored inputs, with
-    // no WHERE, ORDER BY, CAST, or other worker that could mask its entry.
-    // Empty constructors must also enter with their actual zero arguments.
-    for expression in [
-        "JSON_ARRAY()",
-        "JSON_OBJECT()",
-        "JSON_ARRAY(d)",
-        "JSON_ARRAY(s)",
-        "JSON_ARRAY(vb)",
-        "JSON_ARRAY(n)",
-        "JSON_ARRAY(nj,jnull)",
-        "JSON_OBJECT(k,d)",
-        "JSON_OBJECT(k,n)",
-        "JSON_OBJECT(k,vb)",
-        "JSON_KEYS(d)",
-        "JSON_KEYS(d,p)",
-        "JSON_KEYS(d,missing)",
-        "JSON_KEYS(d,np)",
-        "JSON_KEYS(emptyobj)",
-        "JSON_KEYS(emptyarr)",
-        "JSON_KEYS(nj)",
-        "JSON_PRETTY(d)",
-        "JSON_PRETTY(emptyobj)",
-        "JSON_PRETTY(emptyarr)",
-        "JSON_PRETTY(nj)",
-        "JSON_PRETTY(jnull)",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_json_values_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("JSON value family bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
@@ -18349,9 +9846,6 @@ fn ready_value_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
         .unwrap();
     session.run("CREATE TABLE shared_json_predicate_sql (id INT PRIMARY KEY, d JSON, arr JSON, overlap_doc JSON, candidate VARCHAR(32), p VARCHAR(32), missing VARCHAR(32), badp VARCHAR(32), wild VARCHAR(32), mode VARCHAR(8), badmode VARCHAR(8), bad_doc VARCHAR(32), target BIGINT, n BIGINT, np VARCHAR(32))").unwrap();
     session.run(r#"INSERT INTO shared_json_predicate_sql VALUES (1,'{"a":[1,2],"n":null}','[1,2]','{"n":null}','2','$.a','$.missing','bad path','$.*','one','bad','nope',2,NULL,NULL),(2,'[1,3]','[1,3]','[2,4]','2','$[0]','$.missing','bad path','$.*','one','bad','nope',2,NULL,NULL),(3,NULL,NULL,NULL,NULL,NULL,'$.missing','bad path','$.*',NULL,'bad','nope',NULL,NULL,NULL)"#).unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Fixed literals from the established JSON source/SQL tables: containment,
     // shallow overlap, value-vs-document MEMBER semantics, and scalar length.
     let StmtOutput::Rows { rows, .. } = session.run_with_columns(
@@ -18453,104 +9947,7 @@ fn ready_value_json_predicates_and_nulleq_preserve_fixed_values_and_errors() {
     assert!(session.warnings().is_empty());
 }
 
-#[test]
-fn ready_value_json_predicates_and_nulleq_zero_slots_require_actual_workers() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_json_predicate_zero (d JSON, c JSON, n JSON, p VARCHAR(32), mode VARCHAR(8), np VARCHAR(32))").unwrap();
-    session
-        .run("INSERT INTO shared_json_predicate_zero VALUES ('[1,2]','1',NULL,'$','one',NULL)")
-        .unwrap();
-    let domains = [
-        ("BIGINT", "-1", "1"),
-        ("BIGINT UNSIGNED", "18446744073709551615", "1"),
-        ("DOUBLE", "1.5e0", "2e0"),
-        (
-            "DECIMAL(30,2)",
-            "9007199254740993.25",
-            "9007199254740993.26",
-        ),
-        ("VARCHAR(8) COLLATE utf8mb4_general_ci", "'A '", "'a'"),
-        ("VARBINARY(8)", "X'41'", "X'61'"),
-        ("JSON", "'[1,2]'", "'[1,3]'"),
-        ("VECTOR", "'[1,2]'", "'[1,3]'"),
-        (
-            "DATETIME(6)",
-            "'2024-01-01 00:00:00.000001'",
-            "'2024-01-01 00:00:00.000002'",
-        ),
-        ("TIME(6)", "'-01:00:00'", "'01:00:00'"),
-    ];
-    for (index, (ty, left, right)) in domains.iter().enumerate() {
-        session.run(&format!("CREATE TABLE shared_nulleq_zero_{index} (l {ty}, r {ty}, n {ty}, nn {ty}, sameval {ty})")).unwrap();
-        session
-            .run(&format!(
-                "INSERT INTO shared_nulleq_zero_{index} VALUES ({left},{right},NULL,NULL,{left})"
-            ))
-            .unwrap();
-    }
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    let mut queries = [
-        "JSON_CONTAINS(d,c)",
-        "JSON_CONTAINS(n,c)",
-        "JSON_CONTAINS(d,n)",
-        "JSON_CONTAINS(d,c,p)",
-        "JSON_CONTAINS(d,c,np)",
-        "JSON_OVERLAPS(d,c)",
-        "JSON_OVERLAPS(n,c)",
-        "JSON_OVERLAPS(d,n)",
-        "c MEMBER OF(d)",
-        "n MEMBER OF(d)",
-        "c MEMBER OF(n)",
-        "JSON_CONTAINS_PATH(d,mode,p)",
-        "JSON_CONTAINS_PATH(n,mode,p)",
-        "JSON_CONTAINS_PATH(d,np,p)",
-        "JSON_CONTAINS_PATH(d,mode,np)",
-        "JSON_LENGTH(d)",
-        "JSON_LENGTH(n)",
-        "JSON_LENGTH(d,p)",
-        "JSON_LENGTH(d,np)",
-    ]
-    .map(|expression| format!("SELECT {expression} FROM shared_json_predicate_zero"))
-    .to_vec();
-    for index in 0..domains.len() {
-        for expression in ["l<=>r", "l<=>sameval", "n<=>r", "l<=>n", "n<=>nn"] {
-            queries.push(format!(
-                "SELECT {expression} FROM shared_nulleq_zero_{index}"
-            ));
-        }
-    }
-    for sql in queries {
-        // Direct stored inputs, no WHERE-id lookup, ORDER BY, or another
-        // migrated wrapper can mask the selected family's worker entry.
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("JSON/NULL-safe predicate bypassed worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_comparison_sql_values_typed_filters_and_row_tuples() {
@@ -18561,9 +9958,6 @@ fn ready_value_comparison_sql_values_typed_filters_and_row_tuples() {
         .unwrap();
     session.run("CREATE TABLE shared_comparison_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED, v BIGINT UNSIGNED, r DOUBLE, t DOUBLE, d DECIMAL(30,2), e DECIMAL(30,2), s VARCHAR(8) COLLATE utf8mb4_general_ci, q VARCHAR(8) COLLATE utf8mb4_general_ci, x VARBINARY(8), y VARBINARY(8), j JSON, k JSON, vec VECTOR, other VECTOR, dt DATETIME(6), later DATETIME(6), tm TIME(6), endtm TIME(6))").unwrap();
     session.run("INSERT INTO shared_comparison_sql VALUES (1,-1,1,18446744073709551615,1,1.5e0,2e0,9007199254740993.25,9007199254740993.26,'A ','a',X'41',X'61','[1,2]','[1,3]','[1,2]','[1,3]','2024-01-01 00:00:00.000001','2024-01-01 00:00:00.000002','-01:00:00','01:00:00'),(2,1,1,1,1,2e0,2e0,1.25,1.25,'a','a',X'61',X'61','[1,3]','[1,3]','[1,3]','[1,3]','2024-01-01 00:00:00.000002','2024-01-01 00:00:00.000002','01:00:00','01:00:00'),(3,NULL,1,NULL,1,NULL,2e0,NULL,1.25,NULL,'a',NULL,X'61',NULL,'[1,3]',NULL,'[1,3]',NULL,'2024-01-01 00:00:00.000002',NULL,'01:00:00')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     // Fixed truth tables: less, greater, equal, then SQL NULL. Expected values
     // are literals, never another comparison implementation used as an oracle.
     for (left, right, first) in [
@@ -18633,95 +10027,7 @@ fn ready_value_comparison_sql_values_typed_filters_and_row_tuples() {
     }
 }
 
-#[test]
-fn ready_value_comparison_zero_slots_reject_direct_columns_and_filters() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    let domains = [
-        ("BIGINT", "-1", "1"),
-        ("BIGINT UNSIGNED", "18446744073709551615", "1"),
-        ("DOUBLE", "1.5e0", "2e0"),
-        (
-            "DECIMAL(30,2)",
-            "9007199254740993.25",
-            "9007199254740993.26",
-        ),
-        ("VARCHAR(8) COLLATE utf8mb4_general_ci", "'A '", "'a'"),
-        ("VARBINARY(8)", "X'41'", "X'61'"),
-        ("JSON", "'[1,2]'", "'[1,3]'"),
-        ("VECTOR", "'[1,2]'", "'[1,3]'"),
-        (
-            "DATETIME(6)",
-            "'2024-01-01 00:00:00.000001'",
-            "'2024-01-01 00:00:00.000002'",
-        ),
-        ("TIME(6)", "'-01:00:00'", "'01:00:00'"),
-    ];
-    for (index, (ty, left, right)) in domains.iter().enumerate() {
-        session
-            .run(&format!(
-                "CREATE TABLE shared_comparison_zero_{index} (l {ty}, r {ty}, n {ty})"
-            ))
-            .unwrap();
-        session
-            .run(&format!(
-                "INSERT INTO shared_comparison_zero_{index} VALUES ({left},{right},NULL)"
-            ))
-            .unwrap();
-    }
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for index in 0..domains.len() {
-        for op in ["=", "!=", "<", "<=", ">", ">="] {
-            for (left, right) in [("l", "r"), ("n", "r"), ("l", "n")] {
-                // No folded constants or another migrated wrapper can supply
-                // the refusal: this is the comparison itself over stored columns.
-                let sql = format!("SELECT {left}{op}{right} FROM shared_comparison_zero_{index}");
-                let error = session.run_with_columns(&sql).expect_err(&sql);
-                match &error {
-                    DriverError::Exec(tidb_executor::ExecError::Eval(
-                        tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                    )) => {
-                        assert_eq!(
-                            failure.class(),
-                            tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                        );
-                        assert_eq!(
-                            failure.origin(),
-                            tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                        );
-                    }
-                    other => panic!("comparison bypassed its worker: {sql}: {other:?}"),
-                }
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1105, "{sql}");
-                assert_eq!(mysql.state, *b"HY000", "{sql}");
-                assert!(mysql.is_from_evaluation(), "{sql}");
-                assert!(session.warnings().is_empty(), "{sql}");
-            }
-            if index == 0 || index == 3 {
-                for predicate in [
-                    format!("l{op}r"),
-                    format!("n{op}r"),
-                    format!("(l,r){op}(r,l)"),
-                ] {
-                    let sql =
-                        format!("SELECT l FROM shared_comparison_zero_{index} WHERE {predicate}");
-                    let error = session.run_with_columns(&sql).expect_err(&sql);
-                    assert!(
-                        matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(tidb_executor::EvalError::ExpressionAdapterFailure(failure))) if failure.class() == tidb_executor::ExpressionAdapterFailureClass::PoolResource && failure.origin() == tidb_executor::ExpressionAdapterFailureOrigin::Pool),
-                        "{sql}: {error:?}"
-                    );
-                    assert!(session.warnings().is_empty(), "{sql}");
-                }
-            }
-        }
-    }
-}
+
 
 #[test]
 fn ready_value_between_sql_fixed_domains_and_existing_grouping_rollup() {
@@ -18771,9 +10077,6 @@ fn ready_value_between_sql_fixed_domains_and_existing_grouping_rollup() {
     session
         .run("INSERT INTO shared_grouping_sql VALUES (1)")
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for index in 0..domains.len() {
         // Every operand is stored. These fixed answers cover inclusive bounds,
         // reversed bounds, NOT BETWEEN, and NULL with a true other comparison.
@@ -18814,86 +10117,7 @@ fn ready_value_between_sql_fixed_domains_and_existing_grouping_rollup() {
     assert!(session.warnings().is_empty());
 }
 
-#[test]
-fn ready_value_between_zero_slots_reject_only_direct_family_work() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    let domains = [
-        ("BIGINT", "0", "-1", "1"),
-        ("DECIMAL(30,2)", "1.25", "1.24", "1.26"),
-        (
-            "VARCHAR(8) COLLATE utf8mb4_general_ci",
-            "'B '",
-            "'a'",
-            "'c'",
-        ),
-    ];
-    for (index, (ty, value, lower, upper)) in domains.iter().enumerate() {
-        session
-            .run(&format!(
-                "CREATE TABLE shared_between_zero_{index} (v {ty}, lo {ty}, hi {ty}, n {ty})"
-            ))
-            .unwrap();
-        session
-            .run(&format!(
-                "INSERT INTO shared_between_zero_{index} VALUES ({value},{lower},{upper},NULL)"
-            ))
-            .unwrap();
-    }
-    session
-        .run("CREATE TABLE shared_grouping_zero (a BIGINT)")
-        .unwrap();
-    session
-        .run("INSERT INTO shared_grouping_zero VALUES (1)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    let mut queries = Vec::new();
-    for index in 0..domains.len() {
-        for op in ["BETWEEN", "NOT BETWEEN"] {
-            for (value, lower, upper) in [
-                ("v", "lo", "hi"),
-                ("n", "lo", "hi"),
-                ("v", "n", "hi"),
-                ("v", "lo", "n"),
-            ] {
-                // No WHERE/ORDER BY, constants, casts, or wrapper builtins can
-                // supply this refusal: only BETWEEN's comparison/logical work.
-                queries.push(format!(
-                    "SELECT {value} {op} {lower} AND {upper} FROM shared_between_zero_{index}"
-                ));
-            }
-        }
-    }
-    queries.push("SELECT GROUPING(a) FROM shared_grouping_zero GROUP BY a WITH ROLLUP".to_owned());
-    for sql in queries {
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("BETWEEN/GROUPING bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
+
 
 #[test]
 fn ready_value_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
@@ -18927,9 +10151,6 @@ fn ready_value_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
         .vars
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for (id, (mode, ciphertext)) in vectors.iter().enumerate() {
         session
             .run(&format!("SET block_encryption_mode='{mode}'"))
@@ -19075,96 +10296,7 @@ fn ready_value_aes_sql_preserves_twelve_mode_goldens_demand_and_diagnostics() {
     assert!(session.warnings().is_empty());
 }
 
-#[test]
-fn ready_value_aes_zero_slots_reject_all_modes_and_actual_column_presence() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_aes_zero (p VARBINARY(32), k VARBINARY(32), iv VARBINARY(32), n VARBINARY(32), empty VARBINARY(1), bad VARBINARY(32), w VARCHAR(8))").unwrap();
-    session.run("INSERT INTO shared_aes_zero VALUES ('pingcap','1234567890123456','1234567890123456',NULL,X'','not-16-bytes','123x')").unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for mode in [
-        "aes-128-ecb",
-        "aes-192-ecb",
-        "aes-256-ecb",
-        "aes-128-cbc",
-        "aes-192-cbc",
-        "aes-256-cbc",
-        "aes-128-ofb",
-        "aes-192-ofb",
-        "aes-256-ofb",
-        "aes-128-cfb",
-        "aes-192-cfb",
-        "aes-256-cfb",
-    ] {
-        session
-            .run(&format!("SET block_encryption_mode='{mode}'"))
-            .unwrap();
-        for function in ["AES_ENCRYPT", "AES_DECRYPT"] {
-            let args: &[&str] = if mode.ends_with("-ecb") {
-                &[
-                    "p,k",
-                    "n,k",
-                    "p,n",
-                    "empty,k",
-                    "empty,empty",
-                    "bad,k",
-                    "p,k,n",
-                ]
-            } else {
-                &[
-                    "p,k,iv",
-                    "n,k,iv",
-                    "p,n,iv",
-                    "p,k,n",
-                    "empty,k,iv",
-                    "empty,empty,iv",
-                    "bad,k,iv",
-                ]
-            };
-            for args in args {
-                // NoFold evidence: direct stored-column AES root, with no HEX,
-                // UNHEX, or other migrated wrapper that could refuse first.
-                let sql = format!("SELECT {function}({args}) FROM shared_aes_zero");
-                let error = session.run_with_columns(&sql).expect_err(&sql);
-                match &error {
-                    DriverError::Exec(tidb_executor::ExecError::Eval(
-                        tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-                    )) => {
-                        assert_eq!(
-                            failure.class(),
-                            tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                        );
-                        assert_eq!(
-                            failure.origin(),
-                            tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                        );
-                    }
-                    other => panic!("AES bypassed its worker: {mode}: {sql}: {other:?}"),
-                }
-                let mysql = error.to_mysql_error();
-                assert_eq!(mysql.code, 1105, "{mode}: {sql}");
-                assert_eq!(mysql.state, *b"HY000", "{mode}: {sql}");
-                assert!(mysql.is_from_evaluation(), "{mode}: {sql}");
-                if mode.ends_with("-ecb") && *args == "p,k,n" {
-                    assert_eq!(
-                        session.warnings(),
-                        &[SqlWarning {
-                            level: WarningLevel::Warning,
-                            code: 1618,
-                            message: "<IV> option ignored".to_owned()
-                        }]
-                    );
-                } else {
-                    assert!(session.warnings().is_empty(), "{mode}: {sql}");
-                }
-            }
-        }
-    }
-}
+
 
 #[test]
 fn ready_value_true_division_sql_preserves_precision_demand_and_diagnostics() {
@@ -19178,9 +10310,6 @@ fn ready_value_true_division_sql_preserves_precision_demand_and_diagnostics() {
         .vars
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     for (precision, expected) in [(0, "1.1429"), (4, "1.1429"), (10, "1.1428571429")] {
         session
             .run(&format!("SET div_precision_increment={precision}"))
@@ -19283,50 +10412,7 @@ fn ready_value_true_division_sql_preserves_precision_demand_and_diagnostics() {
     assert!(mysql.is_from_evaluation());
 }
 
-#[test]
-fn ready_value_true_division_zero_slots_reject_columns_nulls_and_zero() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_div_zero (a BIGINT, b BIGINT, z BIGINT, n BIGINT, r DOUBLE, t DOUBLE, rz DOUBLE, rn DOUBLE, d DECIMAL(20,2), e DECIMAL(20,2), dz DECIMAL(20,2), dn DECIMAL(20,2))").unwrap();
-    session
-        .run("INSERT INTO shared_div_zero VALUES (7,2,0,NULL,7.5e0,2e0,0e0,NULL,7.5,2,0,NULL)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for expression in [
-        "a/b", "a/z", "n/b", "a/n", "n/z", "r/t", "r/rz", "rn/t", "r/rn", "rn/rz", "d/e", "d/dz",
-        "dn/e", "d/dn", "dn/dz",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_div_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("true division bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(
-            session.warnings().is_empty(),
-            "zero warnings follow successful worker evaluation only: {sql}"
-        );
-    }
-}
+
 
 #[test]
 fn ready_value_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
@@ -19340,9 +10426,6 @@ fn ready_value_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
         .vars
         .set_system("max_allowed_packet", "1024".to_owned())
         .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
     let decimal = |text: &str| Datum::Decimal(tidb_datatype::Decimal::parse_mysql(text).0);
     let StmtOutput::Rows { rows, .. } = session
         .run_with_columns("SELECT a%b,MOD(a,u),u%a,MOD(d,e),r%t FROM shared_mod_sql WHERE id=1")
@@ -19432,246 +10515,11 @@ fn ready_value_modulo_sql_preserves_domains_demand_and_zero_diagnostics() {
     assert!(mysql.is_from_evaluation());
 }
 
-#[test]
-fn ready_value_modulo_zero_slots_reject_values_nulls_and_zero_divisors() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run("CREATE TABLE shared_mod_zero (a BIGINT, b BIGINT, z BIGINT, n BIGINT, r DOUBLE, t DOUBLE, rz DOUBLE, rn DOUBLE, d DECIMAL(20,2), e DECIMAL(20,2), dz DECIMAL(20,2), dn DECIMAL(20,2))").unwrap();
-    session
-        .run("INSERT INTO shared_mod_zero VALUES (7,2,0,NULL,7.5e0,2e0,0e0,NULL,7.5,2,0,NULL)")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for expression in [
-        "a%b",
-        "MOD(a,z)",
-        "n%b",
-        "a%n",
-        "n%z",
-        "r%t",
-        "MOD(r,rz)",
-        "rn%t",
-        "r%rn",
-        "rn%rz",
-        "d%e",
-        "MOD(d,dz)",
-        "dn%e",
-        "d%dn",
-        "dn%dz",
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_mod_zero");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => panic!("MOD bypassed its worker: {sql}: {other:?}"),
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-}
 
-#[test]
-fn ready_value_binary_arithmetic_sql_keeps_domains_mode_and_pool_failures() {
-    let mut session = Session::new();
-    session.run("SET NAMES utf8mb4").unwrap();
-    session
-        .run("SET sql_mode='', tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session.run(
-        "CREATE TABLE shared_binary_sql (id INT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED, \
-         d DECIMAL(6,2), e DECIMAL(6,2), r DOUBLE, t DOUBLE, v VECTOR, w VECTOR)",
-    ).unwrap();
-    session
-        .run(
-            "INSERT INTO shared_binary_sql VALUES \
-         (1,7,2,0,1.25,2.50,1.5e0,2.0e0,'[1,2]','[3,4]'),\
-         (2,9223372036854775807,1,0,NULL,NULL,NULL,NULL,NULL,NULL),\
-         (3,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
-        )
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(1))
-        .unwrap());
-    // Existing infer_arithmetic_type selects VectorFloat32 as soon as either
-    // operand is vector; ops' old signatures are elementwise for all three.
-    // Decimal's value equality is exact and scale-independent, not f64-based.
-    let decimal = |text: &str| Datum::Decimal(tidb_datatype::Decimal::parse_mysql(text).0);
-    let vector =
-        |values| Datum::new_vector_float32(tidb_datatype::VectorFloat32::must_create(values));
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns(
-            "SELECT a+b,a-b,a*b,d+e,d-e,d*e,r+t,r-t,r*t,v+w,v-w,v*w \
-         FROM shared_binary_sql WHERE id IN (1,3) ORDER BY id",
-        )
-        .unwrap()
-    else {
-        panic!("expected the three stored arithmetic families")
-    };
-    assert_eq!(
-        rows,
-        vec![
-            vec![
-                Datum::Int(9),
-                Datum::Int(5),
-                Datum::Int(14),
-                decimal("3.75"),
-                decimal("-1.25"),
-                decimal("3.1250"),
-                Datum::Real(3.5),
-                Datum::Real(-0.5),
-                Datum::Real(3.0),
-                vector(vec![4.0, 6.0]),
-                vector(vec![-2.0, -2.0]),
-                vector(vec![3.0, 8.0])
-            ],
-            vec![Datum::Null; 12],
-        ]
-    );
-    assert!(session.warnings().is_empty());
 
-    // Original scalar overflow rendering derives BIGINT[ UNSIGNED] from the
-    // result type; unlike constant unary minus, binary integer overflow errors.
-    for (expression, domain) in [
-        ("a+1", "BIGINT"),
-        ("a-(-1)", "BIGINT"),
-        ("a*2", "BIGINT"),
-        ("u-1", "BIGINT UNSIGNED"),
-    ] {
-        let sql = format!("SELECT {expression} FROM shared_binary_sql WHERE id=2");
-        let error = session.run_with_columns(&sql).expect_err(&sql);
-        assert!(
-            matches!(&error, DriverError::Exec(tidb_executor::ExecError::Eval(
-            tidb_executor::EvalError::DataOutOfRange { value, .. }
-        )) if *value == domain),
-            "{sql}: {error:?}"
-        );
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1690, "{sql}");
-        assert_eq!(mysql.state, *b"22003", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(session.warnings().is_empty(), "{sql}");
-    }
-    session
-        .run("SET sql_mode='NO_UNSIGNED_SUBTRACTION'")
-        .unwrap();
-    let StmtOutput::Rows { rows, .. } = session
-        .run_with_columns("SELECT u-1 FROM shared_binary_sql WHERE id=2")
-        .unwrap()
-    else {
-        panic!("expected forced signed subtraction")
-    };
-    assert_eq!(rows, vec![vec![Datum::Int(-1)]]);
-    assert!(session.warnings().is_empty());
-    session.run("SET sql_mode=''").unwrap();
-    let restored = session
-        .run_with_columns("SELECT u-1 FROM shared_binary_sql WHERE id=2")
-        .expect_err("mode cannot leak through worker reuse");
-    assert!(matches!(
-        &restored,
-        DriverError::Exec(tidb_executor::ExecError::Eval(
-            tidb_executor::EvalError::DataOutOfRange {
-                value: "BIGINT UNSIGNED",
-                ..
-            }
-        ))
-    ));
-    assert_eq!(restored.to_mysql_error().code, 1690);
-    assert!(session.warnings().is_empty());
 
-    let mut zero = Session::new();
-    zero.run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    zero.run("CREATE TABLE shared_binary_zero (a BIGINT, b BIGINT, n BIGINT)")
-        .unwrap();
-    zero.run("INSERT INTO shared_binary_zero VALUES (2,1,NULL)")
-        .unwrap();
-    assert!(zero
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
-    for expression in ["a+b", "a-b", "a*b", "a+n", "n-b", "a*n"] {
-        let sql = format!("SELECT {expression} FROM shared_binary_zero");
-        let error = zero.run_with_columns(&sql).expect_err(&sql);
-        match &error {
-            DriverError::Exec(tidb_executor::ExecError::Eval(
-                tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-            )) => {
-                assert_eq!(
-                    failure.class(),
-                    tidb_executor::ExpressionAdapterFailureClass::PoolResource
-                );
-                assert_eq!(
-                    failure.origin(),
-                    tidb_executor::ExpressionAdapterFailureOrigin::Pool
-                );
-            }
-            other => {
-                panic!("stored binary arithmetic must reach the zero-slot pool: {sql}: {other:?}")
-            }
-        }
-        let mysql = error.to_mysql_error();
-        assert_eq!(mysql.code, 1105, "{sql}");
-        assert_eq!(mysql.state, *b"HY000", "{sql}");
-        assert!(mysql.is_from_evaluation(), "{sql}");
-        assert!(zero.warnings().is_empty(), "{sql}");
-    }
-}
 
-#[test]
-fn ready_value_window_arguments_borrow_the_statement_execution() {
-    let mut session = Session::new();
-    session
-        .run("SET tidb_executor_concurrency=1, tidb_projection_concurrency=1")
-        .unwrap();
-    session
-        .run("CREATE TABLE ascii_window_owner (id INT, v VARBINARY(8))")
-        .unwrap();
-    session
-        .run("INSERT INTO ascii_window_owner VALUES (1,X'41'),(2,X'42')")
-        .unwrap();
-    assert!(session
-        .try_install_ready_value_policy(ready_value_session_policy(0))
-        .unwrap());
 
-    let sql = "SELECT SUM(ASCII(v)) OVER (ORDER BY id) FROM ascii_window_owner";
-    let error = session.run_with_columns(sql).expect_err(sql);
-    match &error {
-        DriverError::Exec(tidb_executor::ExecError::Eval(
-            tidb_executor::EvalError::ExpressionAdapterFailure(failure),
-        )) => {
-            assert_eq!(
-                failure.class(),
-                tidb_executor::ExpressionAdapterFailureClass::PoolResource
-            );
-            assert_eq!(
-                failure.origin(),
-                tidb_executor::ExpressionAdapterFailureOrigin::Pool
-            );
-        }
-        other => panic!("window arguments must retain the statement owner: {other:?}"),
-    }
-    let mysql = error.to_mysql_error();
-    assert_eq!(mysql.code, 1105);
-    assert_eq!(mysql.state, *b"HY000");
-    assert!(mysql.is_from_evaluation());
-    assert!(session.warnings().is_empty());
-}
 
 #[test]
 fn ready_value_window_arguments_use_executor_lane_cache_without_session_pool() {

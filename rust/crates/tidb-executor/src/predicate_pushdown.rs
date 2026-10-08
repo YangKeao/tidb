@@ -947,64 +947,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fast_like_preserves_negation_null_and_execution_failures() {
-        let policy = crate::ReadyValuePoolPolicy::checked(
-            1,
-            1,
-            usize::MAX,
-            1 << 20,
-            1 << 20,
-            64,
-            16,
-            1 << 20,
-        )
-        .unwrap();
-        let owner = crate::ReadyValuePoolOwner::new(policy).unwrap();
-        let execution = owner.begin_execution().unwrap();
-        let ctx = crate::StmtContext::for_query().with_ready_value_execution(execution.clone());
-        let mut rows = tidb_chunk::chunk::Chunk::new_with_capacity(
-            &[FieldType::new(FieldTypeCode::VarString)],
-            3,
-        );
-        for value in [
-            Datum::new_string("alpha"),
-            Datum::new_string("beta"),
-            Datum::Null,
-        ] {
-            rows.append_datum(0, &value);
-        }
-        for negated in [false, true] {
-            let filter = super::FastScanFilter::Like {
-                column_offset: 0,
-                pattern: b"a%".to_vec(),
-                escape: b'\\',
-                collation: tidb_datatype::Collation::Utf8Mb4Bin,
-                negated,
-            };
-            assert_eq!(filter.matches(&ctx, rows.get_row(0)).unwrap(), !negated);
-            assert_eq!(filter.matches(&ctx, rows.get_row(1)).unwrap(), negated);
-            assert!(!filter.matches(&ctx, rows.get_row(2)).unwrap());
-        }
-        execution.close();
-        for negated in [false, true] {
-            let filter = super::FastScanFilter::Like {
-                column_offset: 0,
-                pattern: b"a%".to_vec(),
-                escape: b'\\',
-                collation: tidb_datatype::Collation::Utf8Mb4Bin,
-                negated,
-            };
-            for index in 0..3 {
-                assert!(matches!(
-                    filter.matches(&ctx, rows.get_row(index)),
-                    Err(tidb_expr::EvalError::ExpressionAdapterFailure(failure))
-                        if failure.class() == crate::ExpressionAdapterFailureClass::PoolClosed
-                ));
-            }
-        }
-    }
-
     fn long() -> FieldType {
         FieldType::new(FieldTypeCode::LongLong)
     }

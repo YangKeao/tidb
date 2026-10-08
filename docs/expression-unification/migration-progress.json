@@ -1,5 +1,5 @@
 {
-  "checkpoint_id": "lane-owned-vector-runtime-219",
+  "checkpoint_id": "lane-cache-only-runtime-220",
   "overall_goal_complete": true,
   "pr_ready": false,
   "standalone_architecture_migration_evaluation_report": true,
@@ -22,7 +22,7 @@
   "window_lane_cache_verified": true,
   "legacy_join_lane_cache_verified": true,
   "remote_unistore_lane_cache_verified": true,
-  "legacy_pool_test_compatibility_surface_retained": true,
+  "legacy_pool_test_compatibility_surface_retained": false,
   "cross_statement_worker_reuse": false,
   "independent_detached_statements_can_coexist": true,
   "columns_effect_facade_unchanged": true,
@@ -984,5 +984,14 @@
   "gb_collation_compatibility_ownership_moved_to_tikv": true,
   "gb_foundation_adds_evaluator_family_credit": false,
   "charset_default_registry_assertion_still_non_green": true,
-  "go_trig_completed_frozen_family_ids": ["sin", "cos", "tan", "cot", "atan"]
+  "go_trig_completed_frozen_family_ids": ["sin", "cos", "tan", "cot", "atan"],
+  "ready_value_pool_api_removed": true,
+  "ready_value_slot_state_machine_removed": true,
+  "session_ready_value_runtime_removed": true,
+  "pool_failure_classes_removed": true,
+  "pool_free_test_targets_compile_green": true,
+  "lane_cache_unit_tests_green": true,
+  "lane_cache_real_sql_smoke_green": true,
+  "paired_tikv_commit": "e0b9a4a1bd8f3438db9b613b12c3efdd58ae872a",
+  "plan_sha256": "f91aa3e88b4bd83863515c41025460919f090993c5ec9fe68dfd48653cf9e93b"
 }
