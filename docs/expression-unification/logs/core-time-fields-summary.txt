@@ -1,0 +1,1 @@
+core-time-fields-200: SDK seven-field projection 1/0/0/560 sha c0d72183eda2977d6e34c9f9a7ddb894e55f9b07c6488e4d1372be4522215270; SDK masked layout 1/0/0/560 sha 6472e191bd1f859e4a1575d60d5c231c9e992daa372b7feab277850375b400ba; TiDB const/raw facade 1/0/0/512 sha f9b0963ec8b7a06388bbb40398933a88ff218b2a1a67bab3c5e1f0f83264a79d. Locked single-thread GREEN; rustfmt/diff clean.

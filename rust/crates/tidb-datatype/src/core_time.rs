@@ -24,10 +24,6 @@ pub use tidb_query_datatype::codec::mysql::time::{
 };
 use tidb_query_datatype::codec::mysql::{time as shared_time, Time as SharedTime};
 
-const HOUR_OFFSET: u64 = 36;
-const MINUTE_OFFSET: u64 = 30;
-const SECOND_OFFSET: u64 = 24;
-const MICROSECOND_OFFSET: u64 = 4;
 const DAYS_BY_MONTH: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 /// TiDB's compact internal calendar representation.
@@ -83,22 +79,22 @@ impl CoreTime {
 
     /// Returns the hour.
     pub const fn hour(self) -> u8 {
-        ((self.0 >> HOUR_OFFSET) & 0x1f) as u8
+        SharedTime::hour_from_core_bits(self.0) as u8
     }
 
     /// Returns the minute.
     pub const fn minute(self) -> u8 {
-        ((self.0 >> MINUTE_OFFSET) & 0x3f) as u8
+        SharedTime::minute_from_core_bits(self.0) as u8
     }
 
     /// Returns the second.
     pub const fn second(self) -> u8 {
-        ((self.0 >> SECOND_OFFSET) & 0x3f) as u8
+        SharedTime::second_from_core_bits(self.0) as u8
     }
 
     /// Returns the microsecond.
     pub const fn microsecond(self) -> u32 {
-        ((self.0 >> MICROSECOND_OFFSET) & 0x0f_ffff) as u32
+        SharedTime::microsecond_from_core_bits(self.0)
     }
 
     /// Returns whether the represented year is a leap year.
