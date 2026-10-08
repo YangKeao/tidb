@@ -27,7 +27,7 @@
 use super::builder::PreservingFunctionBuilder;
 use super::*;
 use crate::column::{Column, CorrelatedColumn};
-use crate::constant::Constant;
+use crate::constant::{Constant, ParamMarker};
 use crate::context::NoColumns;
 use crate::expression::Expression;
 use crate::scalar_function::ScalarFunction;
@@ -293,9 +293,8 @@ fn go_disable_parse_json_flag_4_expr() {
     assert!(expr.static_type().expect("a type").flags() & FieldTypeFlags::PARSE_TO_JSON == 0);
 }
 
-/// GO PORT of `TestGetUint64FromConstant` (`util_test.go:155`), minus the
-/// `ParamMarker` case -- see the narrowing on
-/// [`super::predicates::get_uint64_from_constant`].
+/// GO PORT of `TestGetUint64FromConstant` (`util_test.go:155`); the bound
+/// `ParamMarker` case is covered separately below.
 #[test]
 fn go_get_uint64_from_constant() {
     let null = Expression::Constant(Constant::new(Datum::Null, int_type()));
@@ -320,6 +319,27 @@ fn go_get_uint64_from_constant() {
     assert_eq!(
         get_uint64_from_constant(&Expression::Constant(deferred), &NoColumns),
         Some((1, false))
+    );
+}
+
+#[test]
+fn uint64_constant_resolves_a_bound_parameter() {
+    struct Params;
+    impl crate::Columns for Params {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, crate::EvalError> {
+            assert_eq!(order, 2);
+            Ok(Datum::UInt(7))
+        }
+    }
+
+    let mut parameter = Constant::new(Datum::Null, int_type());
+    parameter.param_marker = Some(ParamMarker { order: 2 });
+    assert_eq!(
+        get_uint64_from_constant(&Expression::Constant(parameter), &Params),
+        Some((7, false))
     );
 }
 

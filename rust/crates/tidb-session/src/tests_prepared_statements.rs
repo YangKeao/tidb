@@ -816,3 +816,22 @@ fn a_group_by_field_keeps_its_written_alias_in_the_header() {
         )
     );
 }
+
+#[test]
+fn prepared_window_integer_arguments_resolve_bound_parameters() {
+    let mut session = Session::new();
+    session
+        .run("CREATE TABLE prepared_window_args (a INT)")
+        .unwrap();
+    session
+        .run("INSERT INTO prepared_window_args VALUES (1),(2),(3)")
+        .unwrap();
+    session
+        .run("PREPARE window_bucket FROM 'SELECT NTILE(?) OVER (ORDER BY a) FROM prepared_window_args'")
+        .unwrap();
+    session.run("SET @buckets=2").unwrap();
+    assert_eq!(
+        row_text(session.run("EXECUTE window_bucket USING @buckets")),
+        [["1"], ["1"], ["2"]]
+    );
+}

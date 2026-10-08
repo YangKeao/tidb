@@ -6,4 +6,6 @@ Five immutable real-SQL filters are GREEN: query+DML/COW, execute/import, predic
 
 R198 classifies window runtime: `build_window` retains `StmtContext` in `WindowExec`, and partition/order/range/aggregate/value/lead-lag evaluations use it. A zero-slot `SUM(ASCII(v)) OVER` SQL test confirms the owner reaches a window argument. DDL default paths also use live context, while aggregate cast's NoColumns use is a literal metadata probe.
 
-Two real gaps remain: null-rejection folding drops available planner `Columns`, and window integer constant extraction rejects prepared `ParamMarker` values. A suspected storage-class UTC/default-zone mismatch was not reproduced by the attempted accepted expression, so no fix or claim was made. [R198 receipt](../logs/wrapper-classification-summary.txt).
+R199 closes prepared window integer extraction: `get_uint64_from_constant` resolves `ParamMarker` through the existing `Columns::param_value` channel. Both a focused unit and real `PREPARE NTILE(?)` SQL pass after the retained RED. [R199 receipt](../logs/window-param-marker-summary.txt).
+
+One real context gap remains: null-rejection folding drops available planner `Columns`. A suspected storage-class UTC/default-zone mismatch was not reproduced by the attempted accepted expression, so no fix or claim was made. [R198 receipt](../logs/wrapper-classification-summary.txt).

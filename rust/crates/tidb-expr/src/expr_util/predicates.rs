@@ -278,17 +278,17 @@ pub fn remove_dup_exprs(exprs: Vec<Expression>) -> Vec<Expression> {
 /// value. A negative signed integer is NOT usable, which is the guard that
 /// keeps a negative `LIMIT` from wrapping.
 ///
-/// `// narrowing:` Go resolves a `ParamMarker` through
-/// `ParamMarker.GetUserVar(ctx)`. That needs the session's bound parameters,
-/// which this crate does not carry, so a parameter constant reports `None`
-/// (Go's own outcome when that call errors).
+/// A `ParamMarker` resolves through the caller's bound-parameter channel, as
+/// Go's `ParamMarker.GetUserVar(ctx)` does. Missing or invalid bindings remain
+/// unusable (`None`).
 #[must_use]
 pub fn get_uint64_from_constant(expr: &Expression, ctx: &impl Columns) -> Option<(u64, bool)> {
     let Expression::Constant(constant) = expr else {
         return None;
     };
-    let value = if constant.param_marker.is_some() {
-        return None;
+    let value = if let Some(marker) = constant.param_marker.as_ref() {
+        let order = usize::try_from(marker.order).ok()?;
+        ctx.param_value(order).ok()?
     } else if let Some(deferred) = constant.deferred_expr.as_deref() {
         super::substitute::eval_once(deferred, ctx).ok()?
     } else {
