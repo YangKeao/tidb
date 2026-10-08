@@ -5861,6 +5861,7 @@ dependencies = [
  "chrono-tz 0.10.4",
  "prost 0.14.4",
  "regex",
+ "tidb-ast",
  "tidb-chunk",
  "tidb-codec",
  "tidb-datatype",

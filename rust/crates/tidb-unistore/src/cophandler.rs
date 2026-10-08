@@ -1279,6 +1279,7 @@ struct LegacyEvaluator<'a> {
     div_precision_increment: i64,
     time_zone: &'a tidb_datatype::SessionTimeZone,
     raw_columns: &'a dyn tidb_expr::Columns,
+    ready_values: std::rc::Rc<tidb_expr::ReadyValueCache>,
     #[cfg(test)]
     shared_override: Option<&'a dyn tidb_expr::Columns>,
 }
@@ -1294,6 +1295,7 @@ impl<'a> LegacyEvaluator<'a> {
             div_precision_increment,
             time_zone,
             raw_columns: &tidb_expr::NoColumns,
+            ready_values: std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
             #[cfg(test)]
             shared_override: None,
         }
@@ -1542,11 +1544,11 @@ pub fn build_dag(req: &coprocessor::Request) -> Result<DagContext, String> {
         "System" => TimeZoneSpec::System,
         name => TimeZoneSpec::Named(name.to_owned()),
     };
-    let mut expression_context = RequestEvalContext::new_with_ready_value_execution(
+    let mut expression_context = RequestEvalContext::new(
         time_zone.resolve()?,
         dag_req.div_precision_increment.unwrap_or(4),
         dag_req.flags.unwrap_or(0),
-    )?;
+    );
     let columns = dag_req.executors.first().and_then(|scan| {
         scan.tbl_scan
             .as_ref()
@@ -2137,15 +2139,12 @@ impl LegacyEvaluator<'_> {
         let columns: &dyn tidb_expr::Columns = expr.context.as_ref();
         #[cfg(test)]
         let columns = self.shared_override.unwrap_or(columns);
-        let eval = |columns: &dyn tidb_expr::Columns| expr.expression.eval(columns, row.to_row());
-        // Borrow only the parent's capability; retain the child's request semantics.
-        let result = if let Some(scope) = self.raw_columns.ready_value_scope() {
-            scope.with_columns(columns, |bound| eval(bound))
-        } else if let Some(execution) = self.raw_columns.ready_value_execution() {
-            execution.scope().with_columns(columns, |bound| eval(bound))
-        } else {
-            eval(columns)
-        };
+        // The evaluator is the unistore evaluation lane. Bind its affine cache
+        // to the child request context without placing !Sync workers in the
+        // shared Arc<RequestEvalContext>.
+        let result = self
+            .ready_values
+            .with_columns(columns, |bound| expr.expression.eval(bound, row.to_row()));
         result.map_err(LegacyEvalError::from)
     }
 }
@@ -3358,6 +3357,7 @@ impl LegacyEvaluator<'_> {
         };
         let evaluator = LegacyEvaluator {
             raw_columns: selected,
+            ready_values: std::rc::Rc::clone(&self.ready_values),
             ..*self
         };
         let child = children.get(index);
@@ -3736,6 +3736,7 @@ impl LegacyEvaluator<'_> {
                             div_precision_increment: self.div_precision_increment,
                             time_zone: self.time_zone,
                             raw_columns: selected_columns,
+                            ready_values: std::rc::Rc::clone(&self.ready_values),
                             #[cfg(test)]
                             shared_override: self.shared_override,
                         };
@@ -4552,6 +4553,7 @@ impl LegacyEvaluator<'_> {
                         |index, selected| {
                             let evaluator = LegacyEvaluator {
                                 raw_columns: selected,
+                                ready_values: std::rc::Rc::clone(&self.ready_values),
                                 ..*self
                             };
                             evaluator.eval_bytes(children.get(index))
@@ -4785,6 +4787,7 @@ impl LegacyEvaluator<'_> {
                         |index, selected| {
                             let evaluator = LegacyEvaluator {
                                 raw_columns: selected,
+                                ready_values: std::rc::Rc::clone(&self.ready_values),
                                 ..*self
                             };
                             children
@@ -4894,6 +4897,34 @@ mod tests {
     use super::*;
 
     // All WRITTEN: Go's cop_handler coverage rides the store's RPC suites.
+
+    #[test]
+    fn legacy_evaluator_owns_and_reuses_shared_expression_cache() {
+        use tidb_ast::CiString;
+        use tidb_datatype::{Datum, FieldType, FieldTypeCode};
+        use tidb_expr::column::Column;
+        use tidb_expr::expression::{Expression, ScalarFunction};
+
+        let string = FieldType::new(FieldTypeCode::VarString);
+        let integer = FieldType::new(FieldTypeCode::Long);
+        let mut column = Column::new(1, string);
+        column.index = 0;
+        let shared = SharedExpression {
+            expression: Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("ascii"),
+                integer,
+                vec![Expression::Column(column)],
+            )),
+            context: Arc::new(RequestEvalContext::new(zone(), 4, 0)),
+        };
+        let row = [Datum::Bytes(b"A".to_vec())];
+        let time_zone = zone();
+        let evaluator = LegacyEvaluator::new(&row, 4, &time_zone);
+        assert_eq!(evaluator.eval_shared(&shared).unwrap(), Datum::Int(65));
+        assert_eq!(evaluator.ready_values.prepared_worker_count(), 1);
+        assert_eq!(evaluator.eval_shared(&shared).unwrap(), Datum::Int(65));
+        assert_eq!(evaluator.ready_values.prepared_worker_count(), 1);
+    }
 
     /// `builtinInIntSig.evalInt`'s null rule, pinned: match wins, then NULL
     /// poisons a miss, then FALSE.

@@ -16,9 +16,9 @@
 
 use std::sync::{Arc, Mutex};
 use tidb_datatype::{Datum, SessionTimeZone};
-use tidb_expr::{
-    Columns, ErrorLevel, ReadyValueExecution, ReadyValuePoolOwner, ReadyValuePoolPolicy,
-};
+use tidb_expr::{Columns, ErrorLevel};
+#[cfg(test)]
+use tidb_expr::{ReadyValueExecution, ReadyValuePoolOwner, ReadyValuePoolPolicy};
 use tidb_model::flags::*;
 
 pub(super) struct RequestEvalContext {
@@ -27,6 +27,7 @@ pub(super) struct RequestEvalContext {
     pub(super) flags: u64,
     pub(super) column_types: Vec<tidb_datatype::FieldType>,
     warnings: Mutex<Vec<(u16, String)>>,
+    #[cfg(test)]
     ready_value_execution: Option<ReadyValueExecution>,
 }
 
@@ -38,10 +39,6 @@ impl std::fmt::Debug for RequestEvalContext {
             .field("flags", &self.flags)
             .field("column_types", &self.column_types)
             .field("warnings", &format_args!("<not inspected>"))
-            .field(
-                "has_ready_value_execution",
-                &self.ready_value_execution.is_some(),
-            )
             .finish()
     }
 }
@@ -54,11 +51,13 @@ impl RequestEvalContext {
             flags,
             column_types: Vec::new(),
             warnings: Mutex::new(Vec::new()),
+            #[cfg(test)]
             ready_value_execution: None,
         }
     }
 
-    pub(super) fn new_with_ready_value_execution(
+    #[cfg(test)]
+    fn new_with_ready_value_execution(
         zone: SessionTimeZone,
         division_precision: u32,
         flags: u64,
@@ -100,6 +99,7 @@ impl RequestEvalContext {
     }
 }
 
+#[cfg(test)]
 impl Drop for RequestEvalContext {
     fn drop(&mut self) {
         if let Some(execution) = self.ready_value_execution.as_ref() {
@@ -109,6 +109,7 @@ impl Drop for RequestEvalContext {
 }
 
 impl Columns for RequestEvalContext {
+    #[cfg(test)]
     fn ready_value_execution(&self) -> Option<&ReadyValueExecution> {
         self.ready_value_execution.as_ref()
     }
