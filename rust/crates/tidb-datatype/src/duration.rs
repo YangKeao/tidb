@@ -22,28 +22,27 @@ pub use tidb_query_datatype::codec::mysql::duration::{
     NativeDurationOverflow as DurationOverflow, NativeDurationParseError as DurationParseError,
     NativeDurationParseEvent as DurationParseEvent, NativeDurationValueError as DurationValueError,
 };
-use tidb_query_datatype::codec::mysql::{duration as shared_duration, Duration as SharedDuration};
+use tidb_query_datatype::codec::{
+    mysql::{duration as shared_duration, Duration as SharedDuration},
+    native_duration_convert::NativeDurationParts,
+};
 
 use crate::{check_fsp, Converted, Decimal, FspError, Time, TimeError, TimeType};
 
 /// The maximum SQL `TIME` hour component accepted by TiDB.
-pub const TIME_MAX_HOUR: i64 = 838;
+pub const TIME_MAX_HOUR: i64 = shared_duration::MAX_HOUR_PART as i64;
 /// The maximum SQL `TIME` minute component accepted by TiDB.
-pub const TIME_MAX_MINUTE: i64 = 59;
+pub const TIME_MAX_MINUTE: i64 = shared_duration::MAX_MINUTE_PART as i64;
 /// The maximum SQL `TIME` second component accepted by TiDB.
-pub const TIME_MAX_SECOND: i64 = 59;
+pub const TIME_MAX_SECOND: i64 = shared_duration::MAX_SECOND_PART as i64;
 /// The largest representable MySQL duration in nanoseconds.
-pub const MAX_TIME_NANOS: i64 =
-    (TIME_MAX_HOUR * 60 * 60 + TIME_MAX_MINUTE * 60 + TIME_MAX_SECOND) * 1_000_000_000;
+pub const MAX_TIME_NANOS: i64 = shared_duration::MAX_NANOS;
 /// The smallest representable MySQL duration in nanoseconds.
 pub const MIN_TIME_NANOS: i64 = -MAX_TIME_NANOS;
 
-/// MySQL `TIME` value with signed nanoseconds and fractional precision.
+/// MySQL `TIME` public API over the shared raw duration representation.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct MySqlDuration {
-    nanoseconds: i64,
-    fsp: i64,
-}
+pub struct MySqlDuration(NativeDurationParts);
 
 impl MySqlDuration {
     /// Returns the maximum representable MySQL TIME value at `fsp`.
@@ -60,11 +59,10 @@ impl MySqlDuration {
         fsp: i64,
     ) -> Result<Self, FspError> {
         let fsp = check_fsp(fsp)?;
-        Ok(Self {
-            nanoseconds: (hour * 3_600 + minute * 60 + second) * 1_000_000_000
-                + microsecond * 1_000,
+        Ok(Self(NativeDurationParts::from_raw_parts(
+            (hour * 3_600 + minute * 60 + second) * 1_000_000_000 + microsecond * 1_000,
             fsp,
-        })
+        )))
     }
 
     /// Constructs from an existing signed nanosecond count.
@@ -78,75 +76,72 @@ impl MySqlDuration {
     /// `UnspecifiedFsp` and values outside SQL's validated 0..=6 domain.
     #[must_use]
     pub const fn from_raw_parts(nanoseconds: i64, fsp: i64) -> Self {
-        Self { nanoseconds, fsp }
+        Self(NativeDurationParts::from_raw_parts(nanoseconds, fsp))
     }
 
     /// Returns the signed nanosecond count.
     pub const fn nanoseconds(self) -> i64 {
-        self.nanoseconds
+        self.0.nanoseconds()
     }
 
     /// Returns fractional-seconds precision.
     pub const fn fsp(self) -> i64 {
-        self.fsp
+        self.0.fsp()
     }
 
     /// Returns the negated duration.
     pub const fn negated(self) -> Self {
-        Self {
-            nanoseconds: -self.nanoseconds,
-            fsp: self.fsp,
-        }
+        Self::from_raw_parts(-self.nanoseconds(), self.fsp())
     }
 
     /// Returns the absolute hour component, including values beyond 24.
     pub const fn hour(self) -> i64 {
-        SharedDuration::hours_from_nanos(self.nanoseconds) as i64
+        SharedDuration::hours_from_nanos(self.nanoseconds()) as i64
     }
 
     /// Returns the absolute minute component.
     pub const fn minute(self) -> i64 {
-        SharedDuration::minutes_from_nanos(self.nanoseconds) as i64
+        SharedDuration::minutes_from_nanos(self.nanoseconds()) as i64
     }
 
     /// Returns the absolute second component.
     pub const fn second(self) -> i64 {
-        SharedDuration::secs_from_nanos(self.nanoseconds) as i64
+        SharedDuration::secs_from_nanos(self.nanoseconds()) as i64
     }
 
     /// Returns the absolute microsecond component.
     pub const fn microsecond(self) -> i64 {
-        SharedDuration::micro_secs_from_nanos(self.nanoseconds) as i64
+        SharedDuration::micro_secs_from_nanos(self.nanoseconds()) as i64
     }
 
     /// Adds two durations while preserving the larger FSP.
     pub fn checked_add(self, other: Self) -> Result<Self, DurationRoundError> {
         let nanoseconds = self
-            .nanoseconds
-            .checked_add(other.nanoseconds)
+            .nanoseconds()
+            .checked_add(other.nanoseconds())
             .ok_or(DurationRoundError::Overflow)?;
-        Ok(Self {
+        Ok(Self::from_raw_parts(
             nanoseconds,
-            fsp: self.fsp.max(other.fsp),
-        })
+            self.fsp().max(other.fsp()),
+        ))
     }
 
     /// Subtracts two durations while preserving the larger FSP.
     pub fn checked_sub(self, other: Self) -> Result<Self, DurationRoundError> {
         let nanoseconds = self
-            .nanoseconds
-            .checked_sub(other.nanoseconds)
+            .nanoseconds()
+            .checked_sub(other.nanoseconds())
             .ok_or(DurationRoundError::Overflow)?;
-        Ok(Self {
+        Ok(Self::from_raw_parts(
             nanoseconds,
-            fsp: self.fsp.max(other.fsp),
-        })
+            self.fsp().max(other.fsp()),
+        ))
     }
 
     /// Formats this duration with MySQL's `TIME_FORMAT` conversion rules.
     pub fn duration_format(self, layout: &str) -> String {
         tidb_query_datatype::codec::mysql::Time::native_raw_duration_format(
-            self.nanoseconds,
+            self.nanoseconds(),
             layout,
         )
     }
@@ -154,29 +149,21 @@ impl MySqlDuration {
     /// Returns TiDB's numeric TIME representation.
     pub fn to_number(self) -> Decimal {
         Decimal::from_shared_parse(
-            tidb_query_datatype::codec::native_temporal_number::native_duration_to_number(
-                tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
-                    nanoseconds: self.nanoseconds,
-                    fsp: self.fsp,
-                },
-            ),
+            tidb_query_datatype::codec::native_temporal_number::native_duration_to_number(self.0),
         )
     }
 
     /// Rounds fractional seconds with Go's nearest-value `Time.Round` rule.
     pub fn round_frac(self, fsp: i64) -> Result<Self, DurationRoundError> {
-        let rounded = round_duration_fsp(self.nanoseconds, self.fsp, fsp)?;
-        Ok(Self {
-            nanoseconds: rounded.nanoseconds(),
-            fsp: rounded.fsp(),
-        })
+        let rounded = round_duration_fsp(self.nanoseconds(), self.fsp(), fsp)?;
+        Ok(Self::from_raw_parts(rounded.nanoseconds(), rounded.fsp()))
     }
 
     /// Compares signed duration values.
     pub const fn compare(self, other: Self) -> Ordering {
-        if self.nanoseconds < other.nanoseconds {
+        if self.nanoseconds() < other.nanoseconds() {
             Ordering::Less
-        } else if self.nanoseconds > other.nanoseconds {
+        } else if self.nanoseconds() > other.nanoseconds() {
             Ordering::Greater
         } else {
             Ordering::Equal
@@ -186,7 +173,7 @@ impl MySqlDuration {
     /// Parses and compares a duration string at maximum FSP.
     pub fn compare_string(self, input: &str) -> Result<Ordering, DurationParseError> {
         let parsed = parse_duration(input.as_bytes(), 6)?;
-        Ok(self.nanoseconds.cmp(&parsed.nanoseconds()))
+        Ok(self.nanoseconds().cmp(&parsed.nanoseconds()))
     }
 
     /// Adds this duration to the calendar date containing `timestamp`.
@@ -198,10 +185,7 @@ impl MySqlDuration {
         allow_invalid_date: bool,
     ) -> Result<Time, TimeError> {
         tidb_query_datatype::codec::native_temporal_convert::native_duration_convert_to_time(
-            tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
-                nanoseconds: self.nanoseconds,
-                fsp: self.fsp,
-            },
+            self.0,
             timestamp,
             kind,
             allow_zero_in_date,
@@ -219,11 +203,11 @@ impl MySqlDuration {
         through_concat: bool,
     ) -> Result<i64, TimeError> {
         tidb_query_datatype::codec::native_temporal_convert::native_duration_convert_to_year_with_event(
-            tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
-                nanoseconds: self.nanoseconds, fsp: self.fsp,
-            },
-            now, through_concat,
-        )?.into_result()
+            self.0,
+            now,
+            through_concat,
+        )?
+        .into_result()
     }
 
     pub(crate) fn convert_to_year_with_event<TZ: TimeZone>(
@@ -232,17 +216,17 @@ impl MySqlDuration {
         through_concat: bool,
     ) -> Result<Converted<i64>, TimeError> {
         tidb_query_datatype::codec::native_temporal_convert::native_duration_convert_to_year_with_event(
-            tidb_query_datatype::codec::native_duration_convert::NativeDurationParts {
-                nanoseconds: self.nanoseconds, fsp: self.fsp,
-            },
-            now, through_concat,
-        ).map(crate::time_parse::from_shared_year_conversion)
+            self.0,
+            now,
+            through_concat,
+        )
+        .map(crate::time_parse::from_shared_year_conversion)
     }
 }
 
 impl fmt::Display for MySqlDuration {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        SharedDuration::write_native_display(self.nanoseconds, self.fsp, formatter)
+        SharedDuration::write_native_display(self.nanoseconds(), self.fsp(), formatter)
     }
 }
 
