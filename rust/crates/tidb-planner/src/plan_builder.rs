@@ -3423,14 +3423,18 @@ impl<S: TableSource, C: Columns> PlanBuilder<'_, S, C> {
             return None;
         };
         let name = path.last()?;
-        // 1. the alias.
-        if let Some(index) = fields.iter().position(|field| {
-            field
-                .alias
-                .as_deref()
-                .is_some_and(|a| a.eq_ignore_ascii_case(name))
-        }) {
-            return Some(index);
+        // 1. An alias is an unqualified select-list name. A qualified
+        // `ORDER BY r.id` must keep resolving against relation `r`, even when
+        // another projected field (or alias) is also named `id`.
+        if path.len() == 1 {
+            if let Some(index) = fields.iter().position(|field| {
+                field
+                    .alias
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(name))
+            }) {
+                return Some(index);
+            }
         }
         // 2. a select-list field that IS that column. GO's
         // resolveFromSelectFields matches the field's ColumnExpr regardless of
@@ -3438,7 +3442,19 @@ impl<S: TableSource, C: Columns> PlanBuilder<'_, S, C> {
         // (q19/q71) must bind the pass-through field, not append a duplicate
         // auxiliary column.
         fields.iter().position(|field| {
-            matches!(&field.expr, Expr::Column(p) if p.last().is_some_and(|c| c.eq_ignore_ascii_case(name)))
+            let Expr::Column(candidate) = &field.expr else {
+                return false;
+            };
+            if path.len() == 1 {
+                return candidate
+                    .last()
+                    .is_some_and(|column| column.eq_ignore_ascii_case(name));
+            }
+            candidate.len() >= path.len()
+                && candidate[candidate.len() - path.len()..]
+                    .iter()
+                    .zip(path)
+                    .all(|(left, right)| left.eq_ignore_ascii_case(right))
         })
     }
 

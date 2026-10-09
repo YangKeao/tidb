@@ -215,6 +215,40 @@ fn joins() {
     );
 }
 
+/// Qualified ORDER BY columns keep their relation identity when both joined
+/// inputs use the same column name.
+#[test]
+fn join_order_by_duplicate_column_names() {
+    let mut catalog = Catalog::default();
+    crate::run_create_table_on("CREATE TABLE ol (id BIGINT, k BIGINT)", &mut catalog).unwrap();
+    crate::run_create_table_on("CREATE TABLE orr (id BIGINT, k BIGINT)", &mut catalog).unwrap();
+    run_insert_on(
+        "INSERT INTO ol VALUES (1, 7)",
+        &mut catalog,
+        &crate::StmtContext::for_query(),
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO orr VALUES (7, 7), (2, 7)",
+        &mut catalog,
+        &crate::StmtContext::for_query(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_select_on(
+            "SELECT ol.id, orr.id FROM ol LEFT JOIN orr ON ol.k = orr.k ORDER BY ol.id, orr.id DESC",
+            &catalog,
+            &crate::StmtContext::for_query(),
+        )
+        .unwrap(),
+        vec![
+            vec![Datum::Int(1), Datum::Int(7)],
+            vec![Datum::Int(1), Datum::Int(2)],
+        ]
+    );
+}
+
 /// Go `pkg/planner/core/rule/rule_outer_join_to_semi_join.go` recognizes an
 /// inner join key tested by the sole remaining `IS NULL` selection. When no
 /// parent reads the null-extended columns, `generateProjectForConvertAntiJoin`

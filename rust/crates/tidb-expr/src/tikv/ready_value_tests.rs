@@ -19,7 +19,9 @@ use std::cell::RefCell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use tidb_datatype::Datum;
-use tidb_query_expr::local::{EvaluatedArgs, EvaluatedBytesOp};
+use tidb_query_expr::local::{
+    prepare_evaluated_bytes, EvaluatedArgs, EvaluatedBytesOp, ExecutionLimits, LocalCompileContext,
+};
 
 use super::*;
 
@@ -80,6 +82,38 @@ fn lane_cache_is_lazy_and_reuses_one_worker_per_operation() {
         );
         assert_eq!(cache.prepared_worker_count(), 2);
     });
+}
+
+#[test]
+fn audited_sql_operations_prepare_in_optimized_builds() {
+    for operation in [
+        EvaluatedBytesOp::IsNull,
+        EvaluatedBytesOp::Length,
+        EvaluatedBytesOp::CharLength,
+        EvaluatedBytesOp::CharLengthUtf8,
+        EvaluatedBytesOp::BitLength,
+        EvaluatedBytesOp::Replace,
+        EvaluatedBytesOp::HexInt,
+        EvaluatedBytesOp::HexStr,
+        EvaluatedBytesOp::UnHex,
+        EvaluatedBytesOp::BitAnd,
+        EvaluatedBytesOp::BitOr,
+        EvaluatedBytesOp::BitXor,
+        EvaluatedBytesOp::LeftShift,
+        EvaluatedBytesOp::RightShift,
+        EvaluatedBytesOp::InetAton,
+        EvaluatedBytesOp::Inet6Aton,
+        EvaluatedBytesOp::Md5,
+        EvaluatedBytesOp::Sha1,
+    ] {
+        prepare_evaluated_bytes(
+            operation,
+            LocalCompileContext::default(),
+            ExecutionLimits::default(),
+            usize::MAX,
+        )
+        .unwrap_or_else(|error| panic!("{operation:?} did not prepare: {error:?}"));
+    }
 }
 
 #[test]
