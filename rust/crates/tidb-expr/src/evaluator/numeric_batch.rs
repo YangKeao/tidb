@@ -39,9 +39,8 @@ use tidb_query_datatype::expr::EvalContext;
 use tidb_query_datatype::EvalType;
 use tidb_query_expr::local::{
     compile_numeric_batch, CallMetadata, CompileLimits, ExecutionLimits, FunctionRef, InputRow,
-    LiteralKind, LocalBatch, LocalCompileContext, LocalError, LocalExpr, LocalFailureSite,
-    LocalNumericBatchProgram, LocalResult, LocalRuntimeServices, NumericBatchFacts,
-    OrdinaryCallSite, OrdinarySourceId, ReportedLocalFailure,
+    LiteralKind, LocalBatch, LocalCompileContext, LocalError, LocalExpr, LocalNumericBatchProgram,
+    LocalResult, LocalRuntimeServices, NumericBatchFacts, OrdinaryCallSite, OrdinarySourceId,
 };
 
 use crate::expr_collation::{Coercibility, CollationInfo, Repertoire};
@@ -67,14 +66,9 @@ enum FailureKind {
     Bridge(BridgeError),
     Local(LocalError),
     Native(EvaluatorError),
-    Reported {
-        failure: ReportedLocalFailure,
-        source: Arc<NumericSource>,
-    },
 }
 
-/// Opaque failure ownership; no public `(report, foreign table)` constructor.
-/// Raw strips the same report without rerunning. No SQL message/severity view.
+/// Opaque failure ownership across admission, bridge, local, and native paths.
 #[derive(Debug)]
 pub(crate) struct NumericBatchFailure {
     kind: FailureKind,
@@ -85,42 +79,10 @@ impl NumericBatchFailure {
             kind: FailureKind::Admission(message),
         }
     }
-    fn reported(failure: ReportedLocalFailure, source: Arc<NumericSource>) -> Self {
-        Self {
-            kind: FailureKind::Reported { failure, source },
-        }
-    }
     pub(crate) fn local_error(&self) -> Option<&LocalError> {
         match &self.kind {
             FailureKind::Local(error) => Some(error),
-            FailureKind::Reported { failure, .. } => Some(failure.error()),
             _ => None,
-        }
-    }
-    pub(crate) fn site(&self) -> Option<&LocalFailureSite> {
-        match &self.kind {
-            FailureKind::Reported { failure, .. } => failure.site(),
-            _ => None,
-        }
-    }
-    pub(crate) fn source_ordinal(&self) -> Option<usize> {
-        let FailureKind::Reported { failure, source } = &self.kind else {
-            return None;
-        };
-        match failure.site()? {
-            LocalFailureSite::Kernel { call, .. } => source
-                .facts
-                .call_sites()
-                .iter()
-                .find(|own| *own == call)
-                .map(OrdinaryCallSite::ordinal),
-            LocalFailureSite::InputSlot { slot, .. } => source.bindings.get(*slot).copied(),
-        }
-    }
-    pub(crate) fn into_raw(self) -> Self {
-        match self.kind {
-            FailureKind::Reported { failure, .. } => failure.into_error().into(),
-            kind => Self { kind },
         }
     }
 
@@ -128,7 +90,6 @@ impl NumericBatchFailure {
         let local = match self.kind {
             FailureKind::Native(error) => return error,
             FailureKind::Local(error) => error,
-            FailureKind::Reported { failure, .. } => failure.into_error(),
             FailureKind::Admission(message) => LocalError::InvalidSpec(message.into()),
             FailureKind::Bridge(error) => LocalError::BindingContract(error.to_string()),
         };
@@ -1086,14 +1047,14 @@ impl NumericBatchConsumer for Consumer<'_> {
         let values = self
             .worker
             .program
-            .eval_with_bindings_reported(
+            .eval_with_bindings(
                 self.worker.limits,
                 self.ctx,
                 invocation.input.physical_rows(),
                 &self.selection,
                 &mut checked,
             )
-            .map_err(|failure| NumericBatchFailure::reported(failure, Arc::clone(&source)))?;
+            .map_err(NumericBatchFailure::from)?;
         self.worker.materialize(values, &self.selection)
     }
     fn row_route(&mut self) -> Result<()> {
@@ -1104,7 +1065,7 @@ impl NumericBatchConsumer for Consumer<'_> {
 }
 
 impl EvaluatorSuite {
-    pub(crate) fn run_numeric_batch_reported<C: Columns>(
+    pub(crate) fn run_numeric_batch_with_bindings<C: Columns>(
         &self,
         native_ctx: &C,
         ctx: &mut EvalContext,
@@ -1151,7 +1112,6 @@ impl EvaluatorSuite {
                 override_source: None,
             },
         )
-        .map_err(NumericBatchFailure::into_raw)
     }
 }
 

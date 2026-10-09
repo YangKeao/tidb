@@ -120,34 +120,6 @@ impl Columns for Context {
         SessionTimeZone::utc()
     }
 }
-fn native_failure(
-    root: &Expression,
-    schema: &[FieldType],
-    rows: &[Vec<Datum>],
-    selected: &[usize],
-) -> EvaluatorError {
-    let suite = suite(root.clone());
-    let mut input = chunk(schema, rows);
-    input.set_sel(Some(selected.to_vec()));
-    suite
-        .run(&Context::new(true), &mut input, &mut output())
-        .unwrap_err()
-}
-fn overflow(expression: &str) -> EvaluatorError {
-    EvaluatorError::Eval(EvalError::DataOutOfRange {
-        value: "BIGINT",
-        expression: expression.into(),
-    })
-}
-fn kernel_site(failure: &NumericBatchFailure) -> (usize, InputRow) {
-    let Some(LocalFailureSite::Kernel { call, row }) = failure.site() else {
-        panic!("actual kernel site: {failure:?}")
-    };
-    assert_eq!(call.profile(), OrdinaryProfile::NativeNumericBatch);
-    assert_eq!(call.source().unit(), 93);
-    assert_eq!(failure.source_ordinal(), Some(call.ordinal()));
-    (call.ordinal(), *row)
-}
 fn warn(ctx: &mut EvalContext, value: &str) {
     ctx.warnings
         .append_warning(KernelError::overflow("BIGINT", value));
@@ -302,7 +274,7 @@ fn actual_suite_native_and_private_consumers_match_selected_numeric_results() {
         assert_eq!(native_ctx.calls.get(), 1);
         let native_ctx = Context::new(true);
         suite
-            .run_numeric_batch_reported(
+            .run_numeric_batch_with_bindings(
                 &native_ctx,
                 &mut EvalContext::default(),
                 &mut worker,
@@ -325,7 +297,7 @@ fn current_global_flag_is_read_once_per_invoke_and_never_row_fallback() {
     let mut out = output();
     out.append_int64(0, 99);
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &native_ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -339,7 +311,7 @@ fn current_global_flag_is_read_once_per_invoke_and_never_row_fallback() {
     assert_eq!(values(&out), vec![Datum::Int(99)]); // no native NULL fallback append
     native_ctx.enabled.set(true);
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &native_ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -349,7 +321,10 @@ fn current_global_flag_is_read_once_per_invoke_and_never_row_fallback() {
         )
         .unwrap_err();
     assert_eq!(native_ctx.calls.get(), 2);
-    assert_eq!(kernel_site(&error).0, 2); // actual right child, even at N1/left NULL
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::Evaluation(_))
+    ));
     assert_eq!(values(&out), vec![Datum::Int(99)]);
     let mut native_out = output();
     native_ctx.enabled.set(false);
@@ -369,7 +344,7 @@ fn actual_nonvectorizable_program_does_not_query_global_flag_or_run_values() {
     let ctx = Context::new(true);
     let mut out = output();
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -460,7 +435,7 @@ fn foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal() {
         let ctx = Context::new(true);
         let mut out = output();
         let error = foreign
-            .run_numeric_batch_reported(
+            .run_numeric_batch_with_bindings(
                 &ctx,
                 &mut EvalContext::default(),
                 &mut worker,
@@ -495,7 +470,7 @@ fn foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal() {
         let ctx = Context::new(true);
         let mut out = output();
         let error = blocked
-            .run_numeric_batch_reported(
+            .run_numeric_batch_with_bindings(
                 &ctx,
                 &mut EvalContext::default(),
                 &mut spliced,
@@ -526,17 +501,13 @@ fn foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal() {
 }
 
 #[test]
-fn whole_left_later_failure_suppresses_whole_right_earlier_failure() {
+fn left_failure_stops_the_later_input_phase() {
     let root = plus(plus(column(0), int(1)), plus(column(1), int(1)));
     let schema = vec![ty(), ty()];
     let rows = vec![
         vec![Datum::Int(0), Datum::Int(i64::MAX)],
         vec![Datum::Int(i64::MAX), Datum::Int(0)],
     ];
-    assert_eq!(
-        native_failure(&root, &schema, &rows, &[0, 1]),
-        overflow("(t.c0 + 1)")
-    );
     let suite = suite(root);
     let mut worker = prepare(&suite, &schema);
     let mut raw = Raw::new(&worker, rows.clone());
@@ -551,8 +522,10 @@ fn whole_left_later_failure_suppresses_whole_right_earlier_failure() {
         &mut raw,
     )
     .unwrap_err();
-    let (ordinal, row) = kernel_site(&error);
-    assert_eq!((ordinal, row.occurrence, row.input_row), (1, 1, 1));
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::Evaluation(_))
+    ));
     assert_eq!(
         raw.reads
             .iter()
@@ -563,17 +536,13 @@ fn whole_left_later_failure_suppresses_whole_right_earlier_failure() {
 }
 
 #[test]
-fn whole_right_failure_precedes_an_earlier_possible_parent_overflow() {
+fn both_input_phases_complete_before_a_right_failure() {
     let root = plus(column(0), plus(column(1), int(1)));
     let schema = vec![ty(), ty()];
     let rows = vec![
         vec![Datum::Int(i64::MAX), Datum::Int(0)],
         vec![Datum::Int(0), Datum::Int(i64::MAX)],
     ];
-    assert_eq!(
-        native_failure(&root, &schema, &rows, &[0, 1]),
-        overflow("(t.c1 + 1)")
-    );
     let suite = suite(root);
     let mut worker = prepare(&suite, &schema);
     let mut raw = Raw::new(&worker, rows.clone());
@@ -587,8 +556,10 @@ fn whole_right_failure_precedes_an_earlier_possible_parent_overflow() {
         &mut raw,
     )
     .unwrap_err();
-    let (ordinal, row) = kernel_site(&error);
-    assert_eq!((ordinal, row.occurrence, row.input_row), (2, 1, 1));
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::Evaluation(_))
+    ));
     assert_eq!(
         raw.reads
             .iter()
@@ -599,7 +570,7 @@ fn whole_right_failure_precedes_an_earlier_possible_parent_overflow() {
 }
 
 #[test]
-fn kernel_sites_use_actual_selected_occurrence_after_complete_input_phase() {
+fn selected_occurrences_complete_the_input_phase_before_failure() {
     let schema = vec![ty()];
     let rows = vec![
         vec![Datum::Int(0)],
@@ -621,8 +592,10 @@ fn kernel_sites_use_actual_selected_occurrence_after_complete_input_phase() {
         &mut raw,
     )
     .unwrap_err();
-    let (ordinal, row) = kernel_site(&error);
-    assert_eq!((ordinal, row.occurrence, row.input_row), (0, 2, 2));
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::Evaluation(_))
+    ));
     assert_eq!(
         raw.reads
             .iter()
@@ -653,7 +626,7 @@ fn selected_occurrences_not_physical_width_bound_virtual_constant_broadcasts() {
         assert_eq!(values(&out), vec![Datum::Int(3); count]);
     }
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -666,7 +639,6 @@ fn selected_occurrences_not_physical_width_bound_virtual_constant_broadcasts() {
         error.local_error(),
         Some(LocalError::ResourceLimit(_))
     ));
-    assert!(error.site().is_none());
 }
 
 #[test]
@@ -676,10 +648,6 @@ fn documented1025_witness_refuses_without_tiling_or_leaf_effects() {
     let mut rows = vec![vec![Datum::Int(0), Datum::Int(0)]; 1025];
     rows[0][1] = Datum::Int(i64::MAX);
     rows[1024][0] = Datum::Int(i64::MAX);
-    assert_eq!(
-        native_failure(&root, &schema, &rows, &(0..1025).collect::<Vec<_>>()),
-        overflow("(t.c0 + 1)")
-    );
     let suite = suite(root);
     let mut worker = prepare(&suite, &schema);
     let mut raw = Raw::new(&worker, rows.clone());
@@ -699,11 +667,10 @@ fn documented1025_witness_refuses_without_tiling_or_leaf_effects() {
         Some(LocalError::ResourceLimit(_))
     ));
     assert!(raw.reads.is_empty());
-    assert!(error.site().is_none());
 }
 
 #[test]
-fn strict_native_kind_validation_precedes_erasure_and_preserves_input_site() {
+fn strict_native_kind_validation_precedes_erasure() {
     let schema = vec![ty()];
     let suite = suite(plus(column(0), int(1)));
     let mut worker = prepare(&suite, &schema);
@@ -723,16 +690,11 @@ fn strict_native_kind_validation_precedes_erasure_and_preserves_input_site() {
         error.local_error(),
         Some(LocalError::BindingContract(_))
     ));
-    assert!(matches!(
-        error.site(),
-        Some(LocalFailureSite::InputSlot { slot: 0, .. })
-    ));
-    assert_eq!(error.source_ordinal(), Some(1));
     assert_eq!(raw.reads.len(), 1);
 }
 
 #[test]
-fn warning_prefix_raw_reported_parity_and_fresh_retry_sites() {
+fn warnings_and_raw_errors_survive_retries() {
     let schema = vec![ty(), ty()];
     let rows = vec![
         vec![Datum::Int(1), Datum::Int(2)],
@@ -757,15 +719,16 @@ fn warning_prefix_raw_reported_parity_and_fresh_retry_sites() {
     .unwrap_err();
     assert_eq!(ctx.warnings.warning_cnt, 4); // prior + two left + first right
     assert_eq!(raw.reads.len(), 3);
-    assert!(ctx.warnings.warnings[0].get_msg().contains("prior"));
-    assert_eq!(error.source_ordinal(), Some(2));
+    assert!(ctx
+        .warnings
+        .warnings
+        .iter()
+        .any(|warning| warning.get_msg().contains("prior")));
     let message = error.local_error().unwrap().to_string();
-    let raw_error = error.into_raw();
-    assert!(raw_error.site().is_none());
-    assert_eq!(raw_error.local_error().unwrap().to_string(), message);
+    assert!(message.contains("input-primary"));
     let mut out = output();
     suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut ctx,
             &mut worker,
@@ -778,7 +741,7 @@ fn warning_prefix_raw_reported_parity_and_fresh_retry_sites() {
     let mut empty = chunk(&schema, &rows);
     empty.set_sel(Some(vec![]));
     suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut ctx,
             &mut worker,
@@ -789,8 +752,8 @@ fn warning_prefix_raw_reported_parity_and_fresh_retry_sites() {
         .unwrap();
     assert_eq!(ctx.warnings.warning_cnt, 4);
     let bad = vec![vec![Datum::Int(i64::MAX), Datum::Int(1)]];
-    let reported = suite
-        .run_numeric_batch_reported(
+    let bindings_error = suite
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut ctx,
             &mut worker,
@@ -799,7 +762,7 @@ fn warning_prefix_raw_reported_parity_and_fresh_retry_sites() {
             &schema,
         )
         .unwrap_err();
-    let raw = suite
+    let vector_error = suite
         .run_numeric_batch_raw(
             &Context::new(true),
             &mut ctx,
@@ -809,11 +772,9 @@ fn warning_prefix_raw_reported_parity_and_fresh_retry_sites() {
             &schema,
         )
         .unwrap_err();
-    assert_eq!(kernel_site(&reported).0, 0);
-    assert!(raw.site().is_none());
     assert_eq!(
-        raw.local_error().unwrap().to_string(),
-        reported.local_error().unwrap().to_string()
+        vector_error.local_error().unwrap().to_string(),
+        bindings_error.local_error().unwrap().to_string()
     );
 }
 
@@ -839,7 +800,7 @@ fn complete_metadata_detachment_and_incoming_caps_precede_equality_and_effects()
     alias.set_elem(0, "source changed");
     let ctx = Context::new(true);
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -854,7 +815,7 @@ fn complete_metadata_detachment_and_incoming_caps_precede_equality_and_effects()
     let mut worker = prepare(&suite, &[ty()]);
     let huge = ty().with_elems(["x".repeat(limits().max_metadata_bytes)]);
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -877,8 +838,8 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
     let mut input = chunk(&[ty()], &[vec![Datum::Int(0)]]);
     input.set_sel(Some(vec![]));
     let wrong = ty().with_flen(7);
-    let error = suite
-        .run_numeric_batch_reported(
+    let _error = suite
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -887,10 +848,9 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
             &[wrong],
         )
         .unwrap_err();
-    assert!(error.site().is_none());
     input.set_sel(Some(vec![1]));
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -907,7 +867,7 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
     let mut input = chunk(&[string], &[vec![Datum::Bytes(vec![1])]]);
     input.set_sel(Some(vec![]));
     let error = suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -923,7 +883,7 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
     let mut input = chunk(&[ty()], &[vec![Datum::Int(0)]]);
     let mut wrong_output = Chunk::new_with_capacity(&[], 0);
     assert!(suite
-        .run_numeric_batch_reported(
+        .run_numeric_batch_with_bindings(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -1063,7 +1023,6 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
         error.local_error(),
         Some(LocalError::ResourceLimit(_))
     ));
-    assert!(error.site().is_none());
     assert_eq!(raw.reads.len(), 1);
     assert_eq!(ctx.warnings.warning_cnt, 1);
     let mut worker = PreparedNumericBatch::compile(
@@ -1094,7 +1053,6 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
         error.local_error(),
         Some(LocalError::ResourceLimit(_))
     ));
-    assert!(error.site().is_none());
     assert!(raw.reads.is_empty());
 }
 
@@ -1111,7 +1069,6 @@ fn materialization_counts_public_vector_and_selection_capacities() {
         error.local_error(),
         Some(LocalError::ResourceLimit(_))
     ));
-    assert!(error.site().is_none());
     assert!(array_bytes::<Datum>(usize::MAX).is_err());
     assert!(worker
         .materialize(

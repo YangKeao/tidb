@@ -553,9 +553,6 @@ impl PreparedIntPlusRow {
     }
 }
 
-#[path = "ordinary_diagnostics.rs"]
-mod diagnostics;
-
 #[cfg(test)]
 #[path = "ordinary_tests.rs"]
 mod tests;
