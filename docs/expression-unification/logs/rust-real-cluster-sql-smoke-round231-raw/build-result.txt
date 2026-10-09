@@ -1,0 +1,6 @@
+default_features_exit=101
+default_features_error=the #[global_allocator] in this crate conflicts with global allocator in: tikv_alloc
+no_default_features_exit=0
+no_default_features_profile=release optimized
+no_default_features_elapsed=2m49.42s
+rust_tidb_sha256=d51ab90da5056fb559a568b82f74b72de4835a774922eceea3fdfdb5e54f8f1c

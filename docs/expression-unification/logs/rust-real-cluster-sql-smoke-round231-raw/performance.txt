@@ -1,0 +1,6 @@
+PERF workload=projection run=1 queries=200 rows_per_query=4096 elapsed_seconds=1.00 user_seconds=0.01 system_seconds=0.01 max_rss_kib=9556
+PERF workload=nested run=1 queries=200 rows_per_query=4096 elapsed_seconds=1.24 user_seconds=0.02 system_seconds=0.00 max_rss_kib=9832
+PERF workload=nested run=2 queries=200 rows_per_query=4096 elapsed_seconds=1.22 user_seconds=0.02 system_seconds=0.00 max_rss_kib=9912
+PERF workload=projection run=2 queries=200 rows_per_query=4096 elapsed_seconds=0.77 user_seconds=0.03 system_seconds=0.00 max_rss_kib=9656
+PERF workload=projection run=3 queries=200 rows_per_query=4096 elapsed_seconds=0.83 user_seconds=0.03 system_seconds=0.00 max_rss_kib=9764
+PERF workload=nested run=3 queries=200 rows_per_query=4096 elapsed_seconds=1.30 user_seconds=0.02 system_seconds=0.01 max_rss_kib=9600

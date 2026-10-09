@@ -1,0 +1,131 @@
+# Real Rust TiDB/TiKV SQL smoke — round231 corrective run
+
+## Correction of round230
+
+Round230 mistakenly started the repository-root Go `cmd/tidb-server`. That run remains valid only as a Go TiDB→current TiKV coprocessor smoke; it did not validate the Rust TiDB changes and must not be cited as Rust `EvaluatorSuite`/lane-cache SQL evidence.
+
+Round231 corrects that mistake. The MySQL endpoint used for every correctness, EXPLAIN, and timing query below is the Rust binary auto-discovered from `rust/crates/tidb-server/src/bin/tidb-server.rs`. A Go TiDB process was used only to bootstrap system metadata and create the fixture, and was stopped before the Rust endpoint started.
+
+## Revisions, build, and binaries
+
+- Rust TiDB source: `2815ba6576a0987e465f60ca17099133eec91f37`
+- TiKV runtime source: `2b93b67d1dd9366cc1e9707206369ebefb55a000`
+- Rust TiDB binary SHA-256: `d51ab90da5056fb559a568b82f74b72de4835a774922eceea3fdfdb5e54f8f1c`
+- TiKV binary SHA-256: `65a498e7f169b46559effd1a6649c56ee03f587cb710d79f3cca2a44e0889ec0`
+- Rust binary self-reported Git hash: `2815ba6576a0987e465f60ca17099133eec91f37`
+- Rust toolchain: `rustc 1.100.0-nightly (c656540d6 2026-08-21)`
+
+The normal default-feature release build failed:
+
+```text
+error: the #[global_allocator] in this crate conflicts with global allocator in: tikv_alloc
+```
+
+The runnable binary was therefore built with the server's `jemalloc` default feature disabled:
+
+```bash
+../../tools/cargo-tidb build --release --locked \
+  -p tidb-server --bin tidb-server --no-default-features
+```
+
+That workaround is a build limitation, not a fix. Timing results below use the optimized release binary but the system allocator rather than the Rust server's declared default jemalloc configuration.
+
+## Real-process topology
+
+The final run used:
+
+```text
+MySQL client
+    → Rust tidb-server :15001
+        → real PD :13379
+        → real TiKV :21160
+```
+
+Provisioning was:
+
+```text
+Go tidb-server :15000
+    → create TiDB metadata and expr_round231.t
+    → stop Go process
+    → start Rust tidb-server --cluster-session --load-privileges
+```
+
+The Rust log emitted `cluster_session_node_ready` with schema version 60 and the Rust binary hash/version is retained in `environment.txt`.
+
+## SQL and correctness
+
+The fixture has 4,096 rows with a clustered BIGINT primary key, nullable signed BIGINT `i`, non-null signed BIGINT `j`, and nullable binary-collated UTF-8 string `s`; every tenth row has NULL in `i` and `s`.
+
+The Rust MySQL endpoint executed:
+
+- `COUNT(*)`, `COUNT(i)`, and `SUM(i+j)`;
+- selected-row `i+j`;
+- selected-row nested `(i+j)+(i+11)`;
+- `LOWER(s)`;
+- full 4,096-row ordered `i+j` projection;
+- full 4,096-row ordered nested-PLUS projection.
+
+All three retained actual outputs are byte-identical to independently generated expected TSVs:
+
+- correctness summary/selected rows: exact;
+- 4,096-row `i+j`: exact, including NULL positions;
+- 4,096-row nested PLUS: exact, including NULL positions.
+
+Representative output:
+
+```text
+4096  3686  25076
+0     NULL  NULL  NULL
+1     -45   -81   beta
+1023  15    31    tidb
+4095  -26   -42   tidb
+```
+
+Each of the six timed output files was also asserted inline by the runner to equal exactly 200 repetitions of the corresponding 4,096-row expected result. `bench-output-check.txt` records the resulting hashes.
+
+## What executed locally in Rust
+
+Rust `EXPLAIN` shows that only the table scan was pushed to TiKV; both arithmetic expressions are in root projections:
+
+```text
+Projection_12 root plus(t.i,t.j), t.id
+└─TableReader
+  └─TableFullScan cop[tikv]
+
+Projection_12 root plus(plus(t.i,t.j),plus(t.i,11)), t.id
+└─TableReader
+  └─TableFullScan cop[tikv]
+```
+
+For a non-empty `ProjectionExec`, production `tidb-executor/src/projection.rs` unconditionally enters `EvaluatorSuite::run_with_tikv_numeric`. Thus this run proves that real MySQL SQL reached the Rust production projection/evaluator entry with real TiKV-backed chunks. The SQL shapes and signed-BIGINT schema match the numeric admission surface, but the production binary currently exposes no route telemetry equivalent to the test-only `tikv_numeric_lane_prepared_for_test`; this receipt therefore does not hard-assert from live telemetry that `NumericVectorLane::Prepared` was selected. That route-specific assertion remains covered by the retained evaluator probe/tests.
+
+## Timing smoke
+
+Each statement returned 4,096 rows over the MySQL protocol. Every run used one connection; the two workloads alternated order. The complete result stream was checked, not discarded before validation.
+
+| workload | statements/run | elapsed runs | median/statement | median/returned row |
+|---|---:|---:|---:|---:|
+| `i+j` root projection | 200 | 1.00 / 0.77 / 0.83 s | 4.15 ms | 1.013 µs |
+| nested PLUS root projection | 200 | 1.24 / 1.22 / 1.30 s | 6.20 ms | 1.514 µs |
+
+The first workload varies materially (0.77–1.00 s), the TiKV binary is an unoptimized dev build, the Rust server uses the allocator workaround, and MySQL serialization of 819,200 rows is included per run. These are only end-to-end smoke timings, not production QPS, not a frozen/current comparison, and not a clean kernel benchmark.
+
+## Failures discovered
+
+Although all requested SQL and inline result assertions completed, the Rust process was not fully healthy:
+
+1. The default release build fails because the server jemalloc global allocator conflicts with `tikv_alloc`.
+2. During the live run, background stats threads logged three panics:
+   - two `negative table ID is not a valid Go shard index: -900000` panics from `tidb-stats-handle-cache-internal-lfu`;
+   - one `register auto-analyze histogram: AlreadyReg` panic from `tidb-stats-handle-autoanalyze-exec`.
+3. Shutdown logged expected PD-unreachable warnings because the bounded cleanup terminates the whole single-node cluster, plus a `region_cache` unique-ownership shutdown error.
+
+The SQL connection workers remained alive and all correctness/timing outputs passed after the background panics, but this does not make the panics acceptable. The run is a useful Rust SQL execution proof and simultaneously evidence that the current standalone Rust server is not release-ready.
+
+## Cleanup and evidence
+
+The runner and a separate post-run socket/HTTP check both confirm all seven ports were released and PD/TiKV endpoints were unreachable. Temporary cluster data was deleted.
+
+- runner: `docs/expression-unification/evidence/run-round231-rust-real-cluster-smoke.sh`
+- retained evidence: `docs/expression-unification/logs/rust-real-cluster-sql-smoke-round231-raw/`
+- evidence manifest SHA-256: `56511c2eb4d49b1f5236bbcfe483b52aa4bc56c785e058bcba0a7ecf2bad2701`

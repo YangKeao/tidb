@@ -1,0 +1,7 @@
+rust-tidb.log: thread '<unnamed>' (2391523) panicked at crates/tidb-stats-handle-cache-internal-lfu/src/lib.rs:48:23: negative table ID is not a valid Go shard index: -900000
+rust-tidb.log: thread '<unnamed>' (2391523) panicked at crates/tidb-stats-handle-autoanalyze-exec/src/lib.rs:49:10: register auto-analyze histogram: AlreadyReg
+rust-tidb.log: thread 'stats-reloader' (2391303) panicked at crates/tidb-stats-handle-cache-internal-lfu/src/lib.rs:48:23: negative table ID is not a valid Go shard index: -900000
+tikv.log: [2026/10/09 12:47:40.940 +08:00] [ERROR] [mod.rs:3590] ["failed to enable heap profiling"] [err=MemProfilingNotEnabled] [thread_id=1]
+tikv.log: [2026/10/09 12:47:54.724 +08:00] [ERROR] [service.rs:95] ["failed to watch resource groups"] [err="Grpc(RpcFailure(RpcStatus { code: 14-UNAVAILABLE, message: \"not leader\", details: [] }))"] [thread_id=24]
+tikv.log: [2026/10/09 12:47:55.726 +08:00] [ERROR] [service.rs:95] ["failed to watch resource groups"] [err="Grpc(RpcFailure(RpcStatus { code: 14-UNAVAILABLE, message: \"failed to connect to all addresses\", details: [] }))"] [thread_id=24]
+tikv.log: [2026/10/09 12:47:56.727 +08:00] [ERROR] [service.rs:95] ["failed to watch resource groups"] [err="Grpc(RpcFailure(RpcStatus { code: 14-UNAVAILABLE, message: \"failed to connect to all addresses\", details: [] }))"] [thread_id=24]

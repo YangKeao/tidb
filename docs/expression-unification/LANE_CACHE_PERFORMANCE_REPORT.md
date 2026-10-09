@@ -157,6 +157,8 @@ round230 后续启动了真实PD/TiKV/TiDB进程，并通过MySQL protocol在4,0
 
 这不会把本报告的microbenchmark升级为production QPS结论：TiKV是unoptimized dev build、没有frozen comparator，也没有并发或持久化压力。更关键的是，Go `tidb-server`不链接实验性`rust/crates/tidb-expr`，所以该真实SQL运行验证的是Go TiDB host→当前TiKV coprocessor链路，而不是TiDB Rust lane cache。详见`logs/real-cluster-sql-smoke-round230.txt`。
 
+round231 已纠正 target：所有验证 SQL 都发往 `rust/crates/tidb-server` 的真实 MySQL endpoint，`EXPLAIN` 显示 PLUS 位于 Rust root `Projection`、仅 scan 在 `cop[tikv]`；4,096-row 单层/嵌套 PLUS 与独立 oracle 逐字节一致。它证明 production `ProjectionExec`/`run_with_tikv_numeric` entry 在真实 PD/TiKV 链路上运行，但 binary 没有 lane-selected telemetry，不能把 `NumericVectorLane::Prepared` 当作 live hard observation。本轮还发现 default allocator build conflict、3 个 stats background-thread panic，以及 Rust `region_cache` unique-ownership non-clean shutdown；强制 process/port/data 清理仍完成。计时包含 MySQL serialization 且波动明显，仍不属于可用于替代本报告 evaluator microbenchmark 的性能结论。详见 `logs/rust-real-cluster-sql-smoke-round231.txt`。
+
 ## 原始证据、collection 脚本与重跑入口
 
 - 当前 width-one probe：`rust/crates/tidb-expr/src/tests/lane_cache_performance.rs`

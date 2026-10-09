@@ -323,6 +323,12 @@ round230 额外启动了三个独立真实进程：PD、从配对 TiKV revision 
 
 这项证据有一个必须明确的边界：当前Go `tidb-server`不链接`rust/crates/tidb-expr`，所以它没有执行本报告中的TiDB Rust `EvaluatorSuite`/lane cache；它只直接验证真实Go TiDB host到当前TiKV coprocessor的SQL链路。TiKV还是unoptimized dev build，单client warm sequential计时仅为smoke：integer 2,000 statements三次为1.58/1.55/1.50s（中位0.775ms/statement），mixed 1,000 statements为0.88/0.88/0.84s（0.880ms/statement）。这不是release、并发或production QPS结论，也没有frozen comparator。完整命令、oracle、plan、timing与teardown证据见`logs/real-cluster-sql-smoke-round230.txt`。
 
+### 7.5 更正：真实 Rust TiDB/TiKV SQL smoke（round231）
+
+round230 选错了 server target，不能回答 Rust TiDB 的联机验证问题。round231 改为构建并启动 `rust/crates/tidb-server/src/bin/tidb-server.rs`：Go server 仅初始化系统表并写入 fixture，随后在任何验证查询开始前停止；全部 correctness、`EXPLAIN` 和计时 SQL 都经 MySQL protocol 发往 Rust server，再读取真实 PD/TiKV。4,096 行的聚合、NULL、`LOWER`、单层及嵌套 signed-BIGINT PLUS 结果均与独立 expected TSV 逐字节一致。`EXPLAIN` 显示 PLUS 位于 root `Projection`，只有 `TableFullScan` 在 `cop[tikv]`，而 production `ProjectionExec::next` 必经 `run_with_tikv_numeric`，故本轮确实执行了 Rust production evaluator entry；binary 尚无 lane-selected telemetry，所以不把 live `NumericVectorLane::Prepared` 当作硬观测结论。
+
+本轮也发现三类真实问题：default-feature release build 因 server jemalloc 与 `tikv_alloc` 两个 global allocator 冲突而失败，实际 binary 使用 `--no-default-features`；运行中 stats background threads 出现 3 次 panic（负 table ID `-900000` 两次、auto-analyze metric `AlreadyReg` 一次）；Rust 进程关闭时 `region_cache` 阶段另报 unique-ownership runtime failure。尽管 SQL worker 保持存活且所有输出检查通过，最终强制 process/port/data 清理也完成，但这不是 clean shutdown。因此这只是纠正 target 后的真实链路 smoke，不是 release-readiness 结论。200 个 4,096-row statement 的中位计时为单层 PLUS 4.15 ms/statement、嵌套 PLUS 6.20 ms/statement，包含 MySQL 结果序列化且波动明显；完整证据见 `logs/rust-real-cluster-sql-smoke-round231.txt`。
+
 ## 8. 性能测量
 
 ### 8.1 方法

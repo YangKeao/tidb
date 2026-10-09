@@ -1,0 +1,8 @@
+Projection_5	4096.00	root		Column#6->Column#7
+└─Projection_12	4096.00	root		plus(expr_round231.t.i, expr_round231.t.j)->Column#6, expr_round231.t.id
+  └─TableReader_14	4096.00	root		data:TableFullScan_13
+    └─TableFullScan_13	4096.00	cop[tikv]	table:t	keep order:true, stats:pseudo
+Projection_5	4096.00	root		Column#6->Column#7
+└─Projection_12	4096.00	root		plus(plus(expr_round231.t.i, expr_round231.t.j), plus(expr_round231.t.i, 11))->Column#6, expr_round231.t.id
+  └─TableReader_14	4096.00	root		data:TableFullScan_13
+    └─TableFullScan_13	4096.00	cop[tikv]	table:t	keep order:true, stats:pseudo
