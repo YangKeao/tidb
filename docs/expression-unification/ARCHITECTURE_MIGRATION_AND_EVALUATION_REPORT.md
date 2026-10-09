@@ -317,6 +317,12 @@ clippy 进一步发现 flate `find_match` 的 `tries` 未递减，这是实际�
 
 因此当前状态保持 `pr_ready=false`。完整 `tidb-expr` 的 4 个历史失败和 Unistore 的 1 个历史失败也继续披露。
 
+### 7.4 真实 TiDB/TiKV SQL smoke（round230）
+
+round230 额外启动了三个独立真实进程：PD、从配对 TiKV revision 构建的 `tikv-server`，以及从当前 TiDB revision 构建的 Go `tidb-server`；客户端通过 MySQL protocol 创建4,096行表并执行一小组代表性 SQL。整数/NULL/字符串/Decimal/JSON、控制流、regexp、MD5及prepared parameter结果与独立生成的expected TSV逐字节一致；warning 1292另行观察，不属于该TSV diff。`EXPLAIN FORMAT='brief'`确认integer PLUS/filter/aggregation及mixed IF、Decimal PLUS、REGEXP_LIKE均进入`cop[tikv]`，因此真实storage/RPC/coprocessor路径已实际运行；所有进程和数据在结束后清理，六个端口均确认释放。
+
+这项证据有一个必须明确的边界：当前Go `tidb-server`不链接`rust/crates/tidb-expr`，所以它没有执行本报告中的TiDB Rust `EvaluatorSuite`/lane cache；它只直接验证真实Go TiDB host到当前TiKV coprocessor的SQL链路。TiKV还是unoptimized dev build，单client warm sequential计时仅为smoke：integer 2,000 statements三次为1.58/1.55/1.50s（中位0.775ms/statement），mixed 1,000 statements为0.88/0.88/0.84s（0.880ms/statement）。这不是release、并发或production QPS结论，也没有frozen comparator。完整命令、oracle、plan、timing与teardown证据见`logs/real-cluster-sql-smoke-round230.txt`。
+
 ## 8. 性能测量
 
 ### 8.1 方法

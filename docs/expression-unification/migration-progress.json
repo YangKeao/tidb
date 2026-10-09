@@ -1,5 +1,5 @@
 {
-  "checkpoint_id": "architecture-report-english-229",
+  "checkpoint_id": "real-cluster-sql-smoke-230",
   "overall_goal_complete": true,
   "pr_ready": false,
   "standalone_architecture_migration_evaluation_report": true,
@@ -1025,8 +1025,22 @@
   "performance_major_faults": 0,
   "lane_cache_performance_report_review": "APPROVED_AFTER_RAW_EVIDENCE_AND_CAUSAL_SCOPE_FIXES",
   "english_architecture_report": true,
-  "english_architecture_report_lines": 409,
-  "english_architecture_report_review": "APPROVED",
-  "paired_tikv_commit": "2b93b67d1dd9366cc1e9707206369ebefb55a000",
-  "plan_sha256": "c07a428c105ee9ee93111a79bc1f5a4d1c82084c2f719cfd8d1a248437401bd8"
+  "english_architecture_report_lines": 415,
+  "english_architecture_report_review": "APPROVED_ROUND230_ADDITION",
+  "real_cluster_sql_smoke": true,
+  "real_cluster_processes": ["pd", "tikv", "tidb"],
+  "real_cluster_rows": 4096,
+  "real_cluster_expected_output_byte_identical": true,
+  "real_cluster_cop_tikv_confirmed": true,
+  "real_cluster_tikv_profile": "dev-unoptimized",
+  "real_cluster_integer_median_ms_per_statement": 0.775,
+  "real_cluster_mixed_median_ms_per_statement": 0.880,
+  "real_cluster_tidb_go_server_links_rust_expr": false,
+  "real_cluster_production_qps_claim": false,
+  "real_cluster_cleanup_ports_free": true,
+  "real_cluster_fatal_records": 0,
+  "real_cluster_server_error_records": 9,
+  "real_cluster_sql_smoke_review": "APPROVED",
+  "paired_tikv_commit": "a702a037bcd49158bb413e1d052b022f6afcdfbf",
+  "plan_sha256": "b6429c2315246c0d770d72df59bec6ea33f65cecb90586abbada9b38420f969c"
 }

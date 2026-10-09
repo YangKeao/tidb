@@ -1,0 +1,9 @@
+POST_CLEANUP endpoint=pd reachable=false
+POST_CLEANUP endpoint=tikv reachable=false
+POST_CLEANUP endpoint=tidb reachable=false
+POST_CLEANUP port=12379 connectable=false
+POST_CLEANUP port=12380 connectable=false
+POST_CLEANUP port=20160 connectable=false
+POST_CLEANUP port=20180 connectable=false
+POST_CLEANUP port=14000 connectable=false
+POST_CLEANUP port=14080 connectable=false

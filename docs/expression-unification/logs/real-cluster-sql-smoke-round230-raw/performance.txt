@@ -1,0 +1,6 @@
+PERF workload=integer run=1 queries=2000 elapsed_seconds=1.58 user_seconds=0.00 system_seconds=0.01 max_rss_kib=9364
+PERF workload=mixed run=1 queries=1000 elapsed_seconds=0.88 user_seconds=0.00 system_seconds=0.00 max_rss_kib=9768
+PERF workload=mixed run=2 queries=1000 elapsed_seconds=0.88 user_seconds=0.00 system_seconds=0.00 max_rss_kib=9808
+PERF workload=integer run=2 queries=2000 elapsed_seconds=1.55 user_seconds=0.00 system_seconds=0.01 max_rss_kib=9724
+PERF workload=integer run=3 queries=2000 elapsed_seconds=1.50 user_seconds=0.01 system_seconds=0.00 max_rss_kib=9528
+PERF workload=mixed run=3 queries=1000 elapsed_seconds=0.84 user_seconds=0.00 system_seconds=0.00 max_rss_kib=9512

@@ -1,0 +1,12 @@
+HashAgg	1.00	root		funcs:sum(Column#10)->Column#8, funcs:count(Column#11)->Column#9
+└─TableReader	1.00	root		data:HashAgg
+  └─HashAgg	1.00	cop[tikv]		funcs:sum(plus(expr_round230.t.i, expr_round230.t.j))->Column#10, funcs:count(1)->Column#11
+    └─Selection	3276.80	cop[tikv]		gt(plus(expr_round230.t.i, expr_round230.t.j), 0)
+      └─TableFullScan	4096.00	cop[tikv]	table:t	keep order:false
+HashAgg	1.00	root		funcs:sum(Column#11)->Column#8, funcs:sum(Column#12)->Column#9, funcs:count(Column#13)->Column#10
+└─TableReader	1.00	root		data:HashAgg
+  └─HashAgg	1.00	cop[tikv]		funcs:sum(if(gt(expr_round230.t.i, 0), expr_round230.t.i, expr_round230.t.j))->Column#11, funcs:sum(plus(expr_round230.t.d, 0.55))->Column#12, funcs:count(1)->Column#13
+    └─Selection	1776.00	cop[tikv]		regexp_like(expr_round230.t.s, "^[at]", "i")
+      └─TableFullScan	4096.00	cop[tikv]	table:t	keep order:false
+0
+Warning	1292	Truncated incorrect INTEGER value: 'not-a-number'

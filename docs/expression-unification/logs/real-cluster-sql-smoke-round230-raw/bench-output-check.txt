@@ -1,0 +1,6 @@
+workload=integer run=1 lines=2000 unique_values=1 value='58479\t2081' sha256=06dcbe4eb42afb53594d85a46e52bef2f8cf6bdcce894c74b89d278e0c194722
+workload=integer run=2 lines=2000 unique_values=1 value='58479\t2081' sha256=06dcbe4eb42afb53594d85a46e52bef2f8cf6bdcce894c74b89d278e0c194722
+workload=integer run=3 lines=2000 unique_values=1 value='58479\t2081' sha256=06dcbe4eb42afb53594d85a46e52bef2f8cf6bdcce894c74b89d278e0c194722
+workload=mixed run=1 lines=1000 unique_values=1 value='27843\t407904.83\t1776' sha256=9a8c84aff8d08ccbe42f9dad98a0771d239c36717289f1576e496146d100dc93
+workload=mixed run=2 lines=1000 unique_values=1 value='27843\t407904.83\t1776' sha256=9a8c84aff8d08ccbe42f9dad98a0771d239c36717289f1576e496146d100dc93
+workload=mixed run=3 lines=1000 unique_values=1 value='27843\t407904.83\t1776' sha256=9a8c84aff8d08ccbe42f9dad98a0771d239c36717289f1576e496146d100dc93

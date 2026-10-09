@@ -1,0 +1,132 @@
+# Real TiDB/TiKV SQL smoke — round230
+
+## Scope
+
+This is a narrow localhost smoke against three real OS processes: one PD, one TiKV, and one TiDB, reached through the MySQL protocol. It is not an exhaustive SQL compatibility run, a frozen/current comparison, a release benchmark, or a concurrent production-QPS measurement.
+
+The TiDB Go server does not link `rust/crates/tidb-expr`; therefore this run does **not** exercise the experimental TiDB Rust `EvaluatorSuite`/lane cache. The TiKV server was built from the paired current TiKV source and does include its `tidb_query_expr` coprocessor implementation. `EXPLAIN FORMAT='brief'` confirms that the measured expressions below ran in `cop[tikv]`.
+
+## Revisions and binaries
+
+- TiDB source: `2e40a204abe783015ceba66b546052538e5f0386`
+- TiKV runtime source: `2b93b67d1dd9366cc1e9707206369ebefb55a000`
+- paired TiKV round230 plan commit: `a702a037bcd49158bb413e1d052b022f6afcdfbf`
+- PD: upstream `080a17a39afef3ca767c3e73cec3ac60b59c48bd`
+- TiDB binary SHA-256: `2bdcf2d373de893248c5b30b0640a67e486ad6cc88dbe6cce3c6ec31f1d7a172`
+- TiKV binary SHA-256: `65a498e7f169b46559effd1a6649c56ee03f587cb710d79f3cca2a44e0889ec0`
+- PD binary SHA-256: `948d8be2f2e8282ff8104225a8958db60be33f75e30150f192b067bfad91bc52`
+- TiDB was built with the installed Go toolchain. TiKV was an **unoptimized dev build** produced by the pinned Cargo wrapper. Consequently the timings below are smoke measurements only.
+
+Build commands:
+
+```bash
+go build -o /home/agent/tidb/expression-unification/cluster-smoke/bin/tidb-server ./cmd/tidb-server
+../tools/cargo-tikv build --locked -p tikv-server
+```
+
+Final cluster command:
+
+```bash
+PD_BIN=/home/agent/tidb/.scratch/statement-playground/tiup/components/pd/v9.0.0-beta.2.pre-nightly/pd-server \
+TIKV_BIN=/home/agent/tidb/expression-unification/target-tikv/debug/tikv-server \
+TIDB_BIN=/home/agent/tidb/expression-unification/cluster-smoke/bin/tidb-server \
+OUT=/home/agent/tidb/expression-unification/logs/round230-real-cluster-final \
+TIDB_SOURCE_REVISION=2e40a204abe783015ceba66b546052538e5f0386 \
+TIKV_SOURCE_REVISION=2b93b67d1dd9366cc1e9707206369ebefb55a000 \
+INTEGER_QUERIES=2000 MIXED_QUERIES=1000 \
+docs/expression-unification/evidence/run-round230-real-cluster-smoke.sh
+```
+
+The runner used isolated localhost ports `12379/12380`, `20160/20180`, and `14000/14080`, generated a 4,096-row table, checked independent expected output, executed the plans/timing loops, then removed temporary data and stopped the three processes.
+
+## Correctness smoke
+
+The 4,096 rows contain nullable signed integers, non-null integers, binary-collated UTF-8 strings, `DECIMAL(20,2)`, and JSON. Every tenth row has NULL in `i`, `s`, `d`, and `js`.
+
+The SQL set covers:
+
+- integer PLUS, multiplication, and `ABS`;
+- lazy `IF`, `COALESCE`, and `NULLIF`;
+- `STRCMP`, `LOWER`, `CHAR_LENGTH`, and `CONCAT`;
+- Decimal addition;
+- `JSON_TYPE` grouping and `REGEXP_LIKE` filtering;
+- `MD5`, `LENGTH`, `UPPER`, `SUBSTRING`, and a prepared parameter;
+- SQL warning projection for `CAST('not-a-number' AS SIGNED)`.
+
+The output of `correctness.sql` is byte-identical to the independently generated expected TSV (`correctness.diff` is empty). The warning query was run separately and is not part of that byte-for-byte oracle. Representative correctness results are:
+
+```text
+4096  3686  25076  -5541  89627
+60425 2419   -549   17608 24980
+Decimal sum: 1119698.61
+REGEXP_LIKE count: 1093
+MD5('abc'): 900150983cd24fb0d6963f7d28e17f72
+prepared SUM(i + 7): 25081
+```
+
+The separate warning observation was `1292 Truncated incorrect INTEGER value: 'not-a-number'`; it was inspected but not checked by the TSV diff.
+
+The previously observed experimental Rust release failures for `MD5` and column-backed `length(s)` did not appear here, but that is **not** evidence that those Rust paths are fixed: this Go TiDB server does not call them.
+
+## Confirmed TiKV pushdown
+
+The integer plan contains:
+
+```text
+HashAgg cop[tikv]: sum(plus(t.i, t.j)), count(1)
+Selection cop[tikv]: gt(plus(t.i, t.j), 0)
+```
+
+The mixed plan contains:
+
+```text
+HashAgg cop[tikv]: sum(if(gt(t.i,0),t.i,t.j)), sum(plus(t.d,0.55)), count(1)
+Selection cop[tikv]: regexp_like(t.s,"^[at]","i")
+```
+
+Thus the real RPC/coprocessor path was exercised for integer PLUS/filter/aggregation and for IF, Decimal PLUS, and regexp filtering.
+
+## Sequential timing smoke
+
+Each timing run reused one MySQL connection and emitted one scalar result row per statement. Runs alternated integer/mixed order. A separate post-run audit—not an inline runner assertion—counted and hashed every timing output: each integer run returned exactly 2,000 identical `58479\t2081` rows, and each mixed run returned exactly 1,000 identical `27843\t407904.83\t1776` rows. The compact audit is retained as `bench-output-check.txt`; the large repetitive outputs themselves are not committed.
+
+| workload | statements/run | elapsed runs | median per statement | median sequential rate |
+|---|---:|---:|---:|---:|
+| integer pushed aggregate/filter | 2,000 | 1.58 / 1.55 / 1.50 s | 0.775 ms | 1,290 statements/s |
+| mixed pushed aggregate/filter | 1,000 | 0.88 / 0.88 / 0.84 s | 0.880 ms | 1,136 statements/s |
+
+These numbers include MySQL parsing/protocol, planning/execution, localhost TiDB↔TiKV RPC, scanning 4,096 rows, coprocessor execution, and result delivery. They use one client, one store, warm data, no durability/fault/concurrency pressure, an unoptimized TiKV build, and no frozen comparator. They must not be generalized to production QPS or used to compare the Rust lane-cache microbenchmark.
+
+## Server-log audit and cleanup
+
+A post-run scan of the three retained complete server logs found no `FATAL` or panic and produced `server-error-lines.txt`. Startup logged unavailable heap profiling, a missing harness cgroup `cpu.max`, permission denial for TiDB's default optional DDL-ingest sort directory, and one transient/context-canceled leader-router stream creation error; the tested table creation/inserts and exact correctness oracle still completed. The later TiKV resource-group and TiDB TSO connection errors occurred while the single-node cluster was being torn down. These environment/startup/teardown records are retained rather than silently omitted, and this run does not validate DDL ingest or heap profiling.
+
+The final runner recorded all six ports free after teardown. A separate post-run check also confirmed the PD, TiKV, and TiDB HTTP endpoints were unreachable and all six listening ports were absent. The runner bounds cleanup by allowing a three-second SIGTERM grace period and then forcing termination only for any process that remains alive.
+
+Retained files:
+
+- runner: `docs/expression-unification/evidence/run-round230-real-cluster-smoke.sh`
+- environment and hashes: `docs/expression-unification/logs/real-cluster-sql-smoke-round230-raw/environment.txt`
+- actual/expected output: `correctness.tsv`, `expected.tsv`
+- plans and warning: `explain-and-warning.tsv`
+- timing samples: `performance.txt`
+- post-run timing-output audit: `bench-output-check.txt`
+- runner teardown proof: `cleanup.txt`
+- independent post-cleanup endpoint/port check: `post-cleanup-check.txt`
+- complete process logs: `pd-server.txt`, `tikv-server.txt`, `tidb-server.txt`
+- post-run error/fatal audit extract: `server-error-lines.txt`
+- compact session summary: `summary.txt`
+
+Evidence SHA-256:
+
+- runner: `f163d78b6634f9456b52cff900aade46f7120caa93070b780a44cc07f8a27abb`
+- environment: `257dc01a8026a52c896d543134eacd959cc97a6140fd55edd234bc20fb5a0501`
+- actual and expected output (each): `92ded3e52434d9ca8fff13798726425f56603e758bbc196efb716f70dfafa697`
+- plans/warning: `4f336acade2f3a8352576e74a7a990328f4e68dcc441490469d3ba0638278ce1`
+- timing: `76df909289c6fc3c3bf228df63ee59b4c6de4cacb9bcf330310393a41c4fd5a7`
+- timing-output audit: `966d225fdee15aea9e0650f4f2cf2fad7e87f6a1ea95c2cda92e130dba0ecf82`
+- full PD/TiKV/TiDB logs: `f337d4c704db450f876ff5a3d538123152d8ff8cf3df235cdf8d6b263c4c7f05` / `7070b90d79540e351ff187b6d1bf508c6772f319d3ca6c9ed6c7725d7b1c9931` / `6cc19f93f69d98c67a0bb58b37382cc0bcfd01c345f985a140ecf3c66095001e`
+- runner cleanup: `fa42839281b46e983a76ecdff2dc46a4e674f6e212b26c9411089ce98a59b1a8`
+- independent post-cleanup check: `f4d209dd9be1b7d3a96985a7c03a6e22ba8aa94142c05e8a592fba5ceddc227b`
+- server error-line audit: `727011b42bbef652ee2dc10962364f6e1fcdc03a1bdacd786651d5d847bc78a4`
+- summary: `62193a997cba06e7c15aa023e6654d06c4d7e30454c6e4e43d7e962d580f084c`

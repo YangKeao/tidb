@@ -1,0 +1,32 @@
+ROUND230_CONFIG rows=4096 integer_queries=2000 mixed_queries=1000 perf_runs=3
+ROUND230_PORTS pd=12379 pd_peer=12380 tikv=20160 tikv_status=20180 tidb=14000 tidb_status=14080
+ROUND230_HOST kernel=Linux 7.1.8-gentoo-dist-bin x86_64 GNU/Linux cpu=24
+ROUND230_SOURCE tidb=2e40a204abe783015ceba66b546052538e5f0386 tikv=2b93b67d1dd9366cc1e9707206369ebefb55a000
+948d8be2f2e8282ff8104225a8958db60be33f75e30150f192b067bfad91bc52  /home/agent/tidb/.scratch/statement-playground/tiup/components/pd/v9.0.0-beta.2.pre-nightly/pd-server
+65a498e7f169b46559effd1a6649c56ee03f587cb710d79f3cca2a44e0889ec0  /home/agent/tidb/expression-unification/target-tikv/debug/tikv-server
+2bdcf2d373de893248c5b30b0640a67e486ad6cc88dbe6cce3c6ec31f1d7a172  /home/agent/tidb/expression-unification/cluster-smoke/bin/tidb-server
+PD_VERSION Release Version: v9.0.0-beta.2.pre-526-g080a17a
+PD_VERSION Edition: Community
+PD_VERSION Kernel Type: Classic
+PD_VERSION Git Commit Hash: 080a17a39afef3ca767c3e73cec3ac60b59c48bd
+PD_VERSION Git Branch: HEAD
+PD_VERSION UTC Build Time:  2026-09-22 01:51:24
+TIKV_VERSION TiKV 
+TIKV_VERSION Release Version:   9.0.0-beta.2
+TIKV_VERSION Edition:           Community
+TIKV_VERSION Git Commit Hash:   Unknown (env var does not exist when building)
+TIKV_VERSION Git Commit Branch: Unknown (env var does not exist when building)
+TIKV_VERSION UTC Build Time:    2026-10-09 04:15:00
+TIKV_VERSION Rust Version:      Unknown (env var does not exist when building)
+TIKV_VERSION Enable Features:   Unknown (env var does not exist when building)
+TIKV_VERSION Profile:           Unknown (env var does not exist when building)
+TIDB_VERSION Release Version: v8.4.0-this-is-a-placeholder
+TIDB_VERSION Edition: Community
+TIDB_VERSION Git Commit Hash: None
+TIDB_VERSION Git Branch: None
+TIDB_VERSION UTC Build Time: None
+TIDB_VERSION GoVersion: go1.26.5-X:nodwarf5
+TIDB_VERSION Race Enabled: false
+TIDB_VERSION Check Table Before Drop: false
+TIDB_VERSION Store: unistore
+TIDB_VERSION Kernel Type: Classic

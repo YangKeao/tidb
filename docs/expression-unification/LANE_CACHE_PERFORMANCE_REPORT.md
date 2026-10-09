@@ -151,6 +151,12 @@ round228 补上了真实 `Chunk` 的 1/8/64/256/1024 行测量、selection/NULL 
 - 这是单核、热 suite、内存中 `Chunk` 的 expression evaluator microbenchmark。它不包含 SQL parse/plan、storage、RPC、scheduler、多并发、server protocol，也不等价于 QPS。
 - 当前结果已经回答 batch scaling 和 route 差异；下一步性能优化应先 profile numeric output/materialization 边界，并扩大 TiKV batch admission，而不是恢复已删除的共享 pool。
 
+### 真实 server SQL smoke 的补充边界
+
+round230 后续启动了真实PD/TiKV/TiDB进程，并通过MySQL protocol在4,096行表上验证了少量整数、控制流、字符串、Decimal、JSON、regexp、MD5、prepared parameter和warning SQL；前述value/prepared结果与独立oracle逐字节一致，warning 1292另行观察且不在该TSV diff内，`EXPLAIN`确认两组代表查询进入`cop[tikv]`。单client warm sequential smoke中，2,000条integer pushed aggregate/filter三次耗时1.58/1.55/1.50s，1,000条mixed查询为0.88/0.88/0.84s。
+
+这不会把本报告的microbenchmark升级为production QPS结论：TiKV是unoptimized dev build、没有frozen comparator，也没有并发或持久化压力。更关键的是，Go `tidb-server`不链接实验性`rust/crates/tidb-expr`，所以该真实SQL运行验证的是Go TiDB host→当前TiKV coprocessor链路，而不是TiDB Rust lane cache。详见`logs/real-cluster-sql-smoke-round230.txt`。
+
 ## 原始证据、collection 脚本与重跑入口
 
 - 当前 width-one probe：`rust/crates/tidb-expr/src/tests/lane_cache_performance.rs`

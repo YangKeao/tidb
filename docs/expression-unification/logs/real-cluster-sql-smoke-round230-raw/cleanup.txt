@@ -1,0 +1,6 @@
+CLEANUP port=12379 free=true
+CLEANUP port=12380 free=true
+CLEANUP port=20160 free=true
+CLEANUP port=20180 free=true
+CLEANUP port=14000 free=true
+CLEANUP port=14080 free=true

@@ -317,6 +317,12 @@ This report's release performance probe also discovered a new compatibility issu
 
 The current state therefore remains `pr_ready=false`. The 4 historical failures in the complete `tidb-expr` suite and the 1 historical Unistore failure also remain disclosed.
 
+### 7.4 Real TiDB/TiKV SQL Smoke (round230)
+
+Round230 additionally started three independent real processes: PD, a `tikv-server` built from the paired TiKV revision, and a Go `tidb-server` built from the current TiDB revision. A client used the MySQL protocol to create a 4,096-row table and execute a small representative SQL set. Integer/NULL/string/Decimal/JSON, control-flow, regexp, MD5, and prepared-parameter results were byte-identical to an independently generated expected TSV; warning 1292 was observed separately and was not part of that TSV diff. `EXPLAIN FORMAT='brief'` confirmed that integer PLUS/filter/aggregation and the mixed IF, Decimal PLUS, and REGEXP_LIKE expressions entered `cop[tikv]`; the real storage/RPC/coprocessor path was therefore exercised. All processes and data were cleaned up afterward, and all six ports were confirmed free.
+
+This evidence has one boundary that must be explicit: the current Go `tidb-server` does not link `rust/crates/tidb-expr`, so it did not execute the TiDB Rust `EvaluatorSuite`/lane cache discussed in this report. It directly validates only the real SQL path from the Go TiDB host to the current TiKV coprocessor. TiKV was also an unoptimized dev build, so the single-client warm sequential timings are smoke measurements only: three runs of 2,000 integer statements took 1.58/1.55/1.50 seconds (median 0.775 ms/statement), while three runs of 1,000 mixed statements took 0.88/0.88/0.84 seconds (0.880 ms/statement). This is not a release, concurrent, or production-QPS result, and there is no frozen comparator. Complete commands, oracle, plans, timings, and teardown evidence are in `logs/real-cluster-sql-smoke-round230.txt`.
+
 ## 8. Performance Measurements
 
 ### 8.1 Method
