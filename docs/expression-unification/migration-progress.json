@@ -1,5 +1,5 @@
 {
-  "checkpoint_id": "lane-cache-real-batch-228",
+  "checkpoint_id": "architecture-report-english-229",
   "overall_goal_complete": true,
   "pr_ready": false,
   "standalone_architecture_migration_evaluation_report": true,
@@ -1024,6 +1024,9 @@
   "performance_cpu_migrations": 0,
   "performance_major_faults": 0,
   "lane_cache_performance_report_review": "APPROVED_AFTER_RAW_EVIDENCE_AND_CAUSAL_SCOPE_FIXES",
-  "paired_tikv_commit": "93698087709d4a59b62ba6762f264af6170d59cc",
-  "plan_sha256": "70a79c2f8085490c2bbc879032f06831d9561dc624420c20928991d05d611f64"
+  "english_architecture_report": true,
+  "english_architecture_report_lines": 409,
+  "english_architecture_report_review": "APPROVED",
+  "paired_tikv_commit": "2b93b67d1dd9366cc1e9707206369ebefb55a000",
+  "plan_sha256": "c07a428c105ee9ee93111a79bc1f5a4d1c82084c2f719cfd8d1a248437401bd8"
 }
