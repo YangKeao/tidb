@@ -1,0 +1,12 @@
+diff --git a/components/tidb_query_datatype/src/codec/mysql/duration.rs b/components/tidb_query_datatype/src/codec/mysql/duration.rs
+index 7f40b9c..0a9de92 100644
+--- a/components/tidb_query_datatype/src/codec/mysql/duration.rs
++++ b/components/tidb_query_datatype/src/codec/mysql/duration.rs
+@@ -513,6 +513,7 @@ impl Duration {
+         Ok(Duration { nanos, fsp })
+     }
+ 
++    #[inline(always)]
+     pub fn from_nanos(nanos: i64, fsp: i8) -> Result<Duration> {
+         let fsp = check_fsp(fsp)?;
+         let nanos = checked_round(nanos, fsp)?;

@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M28 constructor inline-only candidate rejected: Duration12.939→13.472ns (~4% slower), despite579byte symbol removal. Datatype516/565,batch33/fullTiDB1385same4/TiKV1031same6/lintfmt pass. All2940main/210groups42native and840M15/60groups agree. Hint reverse-applied; adopted runtime remains M27, no altered checks or candidate baseline retained.
+
 - [x] (2026-10-16) M27 owned fixed-output buffer sized once/filled in place with actual-count/fused-iterator/zero-width/scratch preservation. Chunk273/batch33/fullTiDB1385same4/lintfmt pass. Actual M26/M27 cohorts2940/210groups42native+840M15/60groups agree. Duration15.082→12.879ns,Time10.9→9.55,Int13.424→12.220,Real13.856→12.411; DecimalPLUSflat/JSONmedian slightly slower retained. No new signature, unsafe code or driver.
 
 - [x] (2026-10-16) M26 private result policy Signed/Unsigned/FirstArgument admits one-argRoundInt and UIntIntAnyValue on the shared driver. Batch33/fullTiDB1385same4/TiKV1031same6/lintfmt pass;2940main/210groups42native+840M15/60groups agree. Target11.38–12.10x native gain; broad2–12% old-control losses retained and630longer-control/45groups confirm. Separate Duration profiles2472/2557samples0lost identify shared storage costs without establishing regression cause. Metadata67/131.
@@ -75,6 +77,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-12 02:22Z) Corrected the benchmark cohort after review. A disposable probe built the actual frozen original-native TiDB `364aef2b` with paired TiKV `548812e` and measured the same nine dense batch-1,024 workloads. The historical pre-optimization TiKV pair `f388b337`/`608bbfc9` was rebuilt separately; only signed Int PLUS had a TiKV batch route at that revision, so the other eight historical TiKV cells are explicitly N/A rather than simulated with current code.
 
 ## Surprises & Discoveries
+
+- Observation (2026-10-16): another constructor inline experiment removes its symbol but slows its target; self time and call removal are insufficient evidence of useful optimization.
+  Evidence: M28 Duration12.939→13.472ns in three cohorts; exact hint fully reverted.
 
 - Observation (2026-10-16): NULL physical backing retains the preceding scratch cell, and safe public iterators may misreport a positive length. Bulk sizing must preserve byte/row consistency and first-None termination rather than assuming a zero-filled NULL or restarting an exhausted iterator.
   Evidence: independent scalar-byte tests cover0/4/8/16/40widths, reset, inaccurate hints and a nonfused iterator; fullChunk273pass.
@@ -140,6 +145,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: reject and fully revert M28 Duration constructor inline hint.
+  Rationale: target~4% regression fails the declared keep criterion, even with some unrelated control improvements. No constructor validation or normalization is removed as a substitute.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: retain the shared owned fixed-output fill loop, preserving scalar semantics for ownership and unusual counts.
   Rationale: measured1.10–1.17x common fixed-output gains justify the19line source change; Decimal/varlen flat or slower results and historical losses stay explicit. No function-specific path or unchecked constructor.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -204,7 +213,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M27 (this TiDB report commit / unchanged TiKVd5817d0). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is67/131 static signature names, with no new arithmetic policy or execution mode.
+Current adopted runtime remains M27 (TiDB7f0daa91 / TiKVd5817d0); M28 is a rejected inline-only experiment. The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is67/131 static signature names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -581,3 +590,19 @@ call-boundary experiment must preserve every FSP/range/rounding check. Broader
 borrowed-carrier or native mathematical profiles remain separate work.
 Revision note (2026-10-16): completed M27 with actual-code/native/historical
 cohorts, all four living sections and unchanged function-coverage metadata.
+
+M28 in progress: test only inline(always) on Duration::from_nanos, identified
+as15–17%self in the recent Duration profiles. Keep check_fsp and checked_round
+exactly; no range/rounding/normalization shortcut or new helper. FSP is shared
+across the input window, so inlining may expose invariant work or avoid a return
+copy. Existing complete datatype/expression suites cover the unchanged body;
+keep only with measured Duration benefit and explicit all-carrier controls.
+
+M28 outcome: the constructor hint is fully removed, with unchanged M27 runtime
+and complete negative receipt. Next inspect only transport-level repeated
+access in DateTime/Duration input: reuse the existing checked Time decoder and
+the same Duration constructor, preserving NULL-skipped conversion/errors. A raw
+view may save per-row buffer accesses without bypassing value policy; broader
+borrowed-carrier or normalization-plan APIs remain separate larger changes.
+Revision note (2026-10-16): recorded M28 rejection in all living sections and
+explicitly retained the M27 source/binary as the next baseline.
