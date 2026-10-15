@@ -1,0 +1,109 @@
+diff --git a/rust/crates/tidb-expr/src/evaluator/batch.rs b/rust/crates/tidb-expr/src/evaluator/batch.rs
+index 04d44384..ca4e8b5e 100644
+--- a/rust/crates/tidb-expr/src/evaluator/batch.rs
++++ b/rust/crates/tidb-expr/src/evaluator/batch.rs
+@@ -1298,30 +1298,40 @@ impl NativeDatumSource for NativeChunk<'_> {
+                 Ok(Some(VectorValue::Bytes(output)))
+             }
+             NativeEvalType::Datetime | NativeEvalType::Timestamp => {
++                let cells = column.raw_cells();
+                 let mut output =
+                     ChunkedVecSized::<TikvDateTime>::with_capacity(physical_rows.len());
+                 for &row in physical_rows {
+-                    output.push(
+-                        (!column.is_null(row)).then(|| {
+-                            TikvDateTime::from_go_raw_like_go(column.get_time(row).go_raw())
+-                        }),
+-                    );
++                    output.push((!cells.is_null(row)).then(|| {
++                        let raw = u64::from_ne_bytes(
++                            cells.get(row).try_into().expect("Time cell is eight bytes"),
++                        );
++                        let value = Time::from_go_raw(raw)
++                            .expect("chunk Time cell holds a valid packed types.Time");
++                        TikvDateTime::from_go_raw_like_go(value.go_raw())
++                    }));
+                 }
+                 Ok(Some(VectorValue::DateTime(output)))
+             }
+             NativeEvalType::Duration => {
++                let cells = column.raw_cells();
+                 let fsp = node.sql.decimal();
+                 let mut output =
+                     ChunkedVecSized::<TikvDuration>::with_capacity(physical_rows.len());
+                 for &row in physical_rows {
+-                    let value = if column.is_null(row) {
++                    let value = if cells.is_null(row) {
+                         None
+                     } else {
+-                        let value = column.get_duration(row, fsp);
++                        let nanos = i64::from_ne_bytes(
++                            cells
++                                .get(row)
++                                .try_into()
++                                .expect("Duration cell is eight bytes"),
++                        );
+                         Some(
+                             TikvDuration::from_nanos(
+-                                value.nanoseconds(),
+-                                i8::try_from(value.fsp())
++                                nanos,
++                                i8::try_from(fsp)
+                                     .map_err(|_| binding("batch Duration FSP is out of range"))?,
+                             )
+                             .map_err(|_| binding("batch Duration column is not representable"))?,
+diff --git a/rust/crates/tidb-expr/src/evaluator/batch_tests.rs b/rust/crates/tidb-expr/src/evaluator/batch_tests.rs
+index e9ea0b15..7d135e5d 100644
+--- a/rust/crates/tidb-expr/src/evaluator/batch_tests.rs
++++ b/rust/crates/tidb-expr/src/evaluator/batch_tests.rs
+@@ -2225,3 +2225,50 @@ fn integer_identities_preserve_first_argument_flags_and_all_bits() {
+     let route = suite.batch_route_snapshot();
+     assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+ }
++
++#[test]
++fn time_raw_batch_binding_preserves_word_normalization_and_null_skipping() {
++    let parsed =
++        tidb_datatype::parse_datetime("2026-10-16 12:34:56.123456", &chrono_tz::UTC, true, false)
++            .unwrap()
++            .time;
++    // Packed Timestamp FSP7 is normalized to6, not rejected or retained as7.
++    assert_eq!(Time::from_go_raw(15).unwrap().go_raw(), 13);
++    let mut words: Vec<_> = (0..16).map(|meta| (parsed.go_raw() & !15) | meta).collect();
++    words.push(u64::MAX);
++    let null_row = words.len() - 1;
++    let selection: Vec<_> = (0..2050)
++        .map(|i| words.len() - 1 - i % words.len())
++        .collect();
++    for code in [FieldTypeCode::Datetime, FieldTypeCode::Timestamp] {
++        let field = FieldType::new(code).with_decimal(6);
++        let schema = [field.clone()];
++        let mut input = Chunk::new_with_capacity(&schema, words.len());
++        for &word in &words {
++            input.append_uint64(0, word);
++        }
++        input.column_mut(0).set_null(null_row, true);
++        input.set_sel(Some(selection.clone()));
++        let suite = suite(call(
++            "any_value",
++            field.clone(),
++            vec![typed_column(0, &field)],
++        ));
++        let mut actual = output_for(&field);
++        suite
++            .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
++            .unwrap();
++        for (row, &source) in selection.iter().enumerate() {
++            let value = actual.get_row(row);
++            assert_eq!(value.is_null(0), source == null_row);
++            if source != null_row {
++                assert_eq!(
++                    value.get_uint64(0),
++                    Time::from_go_raw(words[source]).unwrap().go_raw()
++                );
++            }
++        }
++        let route = suite.batch_route_snapshot();
++        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
++    }
++}

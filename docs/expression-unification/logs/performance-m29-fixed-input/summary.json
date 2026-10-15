@@ -1,0 +1,1836 @@
+[
+  {
+    "workload": "any_value_datetime",
+    "scenario": "dense",
+    "baseline": [
+      9.536,
+      9.548,
+      9.555
+    ],
+    "baseline_median": 9.548,
+    "direct": [
+      9.098,
+      9.034,
+      9.144
+    ],
+    "direct_median": 9.098,
+    "fixed": [
+      9.459,
+      9.465,
+      9.442
+    ],
+    "fixed_median": 9.459,
+    "baseline_over_direct": 1.0481424488898659,
+    "baseline_over_fixed": 1.008769149498151,
+    "direct_over_fixed": 0.9618352891426156,
+    "native": [
+      122.699,
+      123.059,
+      121.939
+    ],
+    "native_median": 122.699
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "dense_null10",
+    "baseline": [
+      9.605,
+      9.618,
+      9.6
+    ],
+    "baseline_median": 9.605,
+    "direct": [
+      9.104,
+      9.07,
+      9.203
+    ],
+    "direct_median": 9.104,
+    "fixed": [
+      9.523,
+      9.503,
+      9.495
+    ],
+    "fixed_median": 9.503,
+    "baseline_over_direct": 1.0550307557117753,
+    "baseline_over_fixed": 1.0110584518167458,
+    "direct_over_fixed": 0.9560012601071091
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "duplicate",
+    "baseline": [
+      9.714,
+      9.732,
+      9.761
+    ],
+    "baseline_median": 9.732,
+    "direct": [
+      9.23,
+      9.178,
+      9.331
+    ],
+    "direct_median": 9.23,
+    "fixed": [
+      9.605,
+      9.631,
+      9.616
+    ],
+    "fixed_median": 9.616,
+    "baseline_over_direct": 1.0524377031419285,
+    "baseline_over_fixed": 1.0113482561166058,
+    "direct_over_fixed": 0.9609578344612181
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "reverse",
+    "baseline": [
+      9.703,
+      9.713,
+      9.724
+    ],
+    "baseline_median": 9.713,
+    "direct": [
+      9.255,
+      9.197,
+      9.344
+    ],
+    "direct_median": 9.255,
+    "fixed": [
+      9.629,
+      9.655,
+      9.635
+    ],
+    "fixed_median": 9.635,
+    "baseline_over_direct": 1.0484062668827658,
+    "baseline_over_fixed": 1.0076851178730917,
+    "direct_over_fixed": 0.9611589988576177
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      15.659,
+      15.597,
+      15.613
+    ],
+    "baseline_median": 15.613,
+    "direct": [
+      15.081,
+      15.139,
+      15.326
+    ],
+    "direct_median": 15.139,
+    "fixed": [
+      16.064,
+      15.685,
+      15.553
+    ],
+    "fixed_median": 15.685,
+    "baseline_over_direct": 1.0302529889688883,
+    "baseline_over_fixed": 0.9943895441504622,
+    "direct_over_fixed": 0.9651896716608224
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "dense",
+    "baseline": [
+      12.891,
+      12.909,
+      12.906
+    ],
+    "baseline_median": 12.906,
+    "direct": [
+      12.551,
+      12.523,
+      12.537
+    ],
+    "direct_median": 12.537,
+    "fixed": [
+      12.235,
+      12.263,
+      12.209
+    ],
+    "fixed_median": 12.235,
+    "baseline_over_direct": 1.0294328786791098,
+    "baseline_over_fixed": 1.053616673477728,
+    "direct_over_fixed": 1.0258275439313445,
+    "native": [
+      122.915,
+      123.832,
+      122.972
+    ],
+    "native_median": 122.972
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "dense_null10",
+    "baseline": [
+      12.637,
+      12.594,
+      12.634
+    ],
+    "baseline_median": 12.634,
+    "direct": [
+      12.292,
+      12.396,
+      12.374
+    ],
+    "direct_median": 12.374,
+    "fixed": [
+      11.941,
+      11.979,
+      11.923
+    ],
+    "fixed_median": 11.941,
+    "baseline_over_direct": 1.021011798933247,
+    "baseline_over_fixed": 1.0582865756636797,
+    "direct_over_fixed": 1.0348109191084398
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "duplicate",
+    "baseline": [
+      12.857,
+      12.866,
+      12.912
+    ],
+    "baseline_median": 12.866,
+    "direct": [
+      12.501,
+      12.501,
+      12.488
+    ],
+    "direct_median": 12.501,
+    "fixed": [
+      12.531,
+      12.535,
+      12.534
+    ],
+    "fixed_median": 12.534,
+    "baseline_over_direct": 1.029197664186865,
+    "baseline_over_fixed": 1.026406063023534,
+    "direct_over_fixed": 0.9972875947347427
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "reverse",
+    "baseline": [
+      13.071,
+      13.061,
+      13.069
+    ],
+    "baseline_median": 13.069,
+    "direct": [
+      12.777,
+      12.687,
+      12.787
+    ],
+    "direct_median": 12.777,
+    "fixed": [
+      12.457,
+      12.426,
+      12.41
+    ],
+    "fixed_median": 12.426,
+    "baseline_over_direct": 1.0230100962667292,
+    "baseline_over_fixed": 1.0511025269596008,
+    "direct_over_fixed": 1.0256883679858713
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      18.905,
+      18.896,
+      19.022
+    ],
+    "baseline_median": 18.905,
+    "direct": [
+      18.627,
+      18.501,
+      18.554
+    ],
+    "direct_median": 18.554,
+    "fixed": [
+      18.552,
+      18.701,
+      18.568
+    ],
+    "fixed_median": 18.568,
+    "baseline_over_direct": 1.0213501972866332,
+    "baseline_over_fixed": 1.0190275981026304,
+    "direct_over_fixed": 0.9992460146488581
+  },
+  {
+    "workload": "any_value_int_unsigned",
+    "scenario": "dense",
+    "baseline": [
+      9.842,
+      9.811,
+      9.826
+    ],
+    "baseline_median": 9.826,
+    "direct": [
+      9.458,
+      9.461,
+      9.589
+    ],
+    "direct_median": 9.461,
+    "fixed": [
+      9.211,
+      9.215,
+      9.229
+    ],
+    "fixed_median": 9.215,
+    "baseline_over_direct": 1.036993975266885,
+    "baseline_over_fixed": 1.0646873984180303,
+    "direct_over_fixed": 1.026815763760721,
+    "native": [
+      121.197,
+      123.991,
+      123.501
+    ],
+    "native_median": 123.501
+  },
+  {
+    "workload": "any_value_int_unsigned",
+    "scenario": "dense_null10",
+    "baseline": [
+      9.677,
+      9.688,
+      9.677
+    ],
+    "baseline_median": 9.677,
+    "direct": [
+      9.63,
+      9.72,
+      9.547
+    ],
+    "direct_median": 9.63,
+    "fixed": [
+      9.272,
+      9.247,
+      9.293
+    ],
+    "fixed_median": 9.272,
+    "baseline_over_direct": 1.0048805815160955,
+    "baseline_over_fixed": 1.0436798964624676,
+    "direct_over_fixed": 1.0386108714408975
+  },
+  {
+    "workload": "any_value_int_unsigned",
+    "scenario": "duplicate",
+    "baseline": [
+      9.934,
+      9.959,
+      9.953
+    ],
+    "baseline_median": 9.953,
+    "direct": [
+      9.619,
+      9.777,
+      9.721
+    ],
+    "direct_median": 9.721,
+    "fixed": [
+      9.366,
+      9.37,
+      9.388
+    ],
+    "fixed_median": 9.37,
+    "baseline_over_direct": 1.0238658574220758,
+    "baseline_over_fixed": 1.0606448857569934,
+    "direct_over_fixed": 1.0354708138048574
+  },
+  {
+    "workload": "any_value_int_unsigned",
+    "scenario": "reverse",
+    "baseline": [
+      9.963,
+      9.99,
+      9.933
+    ],
+    "baseline_median": 9.963,
+    "direct": [
+      9.632,
+      9.706,
+      9.763
+    ],
+    "direct_median": 9.706,
+    "fixed": [
+      9.409,
+      9.395,
+      9.477
+    ],
+    "fixed_median": 9.409,
+    "baseline_over_direct": 1.0292602513908924,
+    "baseline_over_fixed": 1.0588797959400573,
+    "direct_over_fixed": 1.0301783264746227
+  },
+  {
+    "workload": "any_value_int_unsigned",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      15.815,
+      16.0,
+      15.886
+    ],
+    "baseline_median": 15.886,
+    "direct": [
+      15.387,
+      15.471,
+      15.686
+    ],
+    "direct_median": 15.471,
+    "fixed": [
+      15.295,
+      15.255,
+      15.392
+    ],
+    "fixed_median": 15.295,
+    "baseline_over_direct": 1.0278156885682719,
+    "baseline_over_fixed": 1.0339980385746976,
+    "direct_over_fixed": 1.0141592920353981
+  },
+  {
+    "workload": "any_value_json",
+    "scenario": "dense",
+    "baseline": [
+      131.275,
+      130.321,
+      129.506
+    ],
+    "baseline_median": 130.321,
+    "direct": [
+      122.919,
+      123.301,
+      123.503
+    ],
+    "direct_median": 123.301,
+    "fixed": [
+      122.535,
+      122.892,
+      122.592
+    ],
+    "fixed_median": 122.592,
+    "baseline_over_direct": 1.0569338448187768,
+    "baseline_over_fixed": 1.0604514533085962,
+    "direct_over_fixed": 1.0033281255085766,
+    "native": [
+      144.45,
+      145.835,
+      143.124
+    ],
+    "native_median": 144.45
+  },
+  {
+    "workload": "any_value_json",
+    "scenario": "dense_null10",
+    "baseline": [
+      123.363,
+      121.92,
+      119.712
+    ],
+    "baseline_median": 121.92,
+    "direct": [
+      115.595,
+      117.19,
+      116.166
+    ],
+    "direct_median": 116.166,
+    "fixed": [
+      115.775,
+      116.122,
+      115.929
+    ],
+    "fixed_median": 115.929,
+    "baseline_over_direct": 1.0403618056148136,
+    "baseline_over_fixed": 1.0499302457759943,
+    "direct_over_fixed": 1.0020443547343632
+  },
+  {
+    "workload": "any_value_json",
+    "scenario": "duplicate",
+    "baseline": [
+      129.642,
+      129.479,
+      127.664
+    ],
+    "baseline_median": 129.479,
+    "direct": [
+      128.167,
+      121.108,
+      125.174
+    ],
+    "direct_median": 125.174,
+    "fixed": [
+      127.306,
+      125.032,
+      125.061
+    ],
+    "fixed_median": 125.061,
+    "baseline_over_direct": 1.0198923099046127,
+    "baseline_over_fixed": 1.0208138428446918,
+    "direct_over_fixed": 1.0009035590631772
+  },
+  {
+    "workload": "any_value_json",
+    "scenario": "reverse",
+    "baseline": [
+      131.301,
+      130.688,
+      128.649
+    ],
+    "baseline_median": 130.688,
+    "direct": [
+      124.73,
+      121.999,
+      121.797
+    ],
+    "direct_median": 121.999,
+    "fixed": [
+      126.074,
+      123.554,
+      123.152
+    ],
+    "fixed_median": 123.554,
+    "baseline_over_direct": 1.0562575432892436,
+    "baseline_over_fixed": 1.0446358971027674,
+    "direct_over_fixed": 0.9889973366246589
+  },
+  {
+    "workload": "any_value_json",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      150.422,
+      147.66,
+      144.55
+    ],
+    "baseline_median": 147.66,
+    "direct": [
+      149.565,
+      150.334,
+      150.34
+    ],
+    "direct_median": 150.334,
+    "fixed": [
+      146.083,
+      149.828,
+      153.471
+    ],
+    "fixed_median": 149.828,
+    "baseline_over_direct": 0.9822129391887396,
+    "baseline_over_fixed": 0.9855300744854099,
+    "direct_over_fixed": 1.0033772058627226
+  },
+  {
+    "workload": "any_value_timestamp",
+    "scenario": "dense",
+    "baseline": [
+      9.574,
+      9.648,
+      9.589
+    ],
+    "baseline_median": 9.589,
+    "direct": [
+      9.044,
+      9.048,
+      9.029
+    ],
+    "direct_median": 9.044,
+    "fixed": [
+      9.51,
+      9.499,
+      9.487
+    ],
+    "fixed_median": 9.499,
+    "baseline_over_direct": 1.0620223723557427,
+    "baseline_over_fixed": 1.0107515547591441,
+    "direct_over_fixed": 0.951723410983451,
+    "native": [
+      122.508,
+      122.618,
+      122.582
+    ],
+    "native_median": 122.582
+  },
+  {
+    "workload": "any_value_timestamp",
+    "scenario": "dense_null10",
+    "baseline": [
+      9.687,
+      9.672,
+      9.708
+    ],
+    "baseline_median": 9.687,
+    "direct": [
+      9.195,
+      9.106,
+      9.088
+    ],
+    "direct_median": 9.106,
+    "fixed": [
+      9.449,
+      9.503,
+      9.479
+    ],
+    "fixed_median": 9.479,
+    "baseline_over_direct": 1.0621568196793323,
+    "baseline_over_fixed": 1.024158666526005,
+    "direct_over_fixed": 0.9587509230931532
+  },
+  {
+    "workload": "any_value_timestamp",
+    "scenario": "duplicate",
+    "baseline": [
+      9.852,
+      9.761,
+      9.761
+    ],
+    "baseline_median": 9.761,
+    "direct": [
+      9.201,
+      9.22,
+      9.207
+    ],
+    "direct_median": 9.207,
+    "fixed": [
+      9.649,
+      9.672,
+      9.613
+    ],
+    "fixed_median": 9.649,
+    "baseline_over_direct": 1.0601716085587052,
+    "baseline_over_fixed": 1.0153958181629044,
+    "direct_over_fixed": 0.9535703181676859
+  },
+  {
+    "workload": "any_value_timestamp",
+    "scenario": "reverse",
+    "baseline": [
+      9.797,
+      9.747,
+      9.744
+    ],
+    "baseline_median": 9.747,
+    "direct": [
+      9.268,
+      9.213,
+      9.185
+    ],
+    "direct_median": 9.213,
+    "fixed": [
+      9.652,
+      9.687,
+      9.643
+    ],
+    "fixed_median": 9.652,
+    "baseline_over_direct": 1.0579615760338652,
+    "baseline_over_fixed": 1.010473918904905,
+    "direct_over_fixed": 0.9525044073421134
+  },
+  {
+    "workload": "any_value_timestamp",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      15.671,
+      15.841,
+      15.722
+    ],
+    "baseline_median": 15.722,
+    "direct": [
+      15.037,
+      15.162,
+      15.022
+    ],
+    "direct_median": 15.037,
+    "fixed": [
+      15.562,
+      15.937,
+      15.543
+    ],
+    "fixed_median": 15.562,
+    "baseline_over_direct": 1.0447830101569713,
+    "baseline_over_fixed": 1.0070042411001157,
+    "direct_over_fixed": 0.966263976352654
+  },
+  {
+    "workload": "any_value_vector",
+    "scenario": "dense",
+    "baseline": [
+      71.584,
+      76.202,
+      71.896
+    ],
+    "baseline_median": 71.896,
+    "direct": [
+      70.907,
+      70.949,
+      76.047
+    ],
+    "direct_median": 70.949,
+    "fixed": [
+      71.763,
+      71.348,
+      71.457
+    ],
+    "fixed_median": 71.457,
+    "baseline_over_direct": 1.0095477174326937,
+    "baseline_over_fixed": 1.0061435548651638,
+    "direct_over_fixed": 0.9944076918764366,
+    "native": [
+      161.781,
+      167.855,
+      163.905
+    ],
+    "native_median": 163.905
+  },
+  {
+    "workload": "any_value_vector",
+    "scenario": "dense_null10",
+    "baseline": [
+      67.108,
+      70.558,
+      67.324
+    ],
+    "baseline_median": 67.324,
+    "direct": [
+      66.251,
+      66.36,
+      66.345
+    ],
+    "direct_median": 66.345,
+    "fixed": [
+      67.789,
+      66.822,
+      67.059
+    ],
+    "fixed_median": 67.059,
+    "baseline_over_direct": 1.0147561986585274,
+    "baseline_over_fixed": 1.0039517439866386,
+    "direct_over_fixed": 0.9893526595982642
+  },
+  {
+    "workload": "any_value_vector",
+    "scenario": "duplicate",
+    "baseline": [
+      71.896,
+      76.119,
+      72.141
+    ],
+    "baseline_median": 72.141,
+    "direct": [
+      71.525,
+      71.235,
+      70.97
+    ],
+    "direct_median": 71.235,
+    "fixed": [
+      72.132,
+      72.716,
+      71.67
+    ],
+    "fixed_median": 72.132,
+    "baseline_over_direct": 1.0164999295476962,
+    "baseline_over_fixed": 1.0065717873587277,
+    "direct_over_fixed": 0.9902330124180271
+  },
+  {
+    "workload": "any_value_vector",
+    "scenario": "reverse",
+    "baseline": [
+      72.141,
+      76.531,
+      72.343
+    ],
+    "baseline_median": 72.343,
+    "direct": [
+      71.731,
+      71.172,
+      72.26
+    ],
+    "direct_median": 71.731,
+    "fixed": [
+      72.529,
+      72.347,
+      71.934
+    ],
+    "fixed_median": 72.347,
+    "baseline_over_direct": 1.0057157993057397,
+    "baseline_over_fixed": 1.0056857675091055,
+    "direct_over_fixed": 0.9889975044464973
+  },
+  {
+    "workload": "any_value_vector",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      80.532,
+      83.801,
+      80.54
+    ],
+    "baseline_median": 80.54,
+    "direct": [
+      79.7,
+      78.768,
+      78.834
+    ],
+    "direct_median": 78.834,
+    "fixed": [
+      80.677,
+      79.648,
+      79.764
+    ],
+    "fixed_median": 79.764,
+    "baseline_over_direct": 1.0216404089606008,
+    "baseline_over_fixed": 1.009728699664009,
+    "direct_over_fixed": 0.9883406047841132
+  },
+  {
+    "workload": "decimal_add",
+    "scenario": "dense",
+    "baseline": [
+      131.927,
+      132.165,
+      132.55
+    ],
+    "baseline_median": 132.165,
+    "direct": [
+      139.17,
+      139.948,
+      138.792
+    ],
+    "direct_median": 139.17,
+    "fixed": [
+      136.969,
+      137.42,
+      137.518
+    ],
+    "fixed_median": 137.42,
+    "baseline_over_direct": 0.9479557375871237,
+    "baseline_over_fixed": 0.9631887507392184,
+    "direct_over_fixed": 1.016069329556323,
+    "native": [
+      69.734,
+      69.461,
+      69.298
+    ],
+    "native_median": 69.461
+  },
+  {
+    "workload": "decimal_add",
+    "scenario": "dense_null10",
+    "baseline": [
+      125.176,
+      125.233,
+      125.388
+    ],
+    "baseline_median": 125.233,
+    "direct": [
+      130.79,
+      131.64,
+      130.479
+    ],
+    "direct_median": 130.79,
+    "fixed": [
+      129.055,
+      130.491,
+      129.656
+    ],
+    "fixed_median": 129.656,
+    "baseline_over_direct": 0.9570762290695009,
+    "baseline_over_fixed": 0.9670821250077127,
+    "direct_over_fixed": 1.0088052049566634
+  },
+  {
+    "workload": "decimal_add",
+    "scenario": "duplicate",
+    "baseline": [
+      133.199,
+      133.308,
+      133.32
+    ],
+    "baseline_median": 133.308,
+    "direct": [
+      139.985,
+      140.729,
+      139.829
+    ],
+    "direct_median": 139.985,
+    "fixed": [
+      139.458,
+      138.628,
+      138.749
+    ],
+    "fixed_median": 138.749,
+    "baseline_over_direct": 0.9515233775047326,
+    "baseline_over_fixed": 0.9608717900669554,
+    "direct_over_fixed": 1.0077838398835308
+  },
+  {
+    "workload": "decimal_add",
+    "scenario": "reverse",
+    "baseline": [
+      131.93,
+      132.538,
+      132.469
+    ],
+    "baseline_median": 132.469,
+    "direct": [
+      140.424,
+      139.044,
+      138.755
+    ],
+    "direct_median": 139.044,
+    "fixed": [
+      137.293,
+      137.819,
+      138.499
+    ],
+    "fixed_median": 137.819,
+    "baseline_over_direct": 0.9532090561261184,
+    "baseline_over_fixed": 0.960937556903848,
+    "direct_over_fixed": 1.008888469659481
+  },
+  {
+    "workload": "decimal_add",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      142.298,
+      142.372,
+      142.905
+    ],
+    "baseline_median": 142.372,
+    "direct": [
+      149.615,
+      149.758,
+      150.743
+    ],
+    "direct_median": 149.758,
+    "fixed": [
+      147.219,
+      148.29,
+      148.074
+    ],
+    "fixed_median": 148.074,
+    "baseline_over_direct": 0.9506804310955008,
+    "baseline_over_fixed": 0.9650917784351067,
+    "direct_over_fixed": 1.0162750731902812
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "dense",
+    "baseline": [
+      74.92,
+      74.938,
+      75.459
+    ],
+    "baseline_median": 74.938,
+    "direct": [
+      84.25,
+      84.21,
+      84.013
+    ],
+    "direct_median": 84.21,
+    "fixed": [
+      82.28,
+      82.972,
+      82.87
+    ],
+    "fixed_median": 82.87,
+    "baseline_over_direct": 0.8898943118394491,
+    "baseline_over_fixed": 0.910549343704424,
+    "direct_over_fixed": 1.0149206961384563,
+    "native": [
+      169.469,
+      173.07,
+      169.456
+    ],
+    "native_median": 169.469
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "dense_null10",
+    "baseline": [
+      71.728,
+      71.952,
+      72.313
+    ],
+    "baseline_median": 71.952,
+    "direct": [
+      79.721,
+      79.9,
+      79.43
+    ],
+    "direct_median": 79.721,
+    "fixed": [
+      78.152,
+      78.381,
+      78.599
+    ],
+    "fixed_median": 78.381,
+    "baseline_over_direct": 0.9005256570713391,
+    "baseline_over_fixed": 0.9179775710950357,
+    "direct_over_fixed": 1.019379696610148
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "duplicate",
+    "baseline": [
+      75.813,
+      75.93,
+      76.254
+    ],
+    "baseline_median": 75.93,
+    "direct": [
+      85.094,
+      84.724,
+      85.26
+    ],
+    "direct_median": 85.094,
+    "fixed": [
+      83.656,
+      83.504,
+      83.705
+    ],
+    "fixed_median": 83.656,
+    "baseline_over_direct": 0.8943701618578466,
+    "baseline_over_fixed": 0.9092977581912244,
+    "direct_over_fixed": 1.0171894424787222
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "reverse",
+    "baseline": [
+      74.963,
+      75.231,
+      75.334
+    ],
+    "baseline_median": 75.231,
+    "direct": [
+      84.621,
+      84.461,
+      84.883
+    ],
+    "direct_median": 84.621,
+    "fixed": [
+      82.812,
+      82.531,
+      82.736
+    ],
+    "fixed_median": 82.736,
+    "baseline_over_direct": 0.8875039760611666,
+    "baseline_over_fixed": 0.9105347128215046,
+    "direct_over_fixed": 1.0233851522458226
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      77.878,
+      78.2,
+      78.759
+    ],
+    "baseline_median": 78.2,
+    "direct": [
+      87.753,
+      87.288,
+      87.164
+    ],
+    "direct_median": 87.288,
+    "fixed": [
+      85.245,
+      85.578,
+      85.755
+    ],
+    "fixed_median": 85.578,
+    "baseline_over_direct": 0.8958848868114747,
+    "baseline_over_fixed": 0.9137862534763608,
+    "direct_over_fixed": 1.0199817710159151
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "dense",
+    "baseline": [
+      75.048,
+      75.345,
+      75.054
+    ],
+    "baseline_median": 75.054,
+    "direct": [
+      84.094,
+      84.435,
+      84.238
+    ],
+    "direct_median": 84.238,
+    "fixed": [
+      82.473,
+      82.447,
+      82.842
+    ],
+    "fixed_median": 82.473,
+    "baseline_over_direct": 0.8923432225972642,
+    "baseline_over_fixed": 0.9099705358117203,
+    "direct_over_fixed": 1.0196549173668958,
+    "native": [
+      164.734,
+      166.808,
+      164.896
+    ],
+    "native_median": 164.896
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "dense_null10",
+    "baseline": [
+      71.762,
+      71.783,
+      72.542
+    ],
+    "baseline_median": 71.783,
+    "direct": [
+      79.517,
+      79.747,
+      80.55
+    ],
+    "direct_median": 79.747,
+    "fixed": [
+      78.323,
+      78.594,
+      78.503
+    ],
+    "fixed_median": 78.503,
+    "baseline_over_direct": 0.9005834885164494,
+    "baseline_over_fixed": 0.9162315028791033,
+    "direct_over_fixed": 1.015244564176551
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "duplicate",
+    "baseline": [
+      75.895,
+      76.153,
+      75.766
+    ],
+    "baseline_median": 75.895,
+    "direct": [
+      85.227,
+      85.059,
+      84.921
+    ],
+    "direct_median": 85.059,
+    "fixed": [
+      83.622,
+      83.44,
+      83.855
+    ],
+    "fixed_median": 83.622,
+    "baseline_over_direct": 0.8921939214093099,
+    "baseline_over_fixed": 0.9075960871540981,
+    "direct_over_fixed": 1.0191935136686519
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "reverse",
+    "baseline": [
+      74.937,
+      76.098,
+      75.205
+    ],
+    "baseline_median": 75.205,
+    "direct": [
+      84.521,
+      84.188,
+      84.659
+    ],
+    "direct_median": 84.521,
+    "fixed": [
+      82.93,
+      83.082,
+      82.829
+    ],
+    "fixed_median": 82.93,
+    "baseline_over_direct": 0.8883284706882906,
+    "baseline_over_fixed": 0.9079549433169543,
+    "direct_over_fixed": 1.0191848546967321
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      78.137,
+      78.131,
+      78.593
+    ],
+    "baseline_median": 78.137,
+    "direct": [
+      87.271,
+      87.4,
+      87.262
+    ],
+    "direct_median": 87.271,
+    "fixed": [
+      85.636,
+      85.788,
+      86.014
+    ],
+    "fixed_median": 85.788,
+    "baseline_over_direct": 0.8953375118882562,
+    "baseline_over_fixed": 0.9124316876080154,
+    "direct_over_fixed": 1.0187905068307923
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "dense",
+    "baseline": [
+      12.355,
+      12.251,
+      12.341
+    ],
+    "baseline_median": 12.341,
+    "direct": [
+      12.14,
+      12.249,
+      12.177
+    ],
+    "direct_median": 12.177,
+    "fixed": [
+      11.302,
+      11.382,
+      11.34
+    ],
+    "fixed_median": 11.34,
+    "baseline_over_direct": 1.0134680134680134,
+    "baseline_over_fixed": 1.0882716049382715,
+    "direct_over_fixed": 1.074146168819678,
+    "native": [
+      20.927,
+      21.035,
+      20.954
+    ],
+    "native_median": 20.954
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "dense_null10",
+    "baseline": [
+      12.201,
+      11.965,
+      12.002
+    ],
+    "baseline_median": 12.002,
+    "direct": [
+      11.913,
+      12.138,
+      11.94
+    ],
+    "direct_median": 11.94,
+    "fixed": [
+      11.188,
+      11.175,
+      11.234
+    ],
+    "fixed_median": 11.188,
+    "baseline_over_direct": 1.0051926298157454,
+    "baseline_over_fixed": 1.0706935123042505,
+    "direct_over_fixed": 1.0648015731140508
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "duplicate",
+    "baseline": [
+      12.418,
+      12.457,
+      12.383
+    ],
+    "baseline_median": 12.418,
+    "direct": [
+      12.308,
+      12.458,
+      12.338
+    ],
+    "direct_median": 12.338,
+    "fixed": [
+      11.455,
+      11.525,
+      11.541
+    ],
+    "fixed_median": 11.525,
+    "baseline_over_direct": 1.0036472686010698,
+    "baseline_over_fixed": 1.0808676789587852,
+    "direct_over_fixed": 1.0744652989960715
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "reverse",
+    "baseline": [
+      12.578,
+      12.445,
+      12.463
+    ],
+    "baseline_median": 12.463,
+    "direct": [
+      12.309,
+      12.454,
+      12.375
+    ],
+    "direct_median": 12.375,
+    "fixed": [
+      11.452,
+      11.527,
+      11.512
+    ],
+    "fixed_median": 11.512,
+    "baseline_over_direct": 1.007111111111111,
+    "baseline_over_fixed": 1.082609451007644,
+    "direct_over_fixed": 1.074965253648367
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      19.069,
+      19.161,
+      19.225
+    ],
+    "baseline_median": 19.161,
+    "direct": [
+      18.795,
+      19.227,
+      19.011
+    ],
+    "direct_median": 19.011,
+    "fixed": [
+      18.053,
+      18.239,
+      18.446
+    ],
+    "fixed_median": 18.239,
+    "baseline_over_direct": 1.0112566408921153,
+    "baseline_over_fixed": 1.0505510170513734,
+    "direct_over_fixed": 1.0411012020162855
+  },
+  {
+    "workload": "lower",
+    "scenario": "dense",
+    "baseline": [
+      34.376,
+      34.501,
+      34.444
+    ],
+    "baseline_median": 34.444,
+    "direct": [
+      32.959,
+      32.932,
+      33.211
+    ],
+    "direct_median": 32.959,
+    "fixed": [
+      33.465,
+      33.387,
+      33.37
+    ],
+    "fixed_median": 33.387,
+    "baseline_over_direct": 1.0429928092478533,
+    "baseline_over_fixed": 1.0321845969433625,
+    "direct_over_fixed": 0.9863719411747087,
+    "native": [
+      154.593,
+      154.497,
+      155.063
+    ],
+    "native_median": 154.593
+  },
+  {
+    "workload": "lower",
+    "scenario": "dense_null10",
+    "baseline": [
+      32.429,
+      32.696,
+      32.431
+    ],
+    "baseline_median": 32.431,
+    "direct": [
+      31.053,
+      31.021,
+      31.178
+    ],
+    "direct_median": 31.053,
+    "fixed": [
+      31.602,
+      31.502,
+      31.386
+    ],
+    "fixed_median": 31.502,
+    "baseline_over_direct": 1.0443113386790326,
+    "baseline_over_fixed": 1.0332950997259924,
+    "direct_over_fixed": 0.9847311281823377
+  },
+  {
+    "workload": "lower",
+    "scenario": "duplicate",
+    "baseline": [
+      34.792,
+      34.798,
+      34.681
+    ],
+    "baseline_median": 34.792,
+    "direct": [
+      33.349,
+      33.287,
+      33.593
+    ],
+    "direct_median": 33.349,
+    "fixed": [
+      33.558,
+      33.626,
+      33.557
+    ],
+    "fixed_median": 33.558,
+    "baseline_over_direct": 1.0432696632582688,
+    "baseline_over_fixed": 1.034853982037709,
+    "direct_over_fixed": 0.9937719768758566
+  },
+  {
+    "workload": "lower",
+    "scenario": "reverse",
+    "baseline": [
+      34.539,
+      34.597,
+      34.552
+    ],
+    "baseline_median": 34.552,
+    "direct": [
+      33.246,
+      33.158,
+      33.519
+    ],
+    "direct_median": 33.246,
+    "fixed": [
+      33.482,
+      33.534,
+      33.592
+    ],
+    "fixed_median": 33.534,
+    "baseline_over_direct": 1.0388918967695362,
+    "baseline_over_fixed": 1.031569201361926,
+    "direct_over_fixed": 0.9929514365927962
+  },
+  {
+    "workload": "lower",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      44.575,
+      45.291,
+      44.358
+    ],
+    "baseline_median": 44.575,
+    "direct": [
+      42.765,
+      42.97,
+      43.785
+    ],
+    "direct_median": 42.97,
+    "fixed": [
+      43.004,
+      43.566,
+      43.143
+    ],
+    "fixed_median": 43.143,
+    "baseline_over_direct": 1.0423243306442185,
+    "baseline_over_fixed": 1.0365314854432146,
+    "direct_over_fixed": 0.9944423774532603
+  },
+  {
+    "workload": "real_add",
+    "scenario": "dense",
+    "baseline": [
+      12.575,
+      12.405,
+      12.458
+    ],
+    "baseline_median": 12.458,
+    "direct": [
+      12.22,
+      12.594,
+      12.326
+    ],
+    "direct_median": 12.326,
+    "fixed": [
+      11.562,
+      11.556,
+      11.529
+    ],
+    "fixed_median": 11.556,
+    "baseline_over_direct": 1.0107090702579913,
+    "baseline_over_fixed": 1.080579408448261,
+    "direct_over_fixed": 1.069130019949692,
+    "native": [
+      107.243,
+      107.327,
+      107.386
+    ],
+    "native_median": 107.327
+  },
+  {
+    "workload": "real_add",
+    "scenario": "dense_null10",
+    "baseline": [
+      12.015,
+      12.064,
+      12.101
+    ],
+    "baseline_median": 12.064,
+    "direct": [
+      11.842,
+      12.177,
+      12.056
+    ],
+    "direct_median": 12.056,
+    "fixed": [
+      11.617,
+      11.611,
+      11.59
+    ],
+    "fixed_median": 11.611,
+    "baseline_over_direct": 1.003732581287326,
+    "baseline_over_fixed": 1.0390147274136594,
+    "direct_over_fixed": 1.040207075064711
+  },
+  {
+    "workload": "real_add",
+    "scenario": "duplicate",
+    "baseline": [
+      12.614,
+      12.56,
+      12.582
+    ],
+    "baseline_median": 12.582,
+    "direct": [
+      12.45,
+      12.504,
+      12.754
+    ],
+    "direct_median": 12.504,
+    "fixed": [
+      11.791,
+      11.767,
+      11.752
+    ],
+    "fixed_median": 11.767,
+    "baseline_over_direct": 1.0044785668586054,
+    "baseline_over_fixed": 1.069798999236706,
+    "direct_over_fixed": 1.0626327866066116
+  },
+  {
+    "workload": "real_add",
+    "scenario": "reverse",
+    "baseline": [
+      12.73,
+      12.576,
+      12.559
+    ],
+    "baseline_median": 12.576,
+    "direct": [
+      12.425,
+      12.52,
+      12.729
+    ],
+    "direct_median": 12.52,
+    "fixed": [
+      11.782,
+      11.743,
+      11.76
+    ],
+    "fixed_median": 11.76,
+    "baseline_over_direct": 1.0044728434504793,
+    "baseline_over_fixed": 1.0709358766924977,
+    "direct_over_fixed": 1.0661670782593886
+  },
+  {
+    "workload": "real_add",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      19.369,
+      19.247,
+      19.557
+    ],
+    "baseline_median": 19.369,
+    "direct": [
+      18.974,
+      19.169,
+      19.395
+    ],
+    "direct_median": 19.169,
+    "fixed": [
+      18.557,
+      18.628,
+      18.698
+    ],
+    "fixed_median": 18.628,
+    "baseline_over_direct": 1.008352668213457,
+    "baseline_over_fixed": 1.0437570728027161,
+    "direct_over_fixed": 1.0290423019111017
+  },
+  {
+    "workload": "round_int_signed",
+    "scenario": "dense",
+    "baseline": [
+      7.476,
+      7.364,
+      7.402
+    ],
+    "baseline_median": 7.402,
+    "direct": [
+      7.236,
+      7.305,
+      7.239
+    ],
+    "direct_median": 7.239,
+    "fixed": [
+      6.794,
+      6.824,
+      6.877
+    ],
+    "fixed_median": 6.824,
+    "baseline_over_direct": 1.0225169222268269,
+    "baseline_over_fixed": 1.0791324736225087,
+    "direct_over_fixed": 1.0650574035914042,
+    "native": [
+      166.955,
+      101.161,
+      101.658
+    ],
+    "native_median": 101.658
+  },
+  {
+    "workload": "round_int_signed",
+    "scenario": "dense_null10",
+    "baseline": [
+      7.284,
+      7.246,
+      7.288
+    ],
+    "baseline_median": 7.284,
+    "direct": [
+      7.217,
+      7.175,
+      7.19
+    ],
+    "direct_median": 7.19,
+    "fixed": [
+      6.835,
+      6.843,
+      6.897
+    ],
+    "fixed_median": 6.843,
+    "baseline_over_direct": 1.0098954703832754,
+    "baseline_over_fixed": 1.058892298699401,
+    "direct_over_fixed": 1.048516732427298
+  },
+  {
+    "workload": "round_int_signed",
+    "scenario": "duplicate",
+    "baseline": [
+      7.567,
+      7.542,
+      7.502
+    ],
+    "baseline_median": 7.542,
+    "direct": [
+      7.359,
+      7.404,
+      7.424
+    ],
+    "direct_median": 7.404,
+    "fixed": [
+      6.94,
+      7.021,
+      7.025
+    ],
+    "fixed_median": 7.021,
+    "baseline_over_direct": 1.018638573743922,
+    "baseline_over_fixed": 1.0742059535678679,
+    "direct_over_fixed": 1.056797153024911
+  },
+  {
+    "workload": "round_int_signed",
+    "scenario": "reverse",
+    "baseline": [
+      7.552,
+      7.493,
+      7.512
+    ],
+    "baseline_median": 7.512,
+    "direct": [
+      7.376,
+      7.421,
+      7.453
+    ],
+    "direct_median": 7.421,
+    "fixed": [
+      6.948,
+      7.0,
+      6.986
+    ],
+    "fixed_median": 6.986,
+    "baseline_over_direct": 1.0097021964694786,
+    "baseline_over_fixed": 1.075293444030919,
+    "direct_over_fixed": 1.061600460564191
+  },
+  {
+    "workload": "round_int_signed",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      13.715,
+      13.531,
+      13.509
+    ],
+    "baseline_median": 13.531,
+    "direct": [
+      13.337,
+      13.464,
+      13.473
+    ],
+    "direct_median": 13.464,
+    "fixed": [
+      12.915,
+      13.032,
+      13.007
+    ],
+    "fixed_median": 13.007,
+    "baseline_over_direct": 1.0049762329174095,
+    "baseline_over_fixed": 1.0385946029061275,
+    "direct_over_fixed": 1.0331491712707184
+  },
+  {
+    "workload": "round_int_unsigned",
+    "scenario": "dense",
+    "baseline": [
+      7.407,
+      7.451,
+      7.337
+    ],
+    "baseline_median": 7.407,
+    "direct": [
+      7.246,
+      7.211,
+      7.267
+    ],
+    "direct_median": 7.246,
+    "fixed": [
+      6.785,
+      6.785,
+      6.84
+    ],
+    "fixed_median": 6.785,
+    "baseline_over_direct": 1.0222191553960804,
+    "baseline_over_fixed": 1.0916728076639646,
+    "direct_over_fixed": 1.0627855563743551,
+    "native": [
+      101.212,
+      101.769,
+      101.792
+    ],
+    "native_median": 101.769
+  },
+  {
+    "workload": "round_int_unsigned",
+    "scenario": "dense_null10",
+    "baseline": [
+      7.295,
+      7.212,
+      7.246
+    ],
+    "baseline_median": 7.246,
+    "direct": [
+      7.185,
+      7.155,
+      7.218
+    ],
+    "direct_median": 7.185,
+    "fixed": [
+      6.827,
+      6.846,
+      6.853
+    ],
+    "fixed_median": 6.846,
+    "baseline_over_direct": 1.0079664570230606,
+    "baseline_over_fixed": 1.0573471472347877,
+    "direct_over_fixed": 1.0524388457594844
+  },
+  {
+    "workload": "round_int_unsigned",
+    "scenario": "duplicate",
+    "baseline": [
+      7.557,
+      7.605,
+      7.509
+    ],
+    "baseline_median": 7.557,
+    "direct": [
+      7.367,
+      7.361,
+      7.432
+    ],
+    "direct_median": 7.367,
+    "fixed": [
+      6.972,
+      6.949,
+      6.933
+    ],
+    "fixed_median": 6.949,
+    "baseline_over_direct": 1.0257906882041536,
+    "baseline_over_fixed": 1.083907056798623,
+    "direct_over_fixed": 1.0592891063462369
+  },
+  {
+    "workload": "round_int_unsigned",
+    "scenario": "reverse",
+    "baseline": [
+      7.553,
+      7.52,
+      7.519
+    ],
+    "baseline_median": 7.52,
+    "direct": [
+      7.383,
+      7.379,
+      7.412
+    ],
+    "direct_median": 7.383,
+    "fixed": [
+      7.007,
+      6.993,
+      6.976
+    ],
+    "fixed_median": 6.993,
+    "baseline_over_direct": 1.019108280254777,
+    "baseline_over_fixed": 1.0778383027522935,
+    "direct_over_fixed": 1.055198055198055
+  },
+  {
+    "workload": "round_int_unsigned",
+    "scenario": "sparse_quarter",
+    "baseline": [
+      13.731,
+      13.451,
+      13.466
+    ],
+    "baseline_median": 13.466,
+    "direct": [
+      13.35,
+      13.311,
+      13.534
+    ],
+    "direct_median": 13.35,
+    "fixed": [
+      13.024,
+      12.964,
+      12.968
+    ],
+    "fixed_median": 12.968,
+    "baseline_over_direct": 1.0105176170084893,
+    "baseline_over_fixed": 1.0384022208513264,
+    "direct_over_fixed": 1.0267664301141624
+  }
+]

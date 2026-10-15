@@ -6,7 +6,15 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新实验：Duration 构造内联未采用（2026-10-16）
+## 最新实验：两种 fixed 输入方案均未采用（2026-10-16）
+
+实际 M27、直接时间输入、统一 fixed helper 三轮轮换测量。统一 helper 让 Int/Real 约快 8%–9%、Duration 快 5%、JSON 快 6%，但 Decimal PLUS **132.165→137.420 ns/行**、比较 **约 75→82–83**，分别慢 4% / 10%；直接时间输入的比较约慢 12%。两个候选及测试均已完整撤回，运行时代码保持 M27，没有留下新 helper、模式或删掉检查。
+
+4410 条主测量 / 210 组（含 42 个真实 native 对照）及 840 条 M15 控制 / 60 组全部一致。M15 对照中 LOWER 仍略慢，所有历史与当前慢项均保留。batch 34、完整 TiDB 1386 / 原有 4 失败、lint/fmt 通过；未变的 datatype/TiKV/Chunk 检查明确沿用。[三方完整报告与撤回决定](logs/performance-m29-fixed-input/summary.md)，[最初直接输入实验](logs/performance-m29-temporal-input/summary.md)。计数仍为 67 / 131 元数据签名。
+
+---
+
+## 历史实验：Duration 构造内联未采用（2026-10-16）
 
 仅加一行内联提示，保留所有检查；独立符号消失但目标 Duration **12.939→13.472 ns/row**，三轮约慢 4%，候选已完整撤回。部分其他项改善，仍未达到构造实验的保留标准，运行时代码保持下面的 M27。
 

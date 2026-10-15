@@ -1,0 +1,208 @@
+diff --git a/rust/crates/tidb-expr/src/evaluator/batch.rs b/rust/crates/tidb-expr/src/evaluator/batch.rs
+index 04d44384..6395471c 100644
+--- a/rust/crates/tidb-expr/src/evaluator/batch.rs
++++ b/rust/crates/tidb-expr/src/evaluator/batch.rs
+@@ -28,7 +28,7 @@ use std::mem::size_of;
+ use std::sync::Arc;
+ 
+ use protobuf::ProtobufEnum;
+-use tidb_chunk::column::get_fixed_len;
++use tidb_chunk::column::{get_fixed_len, Column};
+ use tidb_datatype::tikv_compat::value::{
+     project_field_type, snapshot_field_type, to_scalar, BridgeError,
+ };
+@@ -1165,6 +1165,27 @@ struct NativeChunk<'a> {
+     input: &'a Chunk,
+     selection: &'a [usize],
+ }
++// One owning transport loop for nullable fixed-width native columns. Keep the
++// per-carrier loop out of the large importer; decoders remain the existing
++// semantic constructors, and are invoked only for non-NULL cells.
++#[inline(never)]
++fn read_fixed_native<T: Clone + Default>(
++    column: &Column,
++    rows: &[usize],
++    mut decode: impl FnMut(&[u8]) -> LocalResult<T>,
++) -> LocalResult<ChunkedVecSized<T>> {
++    let cells = column.raw_cells();
++    let mut output = ChunkedVecSized::with_capacity(rows.len());
++    for &row in rows {
++        output.push(if cells.is_null(row) {
++            None
++        } else {
++            Some(decode(cells.get(row))?)
++        });
++    }
++    Ok(output)
++}
++
+ impl NativeDatumSource for NativeChunk<'_> {
+     fn schema(&self) -> &[tipb::FieldType] {
+         &self.source.schema
+@@ -1224,36 +1245,21 @@ impl NativeDatumSource for NativeChunk<'_> {
+         };
+         let column = self.input.column(*index);
+         match node.sql.eval_type() {
+-            NativeEvalType::Int => {
+-                let cells = column.raw_cells();
+-                let mut output = ChunkedVecSized::<Int>::with_capacity(physical_rows.len());
+-                for &row in physical_rows {
+-                    output.push((!cells.is_null(row)).then(|| {
+-                        i64::from_ne_bytes(
+-                            cells.get(row).try_into().expect("Int cell is eight bytes"),
+-                        )
+-                    }));
+-                }
+-                Ok(Some(VectorValue::Int(output)))
+-            }
+-            NativeEvalType::Real => {
+-                let cells = column.raw_cells();
+-                let mut output = ChunkedVecSized::<Real>::with_capacity(physical_rows.len());
+-                for &row in physical_rows {
+-                    let value = if column.is_null(row) {
+-                        None
+-                    } else {
+-                        Some(
+-                            Real::new(f64::from_ne_bytes(
+-                                cells.get(row).try_into().expect("Real cell is eight bytes"),
+-                            ))
+-                            .map_err(|_| binding("batch Real column contains a NaN value"))?,
+-                        )
+-                    };
+-                    output.push(value);
+-                }
+-                Ok(Some(VectorValue::Real(output)))
+-            }
++            NativeEvalType::Int => read_fixed_native(&column, physical_rows, |cell| {
++                Ok(i64::from_ne_bytes(
++                    cell.try_into().expect("Int cell is eight bytes"),
++                ))
++            })
++            .map(VectorValue::Int)
++            .map(Some),
++            NativeEvalType::Real => read_fixed_native(&column, physical_rows, |cell| {
++                Real::new(f64::from_ne_bytes(
++                    cell.try_into().expect("Real cell is eight bytes"),
++                ))
++                .map_err(|_| binding("batch Real column contains a NaN value"))
++            })
++            .map(VectorValue::Real)
++            .map(Some),
+             NativeEvalType::Decimal => {
+                 let cells = column.raw_cells();
+                 let mut output = ChunkedVecSized::<TikvDecimal>::with_capacity(physical_rows.len());
+@@ -1298,38 +1304,30 @@ impl NativeDatumSource for NativeChunk<'_> {
+                 Ok(Some(VectorValue::Bytes(output)))
+             }
+             NativeEvalType::Datetime | NativeEvalType::Timestamp => {
+-                let mut output =
+-                    ChunkedVecSized::<TikvDateTime>::with_capacity(physical_rows.len());
+-                for &row in physical_rows {
+-                    output.push(
+-                        (!column.is_null(row)).then(|| {
+-                            TikvDateTime::from_go_raw_like_go(column.get_time(row).go_raw())
+-                        }),
+-                    );
+-                }
+-                Ok(Some(VectorValue::DateTime(output)))
++                read_fixed_native(&column, physical_rows, |cell| {
++                    let raw =
++                        u64::from_ne_bytes(cell.try_into().expect("Time cell is eight bytes"));
++                    let value = Time::from_go_raw(raw)
++                        .expect("chunk Time cell holds a valid packed types.Time");
++                    Ok(TikvDateTime::from_go_raw_like_go(value.go_raw()))
++                })
++                .map(VectorValue::DateTime)
++                .map(Some)
+             }
+             NativeEvalType::Duration => {
+                 let fsp = node.sql.decimal();
+-                let mut output =
+-                    ChunkedVecSized::<TikvDuration>::with_capacity(physical_rows.len());
+-                for &row in physical_rows {
+-                    let value = if column.is_null(row) {
+-                        None
+-                    } else {
+-                        let value = column.get_duration(row, fsp);
+-                        Some(
+-                            TikvDuration::from_nanos(
+-                                value.nanoseconds(),
+-                                i8::try_from(value.fsp())
+-                                    .map_err(|_| binding("batch Duration FSP is out of range"))?,
+-                            )
+-                            .map_err(|_| binding("batch Duration column is not representable"))?,
+-                        )
+-                    };
+-                    output.push(value);
+-                }
+-                Ok(Some(VectorValue::Duration(output)))
++                read_fixed_native(&column, physical_rows, |cell| {
++                    let nanos =
++                        i64::from_ne_bytes(cell.try_into().expect("Duration cell is eight bytes"));
++                    TikvDuration::from_nanos(
++                        nanos,
++                        i8::try_from(fsp)
++                            .map_err(|_| binding("batch Duration FSP is out of range"))?,
++                    )
++                    .map_err(|_| binding("batch Duration column is not representable"))
++                })
++                .map(VectorValue::Duration)
++                .map(Some)
+             }
+             NativeEvalType::Json => {
+                 let cells = column.raw_cells();
+diff --git a/rust/crates/tidb-expr/src/evaluator/batch_tests.rs b/rust/crates/tidb-expr/src/evaluator/batch_tests.rs
+index e9ea0b15..7d135e5d 100644
+--- a/rust/crates/tidb-expr/src/evaluator/batch_tests.rs
++++ b/rust/crates/tidb-expr/src/evaluator/batch_tests.rs
+@@ -2225,3 +2225,50 @@ fn integer_identities_preserve_first_argument_flags_and_all_bits() {
+     let route = suite.batch_route_snapshot();
+     assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+ }
++
++#[test]
++fn time_raw_batch_binding_preserves_word_normalization_and_null_skipping() {
++    let parsed =
++        tidb_datatype::parse_datetime("2026-10-16 12:34:56.123456", &chrono_tz::UTC, true, false)
++            .unwrap()
++            .time;
++    // Packed Timestamp FSP7 is normalized to6, not rejected or retained as7.
++    assert_eq!(Time::from_go_raw(15).unwrap().go_raw(), 13);
++    let mut words: Vec<_> = (0..16).map(|meta| (parsed.go_raw() & !15) | meta).collect();
++    words.push(u64::MAX);
++    let null_row = words.len() - 1;
++    let selection: Vec<_> = (0..2050)
++        .map(|i| words.len() - 1 - i % words.len())
++        .collect();
++    for code in [FieldTypeCode::Datetime, FieldTypeCode::Timestamp] {
++        let field = FieldType::new(code).with_decimal(6);
++        let schema = [field.clone()];
++        let mut input = Chunk::new_with_capacity(&schema, words.len());
++        for &word in &words {
++            input.append_uint64(0, word);
++        }
++        input.column_mut(0).set_null(null_row, true);
++        input.set_sel(Some(selection.clone()));
++        let suite = suite(call(
++            "any_value",
++            field.clone(),
++            vec![typed_column(0, &field)],
++        ));
++        let mut actual = output_for(&field);
++        suite
++            .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
++            .unwrap();
++        for (row, &source) in selection.iter().enumerate() {
++            let value = actual.get_row(row);
++            assert_eq!(value.is_null(0), source == null_row);
++            if source != null_row {
++                assert_eq!(
++                    value.get_uint64(0),
++                    Time::from_go_raw(words[source]).unwrap().go_raw()
++                );
++            }
++        }
++        let route = suite.batch_route_snapshot();
++        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
++    }
++}

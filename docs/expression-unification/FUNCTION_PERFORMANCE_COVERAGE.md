@@ -178,3 +178,10 @@ static signatures out of131 is metadata, not an SQL coverage percentage.
 ## M27 shared fixed-output storage
 
 [The M27 receipt](logs/performance-m27-fixed-output/summary.md) measures the common fixed-output buffer across14workloads, preserves all source/byte/ownership contracts and reports every slower control. No signature is added;67/131 remains metadata only.
+
+## M29 rejected input experiments
+
+[The three-code receipt](logs/performance-m29-fixed-input/summary.md) compares
+M27, direct temporal input and common fixed-input import. Both candidates are
+fully reverted: local gains coincide with4–10% Decimal losses (direct-only
+comparisons about12%). Runtime and67/131metadata remain unchanged.

@@ -1,0 +1,15 @@
+any_value_datetime 9.548 9.098 9.459 1.009
+any_value_duration 12.906 12.537 12.235 1.054
+any_value_int_unsigned 9.826 9.461 9.215 1.065
+any_value_json 130.321 123.301 122.592 1.06
+any_value_timestamp 9.589 9.044 9.499 1.011
+any_value_vector 71.896 70.949 71.457 1.006
+decimal_add 132.165 139.17 137.42 0.963
+decimal_compare_lt 74.938 84.21 82.87 0.911
+decimal_compare_nulleq 75.054 84.238 82.473 0.91
+integer_add 12.341 12.177 11.34 1.088
+lower 34.444 32.959 33.387 1.032
+real_add 12.458 12.326 11.556 1.081
+round_int_signed 7.402 7.239 6.824 1.079
+round_int_unsigned 7.407 7.246 6.785 1.092
+4410 timings/210 checksum groups incl42 actual-native dense groups agree; all3 real-code modes prepared only.
