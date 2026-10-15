@@ -20,7 +20,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-16) Added five LongLong comparisons and unsigned-input coverage across all seven via one registry contract; arithmetic/older row modes stay signed-only. Batch26/profile50 and PB roundtrips pass. Three cohorts give batch11.16–11.28ns versus true frozen native71.33–78.76ns; same-current-binary fallback ablation is explicitly distinct. Full suites retain1,376/same4 and1,026/same6.
 - [x] (2026-10-16) M14 admits fourteen same-domain Double/Decimal comparisons with the same registry and PB decoder. Batch27/profile51 and PB round trips pass; full1378/same4 and1027/same6. Three paired cohorts2940records/210checksums/42true-native groups agree; Double11.618–11.846ns vs native80.363–80.967, Decimal147.140–147.545 vs166.678–178.813. No new route or temporary boundary.
 - [x] (2026-10-16) M15 admits Tiny/Short/Int24/Long through the same eight-byte Int carrier. Batch28/profile52 and full1379/same4,1028/same6 pass their changed contract. Four typed SQL PLUS workloads give12.840–12.879ns vs native21.772–21.862; LT11.293–11.368 vs72.018–72.284. Three cohorts1680records/120checksumgroups/24native groups all agree. Year/hybrids and unsigned arithmetic remain excluded.
-- [ ] Audit direct logical Decimal word transport; source physical header/padding and native normalization policies must remain equivalent. Other collation/temporal/lazy/effectful families need separate semantic review.
+- [x] (2026-10-16) M16 direct logical Decimal cell import preserves normalization across197056 cases. TiDBdatatype514/TiKVdatatype564/batch28 pass, fullTiDB1379/same4. Three cohorts2310records/165checksumgroups agree: DecimalPLUS228.438→182.680ns, comparisons148→102.5. Int/Time controls regress~5%/~4%; a targeted210record Int control confirms it, cause unresolved. All tradeoffs and true-native results retained.
+- [ ] Audit direct Decimal output cell projection, preserving strict logical validity and resource preflights, and recheck Int/Time controls. Other collation/temporal/lazy/effectful families need separate semantic review.
 - [x] (2026-10-16) Measured direct Decimal word owner: 250.597→229.120ns/row (1.09x), datatype564 pass and expression baselines unchanged. Other workloads flat to ~2% slower; no universal improvement claim. All paired checksum/route groups agree; report under `logs/performance-m11-decimal-owner/`.
 
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.
@@ -293,3 +294,15 @@ LongLong. Obsolete batch Tiny/Long refusal assertions now test Year/BIT; the
 final debug TiKV suite and release TiDB suite verify the new boundary. The
 original release failure log is retained to make that test expectation change
 visible. All typed benchmark checksums match true frozen native.
+
+M16 in progress: replace batch Decimal input's intermediate native coefficient
+with one checked logical-word projection. Native cell header/padding normalization,
+zero sign, visible-scale extension and per-owner resource limits must match the
+old value bridge. Validate a bounded header/random-word corpus before benchmarking;
+do not reuse the wider physical-cell decoder as a logical adapter.
+
+M16 outcome: input coefficient round-trip is deleted from batch binding, with no
+new function driver or physical-codec substitution. Decimal improves1.25–1.45x,
+but Int/Time controls regress4–5%; the targeted check confirms the Int result.
+These are explicit checkpoint tradeoffs, with no universal performance claim.
+Decimal output remains a clear measured-cost direction for the next slice.

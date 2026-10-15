@@ -6,7 +6,17 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：窄整数类型（2026-10-16）
+## 最新结果：Decimal 输入的逻辑 words 转换（2026-10-16）
+
+移除 batch 输入的中间系数对象，直接按原值语义生成共享 words。197,056 个 cell 的逐字段等价检查通过，包括非规范 padding、负零、可见 scale 扩展和资源边界。三组 dense 对照中，Decimal PLUS **228.438→182.680 ns/row**（1.25 倍），LT **148.866→102.485**、NULL-safe equality **148.356→102.584**（均约 1.45 倍）。
+
+这不是所有 workload 都变快：Int PLUS **12.878→13.569**，单独复核也确认约 5% 的变慢；Time 控制项约 4% 变慢，其余控制项基本持平。全部结果保留，尚未建立这些控制项差异的具体原因。Decimal PLUS 仍比真实 native **70.089 ns/row** 慢约 2.61 倍；输出侧的中间系数转换尚待优化。
+
+主测量 2310 条 timing、165 个 checksum 组及 33 个 native/current dense 组一致；另有 Int 复核 210 条 timing / 15 组通过。[完整结果、慢项、重复范围与验证](logs/performance-m16-decimal-cell/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：窄整数类型（2026-10-16）
 
 Tiny/Short/Int24/Long 已复用相同的 8 字节 Int carrier，signed 算术与 signed/unsigned 比较的权限不变。四种实际 SQL 类型的 dense PLUS 为 **12.840–12.879 ns/row**，真实冻结 native **21.772–21.862**；LT 为 **11.293–11.368**，真实 native **72.018–72.284**。这些类型原先不能进入 batch；未增加任何 kernel 或执行模式。
 

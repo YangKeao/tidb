@@ -254,6 +254,18 @@ impl MyDecimal {
         self.as_shared().append_result_string_bytes(output);
     }
 
+    /// Projects a checked chunk cell directly into shared logical math words,
+    /// preserving native normalization and the per-owner byte limit.
+    pub fn try_to_shared_math(
+        &self,
+        limit: usize,
+    ) -> Result<
+        tidb_query_datatype::codec::mysql::Decimal,
+        tidb_query_datatype::codec::mysql::decimal::NativeDecimalError,
+    > {
+        tidb_query_datatype::codec::mysql::Decimal::try_from_native_cell(self.as_shared(), limit)
+    }
+
     pub(crate) fn to_decimal_parts(self) -> (bool, SmallVec<[u8; 24]>, u32, u32) {
         self.as_shared().to_decimal_parts()
     }
@@ -1150,4 +1162,67 @@ fn shared_mydecimal_facade_keeps_raw_storage_and_unwind_writeback() {
     assert_eq!(value.to_string_bytes(), b"12.5");
     assert_eq!(value.result_frac, 1);
     assert_eq!(value.word_buf[8], -12345);
+}
+
+#[cfg(test)]
+mod shared_math_cell_tests {
+    use super::*;
+    use crate::Decimal;
+
+    #[test]
+    fn direct_cell_projection_matches_native_value_normalization() {
+        let mut state = 0x94d049bb133111eb_u64;
+        let mut cases = 0;
+        for integer in 0..=81_usize {
+            for fraction in 0..=81_usize {
+                let active = integer.div_ceil(9) + fraction.div_ceil(9);
+                if active > 9 {
+                    continue;
+                }
+                for result in [0, 1, 8, 9, 10, 30, 81, 127] {
+                    for negative in [false, true] {
+                        for pattern in 0..4 {
+                            let mut bytes = [0_u8; 40];
+                            bytes[0] = integer as u8;
+                            bytes[1] = fraction as u8;
+                            bytes[2] = result;
+                            bytes[3] = u8::from(negative);
+                            for word in 0..9 {
+                                state ^= state << 13;
+                                state ^= state >> 7;
+                                state ^= state << 17;
+                                let raw = if word >= active {
+                                    -123_i32
+                                } else {
+                                    match pattern {
+                                        0 => 0,
+                                        1 => 999_999_999,
+                                        2 => (state % 1_000_000_000) as i32,
+                                        _ if word + 1 < integer.div_ceil(9) => 0,
+                                        _ => 1,
+                                    }
+                                };
+                                bytes[4 + word * 4..8 + word * 4]
+                                    .copy_from_slice(&raw.to_ne_bytes());
+                            }
+                            let cell = MyDecimal::from_raw_bytes(bytes).unwrap();
+                            let old = Decimal::from_my_decimal(&cell)
+                                .try_to_shared_math(1024 * 1024)
+                                .unwrap();
+                            let direct = cell.try_to_shared_math(1024 * 1024).unwrap();
+                            let old = old.words();
+                            let direct = direct.words();
+                            assert_eq!((direct.int_digits,direct.storage_frac,direct.result_frac,direct.negative,direct.words),(old.int_digits,old.storage_frac,old.result_frac,old.negative,old.words),"int={integer} frac={fraction} result={result} negative={negative} pattern={pattern}");
+                            let boundary = direct.words.len() * 4;
+                            assert!(cell.try_to_shared_math(boundary).is_ok());
+                            assert!(cell.try_to_shared_math(boundary - 1).is_err());
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cases > 100_000, "{cases}");
+        println!("validated {cases} native cell projections");
+    }
 }

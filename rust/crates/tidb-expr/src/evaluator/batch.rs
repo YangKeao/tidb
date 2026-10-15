@@ -1267,12 +1267,13 @@ impl NativeDatumSource for NativeChunk<'_> {
                     let value = if column.is_null(row) {
                         None
                     } else {
-                        let value =
-                            tidb_datatype::Decimal::from_my_decimal(&column.get_my_decimal(row));
                         Some(
-                            value.try_to_shared_math(1024 * 1024).map_err(|_| {
-                                binding("batch Decimal column is not representable")
-                            })?,
+                            column
+                                .get_my_decimal(row)
+                                .try_to_shared_math(1024 * 1024)
+                                .map_err(|_| {
+                                    binding("batch Decimal column is not representable")
+                                })?,
                         )
                     };
                     output.push(value);

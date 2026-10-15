@@ -1,0 +1,12 @@
+any_value_datetime 10.156 10.564 0.96
+any_value_duration 14.418 14.75 0.98
+any_value_json 133.266 133.404 1.0
+any_value_timestamp 10.163 10.57 0.96
+any_value_vector 71.898 70.557 1.02
+decimal_add 228.438 182.68 1.25
+decimal_compare_lt 148.866 102.485 1.45
+decimal_compare_nulleq 148.356 102.584 1.45
+integer_add 12.878 13.569 0.95
+lower 32.986 33.186 0.99
+real_add 13.724 14.039 0.98
+2310 timing records / 165 checksum groups match; prepared only.
