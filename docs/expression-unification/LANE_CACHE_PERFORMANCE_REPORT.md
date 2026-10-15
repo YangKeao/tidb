@@ -6,7 +6,29 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：整批 kernel（2026-10-16）
+## 最新结果：批量输出（2026-10-16）
+
+目标列每批只获取一次，定长输出统一批量写入，Decimal 每个值只转换一次。三组旧/新交错对照，dense 1,024 行、ns/selected-row：
+
+| workload | M9 vector kernel | M10 bulk output | paired speedup |
+|---|---:|---:|---:|
+| `any_value_datetime` | 15.768 | 10.484 | 1.50x |
+| `any_value_duration` | 19.681 | 14.731 | 1.33x |
+| `any_value_json` | 142.699 | 135.732 | 1.05x |
+| `any_value_timestamp` | 15.788 | 10.563 | 1.49x |
+| `any_value_vector` | 83.575 | 82.299 | 1.02x |
+| `decimal_add` | 289.160 | 251.091 | 1.15x |
+| `integer_add` | 17.322 | 13.039 | 1.33x |
+| `lower` | 37.692 | 35.952 | 1.05x |
+| `real_add` | 18.472 | 14.236 | 1.30x |
+
+Int 降至 13.039 ns/row；Decimal 降至 251.091，仍明显慢于原始 native。Vector 的小幅变化不足以认定稳定收益。1,890 条 timing / 135 个 checksum 组均一致，NULL/sparse/reverse/duplicate 均走 prepared。仍有 owned input import 和 TiKV 中间结果分配，尚未实现跨库零拷贝或 kernel 直接写目标 Chunk。
+
+完整条件、版本、全部样本和验证见[批量输出报告](logs/performance-m10-transport/summary.md)。以下为各阶段历史记录。
+
+---
+
+## 历史结果：整批 kernel（2026-10-16）
 
 删除逐 lane 的 singleton kernel 调用，改为每个函数节点调用一次完整 vector kernel。三组旧/新二进制交错对照，dense 1,024 行（ns/selected-row）：
 

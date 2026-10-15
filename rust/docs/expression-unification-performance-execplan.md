@@ -14,7 +14,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 - [x] (2026-10-15) Replaced per-lane singleton kernel calls with one vector call, removed singleton views/SmallVec dependency, and added aggregate work-budget boundary tests. TiKV profile 48/48 and runtime budget/storage 6/6 pass.
 - [x] (2026-10-16) Measured three interleaved release pairs: Int 52.792→17.370 ns/row (3.05x), Decimal 536.500→288.082 (1.86x), LOWER 104.976→37.813 (2.78x). All nine workloads improve, 1,890 records / 135 checksum groups agree. Frozen native was separately refreshed (Int21.196). Report/evidence retained under `docs/expression-unification/logs/performance-m9-vector-kernel/`.
-- [ ] Reduce typed transport overhead while preserving Chunk selection/alias behavior; measure separately.
+- [x] (2026-10-16) Added shared nullable fixed-cell bulk output, one destination-column borrow per window and single-pass Decimal conversion with accounted scratch. Chunk271/batch25/lint pass; three release pairs give Int17.322→13.039ns (1.33x), Decimal289.160→251.091 (1.15x), all checksum/route groups agree. Input import and intermediate result ownership remain.
 - [ ] Add a reproducible per-function/signature planning inventory and expand shared capability coverage with semantic tests.
 
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.

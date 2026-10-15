@@ -1868,3 +1868,47 @@ fn zero_value_variable_column_reads_as_empty_bytes() {
     let column = Column::default();
     assert!(column.get_bytes(0).is_empty());
 }
+
+#[test]
+fn nullable_fixed_batch_preserves_scalar_storage_and_frozen_aliases() {
+    for frozen in [false, true] {
+        for reset in [false, true] {
+            let mut actual = Column::new_fixed_len(8, 4);
+            actual.append_int64(91);
+            if frozen {
+                actual.data = SharedBytes::from_bytes(bytes::Bytes::from(actual.data.snapshot()));
+            }
+            let snapshot = actual.data.clone();
+            let snapshot_bytes = snapshot.snapshot();
+            let mut expected = actual.clone();
+            if reset {
+                actual.reset();
+                expected.reset();
+            }
+            let cells: Vec<Option<[u8; 8]>> = (0..1031)
+                .map(|i| (i % 3 != 0).then(|| (i as i64 * -7).to_ne_bytes()))
+                .collect();
+            for cell in &cells {
+                match cell {
+                    Some(value) => {
+                        expected.write_elem_buf(value);
+                        expected.finish_append_fixed();
+                    }
+                    None => expected.append_null(),
+                }
+            }
+            actual.append_fixed_cells(cells.iter().copied());
+            assert_eq!(actual.length, expected.length);
+            assert_eq!(actual.null_bitmap, expected.null_bitmap);
+            assert_eq!(actual.data.snapshot(), expected.data.snapshot());
+            assert_eq!(actual.elem_buf, expected.elem_buf);
+            assert_eq!(snapshot.snapshot(), snapshot_bytes);
+            let length = actual.length;
+            actual.append_fixed_cells(std::iter::empty::<Option<[u8; 8]>>());
+            assert_eq!(actual.length, length);
+            actual.append_null();
+            expected.append_null();
+            assert_eq!(actual.data.snapshot(), expected.data.snapshot());
+        }
+    }
+}

@@ -494,6 +494,56 @@ impl Column {
         }
     }
 
+    /// Append nullable fixed-width cells with one reservation and one owned
+    /// data borrow. Shared/frozen buffers retain the scalar copy-on-write path.
+    /// NULL backing and the scratch element match ordinary fixed appends.
+    pub fn append_fixed_cells<const N: usize>(
+        &mut self,
+        cells: impl ExactSizeIterator<Item = Option<[u8; N]>> + Clone,
+    ) {
+        assert_eq!(self.elem_buf.as_ref().map(Vec::len), Some(N));
+        let count = cells.len();
+        if count == 0 {
+            return;
+        }
+        let bytes = count
+            .checked_mul(N)
+            .expect("fixed batch byte count overflow");
+        let null_bytes = (self.length + count + 7) >> 3;
+        self.null_bitmap
+            .reserve(null_bytes.saturating_sub(self.null_bitmap.len()));
+        let Self {
+            data,
+            null_bitmap,
+            length,
+            elem_buf,
+            ..
+        } = self;
+        let elem = elem_buf.as_mut().expect("checked fixed column");
+        let appended = data.append_owned(|data| {
+            data.reserve(bytes);
+            for value in cells.clone() {
+                append_null_bit(null_bitmap, *length, value.is_some());
+                if let Some(value) = value {
+                    elem.copy_from_slice(&value);
+                }
+                data.extend_from_slice(elem);
+                *length += 1;
+            }
+        });
+        if !appended {
+            for value in cells {
+                match value {
+                    Some(value) => {
+                        self.write_elem_buf(&value);
+                        self.finish_append_fixed();
+                    }
+                    None => self.append_null(),
+                }
+            }
+        }
+    }
+
     /// Go `reset` (lowercase): drop all rows but keep the element type. A
     /// var-length column keeps its leading `0` offset.
     pub fn reset(&mut self) {

@@ -1017,22 +1017,20 @@ impl PreparedBatch {
         // a binding/resource error cannot leave a partially appended column.
         // The destination Chunk owns its ordinary allocation policy just as it
         // does for every other evaluator route.
+        // Invocation rejects output selections. Resolve the destination owner
+        // once for the whole window, preserving ColumnWrite alias/COW handling.
+        let mut output = output.column_mut(output_index);
         match &values {
             VectorValue::Int(ints) => {
-                for index in 0..values.len() {
-                    match ChunkRef::get_option_ref(ints, index) {
-                        Some(value) => output.append_int64(output_index, *value),
-                        None => output.append_null(output_index),
-                    }
-                }
+                output.append_fixed_cells((0..values.len()).map(|index| {
+                    ChunkRef::get_option_ref(ints, index).map(|value| value.to_ne_bytes())
+                }));
             }
             VectorValue::Real(reals) => {
-                for index in 0..values.len() {
-                    match ChunkRef::get_option_ref(reals, index) {
-                        Some(value) => output.append_float64(output_index, value.into_inner()),
-                        None => output.append_null(output_index),
-                    }
-                }
+                output.append_fixed_cells((0..values.len()).map(|index| {
+                    ChunkRef::get_option_ref(reals, index)
+                        .map(|value| value.into_inner().to_ne_bytes())
+                }));
             }
             VectorValue::Decimal(decimals) => {
                 let convert = |value: &TikvDecimal| {
@@ -1049,45 +1047,56 @@ impl PreparedBatch {
                     })
                     .map_err(|_| binding("batch Decimal output is not representable"))
                 };
-                for index in 0..values.len() {
-                    if let Some(value) = ChunkRef::get_option_ref(decimals, index) {
-                        drop(convert(value)?);
-                    }
-                }
-                for index in 0..values.len() {
-                    match ChunkRef::get_option_ref(decimals, index) {
-                        Some(value) => output.append_my_decimal(output_index, &convert(value)?),
-                        None => output.append_null(output_index),
-                    }
-                }
+                let converted_bytes =
+                    array_bytes::<Option<tidb_datatype::MyDecimal>>(values.len())?;
+                self.accept_retained(
+                    source_bytes
+                        .checked_add(converted_bytes)
+                        .ok_or_else(|| resource("batch Decimal conversion size overflow"))?,
+                )?;
+                // Validate every cell once before publishing any output. The
+                // previous adapter performed the same conversion twice.
+                let converted = (0..values.len())
+                    .map(|index| {
+                        ChunkRef::get_option_ref(decimals, index)
+                            .map(&convert)
+                            .transpose()
+                    })
+                    .collect::<LocalResult<Vec<_>>>()?;
+                self.accept_retained(
+                    source_bytes
+                        .checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(
+                            converted.capacity(),
+                        )?)
+                        .ok_or_else(|| resource("batch Decimal conversion size overflow"))?,
+                )?;
+                output.append_fixed_cells(
+                    converted
+                        .iter()
+                        .map(|value| value.as_ref().map(|value| value.to_raw_bytes())),
+                );
             }
             VectorValue::Bytes(bytes) => {
-                for index in 0..values.len() {
-                    match bytes.get(index) {
-                        Some(value) => output.append_bytes(output_index, value),
-                        None => output.append_null(output_index),
-                    }
-                }
+                output.append_raw_cells((0..values.len()).map(|index| {
+                    bytes
+                        .get(index)
+                        .map_or((false, &[][..]), |value| (true, value))
+                }));
             }
             VectorValue::DateTime(values) => {
-                for index in 0..values.len() {
-                    match ChunkRef::get_option_ref(values, index) {
-                        Some(value) => output
-                            .append_time(output_index, Time::from_go_raw_like_go(value.go_raw())),
-                        None => output.append_null(output_index),
-                    }
-                }
+                output.append_fixed_cells((0..values.len()).map(|index| {
+                    ChunkRef::get_option_ref(values, index).map(|value| {
+                        Time::from_go_raw_like_go(value.go_raw())
+                            .go_raw()
+                            .to_ne_bytes()
+                    })
+                }));
             }
             VectorValue::Duration(values) => {
-                for index in 0..values.len() {
-                    match ChunkRef::get_option_ref(values, index) {
-                        Some(value) => output.append_duration(
-                            output_index,
-                            MySqlDuration::from_raw_parts(value.to_nanos(), i64::from(value.fsp())),
-                        ),
-                        None => output.append_null(output_index),
-                    }
-                }
+                output.append_fixed_cells((0..values.len()).map(|index| {
+                    ChunkRef::get_option_ref(values, index)
+                        .map(|value| value.to_nanos().to_ne_bytes())
+                }));
             }
             VectorValue::Json(values) => {
                 let converted = (0..values.len())
@@ -1103,19 +1112,17 @@ impl PreparedBatch {
                     .collect::<LocalResult<Vec<_>>>()?;
                 for value in converted {
                     match value {
-                        Some(value) => output.append_json(output_index, &value),
-                        None => output.append_null(output_index),
+                        Some(value) => output.append_json(&value),
+                        None => output.append_null(),
                     }
                 }
             }
             VectorValue::VectorFloat32(values) => {
                 for index in 0..values.len() {
                     match values.get(index) {
-                        Some(value) => output.append_vector_float32(
-                            output_index,
-                            &native_vector_from_tikv(value.to_owned())?,
-                        ),
-                        None => output.append_null(output_index),
+                        Some(value) => output
+                            .append_vector_float32(&native_vector_from_tikv(value.to_owned())?),
+                        None => output.append_null(),
                     }
                 }
             }
