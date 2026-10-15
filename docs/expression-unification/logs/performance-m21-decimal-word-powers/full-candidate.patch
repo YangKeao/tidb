@@ -1,0 +1,142 @@
+diff --git a/components/tidb_query_datatype/src/codec/mysql/decimal.rs b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+index eacc494..be8f467 100644
+--- a/components/tidb_query_datatype/src/codec/mysql/decimal.rs
++++ b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+@@ -1911,6 +1911,31 @@ impl std::error::Error for NativeDecimalError {
+ 
+ type NativeDecimalResult<T> = std::result::Result<T, NativeDecimalError>;
+ 
++// Reciprocal constants are derived from the existing powers, not rounded
++// floating point. Entry zero is handled directly by the divider below.
++const NATIVE_WORD_POW10_RECIPROCALS: [u64; 10] = {
++    let mut values = [0; 10];
++    let mut power = 1;
++    while power < TEN_POW.len() {
++        let divisor = TEN_POW[power] as u128;
++        values[power] = (((1_u128 << 64) + divisor - 1) / divisor) as u64;
++        power += 1;
++    }
++    values
++};
++
++// For word <= u32::MAX and divisor <= 1e9, word * divisor < 2^64.
++// The ceil-reciprocal error adds less than word/2^64 < 1/divisor,
++// smaller than the fractional gap to the next quotient. The high product
++// therefore equals exact floor(word/divisor), including boundary multiples.
++#[inline(always)]
++fn native_word_div_pow10(word: u32, power: usize) -> u32 {
++    if power == 0 {
++        return word;
++    }
++    ((u128::from(word) * u128::from(NATIVE_WORD_POW10_RECIPROCALS[power])) >> 64) as u32
++}
++
+ // A limit applies to ONE materialized word value/buffer, including its nine
+ // initialized inline cells, not allocator capacity, headers or a combined peak.
+ // Round/shift preflights may reserve a conservative carry/alignment bound.
+@@ -2394,13 +2419,14 @@ impl Decimal {
+         // Native coefficient extraction emits only the declared digits of the
+         // first/last partial words. Physical cells may contain extra padding.
+         let head = integer % DIGITS_PER_WORD;
+-        if head != 0 {
+-            words[0] %= TEN_POW[head];
++        if head != 0 && words[0] >= TEN_POW[head] {
++            words[0] -= native_word_div_pow10(words[0], head) * TEN_POW[head];
+         }
+         let tail = fraction % DIGITS_PER_WORD;
+         if tail != 0 {
+             let padding = TEN_POW[DIGITS_PER_WORD - tail];
+-            words[source_active - 1] = words[source_active - 1] / padding * padding;
++            words[source_active - 1] =
++                native_word_div_pow10(words[source_active - 1], DIGITS_PER_WORD - tail) * padding;
+         }
+         let start = words[..int_words]
+             .iter()
+@@ -2486,7 +2512,11 @@ impl Decimal {
+             ));
+         }
+         let tail = self.frac_cnt % DIGITS_PER_WORD;
+-        if tail != 0 && self.word_buf[active - 1] % TEN_POW[DIGITS_PER_WORD - tail] != 0 {
++        if tail != 0
++            && self.word_buf[active - 1]
++                != native_word_div_pow10(self.word_buf[active - 1], DIGITS_PER_WORD - tail)
++                    * TEN_POW[DIGITS_PER_WORD - tail]
++        {
+             return Err(NativeDecimalError::InvalidInput(
+                 "fractional word has nonzero padding",
+             ));
+@@ -10554,3 +10584,57 @@ mod native_cell_logical_export_tests {
+         assert_eq!(cell.to_decimal_parts().1.as_slice(), b"120");
+     }
+ }
++
++#[cfg(test)]
++mod native_word_power_tests {
++    use super::*;
++
++    #[test]
++    fn reciprocal_word_division_matches_integer_division() {
++        let mut state = 0xd1b54a32d192ed03_u64;
++        for power in 0..TEN_POW.len() {
++            let divisor = TEN_POW[power];
++            for word in [
++                0,
++                1,
++                u32::MAX - 1,
++                u32::MAX,
++                WORD_BASE - 1,
++                divisor - 1,
++                divisor,
++                divisor + 1,
++            ] {
++                assert_eq!(
++                    native_word_div_pow10(word, power),
++                    word / divisor,
++                    "word={word} power={power}"
++                );
++            }
++            for quotient in [0, 1, 2, 9, 10, 99, u32::MAX / divisor] {
++                let multiple = u64::from(quotient) * u64::from(divisor);
++                for word in [multiple.saturating_sub(1), multiple, multiple + 1] {
++                    if let Ok(word) = u32::try_from(word) {
++                        assert_eq!(
++                            native_word_div_pow10(word, power),
++                            word / divisor,
++                            "boundary word={word} power={power}"
++                        );
++                    }
++                }
++            }
++        }
++        for _ in 0..100_000 {
++            state ^= state << 13;
++            state ^= state >> 7;
++            state ^= state << 17;
++            let word = (state >> 32) as u32;
++            for power in 0..TEN_POW.len() {
++                assert_eq!(
++                    native_word_div_pow10(word, power),
++                    word / TEN_POW[power],
++                    "random word={word} power={power}"
++                );
++            }
++        }
++    }
++}
+diff --git a/doc/maintenance-guides/src/coprocessor.md b/doc/maintenance-guides/src/coprocessor.md
+index 5e83921..44c884d 100644
+--- a/doc/maintenance-guides/src/coprocessor.md
++++ b/doc/maintenance-guides/src/coprocessor.md
+@@ -2017,6 +2017,12 @@ flag or eligibility policy described above.
+   the accounted converted cell Vec before any publication; its intermediate
+   ASCII coefficient allocation is removed. Physical/raw status export and
+   generic wide-math consumer admission remain separate.
++- Native partial-word normalization/validation uses exact high-product
++  division for u32 words and the existing powers10..1e9. Reciprocal constants
++  are computed as ceil(2^64/divisor); word*divisor<2^64 bounds quotient error
++  below the next integer gap. Canonical heads skip reduction. This changes
++  neither Decimal arithmetic/rounding nor physical/logical admission; direct
++  integer-division edge/random tests and cell/export oracles cover the helper.
+ - SQL declared precision/scale belongs to the typed caller, separately from
+   Decimal storage/result scale. Keep `Res::Ok`/`Truncated`/`Overflow` until that
+   caller applies warning/error policy; transport must not erase disposition by

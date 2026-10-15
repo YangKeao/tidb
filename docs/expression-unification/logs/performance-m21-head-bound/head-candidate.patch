@@ -1,0 +1,13 @@
+diff --git a/components/tidb_query_datatype/src/codec/mysql/decimal.rs b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+index eacc494..c6d5a59 100644
+--- a/components/tidb_query_datatype/src/codec/mysql/decimal.rs
++++ b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+@@ -2394,7 +2394,7 @@ impl Decimal {
+         // Native coefficient extraction emits only the declared digits of the
+         // first/last partial words. Physical cells may contain extra padding.
+         let head = integer % DIGITS_PER_WORD;
+-        if head != 0 {
++        if head != 0 && words[0] >= TEN_POW[head] {
+             words[0] %= TEN_POW[head];
+         }
+         let tail = fraction % DIGITS_PER_WORD;

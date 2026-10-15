@@ -1,0 +1,2 @@
+try_from_native_cell_bytes: 0 hardware div instructions
+try_to_native_cell: 0 hardware div instructions

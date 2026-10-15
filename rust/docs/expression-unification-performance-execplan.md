@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M21 compares M20/full reciprocal/head-bound binaries in three rotated cohorts. Retain only one head predicate: PLUS132.335→129.283ns, comparisons77.8→74.9. Full math gains another1.8–2ns but is discarded as insufficient for its added surface. All3465main/165groups33native and840M15/60groups agree; datatype516/565,batch28/full1379same4 pass.
+
 - [x] (2026-10-15) Replaced per-lane singleton kernel calls with one vector call, removed singleton views/SmallVec dependency, and added aggregate work-budget boundary tests. TiKV profile 48/48 and runtime budget/storage 6/6 pass.
 - [x] (2026-10-16) Measured three interleaved release pairs: Int 52.792→17.370 ns/row (3.05x), Decimal 536.500→288.082 (1.86x), LOWER 104.976→37.813 (2.78x). All nine workloads improve, 1,890 records / 135 checksum groups agree. Frozen native was separately refreshed (Int21.196). Report/evidence retained under `docs/expression-unification/logs/performance-m9-vector-kernel/`.
 - [x] (2026-10-16) Added shared nullable fixed-cell bulk output, one destination-column borrow per window and single-pass Decimal conversion with accounted scratch. Chunk271/batch25/lint pass; three release pairs give Int17.322→13.039ns (1.33x), Decimal289.160→251.091 (1.15x), all checksum/route groups agree. Input import and intermediate result ownership remain.
@@ -62,6 +64,14 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Surprises & Discoveries
 
+- Observation (2026-10-16): one head-range predicate captures most of the full reciprocal gain. The latter still saves1.8–2ns more, but adds table/helper/proof surface; only the bound is retained.
+  Evidence: three actual code versions,3465 timings/165 checksum groups; see M21 head-bound receipt.
+
+- Observation (2026-10-16): a9% constructor self profile did not imply that removing source checks would improve runtime. The M18 candidate was flat/slower and was fully reverted; its patch and samples remain available.
+  Evidence: `logs/performance-m18-decimal-construction/summary.md` records PLUS156.558→158.373ns and slower comparisons.
+- Observation (2026-10-16): the old typed Decimal input checked cell validity twice. One existing byte decoder plus the same logical projection removes both the redundant checks and the obsolete facade entry.
+  Evidence: M20 PLUS149.513→132.998ns, all checksum groups agree; production searches for the old input adapter find zero callers.
+
 - Observation: before milestone 1, `EvaluatorSuite::run_with_tikv_batch` cached only `Prepared` versus `Unsupported`; the benchmark inferred the route through a `cfg(test)` boolean, so a live server could not report why it fell back.
   Evidence: the implementation now exposes the permanent prepared/fallback/refusal counters and uses `BatchLane` for the semantic-class state; the old test-only inference hook is gone.
 
@@ -103,6 +113,20 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: retain only the M21 one-line head bound and discard the full reciprocal helper/table/unit.
+  Rationale: measured2–4% Decimal benefit from a simple n<d identity justifies one predicate; another1.8–2ns from full reciprocal math does not justify that larger surface. Preserve both experiments and all slower controls.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
+- Decision: reject and fully revert the M18 fresh-constructor candidate despite passing correctness checks.
+  Rationale: three paired cohorts provided no clear gain; keep performance-only changes only when measured benefit justifies them.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+- Decision: retain M19 generic append inlining with its explicit slower controls, and replace the M20 typed input adapter with one checked byte entry rather than keeping both.
+  Rationale: consistent Decimal gains use the same driver; source cleanup removes obsolete boundaries. The Real/Time and older M15 control regressions remain measured limitations, not hidden baseline changes.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+- Decision: test exact u32 reciprocal division only in native partial-word format normalization/validation, with an integer proof and independent division/cell/export oracles.
+  Rationale: M20 assembly contains two input and one output variable divisions; arithmetic, rounding, admission and resource policies need no change. Retention still requires measured benefit.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: optimize one common substrate; use signed LongLong `PLUS` only as the first end-to-end proof.
   Rationale: invariant sealing, route telemetry, dense slots, and buffer reuse are operation-independent. Carrier-specific batch adapters must be shared by all pure strict functions in that carrier.
   Date/Author: 2026-10-10 / TiDBEngineer and YangKeao.
@@ -128,6 +152,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
   Date/Author: 2026-10-12 / YangKeao and TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+Current adopted runtime is M21 (this TiDB report commit / TiKV8d143e4). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. Decimal PLUS is129.283ns/row versus true original native70.046; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. Coverage remains51/126 static names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -359,3 +385,27 @@ facade/typed-cell input boundaries are deleted. Decimal improves1.12–1.21x,
 without a new driver or value domain. Assembly inspection confirms two input
 and one output hardware divisions for partial-word powers, a small next target
 that still needs exact equivalence and measurement before retention.
+
+M21 in progress: replace partial-word variable division with exact reciprocal
+multiplication over u32 words and existing powers10..1e9. The integer proof uses
+word*divisor<2^64; no floating point or Decimal arithmetic policy changes. Skip
+head reduction for canonical bounded heads, preserve noncanonical projection
+and strict tail rejection. Validate against native integer division boundaries
+and1M random comparisons plus the independent existing cell/export corpora;
+inspect code generation and measure all primary/historical controls before keep.
+
+M21 candidate refinement: full reciprocal math improves the first cohort matrix
+by4–7%, but a canonical integer-head bound alone may capture that benefit. The
+full candidate/patch/binary/correctness evidence is saved outside production;
+test a head-bound-only one-line candidate against both M20 and full reciprocal
+before choosing. No alternative production route is kept alongside either.
+
+M21 outcome: only the canonical-head bound remains in production. Full reciprocal
+math, helper, table and unit are removed; both exact patches, proofs and actual
+binary measurements are archived. Reproduce three modes via
+docs/expression-unification/logs/performance-m21-head-bound/validation.md and
+collect.py; inspect summary.md for all controls. Next inspect whether a simple
+constructor call-boundary hint has meaningful measured benefit before considering
+a broader borrowed-output redesign or unsigned-result catalog contract.
+Revision note (2026-10-16): completed M21 with the smaller measured candidate,
+updated all living sections and archived the superseded alternative.

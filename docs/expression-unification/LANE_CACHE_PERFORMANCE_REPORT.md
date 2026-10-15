@@ -6,7 +6,17 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新采用结果：Decimal cell 只做一次 checked decode（2026-10-16）
+## 最新采用结果：只跳过规范 Decimal head 的余数运算（2026-10-16）
+
+三种实际二进制交错测量后，选择只改一行范围判断。Decimal PLUS **132.335→129.283 ns/row**，LT **77.772→74.849**、NULL-safe equality **77.754→74.977**，改善约 2%–4%。完整倒数算法还能再省约 1.8–2 ns，但增加的表、算法与证明成本不值得这点额外收益，已完整删除，实验 patch 留档。
+
+3465 条当前测量 / 165 组（含 33 个 native 对照）及 840 条 M15 控制 / 60 组全部匹配。原始 native PLUS 为 **70.046 ns**，当前仍慢约 1.85 倍。M15 对照的 Int、Datetime、Duration、LOWER 仍慢约 2%、7%、4%、4%，没有重置基线或宣称普遍提升。datatype 516 / 565、batch 28、完整 TiDB 1379 / 原有 4 失败保持。
+
+[三种实现、所有慢项、全部样本与最终选择](logs/performance-m21-head-bound/summary.md)，[未采用的完整倒数实验](logs/performance-m21-decimal-word-powers/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：Decimal cell 只做一次 checked decode（2026-10-16）
 
 输入直接使用每列一次的 raw-cell view，经已有 checked decoder 进入原逻辑归一化，删除了旧 typed-cell/facade 输入适配器与重复校验。三组 dense Decimal PLUS **149.513→132.998 ns/row**（1.12 倍），LT **94.040→78.179**、NULL-safe equality **94.095→77.907**（约 1.20–1.21 倍）。原始 native PLUS **70.492**，当前仍慢约 1.89 倍。
 
