@@ -1,0 +1,16 @@
+any_value_datetime 9.532 9.526 1.0
+any_value_duration 12.905 12.842 1.01
+any_value_int_unsigned 9.834 9.624 1.02
+any_value_json 129.414 121.142 1.07
+any_value_timestamp 9.566 9.463 1.01
+any_value_vector 72.256 72.026 1.0
+decimal_add 131.835 128.86 1.02
+decimal_compare_lt 75.02 74.698 1.0
+decimal_compare_nulleq 74.899 74.979 1.0
+integer_add 12.236 12.237 1.0
+lower 34.379 33.29 1.04
+pure_pi 630.365 4.1 153.75
+real_add 12.414 12.479 0.99
+round_int_signed 7.421 7.334 1.01
+round_int_unsigned 7.392 7.364 1.01
+3150 records /225 checksum groups incl45fresh native match; newPi before is current fallback ablation, old14 actual M27/M30 batch.

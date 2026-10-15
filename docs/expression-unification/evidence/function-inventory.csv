@@ -190,7 +190,7 @@ ord,"1, Some(1)",,,pending,not_audited,not_audited
 password,"1, Some(1)",,,pending,not_audited,not_audited
 period_add,"2, Some(2)",,,pending,not_audited,not_audited
 period_diff,"2, Some(2)",,,pending,not_audited,not_audited
-pi,"0, Some(0)",Pi,,pending,not_audited,not_audited
+pi,"0, Some(0)",Pi,Pi,pending,not_audited,not_audited
 plus,"2, Some(2)",PlusDecimal;PlusInt,PlusDecimal;PlusInt,pending,not_audited,not_audited
 position,"2, Some(2)",,,pending,not_audited,not_audited
 pow,"2, Some(2)",Pow,,pending,not_audited,not_audited

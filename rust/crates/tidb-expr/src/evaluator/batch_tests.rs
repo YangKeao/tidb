@@ -2225,3 +2225,79 @@ fn integer_identities_preserve_first_argument_flags_and_all_bits() {
     let route = suite.batch_route_snapshot();
     assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
 }
+
+#[test]
+fn pure_niladic_pi_uses_explicit_rows_without_admitting_stateful_calls() {
+    let field = real_ty();
+    let pi = || call("pi", field.clone(), vec![]);
+    for selected in [
+        None,
+        Some(vec![]),
+        Some((0..2050).map(|i| 16 - i % 17).collect()),
+    ] {
+        let mut input = Chunk::new_with_capacity(&[], 2050);
+        input.set_num_virtual_rows(2050);
+        input.set_sel(selected.clone());
+        let expected_rows = selected.as_ref().map_or(2050, Vec::len);
+        for nested in [false, true] {
+            let root = if nested {
+                call(
+                    "plus",
+                    field.clone(),
+                    vec![pi(), literal(Datum::Real(1.25), field.clone())],
+                )
+            } else {
+                pi()
+            };
+            let suite = suite(root);
+            let mut actual = output_for(&field);
+            suite
+                .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &[])
+                .unwrap();
+            assert_eq!(actual.num_rows(), expected_rows);
+            let expected: f64 = if nested {
+                3.141592653589793 + 1.25
+            } else {
+                3.141592653589793
+            };
+            for row in 0..actual.num_rows() {
+                assert!(!actual.get_row(row).is_null(0));
+                assert_eq!(
+                    actual.get_row(row).get_float64(0).to_bits(),
+                    expected.to_bits()
+                );
+            }
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        }
+    }
+    // An empty argument list is only arity; the registry still decides purity.
+    let random = suite(call("rand", field.clone(), vec![]));
+    assert!(PreparedBatch::compile(
+        &random,
+        &[],
+        true,
+        1,
+        limits(),
+        ExecutionLimits::default(),
+        usize::MAX
+    )
+    .is_err());
+    let pure = suite(pi());
+    let mut source_limits = limits();
+    source_limits.tree.max_nodes = 0;
+    assert!(matches!(
+        PreparedBatch::compile(
+            &pure,
+            &[],
+            true,
+            1,
+            source_limits,
+            ExecutionLimits::default(),
+            usize::MAX
+        ),
+        Err(BatchFailure {
+            kind: FailureKind::Local(LocalError::ResourceLimit(_))
+        })
+    ));
+}

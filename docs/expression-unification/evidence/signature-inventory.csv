@@ -99,7 +99,7 @@ NeReal,ne,True,pending,not_audited,not_audited
 NullEqDecimal,nulleq,True,pending,not_audited,not_audited
 NullEqInt,nulleq,True,pending,not_audited,not_audited
 NullEqReal,nulleq,True,pending,not_audited,not_audited
-Pi,pi,False,pending,not_audited,not_audited
+Pi,pi,True,pending,not_audited,not_audited
 PlusDecimal,plus,True,pending,not_audited,not_audited
 PlusInt,plus,True,pending,not_audited,not_audited
 PlusReal,,True,pending,not_audited,not_audited

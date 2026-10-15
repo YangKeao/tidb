@@ -413,8 +413,7 @@ fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
 }
 fn check_batch_call(function: &ScalarFunction) -> Result<()> {
     let expected_arity = batch_fact(function)?.1;
-    if expected_arity == 0
-        || function.args.len() != expected_arity
+    if function.args.len() != expected_arity
         || function.pb_signature().is_some()
         || function.pb_origin().is_some()
         || function.has_values_offset()

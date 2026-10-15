@@ -92,7 +92,11 @@ struct Workload {
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 63] = [
+const WORKLOADS: [Workload; 64] = [
+    Workload {
+        name: "pure_pi",
+        sql: "pi()",
+    },
     Workload {
         name: "round_int_signed",
         sql: "round(i)",
@@ -350,7 +354,7 @@ const WORKLOADS: [Workload; 63] = [
 fn tikv_batch_workload(name: &str) -> bool {
     matches!(
         name,
-        "round_int_signed" | "round_int_unsigned" | "any_value_int_unsigned"
+        "pure_pi" | "round_int_signed" | "round_int_unsigned" | "any_value_int_unsigned"
     ) || matches!(name, "integer_not" | "real_asin" | "real_acos")
         || name.starts_with("isnull_")
         || name.starts_with("integer_bit_")
@@ -571,6 +575,15 @@ fn validate_output(
 ) {
     assert_eq!(output.num_rows(), input.num_rows());
     assert_eq!(output_checksum(output, field), reference_checksum);
+    if workload.name == "pure_pi" {
+        for row in 0..output.num_rows() {
+            assert!(!output.get_row(row).is_null(0));
+            assert_eq!(
+                output.get_row(row).get_float64(0).to_bits(),
+                3.141592653589793_f64.to_bits()
+            );
+        }
+    }
     if !workload.name.starts_with("integer_add") {
         return;
     }

@@ -9,7 +9,7 @@ lowering and measured performance are separate gates.
 The reproducible source audit inventories 308 static function-name registrations
 (including aliases/internal names) from this checkout's `builtin_registry.rs`.
 It also inventories 131 unique signature names found in the static pushdown
-catalog or the paired TiKV batch registry. There are 67 registry-admitted eager
+catalog or the paired TiKV batch registry. There are 68 registry-admitted eager
 signatures. These counts describe different sets and must not be divided to
 produce an SQL/function coverage percentage.
 
@@ -185,3 +185,20 @@ static signatures out of131 is metadata, not an SQL coverage percentage.
 M27, direct temporal input and common fixed-input import. Both candidates are
 fully reverted: local gains coincide with4–10% Decimal losses (direct-only
 comparisons about12%). Runtime and67/131metadata remain unchanged.
+
+## M30 pure niladic PI and next-work boundary
+
+Pi()->Real now uses the same explicit-row kernel entry, with no input columns
+required. Only this pure deterministic zero-argument signature is admitted;
+RAND and contextual/stateful calls remain excluded. Virtual2050rows, empty and
+reverse/duplicate selections, nestedReal and resource refusals are tested.
+Three pairs measure4.100ns/row versus true original native67.078, about16.44x.
+Old14actualM27controls and all slow shapes remain in the receipt.68/131metadata
+still does not express a SQL coverage percentage.
+
+[The M30 receipt](logs/performance-m30-pi/summary.md) pins implementation,
+validation, all3150main/225groups and840historical/60groups samples.
+[The remaining-work audit](logs/performance-m30-pi/remaining-work-boundary.md)
+lists all63unadmitted static signature names and the ownership/semantic work
+needed next. This measured pass ends at that cost boundary; broad full-function
+optimization remains unfinished.

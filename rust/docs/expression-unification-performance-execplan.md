@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M30 pure niladic Pi reuses explicit-row kernel dispatch; exact bits,2050virtual/empty/reverse/duplicate/nested/resource/RAND refusal tests pass. Batch34/fullTiDB1386same4/TiKV1032same6/lintfmt pass. Three pairs3150records/225groups45native agree: PI4.100ns vs true original67.078 (~16.44x), old14actualM27controls retained;840M15/60groups agree, LOWER remains~1%slower. Metadata68/131. End this authorized pass at the documented ownership/semantic cost boundary, not full coverage.
+
 - [x] (2026-10-16) M29 both input candidates rejected/fully reverted. Actual M27/direct/common rotated cohorts4410records/210checksumgroups incl42native agree. Common importer improves Int/Real8–9% and Duration5%, but DecimalPLUS132.165→137.420ns and comparisons75→82–83 regress4%/10%; direct-only is worse. Batch34/full1386same4 and lint/fmt pass;840M15/60groups agree with LOWER still slower. Preserve both patches/receipts. Runtime remains M27.
 
 - [x] (2026-10-16) M28 constructor inline-only candidate rejected: Duration12.939→13.472ns (~4% slower), despite579byte symbol removal. Datatype516/565,batch33/fullTiDB1385same4/TiKV1031same6/lintfmt pass. All2940main/210groups42native and840M15/60groups agree. Hint reverse-applied; adopted runtime remains M27, no altered checks or candidate baseline retained.
@@ -43,7 +45,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-16) M18 constructor simplification tested and REJECTED: datatype515/565,batch28/full1379same4 all pass, but three cohorts show PLUS156.558→158.373ns and comparisons~3%slower. 2310main records/165groups plus840M15reference/60groups all match. Candidate reverse-applied; TiKV restored clean to44befe0. Exact patch/results retained; no unmeasured optimization remains.
 - [x] (2026-10-16) M19 retains one append inline hint after three cohorts: DecimalPLUS158.749→149.122ns (1.07x), comparisons103→94 (1.09x), Duration/JSON improve. Real/Time controls regress~5%/~3% and are retained. All2310main/165groups/33native plus840M15ref/60groups agree. Datatype515/565, freshTiKVexpr1028/same6, batch28/fullTiDB1379/same4/lintfmt pass.
 - [x] (2026-10-16) M20 replaces typed-cell input with one existing checked byte decoder plus unchanged projection/raw view. Old adapter API/facade/guards deleted, source searches0. Datatype516/565,batch28/fullTiDB1379/same4/lintfmt pass. Three cohorts PLUS149.513→132.998ns, comparison94→78; all2310/165groups33native and840M15ref/60groups agree, slower historical controls retained.
-- [ ] Test partial-word arithmetic simplification: canonical head bounds can skip remainder; fractional projection/validation can expose constant powers to codegen. Current assembly has two input and one output hardware divisions. Preserve exact noncanonical-cell/value semantics and keep only measured gains. Other collation/temporal/lazy/effectful families need separate semantic review.
+- [x] Partial-word experiment completed in M21: retain one canonical-head predicate; reject the larger reciprocal algorithm after actual three-way comparison. Other collation/temporal/lazy/effectful families remain explicitly outside this completed measured pass.
 - [x] (2026-10-16) Measured direct Decimal word owner: 250.597→229.120ns/row (1.09x), datatype564 pass and expression baselines unchanged. Other workloads flat to ~2% slower; no universal improvement claim. All paired checksum/route groups agree; report under `logs/performance-m11-decimal-owner/`.
 
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.
@@ -79,6 +81,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-12 02:22Z) Corrected the benchmark cohort after review. A disposable probe built the actual frozen original-native TiDB `364aef2b` with paired TiKV `548812e` and measured the same nine dense batch-1,024 workloads. The historical pre-optimization TiKV pair `f388b337`/`608bbfc9` was rebuilt separately; only signed Int PLUS had a TiKV batch route at that revision, so the other eight historical TiKV cells are explicitly N/A rather than simulated with current code.
 
 ## Surprises & Discoveries
+
+- Observation (2026-10-16): the shared generated kernel already accepts an explicit output-row count with no arguments; native admission alone prohibited every zero-argument call.
+  Evidence: M30 Pi works across2050virtual rows, empty/repeated selection and nested calls without source reads. Stateful RAND remains registry-excluded and budget refusals still apply.
 
 - Observation (2026-10-16): packed native Timestamp FSP7 normalizes to6; a raw-byte transport must preserve the original constructor before exporting its word.
   Evidence: M29 all16metadata-nibble test over2050reverse/duplicate rows, both Datetime/Timestamp and poisoned NULL payload.
@@ -149,6 +154,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
   Evidence: the failed first carrier audit produced 72/75 and a panic at the old arithmetic-only assertion. The helper now leaves registered non-arithmetic calls on their existing row evaluator; a native-vs-batch `GT/EQ` regression passes, and the rebuilt audit returns to 73/75 with no panic.
 
 ## Decision Log
+
+- Decision: retain only pure niladic Pi admission and finish this measured pass at the next-work cost boundary.
+  Rationale: PI16.44x true-native gain needs no new driver; all actual old controls are retained. Further clear common storage work changes borrowed-value ownership/budgets; remaining63signature domains need specific semantic review. No full-function optimization or universal speedup is claimed.
+  Date/Author: 2026-10-16 / TiDBEngineer.
 
 - Decision: fully revert both M29 input candidates, including their test, after the final three-code comparison.
   Rationale: common helper Int/Real8–9% and Duration5% gains do not justify Decimal4–10% regressions; direct-only regresses comparisons12%. Production remains M27; no unproven code-shape explanation is asserted.
@@ -226,9 +235,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime remains M27 (TiDB7f0daa91 / TiKVd5817d0); M28 inline-only and both M29 input experiments are rejected/fully reverted. M29 demonstrates that local fixed-input gains can coexist with larger Decimal comparison losses; all candidates and slow controls remain in their receipts. The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is67/131 static signature names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M30: pure Pi admission on the retained M27 storage implementation. M28 inline-only and both M29 input experiments are rejected/fully reverted. M29 demonstrates that local fixed-input gains can coexist with larger Decimal comparison losses; all candidates and slow controls remain in their receipts. The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is68/131 static signature names, with no new arithmetic policy or execution mode. The authorized measured pass ends at its next-work cost boundary; all63unadmitted names and larger ownership/semantic work are listed in docs/expression-unification/logs/performance-m30-pi/remaining-work-boundary.md.
 
-The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
+The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. That historical checkpoint used owned typed import/output and singleton kernels. Adopted M9 now uses full-vector kernels and later milestones improve output transport; borrowed input/intermediate ownership remains future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
 At the earlier checkpoint, The first sealing/scratch-only checkpoint moved the batch-1,024 dense median from 285.179 to 279.861 ns/row. After whole-selection execution and direct destination output, the final seven-sample `PLUS` medians are dense 131.879 ns/row (-53.8% from the frozen baseline), NULL 133.786, sparse 136.628, reverse 133.789, and duplicate 132.553. The final test binary SHA-256 is `111d05ffae43f824ee1c339b4de1e9faca8340df7e05941af22fb1176edfbc38`; CPU calibration was 1.063 before and 1.079 ns/iteration after. All live route snapshots showed prepared calls only with zero fallback/refusal, and retained scratch is only the selection buffer (capacity 1,024, or 256 for the sparse case).
 
@@ -642,3 +651,8 @@ M29 final outcome: both exact candidate patches reverse-applied. Three rotated
 cohorts confirm Decimal comparison regression for A and B; retain M27 runtime
 and archive both alternatives, validation and every slow control. No new
 signatures or production test/helper remain.
+
+M30 final checkpoint: admit pure Pi at exact arity0 on the existing vector
+kernel/row-count contract. Keep stateful calls excluded. Publish actual
+original-native results, old-code controls, negative experiments and all63
+unadmitted names; conclude this pass at the documented larger-work boundary.
