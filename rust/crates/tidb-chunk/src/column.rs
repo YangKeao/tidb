@@ -808,15 +808,28 @@ impl Column {
             !self.is_fixed(),
             "append_vector_float32 on a fixed-length column"
         );
-        let mut encoded = Vec::new();
-        value.serialize_to(&mut encoded);
-        self.data.extend_from_slice(&encoded);
+        if !self.data.append_owned(|data| value.serialize_to(data)) {
+            let mut encoded = Vec::new();
+            value.serialize_to(&mut encoded);
+            self.data.extend_from_slice(&encoded);
+        }
         self.finish_append_var();
     }
 
     /// Go `Column.AppendJSON`.
     pub fn append_json(&mut self, value: &tidb_datatype::BinaryJSON) {
-        self.append_bytes(&value.encoded());
+        assert!(!self.is_fixed(), "append_json on a fixed-length column");
+        let payload = value.value();
+        if !self.data.append_owned(|data| {
+            data.reserve(1 + payload.len());
+            data.push(value.type_code());
+            data.extend_from_slice(payload);
+        }) {
+            self.data.reserve(1 + payload.len());
+            self.data.extend_from_slice(&[value.type_code()]);
+            self.data.extend_from_slice(payload);
+        }
+        self.finish_append_var();
     }
 
     /// Go `GetBytes`: the raw bytes of a variable-length row.

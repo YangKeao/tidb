@@ -1219,21 +1219,29 @@ impl NativeDatumSource for NativeChunk<'_> {
         let column = self.input.column(*index);
         match node.sql.eval_type() {
             NativeEvalType::Int => {
+                let cells = column.raw_cells();
                 let mut output = ChunkedVecSized::<Int>::with_capacity(physical_rows.len());
                 for &row in physical_rows {
-                    output.push((!column.is_null(row)).then(|| column.get_int64(row)));
+                    output.push((!cells.is_null(row)).then(|| {
+                        i64::from_ne_bytes(
+                            cells.get(row).try_into().expect("Int cell is eight bytes"),
+                        )
+                    }));
                 }
                 Ok(Some(VectorValue::Int(output)))
             }
             NativeEvalType::Real => {
+                let cells = column.raw_cells();
                 let mut output = ChunkedVecSized::<Real>::with_capacity(physical_rows.len());
                 for &row in physical_rows {
                     let value = if column.is_null(row) {
                         None
                     } else {
                         Some(
-                            Real::new(column.get_float64(row))
-                                .map_err(|_| binding("batch Real column contains a NaN value"))?,
+                            Real::new(f64::from_ne_bytes(
+                                cells.get(row).try_into().expect("Real cell is eight bytes"),
+                            ))
+                            .map_err(|_| binding("batch Real column contains a NaN value"))?,
                         )
                     };
                     output.push(value);
@@ -1259,11 +1267,12 @@ impl NativeDatumSource for NativeChunk<'_> {
                 Ok(Some(VectorValue::Decimal(output)))
             }
             NativeEvalType::String => {
+                let cells = column.raw_cells();
                 let payload = physical_rows.iter().try_fold(0usize, |total, &row| {
                     total.checked_add(if column.is_null(row) {
                         0
                     } else {
-                        column.get_bytes(row).as_ref().len()
+                        cells.get(row).len()
                     })
                 });
                 let payload = payload.ok_or_else(|| resource("batch Bytes payload overflow"))?;
@@ -1273,8 +1282,7 @@ impl NativeDatumSource for NativeChunk<'_> {
                     if column.is_null(row) {
                         output.push_ref(None);
                     } else {
-                        let value = column.get_bytes(row);
-                        output.push_ref(Some(value.as_ref()));
+                        output.push_ref(Some(cells.get(row)));
                     }
                 }
                 Ok(Some(VectorValue::Bytes(output)))
@@ -1314,15 +1322,19 @@ impl NativeDatumSource for NativeChunk<'_> {
                 Ok(Some(VectorValue::Duration(output)))
             }
             NativeEvalType::Json => {
+                let cells = column.raw_cells();
                 let mut output = ChunkedVecJson::with_capacity(physical_rows.len());
                 for &row in physical_rows {
                     if column.is_null(row) {
                         output.push(None);
                     } else {
-                        let value = column.get_json(row);
-                        let kind = JsonType::try_from(value.type_code())
+                        let (kind, payload) = cells
+                            .get(row)
+                            .split_first()
+                            .expect("a JSON cell always carries its type code");
+                        let kind = JsonType::try_from(*kind)
                             .map_err(|_| binding("batch JSON column has an unknown type code"))?;
-                        output.push(Some(TikvJson::new(kind, value.value().to_vec())));
+                        output.push(Some(TikvJson::new(kind, payload.to_vec())));
                     }
                 }
                 Ok(Some(VectorValue::Json(output)))

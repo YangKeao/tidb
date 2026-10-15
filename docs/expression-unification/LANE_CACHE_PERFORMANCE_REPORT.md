@@ -6,7 +6,29 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：Decimal 直接构造 word owner（2026-10-16）
+## 最新结果：变长序列化与输入视图（2026-10-16）
+
+JSON/Vector 普通输出缓冲直接序列化，Int/Real/Bytes/JSON 输入每批持有一次 raw view，JSON 少一次中间 payload 拷贝。三组配对，dense 1,024 行、ns/selected-row：
+
+| workload | M11 | M12 | paired speedup | frozen native (fresh) |
+|---|---:|---:|---:|---:|
+| `any_value_datetime` | 10.826 | 10.091 | 1.07x | 117.316 |
+| `any_value_duration` | 14.965 | 14.448 | 1.04x | 119.242 |
+| `any_value_json` | 136.204 | 122.171 | 1.11x | 137.705 |
+| `any_value_timestamp` | 10.767 | 10.086 | 1.07x | 116.551 |
+| `any_value_vector` | 83.312 | 72.932 | 1.14x | 158.377 |
+| `decimal_add` | 230.038 | 228.664 | 1.01x | 73.061 |
+| `integer_add` | 13.170 | 12.836 | 1.02x | 21.111 |
+| `lower` | 36.084 | 32.570 | 1.11x | 148.327 |
+| `real_add` | 14.317 | 13.863 | 1.03x | 109.633 |
+
+JSON 136.204→122.171、Vector 83.312→72.932、LOWER 36.084→32.570；Decimal 变化约 1%，基本持平。另行复测真实原始 native 后，九个代表 workload 中八个更快，Decimal 仍慢约 3.13 倍。不能据此声称所有函数或 SQL workload 已更快。
+
+1,890 条旧/新 timing / 135 个 checksum 组一致，另有 9 个 dense native/current checksum 组一致。仍有 owned typed 输入和中间结果，并未实现跨库零拷贝。完整版本、条件、样本及验证见[本轮报告](logs/performance-m12-varlen-transport/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：Decimal 直接构造 word owner（2026-10-16）
 
 共享 Decimal 构造器去掉临时 word Vec、重复校验及拷贝，保留原有输入与资源检查。三组旧/新配对，dense 1,024 行、ns/selected-row：
 

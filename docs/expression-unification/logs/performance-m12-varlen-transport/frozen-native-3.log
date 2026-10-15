@@ -1,0 +1,71 @@
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.073 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=integer_add sample=0 iterations=3535 elapsed_ns=76459641 ns_per_row=21.122 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=integer_add sample=1 iterations=3535 elapsed_ns=76584000 ns_per_row=21.157 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=integer_add sample=2 iterations=3535 elapsed_ns=76281452 ns_per_row=21.073 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=integer_add sample=3 iterations=3535 elapsed_ns=76277191 ns_per_row=21.072 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=integer_add sample=4 iterations=3535 elapsed_ns=76293562 ns_per_row=21.077 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=integer_add sample=5 iterations=3535 elapsed_ns=76328112 ns_per_row=21.086 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=integer_add sample=6 iterations=3535 elapsed_ns=76321552 ns_per_row=21.084 checksum=1415905436846118828
+ORIGINAL_NATIVE_PERF name=real_add sample=0 iterations=668 elapsed_ns=74981018 ns_per_row=109.616 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=real_add sample=1 iterations=668 elapsed_ns=74997318 ns_per_row=109.640 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=real_add sample=2 iterations=668 elapsed_ns=74992687 ns_per_row=109.633 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=real_add sample=3 iterations=668 elapsed_ns=75010267 ns_per_row=109.659 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=real_add sample=4 iterations=668 elapsed_ns=74943297 ns_per_row=109.561 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=real_add sample=5 iterations=668 elapsed_ns=74926988 ns_per_row=109.537 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=real_add sample=6 iterations=668 elapsed_ns=75002908 ns_per_row=109.648 checksum=3322529630682028431
+ORIGINAL_NATIVE_PERF name=decimal_add sample=0 iterations=989 elapsed_ns=73728593 ns_per_row=72.801 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=decimal_add sample=1 iterations=989 elapsed_ns=73572193 ns_per_row=72.647 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=decimal_add sample=2 iterations=989 elapsed_ns=73589843 ns_per_row=72.664 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=decimal_add sample=3 iterations=989 elapsed_ns=73495434 ns_per_row=72.571 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=decimal_add sample=4 iterations=989 elapsed_ns=73523503 ns_per_row=72.599 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=decimal_add sample=5 iterations=989 elapsed_ns=73540563 ns_per_row=72.616 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=decimal_add sample=6 iterations=989 elapsed_ns=73482664 ns_per_row=72.559 checksum=18059723463645726757
+ORIGINAL_NATIVE_PERF name=lower sample=0 iterations=498 elapsed_ns=75466335 ns_per_row=147.987 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=lower sample=1 iterations=498 elapsed_ns=75854803 ns_per_row=148.749 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=lower sample=2 iterations=498 elapsed_ns=75639485 ns_per_row=148.327 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=lower sample=3 iterations=498 elapsed_ns=75860084 ns_per_row=148.759 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=lower sample=4 iterations=498 elapsed_ns=75430355 ns_per_row=147.917 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=lower sample=5 iterations=498 elapsed_ns=75659254 ns_per_row=148.365 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=lower sample=6 iterations=498 elapsed_ns=75585824 ns_per_row=148.221 checksum=15273801051735777761
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=0 iterations=621 elapsed_ns=73989791 ns_per_row=116.354 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=1 iterations=621 elapsed_ns=74468529 ns_per_row=117.107 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=2 iterations=621 elapsed_ns=74661649 ns_per_row=117.410 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=3 iterations=621 elapsed_ns=74522139 ns_per_row=117.191 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=4 iterations=621 elapsed_ns=74795168 ns_per_row=117.620 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=5 iterations=621 elapsed_ns=75010747 ns_per_row=117.959 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_datetime sample=6 iterations=621 elapsed_ns=74601609 ns_per_row=117.316 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=0 iterations=622 elapsed_ns=75239105 ns_per_row=118.128 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=1 iterations=622 elapsed_ns=75055567 ns_per_row=117.840 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=2 iterations=622 elapsed_ns=74845208 ns_per_row=117.510 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=3 iterations=622 elapsed_ns=75071287 ns_per_row=117.865 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=4 iterations=622 elapsed_ns=75100177 ns_per_row=117.910 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=5 iterations=622 elapsed_ns=74602389 ns_per_row=117.128 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_timestamp sample=6 iterations=622 elapsed_ns=74617189 ns_per_row=117.152 checksum=526423980264004389
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=0 iterations=620 elapsed_ns=75719184 ns_per_row=119.265 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=1 iterations=620 elapsed_ns=75197516 ns_per_row=118.444 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=2 iterations=620 elapsed_ns=75449685 ns_per_row=118.841 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=3 iterations=620 elapsed_ns=75528295 ns_per_row=118.965 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=4 iterations=620 elapsed_ns=76217411 ns_per_row=120.050 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=5 iterations=620 elapsed_ns=75819683 ns_per_row=119.424 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_duration sample=6 iterations=620 elapsed_ns=75704644 ns_per_row=119.242 checksum=4118003679867021786
+ORIGINAL_NATIVE_PERF name=any_value_json sample=0 iterations=535 elapsed_ns=75762434 ns_per_row=138.293 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_json sample=1 iterations=535 elapsed_ns=75045067 ns_per_row=136.984 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_json sample=2 iterations=535 elapsed_ns=75440515 ns_per_row=137.705 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_json sample=3 iterations=535 elapsed_ns=75975903 ns_per_row=138.683 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_json sample=4 iterations=535 elapsed_ns=75378415 ns_per_row=137.592 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_json sample=5 iterations=535 elapsed_ns=75417315 ns_per_row=137.663 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_json sample=6 iterations=535 elapsed_ns=76416791 ns_per_row=139.487 checksum=1076144593231861541
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=0 iterations=471 elapsed_ns=77146358 ns_per_row=159.954 checksum=14910354562545668169
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=1 iterations=471 elapsed_ns=78878810 ns_per_row=163.546 checksum=14910354562545668169
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=2 iterations=471 elapsed_ns=81541299 ns_per_row=169.066 checksum=14910354562545668169
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=3 iterations=471 elapsed_ns=76640710 ns_per_row=158.905 checksum=14910354562545668169
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=4 iterations=471 elapsed_ns=77012068 ns_per_row=159.675 checksum=14910354562545668169
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=5 iterations=471 elapsed_ns=76306380 ns_per_row=158.212 checksum=14910354562545668169
+ORIGINAL_NATIVE_PERF name=any_value_vector sample=6 iterations=471 elapsed_ns=76463190 ns_per_row=158.537 checksum=14910354562545668169
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.097 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 4.85s
+

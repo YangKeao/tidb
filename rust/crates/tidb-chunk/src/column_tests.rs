@@ -1912,3 +1912,41 @@ fn nullable_fixed_batch_preserves_scalar_storage_and_frozen_aliases() {
         }
     }
 }
+
+#[test]
+fn json_vector_direct_append_preserves_encoded_cells_and_frozen_aliases() {
+    let json = tidb_datatype::BinaryJSON::from_encoded_parts(0x04, vec![1]);
+    let mut vector = tidb_datatype::VectorFloat32::init(3);
+    vector
+        .elements_mut()
+        .copy_from_slice(&[-0.0, f32::from_bits(0x7fc0_0123), f32::INFINITY]);
+    for frozen in [false, true] {
+        for reset in [false, true] {
+            let mut actual = Column::new_var_len(8);
+            actual.append_bytes(b"prefix");
+            if frozen {
+                actual.data = SharedBytes::from_bytes(bytes::Bytes::from(actual.data.snapshot()));
+            }
+            let snapshot = actual.data.clone();
+            let snapshot_bytes = snapshot.snapshot();
+            let mut expected = actual.clone();
+            if reset {
+                actual.reset();
+                expected.reset();
+            }
+            for _ in 0..3 {
+                actual.append_json(&json);
+                expected.append_bytes(&json.encoded());
+                actual.append_null();
+                expected.append_null();
+                actual.append_vector_float32(&vector);
+                expected.append_bytes(&vector.serialize());
+            }
+            assert_eq!(actual.length, expected.length);
+            assert_eq!(actual.null_bitmap, expected.null_bitmap);
+            assert_eq!(actual.offsets, expected.offsets);
+            assert_eq!(actual.data.snapshot(), expected.data.snapshot());
+            assert_eq!(snapshot.snapshot(), snapshot_bytes);
+        }
+    }
+}
