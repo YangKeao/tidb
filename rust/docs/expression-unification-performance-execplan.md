@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M25 UnaryNotInt/ASIN/ACOS source-matched admission: exact native bit/NULL/UInt/window tests, batch32/fullTiDB1384same4/TiKVprofile54/full1030same6/lintfmt pass.2940main/210groups42native +840M15/60groups agree. NOT8.085vsnative47.038, ASIN/ACOS10.686/10.756vs112.748/112.619. Decimal comparisons~1–2% slower retained; metadata66/131.
+
 - [x] (2026-10-16) M24 seven IS NULL signatures preserve non-NULL signed Boolean results on the same driver; unsigned Int admitted, JSON CastJsonAsString boundary preserved. Batch30/fullTiDB1382same4/TiKV1030same6/lintfmt pass.3990records/285groups57native +840M15/60groups agree; eight native types3.19–13.77x faster than true native. Old controls flat/improve except tiny Vector; M15Datetime remains~3% slower. Metadata63/131.
 
 - [x] (2026-10-16) M23 five integer bit operations admitted with an explicit always-unsigned result fact on the shared catalog/registry/driver. Batch29/fullTiDB1381same4, freshTiKV1029same6/PB/flag/shift/NULL/window/lintfmt pass. Three cohorts3360timings/240groups48native plus840M15/60groups agree; bitbatch11.936–12.027ns vs native79.651–80.606. Old Int/Real/DecimalPLUS slower controls retained. Inventory56/131 is metadata only.
@@ -70,6 +72,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Surprises & Discoveries
 
+- Observation (2026-10-16): a shared native/wire mathematical helper is a stronger admission fact than a matching function name. ASIN/ACOS match exactly, while SIN/COS/ATAN and nonidentity ROUND retain different policies.
+  Evidence: M25 source proof and native bit comparisons cover signed zero, domain edges and infinities; no tolerance-based equivalence is assumed.
+
 - Observation (2026-10-16): native JSON IS NULL lowers through CastJsonAsString and StringIsNull, despite an existing direct JsonIsNull wire kernel. Registering the latter would not prove native SQL coverage.
   Evidence: unchanged catalog PB tests pin the cast; new JSON constant/column golden tests retain native fallback.
 
@@ -125,6 +130,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: admit only source-matched unary NOT and ASIN/ACOS, with declared mixed-domain benchmark data.
+  Rationale: shared underlying f64 primitives and NaN-to-NULL policy are verified by exact native bits; no substitution of Go/libm or rounding policies. Measured target gains5.82–10.55x justify retention with slower Decimal controls visible.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: retain the seven existing IS NULL signatures on the ordinary driver, leaving JSON cast support separate.
   Rationale: full typed child evaluation and existing nullable kernels give correct0/1results and3.19–13.77x true-native gains; no nullness-only shortcut or per-function JSON selector.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -177,7 +186,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M24 (this TiDB report commit / TiKVf983e54). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is63/131 static signature names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M25 (this TiDB report commit / TiKV2b289f9). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is66/131 static signature names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -490,3 +499,24 @@ ASIN/ACOS use the same f64 primitive with NaN-to-NULL on both sides, and integer
 NOT has a matching zero/nonzero/NULL contract; these are smaller next candidates.
 Revision note (2026-10-16): completed M24 and updated formal living sections,
 report/coverage/source receipts; recorded real mathematical admission boundaries.
+
+M25 in progress: admit integer NOT plus ASIN/ACOS only where source policies
+match. UnaryNotInt preserves UInt raw bits and signed NULL/zero/nonzero truth.
+Wire and native ASIN/ACOS call the same asin_f64/acos_f64 primitive; NaN output
+becomes NULL on both sides, with signed zero retained. This does not admit the
+legacy libm trig family or ROUND with different native policies. Golden native
+bit comparisons include infinities, immediate neighbors outside±1, endpoints,
+±0, interior values and NULL over2050reverse/duplicate rows. Benchmarks use a
+test-only inverse_trig input domain (8valid/2outside values per10) on identical
+current/frozen input columns. Existing controls keep their original dataset.
+
+M25 outcome: three exact-domain unary signatures reuse the existing driver;
+full native bit tests and actual frozen SQL measurements agree. Decimal
+comparisons regress slightly; every sample remains retained. The test-only
+Real input-domain flag does not change old controls or production admission.
+Next inspect signedness-following integer identities: one-argument RoundInt
+and IntAnyValue share identity kernels, but require result sign to follow the
+first input. A shared result-policy fact must replace the current Boolean if
+these are extended; scaled or noninteger rounding remains outside that slice.
+Revision note (2026-10-16): completed M25, updated all living sections and
+source/coverage receipts, retained explicit mathematical boundaries.

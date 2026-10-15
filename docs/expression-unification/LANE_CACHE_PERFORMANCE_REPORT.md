@@ -6,7 +6,19 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新采用结果：IS NULL 复用普通 nullable kernel（2026-10-16）
+## 最新采用结果：语义匹配的 NOT 与 ASIN/ACOS（2026-10-16）
+
+只准入已核对 source policy 的三个签名：整数 NOT（含 unsigned）以及与 native 共用 `asin_f64/acos_f64` 的 ASIN/ACOS。精确位对照覆盖 ±0、端点、刚越界的数、无穷、NULL 和跨窗口 selection；没有直接接入语义不同的 Go/libm 三角族或非恒等 ROUND。
+
+三轮 dense batch / 真实原始 native：NOT **8.085 / 47.038 ns/row**（5.82 倍），ASIN **10.686 / 112.748**（10.55 倍）、ACOS **10.756 / 112.619**（10.47 倍）。数学测量使用相同的 8/10 正常值、2/10 越界值混合数据；旧控制仍用原数据，fallback 消融单独标记。
+
+2940 条主测量 / 210 组（含 42 个 native 对照）及 840 条 M15 控制 / 60 组一致。慢项保留：Decimal LT **72.924→73.976**、NULL-safe equality **73.243→74.085**；其余控制约持平或改善。M15 Int/LOWER 约持平、Datetime 略慢、Duration 改善，不宣称永久消除了所有回归。batch 32、完整 TiDB 1384 / 原有 4 失败、TiKV 1030 / 原有 6 失败；计数 **66 / 131** 仅为元数据。
+
+[完整 source 对照、混合输入、所有控制和复现记录](logs/performance-m25-unary-math/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：IS NULL 复用普通 nullable kernel（2026-10-16）
 
 七个签名接入同一个 eager driver。NULL 输入返回非 NULL 的 signed 1，非 NULL（包括零值、空串）返回 0；Int 允许 unsigned 输入。Datetime/Timestamp 共用 Time。JSON 保留原来的 cast 边界：Go catalog 先插入 CastJsonAsString 再用 StringIsNull，没有直接替换成 JsonIsNull。
 

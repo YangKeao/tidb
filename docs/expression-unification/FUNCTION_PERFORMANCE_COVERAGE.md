@@ -9,7 +9,7 @@ lowering and measured performance are separate gates.
 The reproducible source audit inventories 308 static function-name registrations
 (including aliases/internal names) from this checkout's `builtin_registry.rs`.
 It also inventories 131 unique signature names found in the static pushdown
-catalog or the paired TiKV batch registry. There are 63 registry-admitted eager
+catalog or the paired TiKV batch registry. There are 66 registry-admitted eager
 signatures. These counts describe different sets and must not be divided to
 produce an SQL/function coverage percentage.
 
@@ -151,3 +151,14 @@ input. JSON remains outside this SQL batch family because the Go catalog inserts
 CastJsonAsString before StringIsNull. Do not count direct wire JsonIsNull as
 native SQL coverage or bypass the cast. Existing schema/hybrid/array exclusions
 remain; [the M24 receipt](logs/performance-m24-is-null/summary.md) retains actual native measurements, all controls and validation.
+
+## M25 matching unary workers
+
+UnaryNotInt preserves UInt raw bits with signed0/1/NULL results. ASIN/ACOS
+share asin_f64/acos_f64 with native raw workers and filter NaN output to NULL;
+tests compare exact native bits for signed zero, endpoints and domain edges.
+NaN input remains excluded by the existing Real carrier. SIN/COS/ATAN and ROUND
+are not admitted: their native/wire policies differ. This is66admitted metadata
+rows out of131static names, not a whole-SQL coverage claim.
+
+[The M25 receipt](logs/performance-m25-unary-math/summary.md) retains exact native bit checks, declared input domains, all performance controls and source hashes.

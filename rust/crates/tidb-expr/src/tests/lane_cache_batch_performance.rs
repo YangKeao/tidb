@@ -92,7 +92,19 @@ struct Workload {
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 57] = [
+const WORKLOADS: [Workload; 60] = [
+    Workload {
+        name: "integer_not",
+        sql: "not i",
+    },
+    Workload {
+        name: "real_asin",
+        sql: "asin(r)",
+    },
+    Workload {
+        name: "real_acos",
+        sql: "acos(r)",
+    },
     Workload {
         name: "isnull_int",
         sql: "isnull(i)",
@@ -324,7 +336,8 @@ const WORKLOADS: [Workload; 57] = [
 ];
 
 fn tikv_batch_workload(name: &str) -> bool {
-    name.starts_with("isnull_")
+    matches!(name, "integer_not" | "real_asin" | "real_acos")
+        || name.starts_with("isnull_")
         || name.starts_with("integer_bit_")
         || name.starts_with("integer_add")
         || name.starts_with("integer_compare_")
@@ -371,6 +384,17 @@ impl ColumnResolver for Resolver {
 
     fn time_zone(&self) -> SessionTimeZone {
         SessionTimeZone::utc()
+    }
+}
+
+// Benchmark data only: identical native/current domain; defaults preserve every old workload.
+fn real_input_value(row: usize) -> f64 {
+    match std::env::var("EXPR_PERF_REAL_DOMAIN").as_deref() {
+        Ok("inverse_trig") => {
+            [-1.0, -0.9999, -0.5, -0.0, 0.0, 0.5, 0.9999, 1.0, -1.5, 1.5][row % 10]
+        }
+        Err(_) => row as f64 * 0.25 - 7.0,
+        Ok(other) => panic!("unknown benchmark Real domain {other}"),
     }
 }
 
@@ -471,7 +495,7 @@ fn make_input(
             chunk.append_bytes(2, STRINGS[row % STRINGS.len()]);
             chunk.append_datum(3, &Datum::Decimal(decimals[row % decimals.len()].clone()));
             chunk.append_json(4, &json[row % json.len()]);
-            chunk.append_float64(5, row as f64 * 0.25 - 7.0);
+            chunk.append_float64(5, real_input_value(row));
             chunk.append_float64(6, row as f64 % 11.0 + 0.5);
             chunk.append_time(7, datetime);
             chunk.append_time(8, timestamp);
@@ -711,6 +735,10 @@ fn bench_scenario(
 #[test]
 #[ignore = "manual stable release-profile batch performance probe"]
 fn lane_cache_batch_release_performance_probe() {
+    println!(
+        "EXPR_BATCH_INPUT_DOMAIN real={}",
+        std::env::var("EXPR_PERF_REAL_DOMAIN").unwrap_or_else(|_| "original".into())
+    );
     println!(
         "EXPR_BATCH_CONFIG samples={} warmup_batches={WARMUP_BATCHES} \
          target_sample_ns={} dense_sizes=1,16,256,1024",

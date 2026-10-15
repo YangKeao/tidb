@@ -2027,3 +2027,119 @@ fn is_null_batch_returns_nonnull_booleans_for_all_admitted_carriers() {
         }
     }
 }
+
+#[test]
+fn inverse_trig_batch_matches_native_bits_and_out_of_domain_nulls() {
+    let inputs = [
+        None,
+        Some(f64::NEG_INFINITY),
+        Some(-1.5),
+        Some(f64::from_bits((-1.0f64).to_bits() + 1)),
+        Some(-1.0),
+        Some(-0.5),
+        Some(-0.0),
+        Some(0.0),
+        Some(0.5),
+        Some(1.0),
+        Some(f64::from_bits(1.0f64.to_bits() + 1)),
+        Some(1.5),
+        Some(f64::INFINITY),
+    ];
+    let field = real_ty();
+    let schema = [field.clone()];
+    let rows: Vec<_> = inputs
+        .iter()
+        .map(|x| vec![x.map_or(Datum::Null, Datum::Real)])
+        .collect();
+    let selection: Vec<_> = (0..2050)
+        .map(|i| inputs.len() - 1 - i % inputs.len())
+        .collect();
+    for name in ["asin", "acos"] {
+        let suite = suite(call(name, field.clone(), vec![typed_column(0, &field)]));
+        let mut native_input = chunk(&schema, &rows);
+        native_input.set_sel(Some(selection.clone()));
+        let mut expected = output_for(&field);
+        suite
+            .run(&Context::new(true), &mut native_input, &mut expected)
+            .unwrap();
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(selection.clone()));
+        let mut actual = output_for(&field);
+        suite
+            .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+            .unwrap();
+        for (row, &source) in selection.iter().enumerate() {
+            let lhs = actual.get_row(row);
+            let rhs = expected.get_row(row);
+            let null = inputs[source].is_none_or(|x| x.abs() > 1.0);
+            assert_eq!(lhs.is_null(0), null, "{name} input={:?}", inputs[source]);
+            assert_eq!(lhs.is_null(0), rhs.is_null(0));
+            if !null {
+                assert_eq!(
+                    lhs.get_float64(0).to_bits(),
+                    rhs.get_float64(0).to_bits(),
+                    "{name} input={:?}",
+                    inputs[source]
+                );
+                if name == "asin" && inputs[source] == Some(0.0) {
+                    assert_eq!(
+                        lhs.get_float64(0).to_bits(),
+                        inputs[source].unwrap().to_bits()
+                    );
+                }
+                if name == "acos" && inputs[source] == Some(1.0) {
+                    assert_eq!(lhs.get_float64(0).to_bits(), 0);
+                }
+            }
+        }
+        let route = suite.batch_route_snapshot();
+        assert_eq!(
+            (route.prepared, route.fallback, route.refusals),
+            (1, 0, 0),
+            "{name}: {route:?}"
+        );
+    }
+}
+
+#[test]
+fn integer_not_batch_preserves_unsigned_truth_and_null() {
+    let inputs = [
+        None,
+        Some(0),
+        Some(1),
+        Some(-1),
+        Some(i64::MIN),
+        Some(i64::MAX),
+    ];
+    let selection: Vec<_> = (0..2050)
+        .map(|i| inputs.len() - 1 - i % inputs.len())
+        .collect();
+    for unsigned in [false, true] {
+        let field = ty().with_unsigned(unsigned);
+        let schema = [field.clone()];
+        let rows: Vec<_> = inputs
+            .iter()
+            .map(|x| {
+                vec![match x {
+                    None => Datum::Null,
+                    Some(v) if unsigned => Datum::UInt(*v as u64),
+                    Some(v) => Datum::Int(*v),
+                }]
+            })
+            .collect();
+        let suite = suite(call("not", ty(), vec![typed_column(0, &field)]));
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(selection.clone()));
+        let mut actual = output();
+        suite
+            .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+            .unwrap();
+        let expected: Vec<_> = selection
+            .iter()
+            .map(|&i| inputs[i].map_or(Datum::Null, |v| Datum::Int(i64::from(v == 0))))
+            .collect();
+        assert_eq!(values(&actual), expected);
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+    }
+}

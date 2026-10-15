@@ -1,0 +1,15 @@
+any_value_datetime 10.451 10.236 1.02
+any_value_duration 13.703 13.571 1.01
+any_value_json 126.041 121.886 1.03
+any_value_timestamp 10.439 10.23 1.02
+any_value_vector 70.792 69.437 1.02
+decimal_add 128.795 129.236 1.0
+decimal_compare_lt 72.924 73.976 0.98
+decimal_compare_nulleq 73.243 74.085 0.99
+integer_add 12.92 12.876 1.0
+integer_not 826.271 8.085 101.76
+lower 32.84 32.802 1.0
+real_acos 1050.533 10.756 98.37
+real_add 13.019 13.038 1.0
+real_asin 1069.012 10.686 99.89
+2940 timing records / 210 checksum groups match; after and old-control routes prepared only. New before cells are explicitly current fallback ablations.

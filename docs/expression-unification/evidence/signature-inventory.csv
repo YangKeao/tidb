@@ -2,8 +2,8 @@ signature,catalog_names,registry_admitted,semantic_review,differential_coverage,
 AbsDecimal,,True,pending,not_audited,not_audited
 AbsInt,,True,pending,not_audited,not_audited
 AbsReal,,True,pending,not_audited,not_audited
-Acos,acos,False,pending,not_audited,not_audited
-Asin,asin,False,pending,not_audited,not_audited
+Acos,acos,True,pending,not_audited,not_audited
+Asin,asin,True,pending,not_audited,not_audited
 Atan1Arg,atan,False,pending,not_audited,not_audited
 Atan2Args,atan;atan2,False,pending,not_audited,not_audited
 BitAndSig,bitand,True,pending,not_audited,not_audited
@@ -122,7 +122,7 @@ Substring3ArgsUtf8,mid;substr;substring,True,pending,not_audited,not_audited
 TimeAnyValue,,True,pending,not_audited,not_audited
 TimeIsNull,isnull,True,pending,not_audited,not_audited
 TimestampDiff,timestampdiff,False,pending,not_audited,not_audited
-UnaryNotInt,not,False,pending,not_audited,not_audited
+UnaryNotInt,not,True,pending,not_audited,not_audited
 UnixTimestampDec,unix_timestamp,False,pending,not_audited,not_audited
 UnixTimestampInt,unix_timestamp,False,pending,not_audited,not_audited
 Upper,upper,True,pending,not_audited,not_audited

@@ -3,7 +3,7 @@ function,arity,catalog_signatures,registry_intersection,semantic_review,differen
 'tidb`.(timeliteral,"1, Some(1)",,,pending,not_audited,not_audited
 'tidb`.(timestampliteral,"1, Some(2)",,,pending,not_audited,not_audited
 abs,"1, Some(1)",,,pending,not_audited,not_audited
-acos,"1, Some(1)",Acos,,pending,not_audited,not_audited
+acos,"1, Some(1)",Acos,Acos,pending,not_audited,not_audited
 adddate,"3, Some(3)",,,pending,not_audited,not_audited
 addtime,"2, Some(2)",,,pending,not_audited,not_audited
 aes_decrypt,"2, Some(3)",,,pending,not_audited,not_audited
@@ -11,7 +11,7 @@ aes_encrypt,"2, Some(3)",,,pending,not_audited,not_audited
 and,"2, Some(2)",LogicalAnd,,pending,not_audited,not_audited
 any_value,"1, Some(1)",,,pending,not_audited,not_audited
 ascii,"1, Some(1)",,,pending,not_audited,not_audited
-asin,"1, Some(1)",Asin,,pending,not_audited,not_audited
+asin,"1, Some(1)",Asin,Asin,pending,not_audited,not_audited
 atan,"1, Some(2)",Atan1Arg;Atan2Args,,pending,not_audited,not_audited
 atan2,"2, Some(2)",Atan2Args,,pending,not_audited,not_audited
 benchmark,"2, Some(2)",,,pending,not_audited,not_audited
@@ -180,7 +180,7 @@ mul,"2, Some(2)",MultiplyDecimal,MultiplyDecimal,pending,not_audited,not_audited
 name_const,"2, Some(2)",,,pending,not_audited,not_audited
 ne,"2, Some(2)",NeDecimal;NeInt;NeReal,NeDecimal;NeInt;NeReal,pending,not_audited,not_audited
 nextval,"1, Some(1)",,,pending,not_audited,not_audited
-not,"1, Some(1)",UnaryNotInt,,pending,not_audited,not_audited
+not,"1, Some(1)",UnaryNotInt,UnaryNotInt,pending,not_audited,not_audited
 now,"0, Some(1)",,,pending,not_audited,not_audited
 nulleq,"2, Some(2)",NullEqDecimal;NullEqInt;NullEqReal,NullEqDecimal;NullEqInt;NullEqReal,pending,not_audited,not_audited
 oct,"1, Some(1)",,,pending,not_audited,not_audited
