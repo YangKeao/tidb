@@ -1,0 +1,22 @@
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=1 warmup_batches=32 target_sample_ns=1000000000 dense_sizes=1,16,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=27811535 ns_per_iter=1.391 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=any_value_duration scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=57579 elapsed_ns=809838694 ns_per_batch=14064.827 ns_per_row=13.735 rows_per_second=72805728.396 checksum=4118003679867021786 live_prepared=57616 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=any_value_duration scenario=dense selection_capacity=1024 measured_calls=57579 vector_allocations=115158 windows=57579 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=any_value_duration scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=0 iterations=74418 elapsed_ns=1017676053 ns_per_batch=13675.133 ns_per_row=13.355 rows_per_second=74880441.350 checksum=14711874768998504651 live_prepared=74455 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=any_value_duration scenario=dense_null10 selection_capacity=1024 measured_calls=74418 vector_allocations=148836 windows=74418 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=any_value_duration scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=0 iterations=199700 elapsed_ns=1001962731 ns_per_batch=5017.340 ns_per_row=19.599 rows_per_second=51023055.467 checksum=2254916223115717690 live_prepared=199737 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=any_value_duration scenario=sparse_quarter selection_capacity=256 measured_calls=199700 vector_allocations=399400 windows=199700 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=any_value_duration scenario=reverse physical_rows=1024 selected_rows=1024 sample=0 iterations=72189 elapsed_ns=1023208597 ns_per_batch=14174.024 ns_per_row=13.842 rows_per_second=72244834.745 checksum=7188353185344723782 live_prepared=72226 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=any_value_duration scenario=reverse selection_capacity=1024 measured_calls=72189 vector_allocations=144378 windows=72189 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=any_value_duration scenario=duplicate physical_rows=1024 selected_rows=1024 sample=0 iterations=72715 elapsed_ns=1012507406 ns_per_batch=13924.327 ns_per_row=13.598 rows_per_second=73540360.849 checksum=5239940398430673869 live_prepared=72752 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=any_value_duration scenario=duplicate selection_capacity=1024 measured_calls=72715 vector_allocations=145430 windows=72715 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21786579 ns_per_iter=1.089 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1482 filtered out; finished in 4.93s
+
+[ perf record: Woken up 81 times to write data ]
+[ perf record: Captured and wrote 19.874 MB duration-before-perf.data (2472 samples) ]

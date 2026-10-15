@@ -2143,3 +2143,85 @@ fn integer_not_batch_preserves_unsigned_truth_and_null() {
         assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
     }
 }
+
+#[test]
+fn integer_identities_preserve_first_argument_flags_and_all_bits() {
+    let raw = [
+        None,
+        Some(0),
+        Some(1),
+        Some(-1),
+        Some(i64::MIN),
+        Some(i64::MAX),
+        Some(i64::MAX - 1),
+        Some((1i64 << 53) + 1),
+    ];
+    let selection: Vec<_> = (0..2050).map(|i| raw.len() - 1 - i % raw.len()).collect();
+    for unsigned in [false, true] {
+        let field = ty().with_unsigned(unsigned);
+        let schema = [field.clone()];
+        let datum = |x: Option<i64>| match x {
+            None => Datum::Null,
+            Some(v) if unsigned => Datum::UInt(v as u64),
+            Some(v) => Datum::Int(v),
+        };
+        let rows: Vec<_> = raw.iter().map(|&x| vec![datum(x)]).collect();
+        for name in ["round", "any_value", "round_any_value"] {
+            for constant in [false, true] {
+                let arg = if constant {
+                    literal(datum(Some((1i64 << 53) + 1)), field.clone())
+                } else {
+                    typed_column(0, &field)
+                };
+                let root = if name == "round_any_value" {
+                    call(
+                        "round",
+                        field.clone(),
+                        vec![call("any_value", field.clone(), vec![arg])],
+                    )
+                } else {
+                    call(name, field.clone(), vec![arg])
+                };
+                let suite = suite(root);
+                let mut input = chunk(&schema, &rows);
+                input.set_sel(Some(selection.clone()));
+                let mut actual = output_for(&field);
+                suite
+                    .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+                    .unwrap();
+                let expected: Vec<_> = selection
+                    .iter()
+                    .map(|&row| {
+                        if constant {
+                            datum(Some((1i64 << 53) + 1))
+                        } else {
+                            rows[row][0].clone()
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    values_for(&actual, &field),
+                    expected,
+                    "{name} unsigned={unsigned} constant={constant}"
+                );
+                let route = suite.batch_route_snapshot();
+                assert_eq!(
+                    (route.prepared, route.fallback, route.refusals),
+                    (1, 0, 0),
+                    "{name}: {route:?}"
+                );
+            }
+        }
+    }
+    // The two-argument integer ROUND is a different f64-based signature.
+    let suite = suite(call("round", ty(), vec![column(0), int(0)]));
+    let schema = [ty()];
+    let mut input = chunk(&schema, &[vec![Datum::Int(i64::MAX - 1)]]);
+    let mut actual = output();
+    suite
+        .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+        .unwrap();
+    assert_eq!(values(&actual), vec![Datum::Int(i64::MAX)]);
+    let route = suite.batch_route_snapshot();
+    assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+}

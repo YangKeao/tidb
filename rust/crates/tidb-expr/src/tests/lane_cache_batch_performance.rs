@@ -92,7 +92,19 @@ struct Workload {
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 60] = [
+const WORKLOADS: [Workload; 63] = [
+    Workload {
+        name: "round_int_signed",
+        sql: "round(i)",
+    },
+    Workload {
+        name: "round_int_unsigned",
+        sql: "round(i)",
+    },
+    Workload {
+        name: "any_value_int_unsigned",
+        sql: "any_value(i)",
+    },
     Workload {
         name: "integer_not",
         sql: "not i",
@@ -336,7 +348,10 @@ const WORKLOADS: [Workload; 60] = [
 ];
 
 fn tikv_batch_workload(name: &str) -> bool {
-    matches!(name, "integer_not" | "real_asin" | "real_acos")
+    matches!(
+        name,
+        "round_int_signed" | "round_int_unsigned" | "any_value_int_unsigned"
+    ) || matches!(name, "integer_not" | "real_asin" | "real_acos")
         || name.starts_with("isnull_")
         || name.starts_with("integer_bit_")
         || name.starts_with("integer_add")
@@ -398,6 +413,15 @@ fn real_input_value(row: usize) -> f64 {
     }
 }
 
+// Benchmark schema choice only; old controls retain signed LongLong fields.
+fn integer_inputs_unsigned() -> bool {
+    match std::env::var("EXPR_BATCH_PERF_INT_UNSIGNED").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Err(_) => false,
+        Ok(other) => panic!("unknown benchmark integer signedness {other}"),
+    }
+}
+
 fn schema() -> Vec<FieldType> {
     let integer = match std::env::var("EXPR_BATCH_PERF_INT_TYPE").as_deref() {
         Ok("tiny") => FieldTypeCode::Tiny,
@@ -413,8 +437,8 @@ fn schema() -> Vec<FieldType> {
     let mut duration = FieldType::new(FieldTypeCode::Duration);
     duration.set_decimal(6);
     vec![
-        FieldType::new(integer),
-        FieldType::new(integer),
+        FieldType::new(integer).with_unsigned(integer_inputs_unsigned()),
+        FieldType::new(integer).with_unsigned(integer_inputs_unsigned()),
         FieldType::new(FieldTypeCode::VarString),
         decimal.clone(),
         FieldType::new(FieldTypeCode::Json),
@@ -735,6 +759,10 @@ fn bench_scenario(
 #[test]
 #[ignore = "manual stable release-profile batch performance probe"]
 fn lane_cache_batch_release_performance_probe() {
+    println!(
+        "EXPR_BATCH_INPUT_SIGN unsigned={}",
+        integer_inputs_unsigned()
+    );
     println!(
         "EXPR_BATCH_INPUT_DOMAIN real={}",
         std::env::var("EXPR_PERF_REAL_DOMAIN").unwrap_or_else(|_| "original".into())

@@ -1,0 +1,2 @@
+0000000003b955c0 000000000000030b t tidb_query_expr::local::profile::batch_signature_contract
+0000000003c60cc0 0000000000000187 t tidb_query_expr::types::expr_eval::batch_eval_type

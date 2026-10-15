@@ -109,7 +109,7 @@ RealIsNull,isnull,True,pending,not_audited,not_audited
 RegexpLikeSig,regexp,False,pending,not_audited,not_audited
 RightShift,rightshift,True,pending,not_audited,not_audited
 RoundDec,round,False,pending,not_audited,not_audited
-RoundInt,round,False,pending,not_audited,not_audited
+RoundInt,round,True,pending,not_audited,not_audited
 RoundReal,round,False,pending,not_audited,not_audited
 Second,second,False,pending,not_audited,not_audited
 Sin,sin,False,pending,not_audited,not_audited

@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M26 private result policy Signed/Unsigned/FirstArgument admits one-argRoundInt and UIntIntAnyValue on the shared driver. Batch33/fullTiDB1385same4/TiKV1031same6/lintfmt pass;2940main/210groups42native+840M15/60groups agree. Target11.38–12.10x native gain; broad2–12% old-control losses retained and630longer-control/45groups confirm. Separate Duration profiles2472/2557samples0lost identify shared storage costs without establishing regression cause. Metadata67/131.
+
 - [x] (2026-10-16) M25 UnaryNotInt/ASIN/ACOS source-matched admission: exact native bit/NULL/UInt/window tests, batch32/fullTiDB1384same4/TiKVprofile54/full1030same6/lintfmt pass.2940main/210groups42native +840M15/60groups agree. NOT8.085vsnative47.038, ASIN/ACOS10.686/10.756vs112.748/112.619. Decimal comparisons~1–2% slower retained; metadata66/131.
 
 - [x] (2026-10-16) M24 seven IS NULL signatures preserve non-NULL signed Boolean results on the same driver; unsigned Int admitted, JSON CastJsonAsString boundary preserved. Batch30/fullTiDB1382same4/TiKV1030same6/lintfmt pass.3990records/285groups57native +840M15/60groups agree; eight native types3.19–13.77x faster than true native. Old controls flat/improve except tiny Vector; M15Datetime remains~3% slower. Metadata63/131.
@@ -72,6 +74,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Surprises & Discoveries
 
+- Observation (2026-10-16): a capability/type-fact extension coincides with repeatable slowdowns in unchanged workloads. Longer reversed-order samples confirm Time/Duration/JSON losses; this cannot be dismissed as one noisy pair.
+  Evidence: M26 main2940, historical840 and longer630records all checksum-match; Duration profiles locate constructor/output costs, not a proven regression cause.
+
 - Observation (2026-10-16): a shared native/wire mathematical helper is a stronger admission fact than a matching function name. ASIN/ACOS match exactly, while SIN/COS/ATAN and nonidentity ROUND retain different policies.
   Evidence: M25 source proof and native bit comparisons cover signed zero, domain edges and infinities; no tolerance-based equivalence is assumed.
 
@@ -130,6 +135,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: retain exact integer identities with a shared first-argument result flag policy, while publishing confirmed old-workload regressions and profiling the next storage target.
+  Rationale: new complete Int/UInt domains gain11–12x over actual native with no f64 narrowing; broad old2–12% losses are explicit and independently repeated. No universal speedup is claimed.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: admit only source-matched unary NOT and ASIN/ACOS, with declared mixed-domain benchmark data.
   Rationale: shared underlying f64 primitives and NaN-to-NULL policy are verified by exact native bits; no substitution of Go/libm or rounding policies. Measured target gains5.82–10.55x justify retention with slower Decimal controls visible.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -186,7 +195,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M25 (this TiDB report commit / TiKV2b289f9). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is66/131 static signature names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M26 (this TiDB report commit / TiKVd5817d0). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is67/131 static signature names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -520,3 +529,27 @@ first input. A shared result-policy fact must replace the current Boolean if
 these are extended; scaled or noninteger rounding remains outside that slice.
 Revision note (2026-10-16): completed M25, updated all living sections and
 source/coverage receipts, retained explicit mathematical boundaries.
+
+M26 in progress: replace the private Boolean result-unsigned fact with
+Signed/Unsigned/FirstArgument, keeping operand permission independent. Extend
+IntAnyValue to UInt and admit only one-argument RoundInt, both exact bit
+identities whose result follows the first input flag. The native and wire
+RoundInt share the same function; two-argument ROUND is intentionally different
+and stays outside batch. Tests cover mismatched flags, NULL/UIntMAX/i64extrema/
+values beyond53bits, literals, nested identities and2050reverse/duplicate rows.
+A captured MAX-1 two-argument ROUND case verifies native fallback still produces
+MAX rather than incorrectly applying the identity. Benchmark unsigned schemas
+are selected only for the new UInt workloads in identical current/frozen probes;
+all existing controls retain their original signed inputs.
+
+M26 outcome: the first-argument result contract is shared and exact for integer
+identities, including UInt and nested/literal operands. Scaled/noninteger ROUND
+is not misclassified. New-target gains coexist with confirmed broad regressions;
+all main/historical/longer samples and profile text remain in the M26 receipt.
+Next experiment: the generic Column::append_fixed_cells owned-buffer loop grows
+Vec length and extends a slice once per cell. Profile self time is substantial.
+Try sizing/filling once while preserving NULL scratch backing, actual iterator
+count, zero-width behavior and shared/frozen scalar semantics. Retain only with
+measured common-substrate gains; do not bypass Duration normalization checks.
+Revision note (2026-10-16): completed M26 and recorded explicit regressions,
+shared result policy, full validation and the profile-backed storage candidate.

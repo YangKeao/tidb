@@ -9,7 +9,7 @@ lowering and measured performance are separate gates.
 The reproducible source audit inventories 308 static function-name registrations
 (including aliases/internal names) from this checkout's `builtin_registry.rs`.
 It also inventories 131 unique signature names found in the static pushdown
-catalog or the paired TiKV batch registry. There are 66 registry-admitted eager
+catalog or the paired TiKV batch registry. There are 67 registry-admitted eager
 signatures. These counts describe different sets and must not be divided to
 produce an SQL/function coverage percentage.
 
@@ -162,3 +162,15 @@ are not admitted: their native/wire policies differ. This is66admitted metadata
 rows out of131static names, not a whole-SQL coverage claim.
 
 [The M25 receipt](logs/performance-m25-unary-math/summary.md) retains exact native bit checks, declared input domains, all performance controls and source hashes.
+
+## M26 integer identities
+
+One-argument RoundInt is admitted as an exact identity, and IntAnyValue now
+preserves UInt inputs/results. The private result-sign contract states Signed,
+Unsigned or FirstArgument independently of operand permission. Nested/literal
+inputs, NULL and64bit extrema remain exact beyond f64's53bit range. Two-argument
+ROUND stays outside this signature and retains native nonidentity semantics;
+noninteger/scaled rounding policy differences remain unoptimized.67admitted
+static signatures out of131 is metadata, not an SQL coverage percentage.
+
+[The M26 receipt](logs/performance-m26-integer-identities/summary.md) retains the flag/identity proof, unsigned schema selection, broad old-workload regressions and longer confirmation.

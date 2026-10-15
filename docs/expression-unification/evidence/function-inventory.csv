@@ -212,7 +212,7 @@ replace,"3, Some(3)",,,pending,not_audited,not_audited
 reverse,"1, Some(1)",,,pending,not_audited,not_audited
 right,"2, Some(2)",,,pending,not_audited,not_audited
 rightshift,"2, Some(2)",RightShift,RightShift,pending,not_audited,not_audited
-round,"1, Some(2)",RoundDec;RoundInt;RoundReal,,pending,not_audited,not_audited
+round,"1, Some(2)",RoundDec;RoundInt;RoundReal,RoundInt,pending,not_audited,not_audited
 row,"2, None",,,pending,not_audited,not_audited
 row_count,"0, Some(0)",,,pending,not_audited,not_audited
 rpad,"3, Some(3)",,,pending,not_audited,not_audited

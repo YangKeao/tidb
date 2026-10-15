@@ -6,7 +6,19 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新采用结果：语义匹配的 NOT 与 ASIN/ACOS（2026-10-16）
+## 最新采用结果：整数恒等操作跟随输入 signedness（2026-10-16）
+
+共享结果事实改为 Signed/Unsigned/FirstArgument，输入权限独立。单参数整数 ROUND 和 IntAnyValue 保留所有位及 NULL，支持 unsigned 结果；两参数 ROUND 继续保留不同的 native 语义，超过 53 位的值没有误经 f64。
+
+三轮 batch / 真实原始 native：signed ROUND **8.369 / 100.852**、unsigned ROUND **8.410 / 101.790**、unsigned ANY_VALUE **10.726 / 122.044 ns/row**，快约 **11.38–12.10 倍**。2940 条主测量 / 210 组及 840 条 M15 控制 / 60 组全一致。
+
+这轮旧项有明显退化：Duration **13.495→15.048**，时间约慢 **6%–7%**、JSON **122.028→130.890**，其他多项慢约 2%–6%。额外三轮 150ms 控制的 630 条 / 45 组确认了主要退化，没有归为噪声。M15 四项旧控制也仍较慢。独立 profile 显示 Duration 构造和固定输出写入占主要成本，尚未隔离回归因果；下一步针对共享输出循环实验，不移除归一化检查。
+
+batch 33、完整 TiDB 1385 / 原有 4 失败、TiKV 1031 / 原有 6 失败；**67 / 131** 仅为元数据计数。[全部结果、重复控制、profile 与结果标志证明](logs/performance-m26-integer-identities/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：语义匹配的 NOT 与 ASIN/ACOS（2026-10-16）
 
 只准入已核对 source policy 的三个签名：整数 NOT（含 unsigned）以及与 native 共用 `asin_f64/acos_f64` 的 ASIN/ACOS。精确位对照覆盖 ±0、端点、刚越界的数、无穷、NULL 和跨窗口 selection；没有直接接入语义不同的 Go/libm 三角族或非恒等 ROUND。
 
