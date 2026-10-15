@@ -6,7 +6,17 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：Decimal 输入的逻辑 words 转换（2026-10-16）
+## 最新结果：Decimal 输出直接构造 cell（2026-10-16）
+
+移除输出边界的系数 Vec 分配与数字往返，保留原有严格逻辑校验、跨度预算和先校验后发布。130,236 组严格/宽值各测六种限制，并对 197,056 个 cell 复核输出字节。三组 dense Decimal PLUS **183.142→158.790 ns/row**（1.15 倍）；真实 native **70.171**，仍慢约 2.26 倍。
+
+Int/Datetime 相比 M16 略有恢复；独立 M15 对照中仍慢约 2%–3%。本轮 Duration **14.735→15.918**、LOWER **33.147→34.550** 也变慢，全部保留，不声称普遍提升。主测量 2310 条 timing / 165 个 checksum 组（含 33 个 true-native/current 组）一致；另有 M15 控制 420 条 / 30 组一致。
+
+[完整结果、慢项、独立基线、验证和 CPU profile](logs/performance-m17-decimal-output/summary.md)。profile 显示输入投影、vector push 和构造仍占主要成本；下一步针对构造中的重复存储检查，不改算术语义。以下是历史阶段。
+
+---
+
+## 历史结果：Decimal 输入的逻辑 words 转换（2026-10-16）
 
 移除 batch 输入的中间系数对象，直接按原值语义生成共享 words。197,056 个 cell 的逐字段等价检查通过，包括非规范 padding、负零、可见 scale 扩展和资源边界。三组 dense 对照中，Decimal PLUS **228.438→182.680 ns/row**（1.25 倍），LT **148.866→102.485**、NULL-safe equality **148.356→102.584**（均约 1.45 倍）。
 

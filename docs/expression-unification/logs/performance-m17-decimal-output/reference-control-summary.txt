@@ -1,0 +1,10 @@
+any_value_datetime dense 10.203 10.44 0.9769245499808501
+any_value_datetime dense_null10 10.363 10.684 0.968866866118175
+any_value_datetime duplicate 10.384 10.648 0.9760223048327138
+any_value_datetime reverse 10.513 10.655 0.9866729235100892
+any_value_datetime sparse_quarter 16.164 16.482 0.9869939549368018
+integer_add dense 12.866 13.17 0.9757539021063797
+integer_add dense_null10 12.602 12.955 0.9716711694326514
+integer_add duplicate 13.051 13.432 0.973955223880597
+integer_add reverse 13.09 13.42 0.9734110090372694
+integer_add sparse_quarter 19.634 20.233 0.9774967639151649

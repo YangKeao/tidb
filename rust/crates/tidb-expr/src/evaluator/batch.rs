@@ -1047,17 +1047,10 @@ impl PreparedBatch {
             }
             VectorValue::Decimal(decimals) => {
                 let convert = |value: &TikvDecimal| {
-                    tidb_datatype::Decimal::try_from_shared_math(
+                    tidb_datatype::MyDecimal::try_from_shared_math(
                         value,
                         self.max_materialization_retained_bytes,
                     )
-                    .and_then(|value| {
-                        value.to_my_decimal().map_err(|_| {
-                            tidb_query_datatype::codec::mysql::decimal::NativeDecimalError::InvalidInput(
-                                "batch Decimal output cannot enter a Chunk cell",
-                            )
-                        })
-                    })
                     .map_err(|_| binding("batch Decimal output is not representable"))
                 };
                 let converted_bytes =

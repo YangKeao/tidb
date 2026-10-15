@@ -266,6 +266,15 @@ impl MyDecimal {
         tidb_query_datatype::codec::mysql::Decimal::try_from_native_cell(self.as_shared(), limit)
     }
 
+    /// Projects strict logical math words directly into a native cell, keeping
+    /// the existing logical byte-span resource preflight and zero normalization.
+    pub fn try_from_shared_math(
+        value: &tidb_query_datatype::codec::mysql::Decimal,
+        limit: usize,
+    ) -> Result<Self, tidb_query_datatype::codec::mysql::decimal::NativeDecimalError> {
+        value.try_to_native_cell(limit).map(Self::from_shared)
+    }
+
     pub(crate) fn to_decimal_parts(self) -> (bool, SmallVec<[u8; 24]>, u32, u32) {
         self.as_shared().to_decimal_parts()
     }
@@ -1169,6 +1178,24 @@ mod shared_math_cell_tests {
     use super::*;
     use crate::Decimal;
 
+    fn assert_native_export(value: &tidb_query_datatype::codec::mysql::Decimal, limit: usize) {
+        use tidb_query_datatype::codec::mysql::decimal::NativeDecimalError;
+        let old = Decimal::try_from_shared_math(value, limit).and_then(|value| {
+            value
+                .to_my_decimal()
+                .map_err(|_| NativeDecimalError::InvalidInput("native cell overflow"))
+        });
+        let direct = MyDecimal::try_from_shared_math(value, limit);
+        match (old, direct) {
+            (Ok(old), Ok(direct)) => assert_eq!(direct.to_raw_bytes(), old.to_raw_bytes()),
+            (Err(old), Err(direct)) => assert_eq!(
+                std::mem::discriminant(&direct),
+                std::mem::discriminant(&old)
+            ),
+            (old, direct) => panic!("export mismatch at limit {limit}: {old:?} / {direct:?}"),
+        }
+    }
+
     #[test]
     fn direct_cell_projection_matches_native_value_normalization() {
         let mut state = 0x94d049bb133111eb_u64;
@@ -1210,6 +1237,7 @@ mod shared_math_cell_tests {
                                 .try_to_shared_math(1024 * 1024)
                                 .unwrap();
                             let direct = cell.try_to_shared_math(1024 * 1024).unwrap();
+                            assert_native_export(&direct, 1024 * 1024);
                             let old = old.words();
                             let direct = direct.words();
                             assert_eq!((direct.int_digits,direct.storage_frac,direct.result_frac,direct.negative,direct.words),(old.int_digits,old.storage_frac,old.result_frac,old.negative,old.words),"int={integer} frac={fraction} result={result} negative={negative} pattern={pattern}");
@@ -1224,5 +1252,82 @@ mod shared_math_cell_tests {
         }
         assert!(cases > 100_000, "{cases}");
         println!("validated {cases} native cell projections");
+    }
+    #[test]
+    fn direct_native_export_preserves_logical_and_wide_rejection_contracts() {
+        use tidb_query_datatype::codec::mysql::{decimal::DecimalParts, Decimal as SharedDecimal};
+        let mut cases = 0;
+        for integer in 0..=81_usize {
+            for fraction in 0..=81_usize {
+                let int_words = integer.div_ceil(9);
+                let active = int_words + fraction.div_ceil(9);
+                if active == 0 || active > 9 {
+                    continue;
+                }
+                for result in [0, 1, 8, 9, 10, 30, 81] {
+                    for negative in [false, true] {
+                        for pattern in 0..3 {
+                            let mut words = [u32::MAX; 9];
+                            for (index, word) in words[..active].iter_mut().enumerate() {
+                                *word = match pattern {
+                                    0 => 0,
+                                    1 => 999_999_999,
+                                    _ if index + 1 < int_words => 0,
+                                    _ => 1,
+                                };
+                            }
+                            if integer % 9 != 0 {
+                                words[0] %= 10_u32.pow((integer % 9) as u32);
+                            }
+                            if fraction % 9 != 0 {
+                                let padding = 10_u32.pow((9 - fraction % 9) as u32);
+                                words[active - 1] = words[active - 1] / padding * padding;
+                            }
+                            let value = SharedDecimal::try_from_parts(DecimalParts {
+                                int_digits: integer as u8,
+                                frac_digits: fraction as u8,
+                                result_frac_digits: result,
+                                negative,
+                                words,
+                            })
+                            .unwrap();
+                            for limit in [0, 35, 40, 80, 257, 1024 * 1024] {
+                                assert_native_export(&value, limit);
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        for integer in [0, 1, 9, 10, 80, 81, 82, 100, 200, 1000_usize] {
+            for fraction in [0, 1, 9, 10, 72, 81, 82, 127_usize] {
+                for negative in [false, true] {
+                    for pattern in [b'0', b'1', b'9'] {
+                        let mut digits = vec![b'0'; (integer + fraction).max(1)];
+                        // Long zero prefixes may normalize into a bounded cell;
+                        // retained wide fractions still cannot enter one.
+                        let last = digits.len() - 1;
+                        digits[last] = pattern;
+                        for result in [0, fraction as u32] {
+                            let value = SharedDecimal::try_from_native_digits(
+                                negative,
+                                &digits,
+                                fraction as u32,
+                                result,
+                                1024 * 1024,
+                            )
+                            .unwrap();
+                            for limit in [0, 35, 40, 80, 257, 1024 * 1024] {
+                                assert_native_export(&value, limit);
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cases > 100_000);
+        println!("validated {cases} strict/wide native exports at six limits");
     }
 }
