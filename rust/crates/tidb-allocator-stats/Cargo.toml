@@ -14,7 +14,10 @@ unsafe_code = "allow"
 all = "warn"
 
 [dependencies]
-tikv-jemalloc-sys = { version = "0.7", optional = true, features = ["profiling"] }
+# Keep the control ABI identical to the allocator owned by TiKV's `tikv_alloc`.
+# Linking a second jemalloc version makes stats/profile mallctl target a
+# different native library than the process allocator.
+tikv-jemalloc-sys = { version = "0.6.1", optional = true, features = ["profiling"] }
 
 [features]
 default = []

@@ -325,12 +325,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
             let mut output = output;
             let result = crate::sort_util::recover_worker_panic(|| {
                 suite
-                    .run_with_tikv_numeric(
-                        &shared.ctx,
-                        &mut input,
-                        &mut output,
-                        &shared.input_schema,
-                    )
+                    .run_with_tikv_batch(&shared.ctx, &mut input, &mut output, &shared.input_schema)
                     .map(|()| (input, output, suite))
                     .map_err(Self::evaluator_error)
             });
@@ -413,7 +408,7 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
             return Ok(());
         }
         self.evaluator_suite
-            .run_with_tikv_numeric(&self.ctx, &mut self.child_chunk, req, &self.input_schema)
+            .run_with_tikv_batch(&self.ctx, &mut self.child_chunk, req, &self.input_schema)
             .map_err(Self::evaluator_error)
     }
 

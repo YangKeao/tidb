@@ -18,8 +18,12 @@ use super::*;
 use crate::column::Column;
 use crate::constant::{Constant, ParamMarker};
 use crate::distsql_builtin::pb_to_expr;
+use crate::evaluator::BatchRouteSnapshot;
 use tidb_ast::CiString;
-use tidb_datatype::{Collation, Decimal, SessionTimeZone};
+use tidb_datatype::{
+    BinaryJSON, Collation, Decimal, MySqlDuration, SessionTimeZone, StringDatum, Time,
+    VectorFloat32,
+};
 use tidb_proto::tipb as db_pb;
 use tidb_query_datatype::expr::Error as KernelError;
 use tidb_query_expr::local::OrdinaryProfile;
@@ -28,6 +32,16 @@ fn ty() -> FieldType {
     FieldType::new(FieldTypeCode::LongLong)
         .with_flen(20)
         .with_decimal(0)
+}
+fn string_ty() -> FieldType {
+    FieldType::new(FieldTypeCode::Varchar)
+        .with_flen(128)
+        .with_collation(Collation::Utf8Mb4Bin)
+}
+fn real_ty() -> FieldType {
+    FieldType::new(FieldTypeCode::Double)
+        .with_flen(22)
+        .with_decimal(-1)
 }
 fn literal(value: Datum, field: FieldType) -> Expression {
     Expression::Constant(Constant::new(value, field))
@@ -44,23 +58,56 @@ fn column(index: usize) -> Expression {
     column.orig_name = format!("t.c{index}");
     Expression::Column(column)
 }
+fn string_column(index: usize) -> Expression {
+    let mut column = Column::new(index as i64 + 1, string_ty());
+    column.index = index as i64;
+    column.orig_name = format!("t.s{index}");
+    Expression::Column(column)
+}
+fn real_column(index: usize) -> Expression {
+    let mut column = Column::new(index as i64 + 1, real_ty());
+    column.index = index as i64;
+    column.orig_name = format!("t.r{index}");
+    Expression::Column(column)
+}
+fn decimal_column(index: usize, field_type: &FieldType) -> Expression {
+    let mut column = Column::new(index as i64 + 1, field_type.clone());
+    column.index = index as i64;
+    column.orig_name = format!("t.d{index}");
+    Expression::Column(column)
+}
+fn typed_column(index: usize, field_type: &FieldType) -> Expression {
+    let mut column = Column::new(index as i64 + 1, field_type.clone());
+    column.index = index as i64;
+    column.orig_name = format!("t.v{index}");
+    Expression::Column(column)
+}
 fn call(name: &str, field: FieldType, args: Vec<Expression>) -> Expression {
     Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
 }
 fn plus(left: Expression, right: Expression) -> Expression {
     call("plus", ty(), vec![left, right])
 }
+fn minus(left: Expression, right: Expression) -> Expression {
+    call("minus", ty(), vec![left, right])
+}
+fn mul(left: Expression, right: Expression) -> Expression {
+    call("mul", ty(), vec![left, right])
+}
+fn abs(arg: Expression) -> Expression {
+    call("abs", ty(), vec![arg])
+}
 fn suite(root: Expression) -> EvaluatorSuite {
     EvaluatorSuite::new(vec![root], false)
 }
-fn limits() -> NumericSourceLimits {
-    NumericSourceLimits {
+fn limits() -> BatchSourceLimits {
+    BatchSourceLimits {
         tree: CompileLimits::default(),
         max_metadata_bytes: 1024 * 1024,
     }
 }
-fn prepare(suite: &EvaluatorSuite, schema: &[FieldType]) -> PreparedNumericBatch {
-    PreparedNumericBatch::compile(
+fn prepare(suite: &EvaluatorSuite, schema: &[FieldType]) -> PreparedBatch {
+    PreparedBatch::compile(
         suite,
         schema,
         true,
@@ -87,9 +134,17 @@ fn chunk(schema: &[FieldType], rows: &[Vec<Datum>]) -> Chunk {
 fn output() -> Chunk {
     Chunk::new_with_capacity(&[ty()], 0)
 }
+fn output_for(field_type: &FieldType) -> Chunk {
+    Chunk::new_with_capacity(std::slice::from_ref(field_type), 0)
+}
 fn values(chunk: &Chunk) -> Vec<Datum> {
     (0..chunk.num_rows())
         .map(|row| chunk.get_row(row).get_datum(0, &ty()))
+        .collect()
+}
+fn values_for(chunk: &Chunk, field_type: &FieldType) -> Vec<Datum> {
+    (0..chunk.num_rows())
+        .map(|row| chunk.get_row(row).get_datum(0, field_type))
         .collect()
 }
 
@@ -135,7 +190,7 @@ struct Raw {
     warnings: bool,
 }
 impl Raw {
-    fn new(worker: &PreparedNumericBatch, rows: Vec<Vec<Datum>>) -> Self {
+    fn new(worker: &PreparedBatch, rows: Vec<Vec<Datum>>) -> Self {
         let source = &worker.source;
         let indexes = source
             .bindings
@@ -186,9 +241,9 @@ impl NativeDatumSource for Raw {
         Ok(self.rows[row.input_row][self.indexes[slot]].clone())
     }
 }
-fn run_raw(
+fn run_provider(
     suite: &EvaluatorSuite,
-    worker: &mut PreparedNumericBatch,
+    worker: &mut PreparedBatch,
     ctx: &mut EvalContext,
     input: &mut Chunk,
     output: &mut Chunk,
@@ -203,15 +258,13 @@ fn run_raw(
             worker,
             ctx,
             row_schema: schema,
-            selection: Vec::new(),
-            vectorized: false,
             override_source: Some(source),
         },
     )
 }
 
 #[test]
-fn own_numeric_facts_preserve_source_ordinals_and_exact_declarations() {
+fn own_batch_facts_preserve_source_ordinals_and_exact_declarations() {
     let root = plus(plus(column(0), int(1)), plus(column(1), null()));
     let suite = suite(root);
     let worker = prepare(&suite, &[ty(), ty()]);
@@ -230,7 +283,7 @@ fn own_numeric_facts_preserve_source_ordinals_and_exact_declarations() {
             call.source(),
             OrdinarySourceId::new(93, call.ordinal() as u64)
         );
-        assert_eq!(call.profile(), OrdinaryProfile::NativeNumericBatch);
+        assert_eq!(call.profile(), OrdinaryProfile::NativeBatch);
         assert_eq!(call.original_pb_signature(), None);
     }
     let LocalExpr::Call {
@@ -250,7 +303,7 @@ fn own_numeric_facts_preserve_source_ordinals_and_exact_declarations() {
 }
 
 #[test]
-fn actual_suite_native_and_private_consumers_match_selected_numeric_results() {
+fn actual_suite_native_and_private_consumers_match_selected_batch_results() {
     let root = plus(plus(column(0), int(1)), plus(column(1), int(2)));
     let schema = vec![ty(), ty()];
     let rows = vec![
@@ -274,7 +327,7 @@ fn actual_suite_native_and_private_consumers_match_selected_numeric_results() {
         assert_eq!(native_ctx.calls.get(), 1);
         let native_ctx = Context::new(true);
         suite
-            .run_numeric_batch_with_bindings(
+            .run_batch(
                 &native_ctx,
                 &mut EvalContext::default(),
                 &mut worker,
@@ -289,6 +342,416 @@ fn actual_suite_native_and_private_consumers_match_selected_numeric_results() {
 }
 
 #[test]
+fn signed_int_family_reuses_the_same_batch_substrate() {
+    let root = abs(mul(minus(column(0), int(2)), plus(column(1), int(3))));
+    let schema = vec![ty(), ty()];
+    let rows = vec![
+        vec![Datum::Int(7), Datum::Int(1)],
+        vec![Datum::Null, Datum::Int(9)],
+        vec![Datum::Int(-4), Datum::Int(2)],
+    ];
+    let suite = suite(root);
+    let mut worker = prepare(&suite, &schema);
+    let mut input = chunk(&schema, &rows);
+    input.set_sel(Some(vec![2, 0, 2, 1]));
+    let mut actual = output();
+    suite
+        .run_batch(
+            &Context::new(true),
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut input,
+            &mut actual,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(
+        values(&actual),
+        vec![Datum::Int(30), Datum::Int(20), Datum::Int(30), Datum::Null]
+    );
+    let functions = worker
+        .source
+        .nodes
+        .iter()
+        .filter_map(|node| match &node.kind {
+            SourceKind::Call { function, .. } => Some(*function),
+            SourceKind::Constant { .. } | SourceKind::Column { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        functions,
+        vec![
+            FunctionRef::TiPb(tipb::ScalarFuncSig::AbsInt),
+            FunctionRef::TiPb(tipb::ScalarFuncSig::MultiplyInt),
+            FunctionRef::TiPb(tipb::ScalarFuncSig::MinusInt),
+            FunctionRef::TiPb(tipb::ScalarFuncSig::PlusInt),
+        ]
+    );
+}
+
+#[test]
+fn bytes_to_fixed_and_varlen_share_the_whole_selection_driver() {
+    let input_type = string_ty();
+    let schema = vec![input_type.clone()];
+    let rows = vec![
+        vec![Datum::String(StringDatum::new(
+            b"AbC".to_vec(),
+            Collation::Utf8Mb4Bin,
+        ))],
+        vec![Datum::String(StringDatum::new(
+            "你好ABC".as_bytes().to_vec(),
+            Collation::Utf8Mb4Bin,
+        ))],
+        vec![Datum::Null],
+    ];
+    let selected = vec![1, 0, 1, 2];
+    for (root, result_type) in [
+        (call("char_length", ty(), vec![string_column(0)]), ty()),
+        (
+            call("lower", input_type.clone(), vec![string_column(0)]),
+            input_type.clone(),
+        ),
+    ] {
+        let suite = suite(root);
+        let mut worker = prepare(&suite, &schema);
+        let mut native_input = chunk(&schema, &rows);
+        native_input.set_sel(Some(selected.clone()));
+        let mut batch_input = chunk(&schema, &rows);
+        batch_input.set_sel(Some(selected.clone()));
+        let mut expected = output_for(&result_type);
+        let mut actual = output_for(&result_type);
+        suite
+            .run(&Context::new(true), &mut native_input, &mut expected)
+            .unwrap();
+        suite
+            .run_batch(
+                &Context::new(true),
+                &mut EvalContext::default(),
+                &mut worker,
+                &mut batch_input,
+                &mut actual,
+                &schema,
+            )
+            .unwrap();
+        assert_eq!(
+            values_for(&actual, &result_type),
+            values_for(&expected, &result_type)
+        );
+        assert!(worker.source.nodes.iter().any(|node| matches!(
+            &node.kind,
+            SourceKind::Call {
+                function: FunctionRef::TiPb(
+                    tipb::ScalarFuncSig::CharLengthUtf8 | tipb::ScalarFuncSig::LowerUtf8
+                ),
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
+fn mixed_carrier_and_three_argument_calls_use_the_shared_registry() {
+    let input_type = string_ty();
+    let schema = vec![input_type.clone()];
+    let rows = vec![
+        vec![Datum::String(StringDatum::new(
+            "你好ABC".as_bytes().to_vec(),
+            Collation::Utf8Mb4Bin,
+        ))],
+        vec![Datum::String(StringDatum::new(
+            b"abcdef".to_vec(),
+            Collation::Utf8Mb4Bin,
+        ))],
+        vec![Datum::Null],
+    ];
+    let root = call(
+        "substring",
+        input_type.clone(),
+        vec![string_column(0), int(2), int(3)],
+    );
+    let string_suite = suite(root);
+    let mut worker = prepare(&string_suite, &schema);
+    let mut native_input = chunk(&schema, &rows);
+    native_input.set_sel(Some(vec![1, 0, 1, 2]));
+    let mut batch_input = chunk(&schema, &rows);
+    batch_input.set_sel(Some(vec![1, 0, 1, 2]));
+    let mut expected = output_for(&input_type);
+    let mut actual = output_for(&input_type);
+    string_suite
+        .run(&Context::new(true), &mut native_input, &mut expected)
+        .unwrap();
+    string_suite
+        .run_batch(
+            &Context::new(true),
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut batch_input,
+            &mut actual,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(
+        values_for(&actual, &input_type),
+        values_for(&expected, &input_type)
+    );
+    assert!(worker.source.nodes.iter().any(|node| matches!(
+        &node.kind,
+        SourceKind::Call {
+            function: FunctionRef::TiPb(tipb::ScalarFuncSig::Substring3ArgsUtf8),
+            arity: 3,
+        }
+    )));
+
+    let compare_schema = vec![ty(), ty()];
+    let compare_rows = vec![
+        vec![Datum::Int(3), Datum::Int(2)],
+        vec![Datum::Int(1), Datum::Int(4)],
+        vec![Datum::Null, Datum::Int(0)],
+    ];
+    for name in ["gt", "eq"] {
+        let suite = suite(call(name, ty(), vec![column(0), column(1)]));
+        let mut worker = prepare(&suite, &compare_schema);
+        let mut native_input = chunk(&compare_schema, &compare_rows);
+        native_input.set_sel(Some(vec![1, 0, 2, 0]));
+        let mut batch_input = chunk(&compare_schema, &compare_rows);
+        batch_input.set_sel(Some(vec![1, 0, 2, 0]));
+        let mut expected = output();
+        let mut actual = output();
+        suite
+            .run(&Context::new(true), &mut native_input, &mut expected)
+            .unwrap();
+        suite
+            .run_batch(
+                &Context::new(true),
+                &mut EvalContext::default(),
+                &mut worker,
+                &mut batch_input,
+                &mut actual,
+                &compare_schema,
+            )
+            .unwrap();
+        assert_eq!(
+            values(&expected),
+            if name == "gt" {
+                vec![Datum::Int(0), Datum::Int(1), Datum::Null, Datum::Int(1)]
+            } else {
+                vec![Datum::Int(0), Datum::Int(0), Datum::Null, Datum::Int(0)]
+            }
+        );
+        assert_eq!(values(&actual), values(&expected));
+    }
+}
+
+#[test]
+fn real_arithmetic_uses_the_same_batch_carrier_contract() {
+    let field = real_ty();
+    let schema = vec![field.clone(), field.clone()];
+    let rows = vec![
+        vec![Datum::Real(1.5), Datum::Real(2.25)],
+        vec![Datum::Null, Datum::Real(4.0)],
+        vec![Datum::Real(-3.0), Datum::Real(0.5)],
+    ];
+    let root = call("plus", field.clone(), vec![real_column(0), real_column(1)]);
+    let suite = suite(root);
+    let mut worker = prepare(&suite, &schema);
+    let mut native_input = chunk(&schema, &rows);
+    native_input.set_sel(Some(vec![2, 0, 2, 1]));
+    let mut batch_input = chunk(&schema, &rows);
+    batch_input.set_sel(Some(vec![2, 0, 2, 1]));
+    let mut expected = output_for(&field);
+    let mut actual = output_for(&field);
+    suite
+        .run(&Context::new(true), &mut native_input, &mut expected)
+        .unwrap();
+    suite
+        .run_batch(
+            &Context::new(true),
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut batch_input,
+            &mut actual,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
+    assert!(worker.source.nodes.iter().any(|node| matches!(
+        &node.kind,
+        SourceKind::Call {
+            function: FunctionRef::TiPb(tipb::ScalarFuncSig::PlusReal),
+            arity: 2,
+        }
+    )));
+}
+
+#[test]
+fn decimal_arithmetic_uses_the_exact_shared_representation() {
+    let field = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(18)
+        .with_decimal(2);
+    let schema = vec![field.clone(), field.clone()];
+    let dec = |value| Datum::Decimal(Decimal::from_literal(value));
+    let rows = vec![
+        vec![dec("1.25"), dec("2.50")],
+        vec![Datum::Null, dec("4.00")],
+        vec![dec("-3.75"), dec("0.50")],
+    ];
+    let root = call(
+        "plus",
+        field.clone(),
+        vec![decimal_column(0, &field), decimal_column(1, &field)],
+    );
+    let suite = suite(root);
+    let mut worker = prepare(&suite, &schema);
+    let mut native_input = chunk(&schema, &rows);
+    native_input.set_sel(Some(vec![2, 0, 2, 1]));
+    let mut batch_input = chunk(&schema, &rows);
+    batch_input.set_sel(Some(vec![2, 0, 2, 1]));
+    let mut expected = output_for(&field);
+    let mut actual = output_for(&field);
+    suite
+        .run(&Context::new(true), &mut native_input, &mut expected)
+        .unwrap();
+    suite
+        .run_batch(
+            &Context::new(true),
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut batch_input,
+            &mut actual,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
+    assert!(worker.source.nodes.iter().any(|node| matches!(
+        &node.kind,
+        SourceKind::Call {
+            function: FunctionRef::TiPb(tipb::ScalarFuncSig::PlusDecimal),
+            arity: 2,
+        }
+    )));
+}
+
+#[test]
+fn varlen_production_route_streams_reverse_duplicates_across_windows() {
+    let input_type = string_ty();
+    let schema = vec![input_type.clone()];
+    let rows = (0..2050)
+        .map(|row| {
+            vec![Datum::String(StringDatum::new(
+                format!("Row{row}ABC").into_bytes(),
+                Collation::Utf8Mb4Bin,
+            ))]
+        })
+        .collect::<Vec<_>>();
+    let selection = (0..2050).rev().map(|row| row / 2).collect::<Vec<_>>();
+    let root = call("lower", input_type.clone(), vec![string_column(0)]);
+    let suite = suite(root);
+    let mut native_input = chunk(&schema, &rows);
+    native_input.set_sel(Some(selection.clone()));
+    let mut expected = output_for(&input_type);
+    suite
+        .run(&Context::new(true), &mut native_input, &mut expected)
+        .unwrap();
+
+    let mut batch_input = chunk(&schema, &rows);
+    batch_input.set_sel(Some(selection));
+    let mut actual = output_for(&input_type);
+    suite
+        .run_with_tikv_batch(&Context::new(true), &mut batch_input, &mut actual, &schema)
+        .unwrap();
+    assert_eq!(
+        values_for(&actual, &input_type),
+        values_for(&expected, &input_type)
+    );
+    assert_eq!(
+        suite.batch_route_snapshot(),
+        BatchRouteSnapshot {
+            prepared: 1,
+            fallback: 0,
+            refusals: 0,
+            refusal: None,
+        }
+    );
+}
+
+#[test]
+fn any_value_batch_round_trips_every_native_eval_type() {
+    let mut decimal = FieldType::new(FieldTypeCode::NewDecimal);
+    decimal.set_flen(20);
+    decimal.set_decimal(4);
+    let mut duration = FieldType::new(FieldTypeCode::Duration);
+    duration.set_decimal(6);
+    let cases = vec![
+        (ty(), Datum::Int(-17)),
+        (real_ty(), Datum::Real(3.25)),
+        (decimal, Datum::Decimal(Decimal::from_literal("123.4567"))),
+        (
+            string_ty(),
+            Datum::String(StringDatum::new(
+                b"All carriers".to_vec(),
+                Collation::Utf8Mb4Bin,
+            )),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime),
+            Datum::Time(Time::from_go_raw_like_go(0)),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Timestamp),
+            Datum::Time(Time::from_go_raw_like_go(1)),
+        ),
+        (
+            duration,
+            Datum::Duration(MySqlDuration::from_raw_parts(-12_345_678_000, 6)),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            Datum::Json(BinaryJSON::parse(r#"{"batch":true}"#).unwrap()),
+        ),
+        (
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.25, -2.5, 3.0])),
+        ),
+    ];
+
+    for (field, value) in cases {
+        let schema = vec![field.clone()];
+        let root = call("any_value", field.clone(), vec![typed_column(0, &field)]);
+        let suite = suite(root);
+        let rows = vec![vec![Datum::Null], vec![value.clone()]];
+        let selection = vec![1, 0, 1];
+        let mut native_input = chunk(&schema, &rows);
+        native_input.set_sel(Some(selection.clone()));
+        let mut expected = output_for(&field);
+        suite
+            .run(&Context::new(true), &mut native_input, &mut expected)
+            .unwrap();
+
+        let mut batch_input = chunk(&schema, &rows);
+        batch_input.set_sel(Some(selection));
+        let mut actual = output_for(&field);
+        suite
+            .run_with_tikv_batch(&Context::new(true), &mut batch_input, &mut actual, &schema)
+            .unwrap_or_else(|error| panic!("failed carrier {:?}: {error:?}", field.eval_type()));
+        assert_eq!(
+            values_for(&actual, &field),
+            values_for(&expected, &field),
+            "failed carrier {:?}",
+            field.eval_type()
+        );
+        assert_eq!(
+            suite.batch_route_snapshot(),
+            BatchRouteSnapshot {
+                prepared: 1,
+                fallback: 0,
+                refusals: 0,
+                refusal: None,
+            }
+        );
+    }
+}
+
+#[test]
 fn current_global_flag_is_read_once_per_invoke_and_never_row_fallback() {
     let suite = suite(plus(null(), plus(int(i64::MAX), int(1))));
     let mut worker = prepare(&suite, &[]);
@@ -297,7 +760,7 @@ fn current_global_flag_is_read_once_per_invoke_and_never_row_fallback() {
     let mut out = output();
     out.append_int64(0, 99);
     let error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &native_ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -311,7 +774,7 @@ fn current_global_flag_is_read_once_per_invoke_and_never_row_fallback() {
     assert_eq!(values(&out), vec![Datum::Int(99)]); // no native NULL fallback append
     native_ctx.enabled.set(true);
     let error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &native_ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -344,7 +807,7 @@ fn actual_nonvectorizable_program_does_not_query_global_flag_or_run_values() {
     let ctx = Context::new(true);
     let mut out = output();
     let error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -359,7 +822,7 @@ fn actual_nonvectorizable_program_does_not_query_global_flag_or_run_values() {
 }
 
 #[test]
-fn native_decimal_priority_and_leaf_admission_remain_unchanged() {
+fn native_decimal_priority_and_leaf_admission_remain_coherent() {
     let decimal = FieldType::new(FieldTypeCode::NewDecimal)
         .with_flen(12)
         .with_decimal(0);
@@ -382,7 +845,10 @@ fn native_decimal_priority_and_leaf_admission_remain_unchanged() {
         out.get_row(0).get_datum(0, &decimal),
         Datum::Decimal(Decimal::from_int(3))
     );
-    assert!(PreparedNumericBatch::compile(
+    // The ordinary consumer still preserves the existing native Decimal
+    // priority, while the mandatory batch consumer can now compile the same
+    // expression through the exact shared Decimal carrier.
+    assert!(PreparedBatch::compile(
         &suite,
         &[],
         true,
@@ -391,15 +857,15 @@ fn native_decimal_priority_and_leaf_admission_remain_unchanged() {
         ExecutionLimits::default(),
         4096
     )
-    .is_err());
+    .is_ok());
     for root in [int(1), column(0)] {
         let input = chunk(&[ty()], &[vec![Datum::Int(9)]]);
         assert!(
-            crate::scalar_function::try_eval_numeric_batch(&root, &Context::new(true), &input)
+            crate::scalar_function::try_eval_batch(&root, &Context::new(true), &input)
                 .unwrap()
                 .is_none()
         );
-        assert!(PreparedNumericBatch::compile(
+        assert!(PreparedBatch::compile(
             &self::suite(root),
             &[ty()],
             true,
@@ -435,7 +901,7 @@ fn foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal() {
         let ctx = Context::new(true);
         let mut out = output();
         let error = foreign
-            .run_numeric_batch_with_bindings(
+            .run_batch(
                 &ctx,
                 &mut EvalContext::default(),
                 &mut worker,
@@ -470,7 +936,7 @@ fn foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal() {
         let ctx = Context::new(true);
         let mut out = output();
         let error = blocked
-            .run_numeric_batch_with_bindings(
+            .run_batch(
                 &ctx,
                 &mut EvalContext::default(),
                 &mut spliced,
@@ -487,7 +953,7 @@ fn foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal() {
         EvaluatorSuite::new(vec![plus(int(1), int(2)), int(3)], false),
         EvaluatorSuite::new(vec![plus(column(0), int(1)), column(0)], false),
     ] {
-        assert!(PreparedNumericBatch::compile(
+        assert!(PreparedBatch::compile(
             &other,
             &[ty()],
             true,
@@ -512,7 +978,7 @@ fn left_failure_stops_the_later_input_phase() {
     let mut worker = prepare(&suite, &schema);
     let mut raw = Raw::new(&worker, rows.clone());
     raw.poison = Some(1);
-    let error = run_raw(
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut EvalContext::default(),
@@ -546,7 +1012,7 @@ fn both_input_phases_complete_before_a_right_failure() {
     let suite = suite(root);
     let mut worker = prepare(&suite, &schema);
     let mut raw = Raw::new(&worker, rows.clone());
-    let error = run_raw(
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut EvalContext::default(),
@@ -582,7 +1048,7 @@ fn selected_occurrences_complete_the_input_phase_before_failure() {
     let mut raw = Raw::new(&worker, rows.clone());
     let mut input = chunk(&schema, &rows);
     input.set_sel(Some(vec![1, 0, 2, 2]));
-    let error = run_raw(
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut EvalContext::default(),
@@ -606,15 +1072,15 @@ fn selected_occurrences_complete_the_input_phase_before_failure() {
 }
 
 #[test]
-fn selected_occurrences_not_physical_width_bound_virtual_constant_broadcasts() {
+fn selected_occurrences_tile_across_driver_windows_for_virtual_constant_broadcasts() {
     let suite = suite(plus(int(1), int(2)));
     let mut worker = prepare(&suite, &[]);
-    for count in [0, 1, 1024] {
-        let mut input = chunk(&[], &vec![vec![]; 2048]);
-        input.set_sel(Some((0..count).map(|row| 2047 - row).collect()));
+    for count in [0, 1, 1024, 1025, 2048] {
+        let mut input = chunk(&[], &vec![vec![]; 4096]);
+        input.set_sel(Some((0..count).map(|row| 4095 - row).collect()));
         let mut out = output();
         suite
-            .run_numeric_batch_raw(
+            .run_batch(
                 &Context::new(true),
                 &mut EvalContext::default(),
                 &mut worker,
@@ -625,48 +1091,38 @@ fn selected_occurrences_not_physical_width_bound_virtual_constant_broadcasts() {
             .unwrap();
         assert_eq!(values(&out), vec![Datum::Int(3); count]);
     }
-    let error = suite
-        .run_numeric_batch_with_bindings(
-            &Context::new(true),
-            &mut EvalContext::default(),
-            &mut worker,
-            &mut chunk(&[], &vec![vec![]; 1025]),
-            &mut output(),
-            &[],
-        )
-        .unwrap_err();
-    assert!(matches!(
-        error.local_error(),
-        Some(LocalError::ResourceLimit(_))
-    ));
 }
 
 #[test]
-fn documented1025_witness_refuses_without_tiling_or_leaf_effects() {
-    let root = plus(plus(column(0), int(1)), plus(column(1), int(1)));
-    let schema = vec![ty(), ty()];
-    let mut rows = vec![vec![Datum::Int(0), Datum::Int(0)]; 1025];
-    rows[0][1] = Datum::Int(i64::MAX);
-    rows[1024][0] = Datum::Int(i64::MAX);
-    let suite = suite(root);
+fn wide_selected_input_preserves_reverse_and_duplicate_order_across_windows() {
+    let schema = vec![ty()];
+    let rows = (0..2049)
+        .map(|value| vec![Datum::Int(value)])
+        .collect::<Vec<_>>();
+    let suite = suite(plus(column(0), int(1)));
     let mut worker = prepare(&suite, &schema);
-    let mut raw = Raw::new(&worker, rows.clone());
-    raw.poison = Some(0);
-    let error = run_raw(
-        &suite,
-        &mut worker,
-        &mut EvalContext::default(),
-        &mut chunk(&schema, &rows),
-        &mut output(),
-        &schema,
-        &mut raw,
-    )
-    .unwrap_err();
-    assert!(matches!(
-        error.local_error(),
-        Some(LocalError::ResourceLimit(_))
-    ));
-    assert!(raw.reads.is_empty());
+    let mut input = chunk(&schema, &rows);
+    let mut selection = (0..2049).rev().collect::<Vec<_>>();
+    selection.extend([17, 17, 0]);
+    input.set_sel(Some(selection.clone()));
+    let mut out = output();
+    suite
+        .run_batch(
+            &Context::new(true),
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut input,
+            &mut out,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(
+        values(&out),
+        selection
+            .into_iter()
+            .map(|row| Datum::Int(row as i64 + 1))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -675,8 +1131,8 @@ fn strict_native_kind_validation_precedes_erasure() {
     let suite = suite(plus(column(0), int(1)));
     let mut worker = prepare(&suite, &schema);
     let mut raw = Raw::new(&worker, vec![vec![Datum::UInt(0)]]);
-    assert!(to_scalar(&Datum::UInt(0), EvalType::Int).is_ok());
-    let error = run_raw(
+    assert!(to_scalar(&Datum::UInt(0), TikvEvalType::Int).is_ok());
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut EvalContext::default(),
@@ -694,7 +1150,7 @@ fn strict_native_kind_validation_precedes_erasure() {
 }
 
 #[test]
-fn warnings_and_raw_errors_survive_retries() {
+fn warnings_and_provider_errors_survive_retries() {
     let schema = vec![ty(), ty()];
     let rows = vec![
         vec![Datum::Int(1), Datum::Int(2)],
@@ -707,7 +1163,7 @@ fn warnings_and_raw_errors_survive_retries() {
     let mut raw = Raw::new(&worker, rows.clone());
     raw.warnings = true;
     raw.fail = Some(1);
-    let error = run_raw(
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut ctx,
@@ -728,7 +1184,7 @@ fn warnings_and_raw_errors_survive_retries() {
     assert!(message.contains("input-primary"));
     let mut out = output();
     suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut ctx,
             &mut worker,
@@ -741,7 +1197,7 @@ fn warnings_and_raw_errors_survive_retries() {
     let mut empty = chunk(&schema, &rows);
     empty.set_sel(Some(vec![]));
     suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut ctx,
             &mut worker,
@@ -753,7 +1209,7 @@ fn warnings_and_raw_errors_survive_retries() {
     assert_eq!(ctx.warnings.warning_cnt, 4);
     let bad = vec![vec![Datum::Int(i64::MAX), Datum::Int(1)]];
     let bindings_error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut ctx,
             &mut worker,
@@ -762,24 +1218,14 @@ fn warnings_and_raw_errors_survive_retries() {
             &schema,
         )
         .unwrap_err();
-    let vector_error = suite
-        .run_numeric_batch_raw(
-            &Context::new(true),
-            &mut ctx,
-            &mut worker,
-            &mut chunk(&schema, &bad),
-            &mut output(),
-            &schema,
-        )
-        .unwrap_err();
-    assert_eq!(
-        vector_error.local_error().unwrap().to_string(),
-        bindings_error.local_error().unwrap().to_string()
-    );
+    assert!(matches!(
+        bindings_error.local_error(),
+        Some(LocalError::Evaluation(_))
+    ));
 }
 
 #[test]
-fn complete_metadata_detachment_and_incoming_caps_precede_equality_and_effects() {
+fn program_metadata_detachment_and_incoming_caps_precede_equality_and_effects() {
     let mut field = ty().with_elems(["first", "second"]);
     field.set_elem_with_binary_literal(1, "second", true);
     let mut alias = field.clone();
@@ -799,23 +1245,25 @@ fn complete_metadata_detachment_and_incoming_caps_precede_equality_and_effects()
     assert!(worker.declared_type_snapshot().elem_is_binary_literal(1));
     alias.set_elem(0, "source changed");
     let ctx = Context::new(true);
-    let error = suite
-        .run_numeric_batch_with_bindings(
+    let mut out = output();
+    suite
+        .run_batch(
             &ctx,
             &mut EvalContext::default(),
             &mut worker,
             &mut chunk(&[], &[vec![]]),
-            &mut output(),
+            &mut out,
             &[],
         )
-        .unwrap_err();
-    assert!(matches!(error.kind, FailureKind::Admission(_)));
-    assert_eq!(ctx.calls.get(), 0);
+        .unwrap();
+    assert_eq!(values(&out), vec![Datum::Int(3)]);
+    assert_eq!(ctx.calls.get(), 1);
     let suite = self::suite(plus(column(0), int(1)));
     let mut worker = prepare(&suite, &[ty()]);
     let huge = ty().with_elems(["x".repeat(limits().max_metadata_bytes)]);
+    let ctx = Context::new(true);
     let error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &ctx,
             &mut EvalContext::default(),
             &mut worker,
@@ -839,7 +1287,7 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
     input.set_sel(Some(vec![]));
     let wrong = ty().with_flen(7);
     let _error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -850,7 +1298,7 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
         .unwrap_err();
     input.set_sel(Some(vec![1]));
     let error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -867,7 +1315,7 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
     let mut input = chunk(&[string], &[vec![Datum::Bytes(vec![1])]]);
     input.set_sel(Some(vec![]));
     let error = suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -883,7 +1331,7 @@ fn malformed_empty_selection_schema_and_native_layout_are_not_skipped() {
     let mut input = chunk(&[ty()], &[vec![Datum::Int(0)]]);
     let mut wrong_output = Chunk::new_with_capacity(&[], 0);
     assert!(suite
-        .run_numeric_batch_with_bindings(
+        .run_batch(
             &Context::new(true),
             &mut EvalContext::default(),
             &mut worker,
@@ -931,7 +1379,6 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         Expression::Column(virtual_column),
         Expression::ScalarFunction(opaque),
         pb,
-        call("minus", ty(), vec![int(1), int(2)]),
         call("cast", ty(), vec![int(1)]),
         call("if", ty(), vec![int(1), int(2), int(3)]),
         literal(Datum::UInt(1), ty().with_unsigned(true)),
@@ -949,7 +1396,7 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         ),
         literal(Datum::Int(1), ty().with_flags(1 << 31)),
     ] {
-        assert!(PreparedNumericBatch::compile(
+        assert!(PreparedBatch::compile(
             &suite(plus(null(), bad)),
             &[ty()],
             true,
@@ -961,7 +1408,7 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         .is_err());
     }
     let root = call("if", ty(), vec![int(1), plus(int(1), int(2)), int(0)]);
-    assert!(PreparedNumericBatch::compile(
+    assert!(PreparedBatch::compile(
         &suite(root),
         &[],
         true,
@@ -972,7 +1419,7 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
     )
     .is_err());
     let root = call("plus", ty(), vec![int(1)]);
-    assert!(PreparedNumericBatch::compile(
+    assert!(PreparedBatch::compile(
         &suite(root),
         &[],
         true,
@@ -990,7 +1437,7 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
     let mut source_limits = limits();
     source_limits.tree.max_depth = 1;
     assert!(matches!(
-        PreparedNumericBatch::compile(
+        PreparedBatch::compile(
             &suite,
             &[ty()],
             true,
@@ -999,7 +1446,7 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
             ExecutionLimits::default(),
             4096
         ),
-        Err(NumericBatchFailure {
+        Err(BatchFailure {
             kind: FailureKind::Local(LocalError::ResourceLimit(_))
         })
     ));
@@ -1009,7 +1456,7 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
     let mut raw = Raw::new(&worker, rows.clone());
     raw.warnings = true;
     let mut ctx = EvalContext::default();
-    let error = run_raw(
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut ctx,
@@ -1025,7 +1472,7 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
     ));
     assert_eq!(raw.reads.len(), 1);
     assert_eq!(ctx.warnings.warning_cnt, 1);
-    let mut worker = PreparedNumericBatch::compile(
+    let mut worker = PreparedBatch::compile(
         &suite,
         &[ty()],
         true,
@@ -1039,7 +1486,7 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
     )
     .unwrap();
     let mut raw = Raw::new(&worker, rows.clone());
-    let error = run_raw(
+    let error = run_provider(
         &suite,
         &mut worker,
         &mut ctx,
@@ -1057,23 +1504,38 @@ fn source_depth_and_retained_limits_are_resources_not_sql_null_or_retry() {
 }
 
 #[test]
-fn materialization_counts_public_vector_and_selection_capacities() {
+fn direct_output_counts_public_vector_and_selection_capacities() {
     let suite = suite(plus(int(1), int(2)));
     let mut worker = prepare(&suite, &[]);
     let mut selection = Vec::with_capacity(256);
     selection.push(0);
     let vector = VectorValue::from_scalar(&ScalarValue::Int(Some(3)), 1);
-    worker.max_materialization_retained_bytes = size_of::<Datum>() + 128;
-    let error = worker.materialize(vector, &selection).unwrap_err();
+    worker.max_materialization_retained_bytes = 0;
+    let error = worker
+        .write_output(vector, &selection, &mut output(), 0)
+        .unwrap_err();
     assert!(matches!(
         error.local_error(),
         Some(LocalError::ResourceLimit(_))
     ));
     assert!(array_bytes::<Datum>(usize::MAX).is_err());
-    assert!(worker
-        .materialize(
+    worker.max_materialization_retained_bytes = usize::MAX;
+    let mut result = output();
+    worker
+        .write_output(
             VectorValue::from_scalar(&ScalarValue::Int(Some(3)), 1),
-            &Vec::new()
+            &selection,
+            &mut result,
+            0,
+        )
+        .unwrap();
+    assert_eq!(values(&result), vec![Datum::Int(3)]);
+    assert!(worker
+        .write_output(
+            VectorValue::from_scalar(&ScalarValue::Int(Some(3)), 1),
+            &Vec::new(),
+            &mut output(),
+            0,
         )
         .is_err());
 }

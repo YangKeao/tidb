@@ -150,8 +150,8 @@ pub fn snapshot_field_type(sql: &FieldType) -> FieldType {
 /// The caller must retain [`snapshot_field_type`] separately and supply a wire
 /// collation ID already checked by the collation owner. This function preserves
 /// that ID's sign and the exact charset spelling; it does not resolve/default
-/// names or infer literal provenance. ENUM/SET, ARRAY, BIT, Decimal, temporal,
-/// JSON, vector and unknown types remain explicit unimplemented domains.
+/// names or infer literal provenance. ENUM/SET, ARRAY, BIT, and unknown types
+/// remain explicit unimplemented domains.
 pub fn project_field_type(
     sql: &FieldType,
     signed_wire_collation: i32,
@@ -168,6 +168,13 @@ pub fn project_field_type(
         FieldTypeCode::Year => FieldTypeTp::Year,
         FieldTypeCode::Float => FieldTypeTp::Float,
         FieldTypeCode::Double => FieldTypeTp::Double,
+        FieldTypeCode::NewDecimal => FieldTypeTp::NewDecimal,
+        FieldTypeCode::Timestamp => FieldTypeTp::Timestamp,
+        FieldTypeCode::Date | FieldTypeCode::NewDate => FieldTypeTp::Date,
+        FieldTypeCode::Duration => FieldTypeTp::Duration,
+        FieldTypeCode::Datetime => FieldTypeTp::DateTime,
+        FieldTypeCode::Json => FieldTypeTp::Json,
+        FieldTypeCode::VectorFloat32 => FieldTypeTp::TiDbVectorFloat32,
         FieldTypeCode::Null => FieldTypeTp::Null,
         FieldTypeCode::Varchar => FieldTypeTp::VarChar,
         FieldTypeCode::VarString => FieldTypeTp::VarString,

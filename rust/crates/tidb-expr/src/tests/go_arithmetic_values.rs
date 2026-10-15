@@ -351,7 +351,7 @@ fn go_test_arithmetic_mod_hybrid_operand_kinds() {
 /// Captured from the pinned Go arithmetic builder and both typed evaluators.
 #[test]
 fn hybrid_arithmetic_uses_go_typed_numeric_arguments() {
-    use crate::scalar_function::{try_eval_numeric_batch, ScalarFunction};
+    use crate::scalar_function::{try_eval_batch, ScalarFunction};
     use tidb_datatype::{BinaryLiteral, Collation, MysqlEnum, MysqlSet};
     struct Strict;
     impl crate::Columns for Strict {
@@ -592,10 +592,8 @@ fn hybrid_arithmetic_uses_go_typed_numeric_arguments() {
                 input.append_datum(0, &value);
                 input.append_datum(1, &right_value);
                 let result = if vectorized {
-                    try_eval_numeric_batch(&expr, &Strict, &input).and_then(|batch| {
-                        Ok(batch
-                            .expect("hybrid numeric batch must be supported")
-                            .remove(0))
+                    try_eval_batch(&expr, &Strict, &input).and_then(|batch| {
+                        Ok(batch.expect("hybrid batch must be supported").remove(0))
                     })
                 } else {
                     expr.eval(&Strict, input.get_row(0))
@@ -639,7 +637,7 @@ fn hybrid_arithmetic_uses_go_typed_numeric_arguments() {
 
 #[test]
 fn hybrid_arithmetic_preserves_null_and_selection_order() {
-    use crate::scalar_function::{try_eval_numeric_batch, ScalarFunction};
+    use crate::scalar_function::{try_eval_batch, ScalarFunction};
     let field = FieldType::new(C::Set);
     let column = |index| {
         let mut column = crate::column::Column::new(index + 1, field.clone());
@@ -681,7 +679,7 @@ fn hybrid_arithmetic_preserves_null_and_selection_order() {
                     input.set_sel(Some(vec![1]));
                 }
                 let result = if vectorized {
-                    try_eval_numeric_batch(&expression, &crate::NoColumns, &input)
+                    try_eval_batch(&expression, &crate::NoColumns, &input)
                         .map(|batch| batch.unwrap().remove(0))
                 } else {
                     expression.eval(&crate::NoColumns, input.get_row(0))
@@ -714,7 +712,7 @@ fn hybrid_arithmetic_preserves_null_and_selection_order() {
 /// Pinned Go arithmetic values and conversion warnings for typed temporal/JSON columns.
 #[test]
 fn temporal_json_arithmetic_uses_go_numeric_casts() {
-    use crate::scalar_function::{try_eval_numeric_batch, ScalarFunction};
+    use crate::scalar_function::{try_eval_batch, ScalarFunction};
     #[derive(Default)]
     struct Context(std::cell::RefCell<Vec<(u16, String)>>, bool);
     impl crate::Columns for Context {
@@ -764,10 +762,8 @@ fn temporal_json_arithmetic_uses_go_numeric_casts() {
                     input.append_datum(0, &value);
                     input.append_int64(1, if name == "json_int" { 1 } else { 2 });
                     let result = if vectorized {
-                        try_eval_numeric_batch(&expr, &context, &input).and_then(|batch| {
-                            Ok(batch
-                                .expect("typed numeric batch must be supported")
-                                .remove(0))
+                        try_eval_batch(&expr, &context, &input).and_then(|batch| {
+                            Ok(batch.expect("typed batch must be supported").remove(0))
                         })
                     } else {
                         expr.eval(&context, input.get_row(0))
@@ -958,7 +954,7 @@ fn temporal_json_arithmetic_fixture(name: &str) -> (FieldType, Datum) {
 
 #[test]
 fn arithmetic_constant_casts_fold_before_evaluation_and_shape_result_metadata() {
-    use crate::scalar_function::try_eval_numeric_batch;
+    use crate::scalar_function::try_eval_batch;
     #[derive(Default)]
     struct Context(std::cell::RefCell<Vec<(u16, String)>>);
     impl crate::Columns for Context {
@@ -1181,9 +1177,7 @@ fn arithmetic_constant_casts_fold_before_evaluation_and_shape_result_metadata() 
                     input.append_int64(0, if name == "json_int" { 1 } else { 2 });
                 }
                 let results = if vectorized {
-                    try_eval_numeric_batch(&expr, &context, &input)
-                        .unwrap()
-                        .unwrap()
+                    try_eval_batch(&expr, &context, &input).unwrap().unwrap()
                 } else {
                     (0..2)
                         .map(|i| expr.eval(&context, input.get_row(i)).unwrap())
@@ -1386,7 +1380,7 @@ fn strict_scalar_decimal_precision_probes_preserve_runtime_evaluation() {
 
 #[test]
 fn json_cast_arithmetic_batches_preserve_go_operand_passes() {
-    use crate::scalar_function::{try_eval_numeric_batch, ScalarFunction};
+    use crate::scalar_function::{try_eval_batch, ScalarFunction};
     #[derive(Default)]
     struct Context(std::cell::RefCell<Vec<(u16, String)>>);
     impl crate::Columns for Context {
@@ -1454,7 +1448,7 @@ fn json_cast_arithmetic_batches_preserve_go_operand_passes() {
                         input.set_sel(Some(vec![0]));
                     }
                     let result = if vectorized {
-                        try_eval_numeric_batch(&expression, &context, &input).map(|values| {
+                        try_eval_batch(&expression, &context, &input).map(|values| {
                             values.expect("JSON cast arithmetic must use ordered batches")
                         })
                     } else {
@@ -1562,7 +1556,7 @@ fn json_cast_arithmetic_batches_preserve_go_operand_passes() {
                     input.append_datum(0, &Datum::new_string("2"));
                     input.append_null(0);
                     let values = if vectorized {
-                        try_eval_numeric_batch(&expression, &context, &input)
+                        try_eval_batch(&expression, &context, &input)
                             .unwrap()
                             .unwrap()
                     } else {
@@ -1602,7 +1596,7 @@ fn json_cast_arithmetic_batches_preserve_go_operand_passes() {
 
 #[test]
 fn json_cast_source_signatures_preserve_binary_types_in_both_modes() {
-    use crate::scalar_function::{try_eval_numeric_batch, ScalarFunction};
+    use crate::scalar_function::{try_eval_batch, ScalarFunction};
     use tidb_datatype::{
         BinaryJSON, BinaryJSONValue, BinaryLiteral, Collation, MysqlEnum, MysqlSet,
     };
@@ -1732,11 +1726,9 @@ fn json_cast_source_signatures_preserve_binary_types_in_both_modes() {
                         input.set_sel(Some(vec![1, 0]));
                     }
                     let result = if vectorized {
-                        try_eval_numeric_batch(&expression, &crate::NoColumns, &input).and_then(
-                            |values| {
-                                values.ok_or(crate::EvalError::Unsupported("JSON batch declined"))
-                            },
-                        )
+                        try_eval_batch(&expression, &crate::NoColumns, &input).and_then(|values| {
+                            values.ok_or(crate::EvalError::Unsupported("JSON batch declined"))
+                        })
                     } else {
                         (0..2)
                             .map(|index| expression.eval(&crate::NoColumns, input.get_row(index)))

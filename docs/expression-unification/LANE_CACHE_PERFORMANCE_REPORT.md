@@ -1,10 +1,38 @@
 # Lane cache 与真实 batch 表达式性能报告
 
-日期：2026-10-08
+历史报告日期：2026-10-08
 
 TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码与 `c1072a80` 相同，本轮只增加 probe/test-only route 观测）
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
+
+## 最新结果：全 EvalType batch（2026-10-12 测量，2026-10-15 发布）
+
+这轮实现使用共享 eager batch registry/driver，覆盖 Int、Real、Decimal、String、Datetime、Timestamp、Duration、JSON 和 VectorFloat32 的 owned typed carrier；下面每类只测一个代表 workload，不能外推为该类所有函数或 SQL server QPS。
+
+真实历史版本的 dense、1,024 行中位数如下，单位 ns/selected-row（越低越好）：
+
+| TiDB EvalType / workload | original native | historical TiKV batch | optimized TiKV batch | optimized vs original native |
+|---|---:|---:|---:|---:|
+| Int / `integer_add` | 21.324 | 253.812 | 55.491 | 2.60x slower |
+| Real / `real_add` | 111.344 | N/A | 56.781 | 1.96x faster |
+| Decimal / `decimal_add` | 73.998 | N/A | 548.599 | 7.41x slower |
+| String / `lower` | 150.011 | N/A | 113.659 | 1.32x faster |
+| Datetime / `any_value_datetime` | 119.524 | N/A | 43.268 | 2.76x faster |
+| Timestamp / `any_value_timestamp` | 119.799 | N/A | 42.469 | 2.82x faster |
+| Duration / `any_value_duration` | 121.732 | N/A | 49.928 | 2.44x faster |
+| JSON / `any_value_json` | 140.874 | N/A | 220.669 | 1.57x slower |
+| VectorFloat32 / `any_value_vector` | 155.959 | N/A | 181.934 | 1.17x slower |
+
+Int PLUS 比优化前 TiKV batch 快 **4.58 倍**，仍比原始 native 慢 **2.60 倍**。其他八类在历史 TiKV 的对应 batch route 尚不存在，因此标为 N/A。原始 native 使用 TiDB `364aef2bab5cc633ecb76a775ae8f36f86a6687d` / TiKV `548812e1ef57aef077a2062a9cc356640a6347f5`；优化前使用 TiDB `f388b337dfad156233904d5407230f8439e0150e` / TiKV `608bbfc9c63e8b50fa2be757533eba572ef9b874`；优化后是上述后一对提交加本次发布的 performance patch。测量时的 binary hash、原始样本及同机条件见[完整结果和证据](logs/performance-m8-all-carriers/summary.md)。这次发布复用已完成的测量，没有把文档发布日期当作一次新 benchmark。
+
+**口径纠正：**早先 675 条同一二进制的消融结果中，`native_reference` 实际是当前迁移后的 fallback，`original_tikv` 实际是当前代码强制单行 window。源码已改为 `current_fallback_ablation` / `current_tikv_row_ablation`；它们只能解释当前代码内的 batch 收益，不能代表历史实现。“Int 比原始 native 快 16.89 倍”的说法已撤回。原始 raw log 保留旧标签并附纠正说明。
+
+Int 剩余开销主要是 generated ArgConstructor/Evaluator wrapper（32.43% self cycles）、`finish_batch`（9.99%）和输入 import（6.19%），实际加法只有 0.88%。当前 `finish_batch` 仍逐 lane 调用 singleton kernel，边界仍复制输入并逐行 append 输出；完整 vector kernel 调用与借用/复用输入、直接输出仍是后续优化，不能宣称已消除这些成本。
+
+最新已有验证：TiDB batch 25/25、TiKV registry/profile 48/48；完整库仍各有 4/6 个已记录的基线失败。server/FIPS/DistSQL/73-of-75 真实集群结果来自更早 checkpoint，未因这轮 carrier 扩展重跑。以下 round227/228 内容保留为历史测量，其中“当前”均指当时提交。
+
+---
 
 ## 为什么上一轮没有测 batch
 

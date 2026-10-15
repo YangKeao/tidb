@@ -163,8 +163,7 @@ impl VecGroupChecker {
                     }
                     continue;
                 }
-                if let Some(values) =
-                    tidb_expr::scalar_function::try_eval_numeric_batch(item, ctx, chunk)?
+                if let Some(values) = tidb_expr::scalar_function::try_eval_batch(item, ctx, chunk)?
                 {
                     for (row, pair) in values.windows(2).enumerate() {
                         if self.same_group[row + 1]
@@ -746,7 +745,7 @@ mod tests {
     #[test]
     fn integer_division_matches_go_values_diagnostics_and_warnings() {
         use tidb_datatype::FieldTypeFlags;
-        use tidb_expr::scalar_function::{try_eval_numeric_batch, ScalarFunction};
+        use tidb_expr::scalar_function::{try_eval_batch, ScalarFunction};
         let max = "9".repeat(81);
         let cases = [
             (
@@ -818,7 +817,7 @@ mod tests {
                 chunk.append_datum(1, &value(b, ru));
                 let ctx = crate::stmt_context::StmtContext::default();
                 let result = if vectorized {
-                    try_eval_numeric_batch(&expression, &ctx, &chunk)
+                    try_eval_batch(&expression, &ctx, &chunk)
                         .map(|values| values.unwrap().remove(0))
                 } else {
                     expression.eval(&ctx, chunk.get_row(0))

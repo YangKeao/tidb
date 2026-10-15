@@ -2747,8 +2747,7 @@ pub fn to_pb(
         PbScalar::Call { signature, args } => {
             let mut children = Vec::with_capacity(args.len());
             for (index, argument) in args.iter().enumerate() {
-                let required =
-                    signature.arg_type_at(index, args.len(), argument.eval_type())?;
+                let required = signature.arg_type_at(index, args.len(), argument.eval_type())?;
                 children.push(coerced_to_pb(argument, required, columns)?);
             }
             let return_field_type = signature.return_field_type(scalar.is_unsigned(), &children)?;

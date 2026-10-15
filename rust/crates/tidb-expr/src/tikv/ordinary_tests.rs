@@ -753,7 +753,7 @@ fn plus_closed_domain_never_reaches_native_hooks() {
     let spec = lower(&plus(int(1), int(2)), &[]);
     for consumer in [
         OrdinaryProfile::AstValueScalar,
-        OrdinaryProfile::NativeNumericBatch,
+        OrdinaryProfile::NativeBatch,
     ] {
         assert!(OrdinaryProfileSpec::new(
             &spec.core.expr,

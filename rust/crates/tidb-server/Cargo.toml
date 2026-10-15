@@ -17,8 +17,7 @@ base64.workspace = true
 chrono.workspace = true
 crossbeam-channel = "0.5"
 prometheus = { version = "0.14", default-features = false }
-tikv-jemallocator = { version = "0.7", optional = true }
-tikv-jemalloc-sys = { version = "0.7", optional = true }
+tikv_alloc = { workspace = true, optional = true }
 ctrlc.workspace = true
 signal-hook.workspace = true
 rcgen.workspace = true
@@ -105,10 +104,10 @@ name = "configured_user_store_source"
 path = "tests/configured_user_store_source.rs"
 
 [features]
-# Production TiKV ships jemalloc, and this node statement path is
-# allocation-heavy: the default build therefore runs on tikv-jemallocator
-# (the global_allocator in src/bin/tidb-server.rs). The opt-out exists
-# for builds that must stay on the platform allocator.
+# Production TiKV ships jemalloc, and the shared TiKV expression crates already
+# link `tikv_alloc`, which exclusively owns the process-wide allocator. Enabling
+# this feature selects its production allocator and profiling implementation;
+# the opt-out keeps its system-allocator implementation.
 default = ["jemalloc"]
 failpoints = [
     "tidb-ddl-serverstate/failpoints",
@@ -117,8 +116,8 @@ failpoints = [
     "tidb-util/failpoints",
 ]
 jemalloc = [
-    "dep:tikv-jemallocator",
-    "dep:tikv-jemalloc-sys",
+    "dep:tikv_alloc",
     "tidb-util/jemalloc",
-    "tikv-jemallocator/profiling",
+    "tikv_alloc/jemalloc",
+    "tikv_alloc/mem-profiling",
 ]

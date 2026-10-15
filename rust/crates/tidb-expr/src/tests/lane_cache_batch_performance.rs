@@ -17,7 +17,7 @@
 //! The benchmark keeps one warm `EvaluatorSuite` per workload/scenario lane,
 //! reuses input and output chunks, includes output reset/materialization, and
 //! exercises the same
-//! `run_with_tikv_numeric` entry used by projection. Unsupported expressions
+//! `run_with_tikv_batch` entry used by projection. Unsupported expressions
 //! deliberately fall back inside that production entry instead of using a
 //! benchmark-only evaluator.
 
@@ -26,7 +26,10 @@ use std::time::Instant;
 
 use tidb_ast::{QueryStmt, SelectField, Stmt};
 use tidb_chunk::chunk::Chunk;
-use tidb_datatype::{BinaryJSON, Decimal, FieldType, FieldTypeCode, SessionTimeZone};
+use tidb_datatype::{
+    parse_datetime, BinaryJSON, Decimal, FieldType, FieldTypeCode, MySqlDuration, SessionTimeZone,
+    TimeType, VectorFloat32,
+};
 
 use super::*;
 use crate::evaluator::EvaluatorSuite;
@@ -36,7 +39,7 @@ use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
 const SAMPLES: usize = 7;
 const WARMUP_BATCHES: usize = 32;
 const TARGET_SAMPLE_NS: u128 = 100_000_000;
-const DENSE_BATCH_SIZES: [usize; 5] = [1, 8, 64, 256, 1024];
+const DENSE_BATCH_SIZES: [usize; 4] = [1, 16, 256, 1024];
 
 fn target_sample_ns() -> u128 {
     std::env::var("EXPR_BATCH_PERF_TARGET_NS")
@@ -68,12 +71,28 @@ fn batch_size_enabled(size: usize) -> bool {
         .unwrap_or(true)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PerfMode {
+    CurrentFallbackAblation,
+    CurrentTikvRowAblation,
+    BatchTikv,
+}
+
+fn perf_mode() -> PerfMode {
+    match std::env::var("EXPR_BATCH_PERF_MODE").as_deref() {
+        Ok("current_fallback_ablation") => PerfMode::CurrentFallbackAblation,
+        Ok("current_tikv_row_ablation") => PerfMode::CurrentTikvRowAblation,
+        Ok("batch_tikv") | Err(_) => PerfMode::BatchTikv,
+        Ok(mode) => panic!("unknown EXPR_BATCH_PERF_MODE={mode}"),
+    }
+}
+
 struct Workload {
     name: &'static str,
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 15] = [
+const WORKLOADS: [Workload; 23] = [
     Workload {
         name: "integer_add",
         sql: "i + j",
@@ -85,6 +104,10 @@ const WORKLOADS: [Workload; 15] = [
     Workload {
         name: "integer_add_nested",
         sql: "(i + j) + (i + 11)",
+    },
+    Workload {
+        name: "integer_subtract",
+        sql: "i - j",
     },
     Workload {
         name: "integer_multiply",
@@ -107,6 +130,10 @@ const WORKLOADS: [Workload; 15] = [
         sql: "strcmp(s, 'beta')",
     },
     Workload {
+        name: "char_length",
+        sql: "char_length(s)",
+    },
+    Workload {
         name: "lower",
         sql: "lower(s)",
     },
@@ -124,7 +151,11 @@ const WORKLOADS: [Workload; 15] = [
     },
     Workload {
         name: "decimal_add",
-        sql: "d + cast(0.55 as decimal(10,2))",
+        sql: "d + d",
+    },
+    Workload {
+        name: "real_add",
+        sql: "r + q",
     },
     Workload {
         name: "json_type",
@@ -134,7 +165,44 @@ const WORKLOADS: [Workload; 15] = [
         name: "regexp_like",
         sql: "regexp_like(s, '^a')",
     },
+    Workload {
+        name: "any_value_datetime",
+        sql: "any_value(dt)",
+    },
+    Workload {
+        name: "any_value_timestamp",
+        sql: "any_value(ts)",
+    },
+    Workload {
+        name: "any_value_duration",
+        sql: "any_value(dur)",
+    },
+    Workload {
+        name: "any_value_json",
+        sql: "any_value(js)",
+    },
+    Workload {
+        name: "any_value_vector",
+        sql: "any_value(v)",
+    },
 ];
+
+fn tikv_batch_workload(name: &str) -> bool {
+    name.starts_with("integer_add")
+        || matches!(
+            name,
+            "integer_subtract"
+                | "integer_multiply"
+                | "abs"
+                | "char_length"
+                | "lower"
+                | "upper"
+                | "substring"
+                | "decimal_add"
+                | "real_add"
+        )
+        || name.starts_with("any_value_")
+}
 
 struct Resolver {
     schema: Vec<FieldType>,
@@ -148,6 +216,12 @@ impl ColumnResolver for Resolver {
             "s" => (2, 3),
             "d" => (3, 4),
             "js" => (4, 5),
+            "r" => (5, 6),
+            "q" => (6, 7),
+            "dt" => (7, 8),
+            "ts" => (8, 9),
+            "dur" => (9, 10),
+            "v" => (10, 11),
             _ => return None,
         };
         Some((index, self.schema[index].clone(), unique_id))
@@ -162,12 +236,20 @@ fn schema() -> Vec<FieldType> {
     let mut decimal = FieldType::new(FieldTypeCode::NewDecimal);
     decimal.set_flen(10);
     decimal.set_decimal(2);
+    let mut duration = FieldType::new(FieldTypeCode::Duration);
+    duration.set_decimal(6);
     vec![
         FieldType::new(FieldTypeCode::LongLong),
         FieldType::new(FieldTypeCode::LongLong),
         FieldType::new(FieldTypeCode::VarString),
         decimal,
         FieldType::new(FieldTypeCode::Json),
+        FieldType::new(FieldTypeCode::Double),
+        FieldType::new(FieldTypeCode::Double),
+        FieldType::new(FieldTypeCode::Datetime),
+        FieldType::new(FieldTypeCode::Timestamp),
+        duration,
+        FieldType::new(FieldTypeCode::VectorFloat32),
     ]
 }
 
@@ -204,6 +286,16 @@ fn make_input(
         BinaryJSON::parse(r#""text""#).expect("string JSON"),
         BinaryJSON::parse("7").expect("number JSON"),
     ];
+    let datetime = parse_datetime("2026-10-12 12:34:56.123456", &chrono_tz::UTC, true, false)
+        .expect("benchmark datetime")
+        .time;
+    let mut timestamp = datetime;
+    timestamp.set_kind(TimeType::Timestamp);
+    let vectors = [
+        VectorFloat32::must_create(vec![1.0, 2.0, 3.0]),
+        VectorFloat32::must_create(vec![-1.25, 8.5]),
+        VectorFloat32::must_create(vec![0.0]),
+    ];
     let mut chunk = Chunk::new_with_capacity(schema, physical_rows);
     for row in 0..physical_rows {
         let is_null = null_every_ten && row % 10 == 0;
@@ -217,10 +309,25 @@ fn make_input(
             chunk.append_null(2);
             chunk.append_null(3);
             chunk.append_null(4);
+            chunk.append_null(5);
+            chunk.append_null(6);
+            chunk.append_null(7);
+            chunk.append_null(8);
+            chunk.append_null(9);
+            chunk.append_null(10);
         } else {
             chunk.append_bytes(2, STRINGS[row % STRINGS.len()]);
             chunk.append_datum(3, &Datum::Decimal(decimals[row % decimals.len()].clone()));
             chunk.append_json(4, &json[row % json.len()]);
+            chunk.append_float64(5, row as f64 * 0.25 - 7.0);
+            chunk.append_float64(6, row as f64 % 11.0 + 0.5);
+            chunk.append_time(7, datetime);
+            chunk.append_time(8, timestamp);
+            chunk.append_duration(
+                9,
+                MySqlDuration::from_raw_parts((row as i64 % 17 - 8) * 1_234_567_000, 6),
+            );
+            chunk.append_vector_float32(10, &vectors[row % vectors.len()]);
         }
     }
     chunk.set_sel(selection);
@@ -297,11 +404,25 @@ fn cpu_calibration(stage: &str) {
     );
 }
 
-fn run_once(suite: &EvaluatorSuite, input: &mut Chunk, output: &mut Chunk, schema: &[FieldType]) {
+fn run_once(
+    suite: &EvaluatorSuite,
+    input: &mut Chunk,
+    output: &mut Chunk,
+    schema: &[FieldType],
+    mode: PerfMode,
+) {
     output.reset();
-    suite
-        .run_with_tikv_numeric(&NoColumns, input, output, schema)
-        .expect("production batch evaluation succeeds");
+    match mode {
+        PerfMode::CurrentFallbackAblation => suite
+            .run(&NoColumns, input, output)
+            .expect("current fallback ablation succeeds"),
+        PerfMode::CurrentTikvRowAblation => suite
+            .run_with_tikv_row_ablation(&NoColumns, input, output, schema)
+            .expect("current TiKV row-window ablation succeeds"),
+        PerfMode::BatchTikv => suite
+            .run_with_tikv_batch(&NoColumns, input, output, schema)
+            .expect("optimized TiKV batch succeeds"),
+    }
     black_box(output.num_rows());
 }
 
@@ -326,53 +447,109 @@ fn bench_scenario(
     let expected = expected_checksum(&expression, &input);
     let suite = EvaluatorSuite::new(vec![expression], false);
     let mut output = Chunk::new_with_capacity(std::slice::from_ref(&output_field), selected_rows);
+    let perf_mode = perf_mode();
 
-    run_once(&suite, &mut input, &mut output, &schema);
-    // The current private TiKV vector admission is intentionally narrow: only
-    // signed LongLong PLUS is admitted. All other common workloads measure the
-    // real production fallback reached by the same projection entry.
-    let tikv_numeric = suite.tikv_numeric_lane_prepared_for_test();
-    assert_eq!(tikv_numeric, workload.name.starts_with("integer_add"));
-    let route = if tikv_numeric {
-        "tikv_numeric"
+    run_once(&suite, &mut input, &mut output, &schema, perf_mode);
+    let route_after_first = suite.batch_route_snapshot();
+    let (mode, route) = if perf_mode == PerfMode::CurrentFallbackAblation {
+        assert_eq!(route_after_first, Default::default());
+        ("current_fallback_ablation", "current_fallback_ablation")
     } else {
-        "production_fallback"
+        let tikv_batch = route_after_first.prepared == 1;
+        assert_eq!(tikv_batch, tikv_batch_workload(workload.name));
+        assert_eq!(route_after_first.fallback, u64::from(!tikv_batch));
+        assert_eq!(route_after_first.refusals, u64::from(!tikv_batch));
+        assert_eq!(route_after_first.refusal.is_some(), !tikv_batch);
+        (
+            match perf_mode {
+                PerfMode::CurrentTikvRowAblation => "current_tikv_row_ablation",
+                PerfMode::BatchTikv => "batch_tikv",
+                PerfMode::CurrentFallbackAblation => unreachable!(),
+            },
+            if tikv_batch {
+                match perf_mode {
+                    PerfMode::CurrentTikvRowAblation => "current_tikv_row_ablation",
+                    PerfMode::BatchTikv => "tikv_batch",
+                    PerfMode::CurrentFallbackAblation => unreachable!(),
+                }
+            } else {
+                "production_fallback"
+            },
+        )
     };
     validate_output(workload, &input, &output, &output_field, expected);
     for _ in 0..WARMUP_BATCHES {
-        run_once(&suite, &mut input, &mut output, &schema);
+        run_once(&suite, &mut input, &mut output, &schema, perf_mode);
     }
-
     let calibration_batches = 4usize;
     let start = Instant::now();
     for _ in 0..calibration_batches {
-        run_once(&suite, &mut input, &mut output, &schema);
+        run_once(&suite, &mut input, &mut output, &schema, perf_mode);
     }
     let calibration_ns = start.elapsed().as_nanos().max(1);
     let iterations = ((target_sample_ns() * calibration_batches as u128) / calibration_ns)
         .clamp(1, 1_000_000) as usize;
+    let route_before_samples = suite.batch_route_snapshot();
+    let scratch_before_samples = suite.batch_scratch_snapshot().unwrap_or_default();
 
     for sample in 0..sample_count() {
         let start = Instant::now();
         for _ in 0..iterations {
-            run_once(&suite, &mut input, &mut output, &schema);
+            run_once(&suite, &mut input, &mut output, &schema, perf_mode);
         }
         let elapsed = start.elapsed().as_nanos();
         assert_eq!(output.num_rows(), selected_rows);
         assert_eq!(output_checksum(&output, &output_field), expected);
         let batches = iterations as f64;
         let rows = (iterations * selected_rows) as f64;
+        let live_route = suite.batch_route_snapshot();
         println!(
-            "EXPR_BATCH_PERF mode=current_production route={route} name={} scenario={scenario} \
+            "EXPR_BATCH_PERF mode={mode} route={route} name={} scenario={scenario} \
              physical_rows={physical_rows} selected_rows={selected_rows} sample={sample} \
              iterations={iterations} elapsed_ns={elapsed} ns_per_batch={:.3} \
-             ns_per_row={:.3} rows_per_second={:.3} checksum={expected}",
+             ns_per_row={:.3} rows_per_second={:.3} checksum={expected} \
+             live_prepared={} live_fallback={} live_refusals={} refusal={:?}",
             workload.name,
             elapsed as f64 / batches,
             elapsed as f64 / rows,
             rows * 1_000_000_000.0 / elapsed as f64,
+            live_route.prepared,
+            live_route.fallback,
+            live_route.refusals,
+            live_route.refusal,
         );
     }
+    let route_after_samples = suite.batch_route_snapshot();
+    let scratch_after_samples = suite.batch_scratch_snapshot().unwrap_or_default();
+    let measured_calls = route_after_samples
+        .prepared
+        .saturating_add(route_after_samples.fallback)
+        .saturating_sub(
+            route_before_samples
+                .prepared
+                .saturating_add(route_before_samples.fallback),
+        );
+    if perf_mode == PerfMode::CurrentFallbackAblation {
+        assert_eq!(measured_calls, 0);
+    } else {
+        assert!(measured_calls > 0);
+    }
+    let vector_allocations = scratch_after_samples
+        .vector_allocations
+        .saturating_sub(scratch_before_samples.vector_allocations);
+    let windows = scratch_after_samples
+        .windows
+        .saturating_sub(scratch_before_samples.windows);
+    println!(
+        "EXPR_BATCH_SCRATCH route={route} name={} scenario={scenario} \
+         selection_capacity={} measured_calls={measured_calls} \
+         vector_allocations={vector_allocations} windows={windows} \
+         vector_allocations_per_call={:.3} windows_per_call={:.3}",
+        workload.name,
+        scratch_after_samples.selection_capacity,
+        vector_allocations as f64 / measured_calls.max(1) as f64,
+        windows as f64 / measured_calls.max(1) as f64,
+    );
 }
 
 #[test]
@@ -380,7 +557,7 @@ fn bench_scenario(
 fn lane_cache_batch_release_performance_probe() {
     println!(
         "EXPR_BATCH_CONFIG samples={} warmup_batches={WARMUP_BATCHES} \
-         target_sample_ns={} dense_sizes=1,8,64,256,1024",
+         target_sample_ns={} dense_sizes=1,16,256,1024",
         sample_count(),
         target_sample_ns()
     );
@@ -394,7 +571,7 @@ fn lane_cache_batch_release_performance_probe() {
                 continue;
             }
             bench_scenario(workload, "dense", batch_size, None, false);
-            if workload.name.starts_with("integer_add") || workload.name == "strcmp" {
+            if tikv_batch_workload(workload.name) || workload.name == "strcmp" {
                 bench_scenario(workload, "dense_null10", batch_size, None, true);
                 bench_scenario(
                     workload,

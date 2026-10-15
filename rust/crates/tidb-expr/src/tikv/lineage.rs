@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Private SQL TypedRow Datum-returning control closure, not EvalInt/EvalString,
-//! AST, PB, numeric batch, PLUS composition or a production evaluator hook.
+//! AST, PB, batch, PLUS composition or a production evaluator hook.
 //!
 //! Every source node is proved before transport. The one executable LocalExpr
 //! and C's checked control facade stay paired with this caller's immutable ID

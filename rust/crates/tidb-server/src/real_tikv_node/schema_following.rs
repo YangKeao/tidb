@@ -151,6 +151,11 @@ fn stats_targets(catalog: &ClusterCatalog) -> Vec<tidb_exec::real_tikv_stats::St
         .iter()
         .flat_map(|database| database.tables.iter())
         .flat_map(tidb_exec::real_tikv_stats::StatsTarget::for_table)
+        // Real TiDB table and partition IDs are positive. The Rust catalog
+        // also publishes synthetic system/metrics tables under negative IDs;
+        // those have no mysql.stats_* rows and Go never inserts them into its
+        // LFU shard array (whose signed remainder would be an invalid index).
+        .filter(|target| target.physical_id > 0)
         .collect()
 }
 
@@ -492,6 +497,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(22, vec![202])]
         );
+
+        shared.store(catalog(-900_000, 303));
+        assert!(current_stats_targets(&shared).is_empty());
     }
 
     #[test]

@@ -56,8 +56,9 @@ tracing = "0.1"
 
 [dev-dependencies]
 sha2 = { workspace = true }
-# The bench runs on the server's allocator (crates/tidb-server default feature).
-tikv-jemallocator = "0.7"
+# Match the server/TiKV process allocator without declaring a second global
+# allocator in the benchmark binary.
+tikv_alloc = { workspace = true, features = ["jemalloc", "mem-profiling"] }
 
 [lints]
 workspace = true

@@ -48,12 +48,6 @@
 //! source. Confirm anything surprising, or anything that turns on cross-crate
 //! inlining, with `cargo bench --profile release`.
 
-/// The server binary runs on tikv-jemallocator (its default feature); the
-/// bench uses the same allocator so allocation-heavy paths, such as the
-/// join's row table segments, fault and reuse memory as they do in the node.
-#[global_allocator]
-static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 

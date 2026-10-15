@@ -15,7 +15,7 @@
 //! `pkg/expression/evaluator.go`: evaluate a projection's calculated
 //! expressions before transferring any direct input-column owners.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -24,15 +24,16 @@ use tidb_chunk::chunk_util::ColumnSwapHelper;
 use tidb_datatype::{Datum, FieldType};
 use tidb_query_datatype::expr::EvalContext as TikvEvalContext;
 use tidb_query_expr::local::{CompileLimits, ExecutionLimits};
+use tidb_query_expr::types::BATCH_MAX_SIZE;
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
 use crate::ReadyValueCache;
 
 // Private consumer checkpoint; the public suite still selects Native below.
-pub(crate) mod numeric_batch;
+pub(crate) mod batch;
 
-use numeric_batch::{NumericSourceLimits, PreparedNumericBatch};
+use batch::{BatchSourceLimits, PreparedBatch};
 
 /// Go `HasGetSetVarFunc`: whether an expression contains a user-variable read
 /// or assignment at any depth.
@@ -325,7 +326,49 @@ impl EvaluatorProgram {
     /// cell by cell like any other expression. Otherwise their resolved input
     /// indexes are grouped into one [`ColumnSwapHelper`].
     #[must_use]
-    pub fn new(exprs: Vec<Expression>, avoid_column_evaluator: bool) -> Self {
+    pub fn new(mut exprs: Vec<Expression>, avoid_column_evaluator: bool) -> Self {
+        // FieldType::clone mirrors a Go slice-header copy, so ENUM/SET
+        // metadata can otherwise remain writable through an alias retained by
+        // the builder. A compiled program is immutable: detach those backing
+        // arrays once at this ownership boundary instead of re-walking every
+        // expression before every prepared invocation.
+        let mut pending = exprs.iter_mut().collect::<Vec<_>>();
+        while let Some(expression) = pending.pop() {
+            let (field, children): (&mut Option<FieldType>, &mut [Expression]) = match expression {
+                Expression::Constant(constant) => (
+                    &mut constant.ret_type,
+                    constant
+                        .deferred_expr
+                        .as_deref_mut()
+                        .map(std::slice::from_mut)
+                        .unwrap_or_default(),
+                ),
+                Expression::Column(column) => (
+                    &mut column.ret_type,
+                    column
+                        .virtual_expr
+                        .as_deref_mut()
+                        .map(std::slice::from_mut)
+                        .unwrap_or_default(),
+                ),
+                Expression::CorrelatedColumn(correlated) => (
+                    &mut correlated.column.ret_type,
+                    correlated
+                        .column
+                        .virtual_expr
+                        .as_deref_mut()
+                        .map(std::slice::from_mut)
+                        .unwrap_or_default(),
+                ),
+                Expression::ScalarFunction(function) => {
+                    (&mut function.ret_type, function.args.as_mut_slice())
+                }
+            };
+            if let Some(field) = field {
+                *field = field.deep_copy_like_go();
+            }
+            pending.extend(children);
+        }
         let mut calculated = Vec::with_capacity(exprs.len());
         let mut calculated_output_indexes = Vec::with_capacity(exprs.len());
         let mut column_mapping = HashMap::<usize, Vec<usize>>::new();
@@ -356,12 +399,57 @@ impl EvaluatorProgram {
     }
 }
 
-/// Per-suite TiKV numeric state. `Unsupported` is decided once before any
+/// Per-suite TiKV eager-batch state. `Unsupported` is decided once before any
 /// values or warnings are observed; a prepared worker is affine to this suite.
-enum NumericVectorLane {
+enum BatchLane {
     Uninitialized,
-    Unsupported,
-    Prepared(PreparedNumericBatch),
+    Unsupported(BatchRefusal),
+    Prepared(PreparedBatch),
+}
+
+/// Bounded reason why a suite could not prepare the closed batch path.
+///
+/// This is route telemetry, not an alternate error mapping. Preparation still
+/// falls back before evaluating values or warnings, and execution failures on a
+/// prepared route still propagate to the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchRefusal {
+    /// The expression is outside the closed eager-batch semantic class.
+    Admission,
+    /// TiDB/TiKV value metadata could not be bridged exactly.
+    Bridge,
+    /// Prepared expression, schema, or binding contracts were inconsistent.
+    Contract,
+    /// A checked retained-memory or size limit refused preparation.
+    Resource,
+    /// TiKV returned an ordinary evaluation failure while preparing.
+    Evaluation,
+    /// The native TiDB evaluator rejected preparation.
+    Native,
+}
+
+/// Allocation-free snapshot of the route actually used by this evaluator lane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchRouteSnapshot {
+    /// Calls that executed the prepared TiKV batch route.
+    pub prepared: u64,
+    /// Calls that executed the canonical native fallback route.
+    pub fallback: u64,
+    /// Failed preparation attempts. A suite attempts preparation at most once.
+    pub refusals: u64,
+    /// Stable bounded category for the preparation refusal, when any.
+    pub refusal: Option<BatchRefusal>,
+}
+
+/// Retained lane-local scratch capacities for the prepared batch route.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchScratchSnapshot {
+    /// Capacity of the reusable selected-row index buffer.
+    pub selection_capacity: usize,
+    /// Typed carrier vectors constructed by successful prepared windows.
+    pub vector_allocations: u64,
+    /// TiKV program windows invoked by this lane.
+    pub windows: u64,
 }
 
 /// Go `EvaluatorSuite`: executes a projection program with execution-lane-local
@@ -371,21 +459,24 @@ pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
     column_swap_helper: Option<ColumnSwapHelper>,
     ready_value_cache: ReadyValueCache,
-    numeric_vector_lane: RefCell<NumericVectorLane>,
+    batch_lane: RefCell<BatchLane>,
+    batch_route_prepared: Cell<u64>,
+    batch_route_fallback: Cell<u64>,
+    batch_route_refusals: Cell<u64>,
 }
 
 // Minted only inside the real column-major/global-enabled/native-eligible
 // branch below. No Clone, public constructor, caller-supplied selection or
 // cached boolean replaces this invocation's provenance.
-struct NumericBatchInvocation<'a> {
+struct BatchInvocation<'a> {
     program: &'a Arc<EvaluatorProgram>,
     calculated_slot: usize,
     output_index: usize,
     input: &'a Chunk,
-    candidate: crate::scalar_function::EligibleNumericBatch<'a>,
+    candidate: crate::scalar_function::EligibleBatch<'a>,
 }
 
-trait NumericBatchConsumer {
+trait BatchConsumer {
     type Error: From<EvalError> + From<EvaluatorError>;
 
     fn before_run(
@@ -397,17 +488,22 @@ trait NumericBatchConsumer {
 
     fn consume(
         &mut self,
-        invocation: NumericBatchInvocation<'_>,
+        invocation: BatchInvocation<'_>,
         ctx: &dyn Columns,
-    ) -> Result<Vec<Datum>, Self::Error>;
+        output: &mut Chunk,
+    ) -> Result<(), Self::Error>;
+
+    fn requires_batch_candidate_before_native_specialization(&self) -> bool {
+        false
+    }
 
     // Native keeps its exact row fallback; mandatory private consumers refuse
     // before constants/rows/owner moves rather than substituting that route.
     fn row_route(&mut self) -> Result<(), Self::Error>;
 }
 
-struct NativeNumericConsumer;
-impl NumericBatchConsumer for NativeNumericConsumer {
+struct NativeBatchConsumer;
+impl BatchConsumer for NativeBatchConsumer {
     type Error = EvaluatorError;
 
     fn before_run(
@@ -421,13 +517,18 @@ impl NumericBatchConsumer for NativeNumericConsumer {
 
     fn consume(
         &mut self,
-        invocation: NumericBatchInvocation<'_>,
+        invocation: BatchInvocation<'_>,
         ctx: &dyn Columns,
-    ) -> Result<Vec<Datum>, Self::Error> {
-        invocation
+        output: &mut Chunk,
+    ) -> Result<(), Self::Error> {
+        let values = invocation
             .candidate
             .eval_native(ctx, invocation.input)
-            .map_err(Into::into)
+            .map_err(EvaluatorError::from)?;
+        for value in values {
+            output.append_datum(invocation.output_index, &value);
+        }
+        Ok(())
     }
 
     fn row_route(&mut self) -> Result<(), Self::Error> {
@@ -455,7 +556,10 @@ impl EvaluatorSuite {
             program,
             column_swap_helper,
             ready_value_cache: ReadyValueCache::new(),
-            numeric_vector_lane: RefCell::new(NumericVectorLane::Uninitialized),
+            batch_lane: RefCell::new(BatchLane::Uninitialized),
+            batch_route_prepared: Cell::new(0),
+            batch_route_fallback: Cell::new(0),
+            batch_route_refusals: Cell::new(0),
         }
     }
 
@@ -465,12 +569,30 @@ impl EvaluatorSuite {
         self.program.vectorizable
     }
 
-    #[cfg(test)]
-    pub(crate) fn tikv_numeric_lane_prepared_for_test(&self) -> bool {
-        matches!(
-            &*self.numeric_vector_lane.borrow(),
-            NumericVectorLane::Prepared(_)
-        )
+    /// Returns live per-lane route counters without allocating or changing the
+    /// route. The refusal category is stable after the one preparation attempt.
+    #[must_use]
+    pub fn batch_route_snapshot(&self) -> BatchRouteSnapshot {
+        let refusal = match &*self.batch_lane.borrow() {
+            BatchLane::Unsupported(reason) => Some(*reason),
+            BatchLane::Uninitialized | BatchLane::Prepared(_) => None,
+        };
+        BatchRouteSnapshot {
+            prepared: self.batch_route_prepared.get(),
+            fallback: self.batch_route_fallback.get(),
+            refusals: self.batch_route_refusals.get(),
+            refusal,
+        }
+    }
+
+    /// Returns retained scratch capacities when this suite prepared the batch
+    /// route. Unsupported and not-yet-invoked suites return `None`.
+    #[must_use]
+    pub fn batch_scratch_snapshot(&self) -> Option<BatchScratchSnapshot> {
+        match &*self.batch_lane.borrow() {
+            BatchLane::Prepared(worker) => Some(worker.scratch_snapshot()),
+            BatchLane::Uninitialized | BatchLane::Unsupported(_) => None,
+        }
     }
 
     /// Go `EvaluatorSuite.Run`.
@@ -486,49 +608,85 @@ impl EvaluatorSuite {
         output: &mut Chunk,
     ) -> Result<(), EvaluatorError> {
         self.ready_value_cache.with_columns(ctx, |bound| {
-            self.run_with_consumer(bound, input, output, &mut NativeNumericConsumer)
+            self.run_with_consumer(bound, input, output, &mut NativeBatchConsumer)
         })
     }
 
-    /// Projection-lane entry for the checked signed-LongLong numeric seed.
+    /// Projection-lane entry for the checked pure, strict, eager batch class.
     /// Admission is cached before evaluation. Unsupported suites retain the
     /// native route; admitted suites pass the real Chunk selection to TiKV's
     /// eager RPN vector entry and never retry natively after an engine error.
-    pub fn run_with_tikv_numeric<C: Columns>(
+    pub fn run_with_tikv_batch<C: Columns>(
         &self,
         ctx: &C,
         input: &mut Chunk,
         output: &mut Chunk,
         row_schema: &[FieldType],
     ) -> Result<(), EvaluatorError> {
-        let mut lane = self.numeric_vector_lane.borrow_mut();
-        if matches!(*lane, NumericVectorLane::Uninitialized) {
-            *lane = match PreparedNumericBatch::compile(
+        self.run_with_tikv_window(ctx, input, output, row_schema, BATCH_MAX_SIZE)
+    }
+
+    /// Benchmark-only ablation of the current TiKV batch implementation. It
+    /// shares the current lowering, checked adapters, and generated kernels,
+    /// but deliberately invokes the program with one selected occurrence per
+    /// window. It is not evidence for a historical TiKV revision.
+    #[cfg(test)]
+    pub(crate) fn run_with_tikv_row_ablation<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        row_schema: &[FieldType],
+    ) -> Result<(), EvaluatorError> {
+        self.run_with_tikv_window(ctx, input, output, row_schema, 1)
+    }
+
+    fn run_with_tikv_window<C: Columns>(
+        &self,
+        ctx: &C,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        row_schema: &[FieldType],
+        window_size: usize,
+    ) -> Result<(), EvaluatorError> {
+        debug_assert!((1..=BATCH_MAX_SIZE).contains(&window_size));
+        let mut lane = self.batch_lane.borrow_mut();
+        if matches!(*lane, BatchLane::Uninitialized) {
+            *lane = match PreparedBatch::compile(
                 self,
                 row_schema,
                 true,
                 0,
-                NumericSourceLimits {
+                BatchSourceLimits {
                     tree: CompileLimits::default(),
                     max_metadata_bytes: 1 << 20,
                 },
                 ExecutionLimits::default(),
                 8 << 20,
             ) {
-                Ok(worker) => NumericVectorLane::Prepared(worker),
-                Err(_) => NumericVectorLane::Unsupported,
+                Ok(worker) => BatchLane::Prepared(worker),
+                Err(error) => {
+                    self.batch_route_refusals
+                        .set(self.batch_route_refusals.get().saturating_add(1));
+                    BatchLane::Unsupported(error.refusal())
+                }
             };
         }
-        let NumericVectorLane::Prepared(worker) = &mut *lane else {
+        let BatchLane::Prepared(worker) = &mut *lane else {
+            self.batch_route_fallback
+                .set(self.batch_route_fallback.get().saturating_add(1));
             drop(lane);
             return self.run(ctx, input, output);
         };
+        worker.window_size = window_size;
+        self.batch_route_prepared
+            .set(self.batch_route_prepared.get().saturating_add(1));
         let mut tikv_ctx = TikvEvalContext::default();
-        self.run_numeric_batch_raw(ctx, &mut tikv_ctx, worker, input, output, row_schema)
-            .map_err(numeric_batch::NumericBatchFailure::into_evaluator_error)
+        self.run_batch(ctx, &mut tikv_ctx, worker, input, output, row_schema)
+            .map_err(batch::BatchFailure::into_evaluator_error)
     }
 
-    fn run_with_consumer<C: Columns, B: NumericBatchConsumer>(
+    fn run_with_consumer<C: Columns, B: BatchConsumer>(
         &self,
         ctx: &C,
         input: &mut Chunk,
@@ -547,6 +705,27 @@ impl EvaluatorSuite {
                 .zip(&program.calculated)
                 .enumerate()
             {
+                if consumer.requires_batch_candidate_before_native_specialization() {
+                    if ctx.enable_vectorized_expression() {
+                        if let Some(candidate) =
+                            crate::scalar_function::batch_candidate(expression, ctx)?
+                        {
+                            consumer.consume(
+                                BatchInvocation {
+                                    program,
+                                    calculated_slot,
+                                    output_index: *output_index,
+                                    input,
+                                    candidate,
+                                },
+                                ctx,
+                                output,
+                            )?;
+                            continue;
+                        }
+                    }
+                    consumer.row_route()?;
+                }
                 if let Expression::ScalarFunction(function) = expression {
                     // Go's typed `VecEvalDecimal` for decimal arithmetic.
                     if function.vec_eval_decimal_arithmetic_in(ctx, input, output, *output_index)? {
@@ -557,10 +736,10 @@ impl EvaluatorSuite {
                 // observation, after Decimal priority and before admission.
                 if ctx.enable_vectorized_expression() {
                     if let Some(candidate) =
-                        crate::scalar_function::numeric_batch_candidate(expression, ctx)?
+                        crate::scalar_function::batch_candidate(expression, ctx)?
                     {
-                        let values = consumer.consume(
-                            NumericBatchInvocation {
+                        consumer.consume(
+                            BatchInvocation {
                                 program,
                                 calculated_slot,
                                 output_index: *output_index,
@@ -568,10 +747,8 @@ impl EvaluatorSuite {
                                 candidate,
                             },
                             ctx,
+                            output,
                         )?;
-                        for value in values {
-                            output.append_datum(*output_index, &value);
-                        }
                         continue;
                     }
                 }
@@ -852,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn tikv_numeric_lane_consumes_real_chunk_selection_and_reuses_worker() {
+    fn tikv_batch_lane_consumes_real_chunk_selection_and_reuses_worker() {
         let field = longlong();
         let mut left = Column::new(1, field.clone());
         left.index = 0;
@@ -873,35 +1050,93 @@ mod tests {
         input.set_sel(Some(vec![2, 0, 2, 1]));
         let mut output = Chunk::new_with_capacity(std::slice::from_ref(&field), 4);
         suite
-            .run_with_tikv_numeric(&NoColumns, &mut input, &mut output, &schema)
+            .run_with_tikv_batch(&NoColumns, &mut input, &mut output, &schema)
             .unwrap();
+        assert_eq!(
+            suite.batch_route_snapshot(),
+            BatchRouteSnapshot {
+                prepared: 1,
+                fallback: 0,
+                refusals: 0,
+                refusal: None,
+            }
+        );
         assert_eq!(output.num_rows(), 4);
         assert!(output.get_row(0).is_null(0));
         assert_eq!(output.get_row(1).get_int64(0), 11);
         assert!(output.get_row(2).is_null(0));
         assert!(output.get_row(3).is_null(0));
-        let first = match &*suite.numeric_vector_lane.borrow() {
-            NumericVectorLane::Prepared(worker) => worker as *const PreparedNumericBatch,
-            _ => panic!("checked numeric suite did not retain its TiKV worker"),
+        let first = match &*suite.batch_lane.borrow() {
+            BatchLane::Prepared(worker) => worker as *const PreparedBatch,
+            _ => panic!("checked batch suite did not retain its TiKV worker"),
         };
+        let first_scratch = suite
+            .batch_scratch_snapshot()
+            .expect("prepared route exposes scratch capacities");
+        assert!(first_scratch.selection_capacity >= 4);
 
         let mut next = Chunk::new_with_capacity(&schema, 1);
         next.append_int64(0, 3);
         next.append_int64(1, 4);
         let mut next_output = Chunk::new_with_capacity(std::slice::from_ref(&field), 1);
         suite
-            .run_with_tikv_numeric(&NoColumns, &mut next, &mut next_output, &schema)
+            .run_with_tikv_batch(&NoColumns, &mut next, &mut next_output, &schema)
             .unwrap();
         assert_eq!(next_output.get_row(0).get_int64(0), 7);
-        let second = match &*suite.numeric_vector_lane.borrow() {
-            NumericVectorLane::Prepared(worker) => worker as *const PreparedNumericBatch,
-            _ => panic!("checked numeric suite lost its TiKV worker"),
+        let second = match &*suite.batch_lane.borrow() {
+            BatchLane::Prepared(worker) => worker as *const PreparedBatch,
+            _ => panic!("checked batch suite lost its TiKV worker"),
         };
         assert_eq!(first, second);
+        assert_eq!(suite.batch_route_snapshot().prepared, 2);
+        let second_scratch = suite
+            .batch_scratch_snapshot()
+            .expect("reused route keeps its scratch counters");
+        assert_eq!(
+            second_scratch.selection_capacity,
+            first_scratch.selection_capacity
+        );
+        assert_eq!(
+            second_scratch.vector_allocations,
+            first_scratch.vector_allocations * 2
+        );
+        assert_eq!(second_scratch.windows, first_scratch.windows * 2);
     }
 
     #[test]
-    fn numeric_batch_selection_signedness_and_preflight() {
+    fn tikv_batch_route_snapshot_records_prepared_abs_calls() {
+        let field = longlong();
+        let mut column = Column::new(1, field.clone());
+        column.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("abs"),
+            field.clone(),
+            vec![Expression::Column(column)],
+        ));
+        let suite = EvaluatorSuite::new(vec![expression], false);
+        let schema = vec![field.clone()];
+        for value in [-7, 9] {
+            let mut input = Chunk::new_with_capacity(&schema, 1);
+            input.append_int64(0, value);
+            let mut output = Chunk::new_with_capacity(std::slice::from_ref(&field), 1);
+            suite
+                .run_with_tikv_batch(&NoColumns, &mut input, &mut output, &schema)
+                .unwrap();
+            assert_eq!(output.get_row(0).get_int64(0), value.abs());
+        }
+        assert_eq!(
+            suite.batch_route_snapshot(),
+            BatchRouteSnapshot {
+                prepared: 2,
+                fallback: 0,
+                refusals: 0,
+                refusal: None,
+            }
+        );
+    }
+
+    #[test]
+    fn batch_selection_signedness_and_preflight() {
         use tidb_datatype::FieldTypeFlags;
         for name in ["plus", "minus", "mul"] {
             for left_unsigned in [false, true] {
@@ -956,7 +1191,7 @@ mod tests {
             reads: Cell::new(0),
         };
         let unsupported = Expression::ScalarFunction(ScalarFunction::new(
-            CiString::new("abs"),
+            CiString::new("sign"),
             long(),
             vec![input_column(0)],
         ));
@@ -968,7 +1203,7 @@ mod tests {
         let mut input = Chunk::new_with_capacity(&[long()], 1);
         input.append_int64(0, 1);
         assert_eq!(
-            crate::scalar_function::try_eval_numeric_batch(&expression, &ctx, &input).unwrap(),
+            crate::scalar_function::try_eval_batch(&expression, &ctx, &input).unwrap(),
             None
         );
         assert_eq!(
@@ -983,7 +1218,7 @@ mod tests {
         ));
         input.reset();
         assert_eq!(
-            crate::scalar_function::try_eval_numeric_batch(&expression, &ctx, &input).unwrap(),
+            crate::scalar_function::try_eval_batch(&expression, &ctx, &input).unwrap(),
             Some(vec![])
         );
         assert_eq!(
@@ -994,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_batch_casts_unsigned_arguments_before_arithmetic() {
+    fn batch_casts_unsigned_arguments_before_arithmetic() {
         use tidb_datatype::{Decimal, FieldTypeFlags};
         let mut unsigned = FieldType::new(FieldTypeCode::LongLong);
         unsigned.add_flags(FieldTypeFlags::UNSIGNED);
@@ -1030,13 +1265,10 @@ mod tests {
                     };
                     Datum::Decimal(Decimal::from_literal(value))
                 };
-                let batch = crate::scalar_function::try_eval_numeric_batch(
-                    &expression,
-                    &crate::NoColumns,
-                    &input,
-                )
-                .unwrap()
-                .unwrap();
+                let batch =
+                    crate::scalar_function::try_eval_batch(&expression, &crate::NoColumns, &input)
+                        .unwrap()
+                        .unwrap();
                 assert_eq!(
                     batch,
                     vec![Datum::Null, expected.clone()],
@@ -1053,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_batch_does_not_suppress_nested_errors_on_null_rows() {
+    fn batch_does_not_suppress_nested_errors_on_null_rows() {
         struct Context(bool);
         impl Columns for Context {
             fn get(&self, _: &[String]) -> Option<Datum> {

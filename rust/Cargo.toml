@@ -145,6 +145,7 @@ tikv-client = { path = "third_party/tikv-client-rs" }
 tidb_query_crypto = { path = "../../tikv/components/tidb_query_crypto" }
 tidb_query_datatype = { path = "../../tikv/components/tidb_query_datatype" }
 tidb_query_expr = { path = "../../tikv/components/tidb_query_expr" }
+tikv_alloc = { path = "../../tikv/components/tikv_alloc" }
 tipb = { git = "https://github.com/pingcap/tipb.git" }
 # Match the generated TiKV enum's trait, separately from TiDB's prost messages.
 protobuf = "=2.8.0"

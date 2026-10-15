@@ -3753,7 +3753,7 @@ fn eval_numeric_operand_batch(
                 .collect();
         }
     }
-    let values = eval_numeric_batch_values(expression, ctx, input, source)?;
+    let values = eval_batch_values(expression, ctx, input, source)?;
     if source == target {
         return Ok(values);
     }
@@ -3773,12 +3773,12 @@ fn cast_json_argument_value(function: &ScalarFunction, value: Datum) -> Result<D
     )
 }
 
-fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
+fn batch_supported(expression: &Expression, target: EvalType) -> bool {
     match expression {
         Expression::Constant(constant) => constant
             .deferred_expr
             .as_deref()
-            .is_none_or(|child| numeric_batch_supported(child, target)),
+            .is_none_or(|child| batch_supported(child, target)),
         Expression::CorrelatedColumn(_) => true,
         Expression::Column(column) => column.get_static_type().is_some_and(|field| {
             if field.is_hybrid() {
@@ -3789,6 +3789,85 @@ fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
             }
         }),
         Expression::ScalarFunction(function) => {
+            if let Some((arguments, result)) =
+                crate::evaluator::batch::batch_call_signature(function)
+            {
+                let carrier_matches = |carrier, native| match carrier {
+                    tidb_query_datatype::EvalType::Int => native == EvalType::Int,
+                    tidb_query_datatype::EvalType::Real => native == EvalType::Real,
+                    tidb_query_datatype::EvalType::Decimal => native == EvalType::Decimal,
+                    tidb_query_datatype::EvalType::Bytes => native == EvalType::String,
+                    tidb_query_datatype::EvalType::DateTime => {
+                        matches!(native, EvalType::Datetime | EvalType::Timestamp)
+                    }
+                    tidb_query_datatype::EvalType::Duration => native == EvalType::Duration,
+                    tidb_query_datatype::EvalType::Json => native == EvalType::Json,
+                    tidb_query_datatype::EvalType::VectorFloat32 => {
+                        native == EvalType::VectorFloat32
+                    }
+                    _ => false,
+                };
+                return carrier_matches(result, target)
+                    && arguments.len() == function.args.len()
+                    && arguments.iter().zip(&function.args).all(|(&carrier, arg)| {
+                        let Some(expected) = arg.static_type().map(FieldType::eval_type) else {
+                            return false;
+                        };
+                        carrier_matches(carrier, expected) && batch_supported(arg, expected)
+                    });
+            }
+            let name = function.func_name.lowercase();
+            if matches!(name, "char_length" | "character_length") {
+                return target == EvalType::Int
+                    && function.args.len() == 1
+                    && function.get_static_type().is_some_and(|field| {
+                        field.eval_type() == EvalType::Int && !field.is_unsigned()
+                    })
+                    && function.args[0]
+                        .static_type()
+                        .is_some_and(|field| field.eval_type() == EvalType::String)
+                    && batch_supported(&function.args[0], EvalType::String);
+            }
+            if matches!(name, "lower" | "upper") {
+                return target == EvalType::String
+                    && function.args.len() == 1
+                    && function
+                        .get_static_type()
+                        .is_some_and(|field| field.eval_type() == EvalType::String)
+                    && function.args[0]
+                        .static_type()
+                        .is_some_and(|field| field.eval_type() == EvalType::String)
+                    && batch_supported(&function.args[0], EvalType::String);
+            }
+            if matches!(name, "substr" | "substring" | "mid") {
+                return target == EvalType::String
+                    && matches!(function.args.len(), 2 | 3)
+                    && function
+                        .get_static_type()
+                        .is_some_and(|field| field.eval_type() == EvalType::String)
+                    && function.args[0]
+                        .static_type()
+                        .is_some_and(|field| field.eval_type() == EvalType::String)
+                    && function.args[1..].iter().all(|arg| {
+                        arg.static_type()
+                            .is_some_and(|field| field.eval_type() == EvalType::Int)
+                    })
+                    && batch_supported(&function.args[0], EvalType::String)
+                    && function.args[1..]
+                        .iter()
+                        .all(|arg| batch_supported(arg, EvalType::Int));
+            }
+            if function.func_name.lowercase() == "abs" {
+                return target == EvalType::Int
+                    && function.args.len() == 1
+                    && function.get_static_type().is_some_and(|field| {
+                        field.eval_type() == EvalType::Int && !field.is_unsigned()
+                    })
+                    && function.args[0].static_type().is_some_and(|field| {
+                        field.eval_type() == EvalType::Int && !field.is_unsigned()
+                    })
+                    && batch_supported(&function.args[0], EvalType::Int);
+            }
             if function.func_name.lowercase() == "cast_json" && target == EvalType::Json {
                 return function
                     .get_static_type()
@@ -3797,7 +3876,7 @@ fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
                     && crate::builtin_ext::json::json_cast_source_supported(
                         function.args[0].static_type(),
                     )
-                    && numeric_batch_supported(
+                    && batch_supported(
                         &function.args[0],
                         function.args[0]
                             .static_type()
@@ -3816,7 +3895,7 @@ fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
                             .static_type()
                             .is_some_and(|field| field.eval_type() == EvalType::Int)))
                 && function.args.iter().all(|arg| {
-                    numeric_batch_supported(
+                    batch_supported(
                         arg,
                         numeric_argument_source(
                             arg,
@@ -3893,6 +3972,39 @@ fn eval_integer_batch(
                 .collect())
         }
         Expression::ScalarFunction(function) => {
+            if function.func_name.lowercase() == "abs" {
+                let values = eval_integer_batch(&function.args[0], ctx, input)?;
+                return values
+                    .into_iter()
+                    .map(|value| {
+                        let Some(value) = value else {
+                            return Ok(None);
+                        };
+                        let result =
+                            crate::math_fn::dispatch_values("ABS", &[Datum::Int(value)], ctx)
+                                .expect("ABS values dispatcher")
+                                .map_err(|error| math_overflow_error(function, error, ctx))?;
+                        bits(result)
+                    })
+                    .collect();
+            }
+            // The common batch registry also contains non-arithmetic Int
+            // results such as comparisons and Bytes-to-Int functions. This
+            // routine is only the native reference evaluator; keep those
+            // calls on their existing row implementation instead of entering
+            // the binary arithmetic helper.
+            if function.numeric_operand_domain().is_none() {
+                return (0..input.num_rows())
+                    .map(|row| {
+                        bits(eval_numeric_row(
+                            expression,
+                            ctx,
+                            input.get_row(row),
+                            EvalType::Int,
+                        )?)
+                    })
+                    .collect();
+            }
             if function.numeric_operand_domain() != Some(EvalType::Int)
                 || function
                     .args
@@ -3960,7 +4072,7 @@ fn eval_integer_batch(
     }
 }
 
-fn eval_numeric_batch_values(
+fn eval_batch_values(
     expression: &Expression,
     ctx: &dyn Columns,
     input: &Chunk,
@@ -3982,7 +4094,7 @@ fn eval_numeric_batch_values(
     match expression {
         Expression::Constant(constant) => {
             if let Some(child) = constant.deferred_expr.as_deref() {
-                return eval_numeric_batch_values(child, ctx, input, target);
+                return eval_batch_values(child, ctx, input, target);
             }
             let value = constant.eval_typed_as_on_row(ctx, input.get_row(0), target)?;
             Ok(vec![value; input.num_rows()])
@@ -3999,7 +4111,7 @@ fn eval_numeric_batch_values(
                 .static_type()
                 .expect("preflight checked JSON source")
                 .eval_type();
-            let values = eval_numeric_batch_values(&function.args[0], ctx, input, source)?;
+            let values = eval_batch_values(&function.args[0], ctx, input, source)?;
             values
                 .into_iter()
                 .map(|value| cast_json_argument_value(function, value))
@@ -4031,7 +4143,12 @@ fn eval_numeric_batch_values(
                 })
                 .collect()
         }
-        Expression::ScalarFunction(function) => eval_arithmetic_batch(function, ctx, input),
+        Expression::ScalarFunction(function) if function.numeric_operand_domain().is_some() => {
+            eval_arithmetic_batch(function, ctx, input)
+        }
+        Expression::ScalarFunction(_) => (0..input.num_rows())
+            .map(|row| expression.eval(ctx, input.get_row(row)))
+            .collect(),
     }
 }
 
@@ -4084,16 +4201,16 @@ fn eval_arithmetic_batch(
     Ok(left)
 }
 
-/// Go numeric arithmetic batch evaluation for typed expression trees. A full
+/// Native batch reference evaluation for typed expression trees. A full
 /// eligibility pass precedes evaluation, so declining a shape never emits a
 /// warning or evaluates an operand. Other signatures retain their existing path.
 /// Deferred wrappers forward the requested domain and use child metadata.
-pub fn try_eval_numeric_batch(
+pub fn try_eval_batch(
     expression: &Expression,
     ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Option<Vec<Datum>>, EvalError> {
-    match numeric_batch_candidate(expression, ctx)? {
+    match batch_candidate(expression, ctx)? {
         Some(candidate) => candidate.eval_native(ctx, input).map(Some),
         None => Ok(None),
     }
@@ -4102,12 +4219,12 @@ pub fn try_eval_numeric_batch(
 /// The result of the existing native eligibility pass, not evidence that a
 /// projection suite selected this route. Only the suite can supply that seal.
 /// No Clone or public constructor permits a consumer to replay this candidate.
-pub(crate) struct EligibleNumericBatch<'a> {
+pub(crate) struct EligibleBatch<'a> {
     expression: &'a Expression,
     target: EvalType,
 }
 
-impl EligibleNumericBatch<'_> {
+impl EligibleBatch<'_> {
     pub(crate) fn expression(&self) -> &Expression {
         self.expression
     }
@@ -4125,17 +4242,26 @@ impl EligibleNumericBatch<'_> {
         if input.num_rows() == 0 {
             return Ok(Vec::new());
         }
-        eval_numeric_batch_values(self.expression, ctx, input, self.target)
+        if matches!(self.expression, Expression::ScalarFunction(function)
+            if matches!(function.func_name.lowercase(),
+                "char_length" | "character_length" | "lower" | "upper"
+                    | "substr" | "substring" | "mid"))
+        {
+            return (0..input.num_rows())
+                .map(|row| self.expression.eval(ctx, input.get_row(row)))
+                .collect();
+        }
+        eval_batch_values(self.expression, ctx, input, self.target)
     }
 }
 
 /// Admission only, factored without changing the native rule/order. This may
 /// read deferred-wrapper type context; callers must not assume it is a generic
-/// effect-free expression predicate. It never invokes a numeric value worker.
-pub(crate) fn numeric_batch_candidate<'a>(
+/// effect-free expression predicate. It never invokes a batch value worker.
+pub(crate) fn batch_candidate<'a>(
     expression: &'a Expression,
     ctx: &dyn Columns,
-) -> Result<Option<EligibleNumericBatch<'a>>, EvalError> {
+) -> Result<Option<EligibleBatch<'a>>, EvalError> {
     let mut source = expression;
     while let Expression::Constant(constant) = source {
         let Some(child) = constant.deferred_expr.as_deref() else {
@@ -4153,10 +4279,10 @@ pub(crate) fn numeric_batch_candidate<'a>(
             None => return Ok(None),
         },
     };
-    if !numeric_batch_supported(expression, target) {
+    if !batch_supported(expression, target) {
         return Ok(None);
     }
-    Ok(Some(EligibleNumericBatch { expression, target }))
+    Ok(Some(EligibleBatch { expression, target }))
 }
 
 /// Go `VecEvalDecimal` over one expression node, restricted to the shapes
@@ -4503,7 +4629,7 @@ mod tests {
                     chunk.append_datum(0, &Datum::new_string(text));
                     chunk.append_datum(1, &Datum::new_string("1"));
                     let result = if vectorized {
-                        super::try_eval_numeric_batch(&expression, &ctx, &chunk)
+                        super::try_eval_batch(&expression, &ctx, &chunk)
                             .map(|batch| batch.unwrap().remove(0))
                     } else {
                         expression.eval(&ctx, chunk.get_row(0))
@@ -4631,7 +4757,7 @@ mod tests {
                             .collect::<Result<Vec<_>, _>>()
                     };
                     let actual = if vectorized {
-                        super::try_eval_numeric_batch(&expression, &ctx, &chunk)
+                        super::try_eval_batch(&expression, &ctx, &chunk)
                             .and_then(|batch| batch.map(Ok).unwrap_or_else(scalar))
                     } else {
                         scalar()
