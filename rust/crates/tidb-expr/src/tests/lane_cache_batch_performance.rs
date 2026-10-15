@@ -321,14 +321,22 @@ impl ColumnResolver for Resolver {
 }
 
 fn schema() -> Vec<FieldType> {
+    let integer = match std::env::var("EXPR_BATCH_PERF_INT_TYPE").as_deref() {
+        Ok("tiny") => FieldTypeCode::Tiny,
+        Ok("short") => FieldTypeCode::Short,
+        Ok("int24") => FieldTypeCode::Int24,
+        Ok("long") => FieldTypeCode::Long,
+        Ok("longlong") | Err(_) => FieldTypeCode::LongLong,
+        Ok(other) => panic!("unsupported benchmark integer type {other}"),
+    };
     let mut decimal = FieldType::new(FieldTypeCode::NewDecimal);
     decimal.set_flen(10);
     decimal.set_decimal(2);
     let mut duration = FieldType::new(FieldTypeCode::Duration);
     duration.set_decimal(6);
     vec![
-        FieldType::new(FieldTypeCode::LongLong),
-        FieldType::new(FieldTypeCode::LongLong),
+        FieldType::new(integer),
+        FieldType::new(integer),
         FieldType::new(FieldTypeCode::VarString),
         decimal.clone(),
         FieldType::new(FieldTypeCode::Json),

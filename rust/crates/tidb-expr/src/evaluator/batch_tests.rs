@@ -1384,7 +1384,7 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         literal(Datum::UInt(1), ty().with_unsigned(true)),
         literal(Datum::UInt(1), ty()),
         literal(Datum::Null, FieldType::new(FieldTypeCode::Null)),
-        literal(Datum::Int(1), FieldType::new(FieldTypeCode::Tiny)),
+        literal(Datum::Int(1), FieldType::new(FieldTypeCode::Year)),
         literal(Datum::Int(1), ty().with_array(true)),
         literal(
             Datum::Int(1),
@@ -1742,5 +1742,123 @@ fn real_decimal_comparisons_preserve_order_nulls_and_selection() {
                 "{name} decimal={decimal}: {route:?}"
             );
         }
+    }
+}
+
+#[test]
+fn narrow_integer_fields_use_the_shared_int_carrier() {
+    for (code, min, max, umax) in [
+        (FieldTypeCode::Tiny, -128_i64, 127_i64, 255_u64),
+        (FieldTypeCode::Short, -32768, 32767, 65535),
+        (FieldTypeCode::Int24, -8388608, 8388607, 16777215),
+        (FieldTypeCode::Long, -2147483648, 2147483647, 4294967295),
+    ] {
+        for left_unsigned in [false, true] {
+            for right_unsigned in [false, true] {
+                let schema = vec![
+                    FieldType::new(code).with_unsigned(left_unsigned),
+                    FieldType::new(code).with_unsigned(right_unsigned),
+                ];
+                let left = if left_unsigned {
+                    vec![
+                        Datum::UInt(umax),
+                        Datum::UInt(0),
+                        Datum::Null,
+                        Datum::UInt(1),
+                    ]
+                } else {
+                    vec![
+                        Datum::Int(min),
+                        Datum::Int(max),
+                        Datum::Null,
+                        Datum::Int(-1),
+                    ]
+                };
+                let right = if right_unsigned {
+                    vec![
+                        Datum::UInt(0),
+                        Datum::UInt(umax),
+                        Datum::UInt(1),
+                        Datum::Null,
+                    ]
+                } else {
+                    vec![Datum::Int(max), Datum::Int(min), Datum::Int(1), Datum::Null]
+                };
+                let rows: Vec<_> = left
+                    .iter()
+                    .cloned()
+                    .zip(right.iter().cloned())
+                    .map(|(l, r)| vec![l, r])
+                    .collect();
+                let selection: Vec<_> = (0..2050).map(|i| 3 - i % 4).collect();
+                let numeric = |v: &Datum| match v {
+                    Datum::Int(v) => Some(*v as i128),
+                    Datum::UInt(v) => Some(*v as i128),
+                    Datum::Null => None,
+                    _ => unreachable!(),
+                };
+                for name in ["lt", "le", "gt", "ge", "eq", "ne", "nulleq"] {
+                    let suite = suite(call(
+                        name,
+                        ty(),
+                        vec![typed_column(0, &schema[0]), typed_column(1, &schema[1])],
+                    ));
+                    let expected: Vec<_> = selection
+                        .iter()
+                        .map(|&i| match (numeric(&left[i]), numeric(&right[i])) {
+                            (Some(l), Some(r)) => Datum::Int(i64::from(match name {
+                                "lt" => l < r,
+                                "le" => l <= r,
+                                "gt" => l > r,
+                                "ge" => l >= r,
+                                "eq" | "nulleq" => l == r,
+                                "ne" => l != r,
+                                _ => unreachable!(),
+                            })),
+                            (l, r) if name == "nulleq" => {
+                                Datum::Int(i64::from(l.is_none() && r.is_none()))
+                            }
+                            _ => Datum::Null,
+                        })
+                        .collect();
+                    let mut input = chunk(&schema, &rows);
+                    input.set_sel(Some(selection.clone()));
+                    let mut actual = output();
+                    suite
+                        .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+                        .unwrap();
+                    assert_eq!(
+                        values(&actual),
+                        expected,
+                        "{code:?} {name} unsigned={left_unsigned}/{right_unsigned}"
+                    );
+                    let route = suite.batch_route_snapshot();
+                    assert_eq!(
+                        (route.prepared, route.fallback, route.refusals),
+                        (1, 0, 0),
+                        "{route:?}"
+                    );
+                }
+            }
+        }
+        let schema = vec![FieldType::new(code)];
+        let suite = suite(plus(typed_column(0, &schema[0]), int(1)));
+        let mut input = chunk(
+            &schema,
+            &[
+                vec![Datum::Int(max)],
+                vec![Datum::Int(min)],
+                vec![Datum::Null],
+            ],
+        );
+        let mut actual = output();
+        suite
+            .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+            .unwrap();
+        assert_eq!(
+            values(&actual),
+            vec![Datum::Int(max + 1), Datum::Int(min + 1), Datum::Null]
+        );
+        assert_eq!(suite.batch_route_snapshot().prepared, 1);
     }
 }

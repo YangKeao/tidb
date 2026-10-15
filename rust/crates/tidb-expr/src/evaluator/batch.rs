@@ -275,7 +275,14 @@ fn check_type(sql: &FieldType) -> Result<()> {
             | FieldTypeFlags::ENUM_SET_AS_INT,
     );
     let carrier_ok = match sql.eval_type() {
-        NativeEvalType::Int => sql.code() == FieldTypeCode::LongLong,
+        NativeEvalType::Int => matches!(
+            sql.code(),
+            FieldTypeCode::Tiny
+                | FieldTypeCode::Short
+                | FieldTypeCode::Int24
+                | FieldTypeCode::Long
+                | FieldTypeCode::LongLong
+        ),
         NativeEvalType::Real => sql.code() == FieldTypeCode::Double,
         NativeEvalType::Decimal => sql.code() == FieldTypeCode::NewDecimal,
         NativeEvalType::String => matches!(
@@ -1376,12 +1383,20 @@ impl LocalRuntimeServices for CheckedInputs<'_> {
         let value = self.source.read(ctx, slot, row, expected)?;
         let eval_type = match value {
             Datum::Int(_) | Datum::Null
-                if expected.get_tp() == tidb_query_datatype::FieldTypeTp::LongLong as i32 =>
+                if matches!(expected.get_tp(), value if value == tidb_query_datatype::FieldTypeTp::Tiny as i32
+                    || value == tidb_query_datatype::FieldTypeTp::Short as i32
+                    || value == tidb_query_datatype::FieldTypeTp::Int24 as i32
+                    || value == tidb_query_datatype::FieldTypeTp::Long as i32
+                    || value == tidb_query_datatype::FieldTypeTp::LongLong as i32) =>
             {
                 TikvEvalType::Int
             }
             Datum::UInt(_)
-                if expected.get_tp() == tidb_query_datatype::FieldTypeTp::LongLong as i32
+                if matches!(expected.get_tp(), value if value == tidb_query_datatype::FieldTypeTp::Tiny as i32
+                    || value == tidb_query_datatype::FieldTypeTp::Short as i32
+                    || value == tidb_query_datatype::FieldTypeTp::Int24 as i32
+                    || value == tidb_query_datatype::FieldTypeTp::Long as i32
+                    || value == tidb_query_datatype::FieldTypeTp::LongLong as i32)
                     && expected.get_flag() & (1 << 5) != 0 =>
             {
                 TikvEvalType::Int

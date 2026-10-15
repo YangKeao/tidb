@@ -113,3 +113,20 @@ batch ablations plus a true frozen native comparison over all fourteen SQL probe
 with all five selection shapes retained. This is no claim about casts or all SQL
 workloads. Generated inventory cells remain unreviewed planning metadata; this
 prose receipt states the exact reviewed scope.
+
+## Reviewed primitive integer storage extension
+
+Tiny/Short/Int24/Long now join LongLong on the existing eight-byte Int carrier.
+The seven comparison signatures preserve unsigned operand bits/metadata; signed
+arithmetic and signed results retain their previous contracts. Raw SQL integer
+width is input metadata, not arithmetic result clipping: e.g. signed TINYINT127
+plus1 returns a LongLong128. Year remains excluded because its native Datum read
+has a separate signedness rule; BIT/ENUM/SET and arrays remain excluded. The older
+row profile still accepts signed LongLong only.
+
+The M15 receipt covers 112 type/operator/signedness combinations, four signed PLUS
+extrema cases and cross-window selected occurrences, plus actual typed SQL PLUS
+and LT workloads for all four widths against the current fallback and true frozen
+native. No signature, driver, new arithmetic or temporary migration route is added.
+Inventory signature counts are unchanged. This extends the earlier LongLong
+receipt's raw type boundary, not its permission for unsigned arithmetic.

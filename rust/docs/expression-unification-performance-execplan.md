@@ -19,7 +19,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-16) Measured direct JSON/vector serialization and raw input views: JSON136.204→122.171ns, Vector83.312→72.932, LOWER36.084→32.570; Decimal flat. Chunk272/batch25/lint pass, full expression retains1374/same4 failures. Three pairs1890 records/135 checksum groups and9 fresh native/current dense groups agree. Evidence in `logs/performance-m12-varlen-transport/`.
 - [x] (2026-10-16) Added five LongLong comparisons and unsigned-input coverage across all seven via one registry contract; arithmetic/older row modes stay signed-only. Batch26/profile50 and PB roundtrips pass. Three cohorts give batch11.16–11.28ns versus true frozen native71.33–78.76ns; same-current-binary fallback ablation is explicitly distinct. Full suites retain1,376/same4 and1,026/same6.
 - [x] (2026-10-16) M14 admits fourteen same-domain Double/Decimal comparisons with the same registry and PB decoder. Batch27/profile51 and PB round trips pass; full1378/same4 and1027/same6. Three paired cohorts2940records/210checksums/42true-native groups agree; Double11.618–11.846ns vs native80.363–80.967, Decimal147.140–147.545 vs166.678–178.813. No new route or temporary boundary.
-- [ ] Continue with primitive integer raw type coverage and Decimal transport audit; string/temporal/cast metadata still needs separate semantic review.
+- [x] (2026-10-16) M15 admits Tiny/Short/Int24/Long through the same eight-byte Int carrier. Batch28/profile52 and full1379/same4,1028/same6 pass their changed contract. Four typed SQL PLUS workloads give12.840–12.879ns vs native21.772–21.862; LT11.293–11.368 vs72.018–72.284. Three cohorts1680records/120checksumgroups/24native groups all agree. Year/hybrids and unsigned arithmetic remain excluded.
+- [ ] Audit direct logical Decimal word transport; source physical header/padding and native normalization policies must remain equivalent. Other collation/temporal/lazy/effectful families need separate semantic review.
 - [x] (2026-10-16) Measured direct Decimal word owner: 250.597→229.120ns/row (1.09x), datatype564 pass and expression baselines unchanged. Other workloads flat to ~2% slower; no universal improvement claim. All paired checksum/route groups agree; report under `logs/performance-m11-decimal-owner/`.
 
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.
@@ -279,3 +280,16 @@ reverse and duplicate shapes; all results agree with true frozen native. The
 current fallback ablation remains separately labeled. Registry inventory now
 contains51 admitted signatures out of126 static union names (not a coverage
 percentage). Remaining Decimal PLUS cost and other metadata families stay open.
+
+M15 in progress: admit native Tiny/Short/Int24/Long integer fields through the
+existing eight-byte Int carrier. Preserve unsigned-comparison-only contracts;
+keep Year, BIT, ENUM/SET and arrays excluded. Check integer extrema for each
+width, NULL, selection duplicates/windows and normal SQL lowering. Benchmark
+actual typed SQL inputs against the true frozen native and current fallback.
+
+M15 outcome: four additional native integer field types use the shared batch
+mode with no new signature or execution route. The old row-only profile remains
+LongLong. Obsolete batch Tiny/Long refusal assertions now test Year/BIT; the
+final debug TiKV suite and release TiDB suite verify the new boundary. The
+original release failure log is retained to make that test expectation change
+visible. All typed benchmark checksums match true frozen native.

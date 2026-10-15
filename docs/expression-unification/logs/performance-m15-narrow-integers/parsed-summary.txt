@@ -1,0 +1,9 @@
+int24 integer_add 973.244 12.84 21.822
+int24 integer_compare_lt 1097.262 11.303 72.284
+long integer_add 976.054 12.84 21.862
+long integer_compare_lt 1085.028 11.301 72.246
+short integer_add 977.411 12.879 21.772
+short integer_compare_lt 1085.797 11.368 72.254
+tiny integer_add 978.241 12.873 21.782
+tiny integer_compare_lt 1097.769 11.293 72.018
+1680 current timing records; 120 checksum groups including 24 native/current dense groups agree.

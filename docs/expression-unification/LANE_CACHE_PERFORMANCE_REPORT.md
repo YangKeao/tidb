@@ -6,7 +6,17 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：Double / Decimal 比较族（2026-10-16）
+## 最新结果：窄整数类型（2026-10-16）
+
+Tiny/Short/Int24/Long 已复用相同的 8 字节 Int carrier，signed 算术与 signed/unsigned 比较的权限不变。四种实际 SQL 类型的 dense PLUS 为 **12.840–12.879 ns/row**，真实冻结 native **21.772–21.862**；LT 为 **11.293–11.368**，真实 native **72.018–72.284**。这些类型原先不能进入 batch；未增加任何 kernel 或执行模式。
+
+三组共 1680 条 timing、120 个 checksum 组（含 24 个 native/current dense 组）全部一致，batch 样本 prepared-only。112 组位宽/比较/unsigned 组合与四种 PLUS 边界测试通过；Year、BIT、ENUM/SET、数组和 unsigned 算术仍拒绝。完整库保持原有 4 / 6 个失败。
+
+[完整报告、fallback 消融与真实 native 对照、原始样本和验证](logs/performance-m15-narrow-integers/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：Double / Decimal 比较族（2026-10-16）
 
 十四种比较沿用共享 registry、kernel、driver 和 protobuf 解码路径。dense 1,024 行：Double batch **11.618–11.846 ns/row**，真实冻结 native **80.363–80.967**（约 6.78–6.96 倍）；Decimal batch **147.140–147.545**，真实 native **166.678–178.813**（约 1.13–1.21 倍）。
 
