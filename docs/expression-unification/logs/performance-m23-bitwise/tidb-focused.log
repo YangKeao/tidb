@@ -1,0 +1,11 @@
+
+running 6 tests
+test evaluator::batch::tests::bitwise_family_keeps_unsigned_results_shift_limits_and_window_selection ... ok
+test pushdown_catalog::bitwise_contract_tests::bitwise_pb_result_is_unsigned_independently_of_operand_flags ... ok
+test tests::bitwise_and_div_by_zero ... ok
+test tests::bitwise_and_unary_source_vectors_match_tidb ... ok
+test tests::expr_to_pb_lowering_gap_source::test_bitwise_func_2_pb ... ignored, go-parity-gap: bitwise-function PB lowering is unported
+test tests::operand_dispatch::a_decimal_bitwise_operand_saturates_the_way_gos_cast_does ... ok
+
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 1474 filtered out; finished in 0.01s
+

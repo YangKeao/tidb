@@ -8,8 +8,8 @@ lowering and measured performance are separate gates.
 
 The reproducible source audit inventories 308 static function-name registrations
 (including aliases/internal names) from this checkout's `builtin_registry.rs`.
-It also inventories 126 unique signature names found in the static pushdown
-catalog or the paired TiKV batch registry. There are 51 registry-admitted eager
+It also inventories 131 unique signature names found in the static pushdown
+catalog or the paired TiKV batch registry. There are 56 registry-admitted eager
 signatures. These counts describe different sets and must not be divided to
 produce an SQL/function coverage percentage.
 
@@ -130,3 +130,15 @@ and LT workloads for all four widths against the current fallback and true froze
 native. No signature, driver, new arithmetic or temporary migration route is added.
 Inventory signature counts are unchanged. This extends the earlier LongLong
 receipt's raw type boundary, not its permission for unsigned arithmetic.
+
+## M23 integer bit operations
+
+Five complete signatures (BitAndSig/BitOrSig/BitXorSig/LeftShift/RightShift)
+share the eager driver. Their inputs preserve signed/unsigned raw64 bits and
+the result must be UNSIGNED for every operand flag combination. The catalog
+now states Signed/FirstArgument/Always result policy rather than inferring it.
+PB decode and encoding preserve the required flag; signed bitwise results and
+unsigned comparisons are refused. Golden cases cover sign bits, shifts63/64/65
+and negative counts, NULL,2050 reverse/duplicate selections. Measurement and
+full validation are recorded in [the M23 receipt](logs/performance-m23-bitwise/summary.md); this metadata
+count is not an SQL coverage percentage. The older row profile stays signed-only.

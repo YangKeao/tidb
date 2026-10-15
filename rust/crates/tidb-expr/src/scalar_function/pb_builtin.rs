@@ -90,6 +90,11 @@ impl PbBuiltin {
             ModIntUnsignedUnsigned => Kernel::IntegerMod {
                 unsigned: [true, true],
             },
+            BitAndSig => Kernel::Binary(BinaryOp::BitAnd, EvalType::Int),
+            BitOrSig => Kernel::Binary(BinaryOp::BitOr, EvalType::Int),
+            BitXorSig => Kernel::Binary(BinaryOp::BitXor, EvalType::Int),
+            LeftShift => Kernel::Binary(BinaryOp::LeftShift, EvalType::Int),
+            RightShift => Kernel::Binary(BinaryOp::RightShift, EvalType::Int),
             EqInt => Kernel::Binary(BinaryOp::Eq, EvalType::Int),
             GtInt => Kernel::Binary(BinaryOp::Gt, EvalType::Int),
             LtInt => Kernel::Binary(BinaryOp::Lt, EvalType::Int),

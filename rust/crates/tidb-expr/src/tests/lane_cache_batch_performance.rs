@@ -92,7 +92,27 @@ struct Workload {
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 44] = [
+const WORKLOADS: [Workload; 49] = [
+    Workload {
+        name: "integer_bit_bitand",
+        sql: "i & j",
+    },
+    Workload {
+        name: "integer_bit_bitor",
+        sql: "i | j",
+    },
+    Workload {
+        name: "integer_bit_bitxor",
+        sql: "i ^ j",
+    },
+    Workload {
+        name: "integer_bit_leftshift",
+        sql: "i << j",
+    },
+    Workload {
+        name: "integer_bit_rightshift",
+        sql: "i >> j",
+    },
     Workload {
         name: "real_compare_lt",
         sql: "r < q",
@@ -272,7 +292,8 @@ const WORKLOADS: [Workload; 44] = [
 ];
 
 fn tikv_batch_workload(name: &str) -> bool {
-    name.starts_with("integer_add")
+    name.starts_with("integer_bit_")
+        || name.starts_with("integer_add")
         || name.starts_with("integer_compare_")
         || name.starts_with("real_compare_")
         || name.starts_with("decimal_compare_")

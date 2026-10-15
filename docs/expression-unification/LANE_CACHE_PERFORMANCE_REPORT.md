@@ -6,7 +6,19 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新实验：构造内联未采用（2026-10-16）
+## 最新采用结果：五种整数位运算复用共享 batch（2026-10-16）
+
+AND/OR/XOR/左右移一次接入原有 registry/driver；输入保留 signed/unsigned 全 64 位，结果明确固定 UNSIGNED。catalog 使用 Signed/FirstArgument/Always 类型事实，PB 往返和准入分别验证输入与结果标志。NULL、符号位、移位 63/64/65/负值和 2050 个反向/重复 selection 均验证。
+
+三轮 dense batch **11.936–12.027 ns/row**，真实原始 native **79.651–80.606**，约 **6.6–6.7 倍**；当前 fallback 消融约 1079–1084 ns，单独标记，不能作为历史 native。3360 条主测量 / 240 组（含 48 个 native 对照）及 840 条 M15 控制 / 60 组全部匹配。
+
+保留慢项：旧 Int **13.200→13.558**，Real **14.005→14.135**，Decimal PLUS **129.951→130.790**；M15 控制中 Int、Datetime、LOWER 仍较慢，Duration 则改善。没有宣称普遍提升。batch 29、完整 TiDB 1381 / 原有 4 失败、完整 TiKV 1029 / 原有 6 失败；元数据计数为 **56 / 131**，不代表 SQL 覆盖率。
+
+[完整三方结果、所有旧项控制、精确探针与验证](logs/performance-m23-bitwise/summary.md)。以下是历史阶段。
+
+---
+
+## 历史实验：构造内联未采用（2026-10-16）
 
 单独对 `Decimal::try_new` 加内联提示，独立符号消失、代码段增加 5184 字节，但三组 Decimal PLUS **129.435→130.475 ns/row**，LT **74.933→75.356**、NULL-safe equality **75.081→75.437**，没有收益。候选完整撤回，当前采用实现仍是下面的 M21。一组 baseline Int 出现 23.124 ns 波动，全部原始样本保留，不据此认领提升。
 

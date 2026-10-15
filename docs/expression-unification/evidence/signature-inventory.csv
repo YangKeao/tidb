@@ -6,6 +6,9 @@ Acos,acos,False,pending,not_audited,not_audited
 Asin,asin,False,pending,not_audited,not_audited
 Atan1Arg,atan,False,pending,not_audited,not_audited
 Atan2Args,atan;atan2,False,pending,not_audited,not_audited
+BitAndSig,bitand,True,pending,not_audited,not_audited
+BitOrSig,bitor,True,pending,not_audited,not_audited
+BitXorSig,bitxor,True,pending,not_audited,not_audited
 CaseWhenDecimal,case,False,pending,not_audited,not_audited
 CaseWhenDuration,case,False,pending,not_audited,not_audited
 CaseWhenInt,case,False,pending,not_audited,not_audited
@@ -67,6 +70,7 @@ JsonReplaceSig,json_replace,False,pending,not_audited,not_audited
 LeDecimal,le,True,pending,not_audited,not_audited
 LeInt,le,True,pending,not_audited,not_audited
 LeReal,le,True,pending,not_audited,not_audited
+LeftShift,leftshift,True,pending,not_audited,not_audited
 LogicalAnd,and,False,pending,not_audited,not_audited
 LogicalOr,or,False,pending,not_audited,not_audited
 Lower,lower,True,pending,not_audited,not_audited
@@ -103,6 +107,7 @@ Pow,pow;power,False,pending,not_audited,not_audited
 RealAnyValue,,True,pending,not_audited,not_audited
 RealIsNull,isnull,False,pending,not_audited,not_audited
 RegexpLikeSig,regexp,False,pending,not_audited,not_audited
+RightShift,rightshift,True,pending,not_audited,not_audited
 RoundDec,round,False,pending,not_audited,not_audited
 RoundInt,round,False,pending,not_audited,not_audited
 RoundReal,round,False,pending,not_audited,not_audited

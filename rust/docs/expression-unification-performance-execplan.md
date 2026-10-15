@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M23 five integer bit operations admitted with an explicit always-unsigned result fact on the shared catalog/registry/driver. Batch29/fullTiDB1381same4, freshTiKV1029same6/PB/flag/shift/NULL/window/lintfmt pass. Three cohorts3360timings/240groups48native plus840M15/60groups agree; bitbatch11.936–12.027ns vs native79.651–80.606. Old Int/Real/DecimalPLUS slower controls retained. Inventory56/131 is metadata only.
+
 - [x] (2026-10-16) M22 constructor inline hint tested and rejected: PLUS129.435→130.475ns, comparisons flat/slower. All2310main/165groups plus840M15/60groups agree. Datatype516/565,batch28/fullTiDB1379same4, freshTiKVexpr1028same6/lint/fmt pass. Exact patch reverse-applied; adopted runtime remains M21.
 
 - [x] (2026-10-16) M21 compares M20/full reciprocal/head-bound binaries in three rotated cohorts. Retain only one head predicate: PLUS132.335→129.283ns, comparisons77.8→74.9. Full math gains another1.8–2ns but is discarded as insufficient for its added surface. All3465main/165groups33native and840M15/60groups agree; datatype516/565,batch28/full1379same4 pass.
@@ -66,6 +68,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Surprises & Discoveries
 
+- Observation (2026-10-16): bitwise input carrier bits alone do not define the SQL result. Even signed operands require an unsigned result; the prior catalog could only copy the first flag and the batch registry rejected every unsigned result.
+  Evidence: Go builtin_op.go sets UnsignedFlag; new PB/golden tests and actual SQL native/current checksums verify the shared fact.
+
 - Observation (2026-10-16): one head-range predicate captures most of the full reciprocal gain. The latter still saves1.8–2ns more, but adds table/helper/proof surface; only the bound is retained.
   Evidence: three actual code versions,3465 timings/165 checksum groups; see M21 head-bound receipt.
 
@@ -115,6 +120,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: retain five binary bit operations using independent input permission and required result-sign facts, with the same generated kernels and driver.
+  Rationale: complete family6.6–6.7x faster than actual native with full flags/NULL/shift-window checks; old small regressions remain explicit. No per-function driver or new semantic mode.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: reject and revert M22 constructor inline hint.
   Rationale: symbol removal and5184 extra text bytes do not produce meaningful Decimal benefit; all slower and anomalous control samples remain archived.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -159,7 +168,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M21 (this TiDB report commit / TiKV8d143e4). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. Decimal PLUS is129.283ns/row versus true original native70.046; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage remains51/126 static names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M23 (this TiDB report commit / TiKV57d3d13). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is56/131 static signature names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -429,3 +438,25 @@ always-unsigned result fact in the shared catalog and batch registry, not only
 five signature rows: check native lowering, PB roundtrips, UInt extremes and
 shift counts plus NULL/duplicate/reverse windows before benchmark/promotion.
 Revision note (2026-10-16): recorded M22 negative result and retained M21 baseline.
+
+M23 in progress: admit five integer bit operations on the existing driver.
+Replace the catalog result-flag boolean with Signed/FirstArgument/Always facts;
+bitwise results are Always unsigned, operands preserve raw bits. Extend the
+shared registry contract with explicit unsigned-result requirement, retaining
+signed comparisons/arithmetic. PB decoder uses the existing integer bit kernels.
+New tests cover golden sign-bit/63/64/negative-shift answers, operand flag
+combinations, NULL and2050 duplicate/reverse rows; PB roundtrips assert result
+flags even for signed operands. Validate rejected signed-result declarations.
+Benchmark fresh native test-only bitwise probes; no same-binary historical labels.
+
+M23 outcome: five bitwise signatures share the same eager execution mode with
+exact always-unsigned results; no driver or temporary migration path is added.
+Old Int/Real/DecimalPLUS controls regress slightly, with causes unresolved and
+all samples retained. The expanded true-native probe remains test-only. See
+docs/expression-unification/logs/performance-m23-bitwise/validation.md for exact
+source pairs, commands and historical controls. Next review the eight carrier
+IS NULL signatures: existing kernels return non-NULL booleans for NULL input,
+so admission must preserve that behavior and full child evaluation rather than
+assuming every eager function propagates NULL.
+Revision note (2026-10-16): completed M23, updated all living sections, coverage
+inventory, guide contract and retained-source evidence.

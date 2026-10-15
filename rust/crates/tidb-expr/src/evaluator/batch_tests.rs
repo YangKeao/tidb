@@ -1862,3 +1862,86 @@ fn narrow_integer_fields_use_the_shared_int_carrier() {
         assert_eq!(suite.batch_route_snapshot().prepared, 1);
     }
 }
+
+#[test]
+fn bitwise_family_keeps_unsigned_results_shift_limits_and_window_selection() {
+    // Golden raw-bit answers include the sign bit, shift 63/64 and negative counts.
+    let cases = [
+        (
+            Some(-1),
+            Some(1),
+            Some([1, u64::MAX, u64::MAX - 1, u64::MAX - 1, i64::MAX as u64]),
+        ),
+        (
+            Some(i64::MIN),
+            Some(63),
+            Some([0, (1u64 << 63) + 63, (1u64 << 63) + 63, 0, 1]),
+        ),
+        (Some(1), Some(63), Some([1, 63, 62, 1u64 << 63, 0])),
+        (
+            Some(-1),
+            Some(64),
+            Some([64, u64::MAX, u64::MAX - 64, 0, 0]),
+        ),
+        (
+            Some(i64::MIN),
+            Some(-1),
+            Some([1u64 << 63, u64::MAX, i64::MAX as u64, 0, 0]),
+        ),
+        (Some(0), Some(65), Some([0, 65, 65, 0, 0])),
+        (None, Some(1), None),
+        (Some(1), None, None),
+        (None, None, None),
+    ];
+    let selection: Vec<_> = (0..2050)
+        .map(|i| cases.len() - 1 - i % cases.len())
+        .collect();
+    for left_unsigned in [false, true] {
+        for right_unsigned in [false, true] {
+            let schema = vec![
+                ty().with_unsigned(left_unsigned),
+                ty().with_unsigned(right_unsigned),
+            ];
+            let datum = |raw: Option<i64>, unsigned| match raw {
+                None => Datum::Null,
+                Some(value) if unsigned => Datum::UInt(value as u64),
+                Some(value) => Datum::Int(value),
+            };
+            let rows: Vec<_> = cases
+                .iter()
+                .map(|&(l, r, _)| vec![datum(l, left_unsigned), datum(r, right_unsigned)])
+                .collect();
+            for (index, name) in ["bitand", "bitor", "bitxor", "leftshift", "rightshift"]
+                .into_iter()
+                .enumerate()
+            {
+                let suite = suite(call(
+                    name,
+                    ty().with_unsigned(true),
+                    vec![typed_column(0, &schema[0]), typed_column(1, &schema[1])],
+                ));
+                let mut input = chunk(&schema, &rows);
+                input.set_sel(Some(selection.clone()));
+                let mut actual = output_for(&ty().with_unsigned(true));
+                suite
+                    .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+                    .unwrap();
+                let expected: Vec<_> = selection
+                    .iter()
+                    .map(|&row| cases[row].2.map_or(Datum::Null, |v| Datum::UInt(v[index])))
+                    .collect();
+                assert_eq!(
+                    values_for(&actual, &ty().with_unsigned(true)),
+                    expected,
+                    "{name} flags={left_unsigned}/{right_unsigned}"
+                );
+                let route = suite.batch_route_snapshot();
+                assert_eq!(
+                    (route.prepared, route.fallback, route.refusals),
+                    (1, 0, 0),
+                    "{name}: {route:?}"
+                );
+            }
+        }
+    }
+}

@@ -19,10 +19,10 @@ bin,"1, Some(1)",,,pending,not_audited,not_audited
 bin_to_uuid,"1, Some(2)",,,pending,not_audited,not_audited
 bit_count,"1, Some(1)",,,pending,not_audited,not_audited
 bit_length,"1, Some(1)",,,pending,not_audited,not_audited
-bitand,"2, Some(2)",,,pending,not_audited,not_audited
+bitand,"2, Some(2)",BitAndSig,BitAndSig,pending,not_audited,not_audited
 bitneg,"1, Some(1)",,,pending,not_audited,not_audited
-bitor,"2, Some(2)",,,pending,not_audited,not_audited
-bitxor,"2, Some(2)",,,pending,not_audited,not_audited
+bitor,"2, Some(2)",BitOrSig,BitOrSig,pending,not_audited,not_audited
+bitxor,"2, Some(2)",BitXorSig,BitXorSig,pending,not_audited,not_audited
 case,"1, None",CaseWhenDecimal;CaseWhenDuration;CaseWhenInt;CaseWhenJson;CaseWhenReal;CaseWhenTime,,pending,not_audited,not_audited
 ceil,"1, Some(1)",,,pending,not_audited,not_audited
 ceiling,"1, Some(1)",,,pending,not_audited,not_audited
@@ -149,7 +149,7 @@ lcase,"1, Some(1)",,,pending,not_audited,not_audited
 le,"2, Some(2)",LeDecimal;LeInt;LeReal,LeDecimal;LeInt;LeReal,pending,not_audited,not_audited
 least,"2, None",,,pending,not_audited,not_audited
 left,"2, Some(2)",,,pending,not_audited,not_audited
-leftshift,"2, Some(2)",,,pending,not_audited,not_audited
+leftshift,"2, Some(2)",LeftShift,LeftShift,pending,not_audited,not_audited
 length,"1, Some(1)",,,pending,not_audited,not_audited
 like,"3, Some(3)",,,pending,not_audited,not_audited
 ln,"1, Some(1)",,,pending,not_audited,not_audited
@@ -211,7 +211,7 @@ repeat,"2, Some(2)",,,pending,not_audited,not_audited
 replace,"3, Some(3)",,,pending,not_audited,not_audited
 reverse,"1, Some(1)",,,pending,not_audited,not_audited
 right,"2, Some(2)",,,pending,not_audited,not_audited
-rightshift,"2, Some(2)",,,pending,not_audited,not_audited
+rightshift,"2, Some(2)",RightShift,RightShift,pending,not_audited,not_audited
 round,"1, Some(2)",RoundDec;RoundInt;RoundReal,,pending,not_audited,not_audited
 row,"2, None",,,pending,not_audited,not_audited
 row_count,"0, Some(0)",,,pending,not_audited,not_audited

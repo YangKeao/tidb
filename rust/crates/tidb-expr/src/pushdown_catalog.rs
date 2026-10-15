@@ -216,6 +216,17 @@ pub enum RetCollation {
     ConnectionString,
 }
 
+/// How the builtin declares its result's UNSIGNED flag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetUnsigned {
+    /// The result is signed regardless of operand flags.
+    Signed,
+    /// Copy the first argument flag (for example MOD and ROUND).
+    FirstArgument,
+    /// Always unsigned, including when every operand is signed.
+    Always,
+}
+
 /// One row of the catalog: a name, the argument pattern it is chosen for, the
 /// signature Go resolves for it, and TiKV's verdict on that signature.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,10 +243,8 @@ pub struct BuiltinSignature {
     pub ret: EvalType,
     /// The `tipb.ScalarFuncSig` Go's `setPbCode` records.
     pub sig: ScalarFuncSig,
-    /// Whether Go's `getFunction` copies the first argument's `UNSIGNED` flag
-    /// onto the result type (`MOD` and `ROUND` do; the trigonometric family
-    /// does not).
-    pub ret_unsigned_from_first_arg: bool,
+    /// Go's result flag policy, independent of operand carrier bits.
+    pub ret_unsigned: RetUnsigned,
     /// Where the result's charset and collation come from.
     pub ret_collation: RetCollation,
 }
@@ -479,7 +488,7 @@ const fn date_signature(
         arg_types: date_arg_types(from, to),
         ret,
         sig,
-        ret_unsigned_from_first_arg: false,
+        ret_unsigned: RetUnsigned::Signed,
         // Non-string signatures ignore this field; string DATE_ADD/SUB
         // results use the connection collation selected by Go's fallback
         // derivation.
@@ -1600,6 +1609,12 @@ pub const CATALOG: &[BuiltinSignature] = &[
         ScalarFuncSig::NullEqInt,
         false,
     ),
+    // Go builtin_op.go declares these results UNSIGNED for every operand flag.
+    unsigned_int_binary_signature("bitand", ScalarFuncSig::BitAndSig),
+    unsigned_int_binary_signature("bitor", ScalarFuncSig::BitOrSig),
+    unsigned_int_binary_signature("bitxor", ScalarFuncSig::BitXorSig),
+    unsigned_int_binary_signature("leftshift", ScalarFuncSig::LeftShift),
+    unsigned_int_binary_signature("rightshift", ScalarFuncSig::RightShift),
     signature(
         "or",
         &[
@@ -2072,9 +2087,31 @@ const fn signature(
         arg_types,
         ret,
         sig,
-        ret_unsigned_from_first_arg,
+        ret_unsigned: if ret_unsigned_from_first_arg {
+            RetUnsigned::FirstArgument
+        } else {
+            RetUnsigned::Signed
+        },
         ret_collation: RetCollation::Numeric,
     }
+}
+
+// All five bitwise kernels consume raw Int bits and return an unsigned Int.
+const fn unsigned_int_binary_signature(name: &'static str, sig: ScalarFuncSig) -> BuiltinSignature {
+    const INPUTS: &[ArgPattern] = &[
+        ArgPattern::eval(EvalType::Int),
+        ArgPattern::eval(EvalType::Int),
+    ];
+    let mut row = signature(
+        name,
+        INPUTS,
+        &[EvalType::Int, EvalType::Int],
+        EvalType::Int,
+        sig,
+        false,
+    );
+    row.ret_unsigned = RetUnsigned::Always;
+    row
 }
 
 /// A one-string-argument, integer-returning row: the `CHAR_LENGTH` pair.
@@ -2135,7 +2172,7 @@ const fn string_signature(
         arg_types,
         ret: EvalType::String,
         sig,
-        ret_unsigned_from_first_arg: false,
+        ret_unsigned: RetUnsigned::Signed,
         ret_collation,
     }
 }
@@ -2425,10 +2462,11 @@ impl PbScalar {
             | Self::DurationLiteral { field_type, .. }
             | Self::JsonLiteral { field_type, .. }
             | Self::VectorLiteral { field_type, .. } => field_type.is_unsigned(),
-            Self::Call { signature, args } => {
-                signature.ret_unsigned_from_first_arg
-                    && args.first().is_some_and(PbScalar::is_unsigned)
-            }
+            Self::Call { signature, args } => match signature.ret_unsigned {
+                RetUnsigned::Signed => false,
+                RetUnsigned::FirstArgument => args.first().is_some_and(PbScalar::is_unsigned),
+                RetUnsigned::Always => true,
+            },
         }
     }
 
@@ -4079,7 +4117,7 @@ mod tests {
                 row.name
             );
             assert!(
-                !row.ret_unsigned_from_first_arg || row.ret != EvalType::String,
+                row.ret_unsigned == RetUnsigned::Signed || row.ret != EvalType::String,
                 "{}: no string getFunction propagates UNSIGNED",
                 row.name
             );
@@ -4301,5 +4339,70 @@ mod probe2 {
             }
         };
         println!("gt lowers: {:?}", to_pb(&gt, &descriptors(&gt)).is_some());
+    }
+}
+
+#[cfg(test)]
+mod bitwise_contract_tests {
+    use super::*;
+
+    #[test]
+    fn bitwise_pb_result_is_unsigned_independently_of_operand_flags() {
+        for (name, sig, expected) in [
+            ("bitand", ScalarFuncSig::BitAndSig, 1),
+            ("bitor", ScalarFuncSig::BitOrSig, u64::MAX),
+            ("bitxor", ScalarFuncSig::BitXorSig, u64::MAX - 1),
+            ("leftshift", ScalarFuncSig::LeftShift, u64::MAX - 1),
+            ("rightshift", ScalarFuncSig::RightShift, i64::MAX as u64),
+        ] {
+            for unsigned in [false, true] {
+                for null in [false, true] {
+                    let field = FieldType::new(FieldTypeCode::LongLong).with_unsigned(unsigned);
+                    let lhs = if null {
+                        PbScalar::NullLiteral {
+                            field_type: field.clone(),
+                        }
+                    } else if unsigned {
+                        PbScalar::UIntLiteral {
+                            value: u64::MAX,
+                            field_type: field.clone(),
+                        }
+                    } else {
+                        PbScalar::IntLiteral(-1)
+                    };
+                    let rhs = if unsigned {
+                        PbScalar::UIntLiteral {
+                            value: 1,
+                            field_type: field,
+                        }
+                    } else {
+                        PbScalar::IntLiteral(1)
+                    };
+                    let call = build_call(name, vec![lhs, rhs]).unwrap();
+                    assert!(call.is_unsigned());
+                    let pb = to_pb(&call, &|_| None).unwrap();
+                    assert_eq!(pb.sig, Some(sig as i32));
+                    assert_ne!(
+                        pb.field_type.as_ref().unwrap().flag.unwrap_or(0) as u32 & UNSIGNED_FLAG,
+                        0
+                    );
+                    let decoded = crate::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                    assert!(decoded.static_type().unwrap().is_unsigned());
+                    let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+                    input.set_num_virtual_rows(1);
+                    assert_eq!(
+                        decoded
+                            .eval(&crate::context::NoColumns, input.get_row(0))
+                            .unwrap(),
+                        if null {
+                            Datum::Null
+                        } else {
+                            Datum::UInt(expected)
+                        },
+                        "{name} unsigned={unsigned} null={null}"
+                    );
+                }
+            }
+        }
     }
 }
