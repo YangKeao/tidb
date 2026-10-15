@@ -1,0 +1,13 @@
+diff --git a/components/tidb_query_datatype/src/codec/data_type/chunked_vec_sized.rs b/components/tidb_query_datatype/src/codec/data_type/chunked_vec_sized.rs
+index c668454..069dee2 100644
+--- a/components/tidb_query_datatype/src/codec/data_type/chunked_vec_sized.rs
++++ b/components/tidb_query_datatype/src/codec/data_type/chunked_vec_sized.rs
+@@ -81,7 +81,7 @@ impl<T: Clone + Default> ChunkedVec<T> for ChunkedVecSized<T> {
+         }
+     }
+ 
+-    #[inline]
++    #[inline(always)]
+     fn push_data(&mut self, value: T) {
+         self.bitmap.push(true);
+         self.data.push(value);

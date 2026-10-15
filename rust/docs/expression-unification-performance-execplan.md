@@ -23,7 +23,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-16) M16 direct logical Decimal cell import preserves normalization across197056 cases. TiDBdatatype514/TiKVdatatype564/batch28 pass, fullTiDB1379/same4. Three cohorts2310records/165checksumgroups agree: DecimalPLUS228.438→182.680ns, comparisons148→102.5. Int/Time controls regress~5%/~4%; a targeted210record Int control confirms it, cause unresolved. All tradeoffs and true-native results retained.
 - [x] (2026-10-16) M17 direct output cell projection matches130236strict/wide cases×6limits plus197056cell exports. Datatype515/565,batch28,full1379/same4 pass. Three cohorts2310records/165groups and M15reference420records/30groups agree. DecimalPLUS183.142→158.790ns, still2.26xslower than native70.171. Int/Time recover partly but remain2–3%slower than M15; Duration/LOWER regress8%/4%, retained. Profile3395samples identifies input26%,push10%,constructor/output9%each.
 - [x] (2026-10-16) M18 constructor simplification tested and REJECTED: datatype515/565,batch28/full1379same4 all pass, but three cohorts show PLUS156.558→158.373ns and comparisons~3%slower. 2310main records/165groups plus840M15reference/60groups all match. Candidate reverse-applied; TiKV restored clean to44befe0. Exact patch/results retained; no unmeasured optimization remains.
-- [ ] Test generic vector append inlining, identified at~10%self in the profile, without changing owning/NULL semantics. Other collation/temporal/lazy/effectful families need separate semantic review.
+- [x] (2026-10-16) M19 retains one append inline hint after three cohorts: DecimalPLUS158.749→149.122ns (1.07x), comparisons103→94 (1.09x), Duration/JSON improve. Real/Time controls regress~5%/~3% and are retained. All2310main/165groups/33native plus840M15ref/60groups agree. Datatype515/565, freshTiKVexpr1028/same6, batch28/fullTiDB1379/same4/lintfmt pass.
+- [ ] Audit checked native-cell byte ingress to avoid repeated physical/logical validation while sharing the existing decoder/projection and exact resource/normalization contracts. Other collation/temporal/lazy/effectful families need separate semantic review.
 - [x] (2026-10-16) Measured direct Decimal word owner: 250.597→229.120ns/row (1.09x), datatype564 pass and expression baselines unchanged. Other workloads flat to ~2% slower; no universal improvement claim. All paired checksum/route groups agree; report under `logs/performance-m11-decimal-owner/`.
 
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.
@@ -332,3 +333,15 @@ M18 outcome: experiment rejected and candidate code fully reverted. Runtime
 remains M17; this checkpoint publishes evidence only. The profile's constructor
 self time was not proof that removing its source checks would improve throughput.
 The next small experiment targets the generic vector append call boundary.
+
+M19 in progress: test forced inlining of the existing generic owning vector
+append, which occupies about10% self in the Decimal profile. Change only the
+inline hint; preserve value ownership, bitmap/data update order, NULL backing
+and all algorithms. Validate broad datatype/expression libraries and keep this
+candidate only with a measured benefit and visible control tradeoffs.
+
+M19 outcome: one generic append hint retained for consistent measured Decimal,
+Duration and JSON benefits; slower controls remain explicit. Four out-of-line
+Decimal append symbols disappear and text grows45652 bytes. Arithmetic and the
+execution mode remain unchanged; subsequent input transport work must not clone
+the physical decoder or relax the logical value boundary.

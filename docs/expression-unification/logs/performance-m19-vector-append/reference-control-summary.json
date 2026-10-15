@@ -1,0 +1,342 @@
+[
+  {
+    "workload": "any_value_datetime",
+    "scenario": "dense",
+    "m15_reference": [
+      10.181,
+      10.165,
+      10.174
+    ],
+    "current_after": [
+      10.755,
+      10.742,
+      10.728
+    ],
+    "m15_median": 10.174,
+    "current_median": 10.742,
+    "paired_speedup": 0.9466294746629473
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "dense_null10",
+    "m15_reference": [
+      10.315,
+      10.386,
+      10.425
+    ],
+    "current_after": [
+      10.928,
+      10.957,
+      10.965
+    ],
+    "m15_median": 10.386,
+    "current_median": 10.957,
+    "paired_speedup": 0.9478871954002006
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "duplicate",
+    "m15_reference": [
+      10.302,
+      10.367,
+      10.493
+    ],
+    "current_after": [
+      10.925,
+      10.966,
+      10.976
+    ],
+    "m15_median": 10.367,
+    "current_median": 10.966,
+    "paired_speedup": 0.9453766186394311
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "reverse",
+    "m15_reference": [
+      10.32,
+      10.559,
+      10.513
+    ],
+    "current_after": [
+      10.959,
+      10.98,
+      11.01
+    ],
+    "m15_median": 10.513,
+    "current_median": 10.98,
+    "paired_speedup": 0.9548592188919165
+  },
+  {
+    "workload": "any_value_datetime",
+    "scenario": "sparse_quarter",
+    "m15_reference": [
+      16.152,
+      16.339,
+      16.281
+    ],
+    "current_after": [
+      16.965,
+      16.972,
+      17.054
+    ],
+    "m15_median": 16.281,
+    "current_median": 16.972,
+    "paired_speedup": 0.9546733904069427
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "dense",
+    "m15_reference": [
+      14.441,
+      14.408,
+      14.406
+    ],
+    "current_after": [
+      14.927,
+      15.003,
+      14.954
+    ],
+    "m15_median": 14.408,
+    "current_median": 14.954,
+    "paired_speedup": 0.9633542864785342
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "dense_null10",
+    "m15_reference": [
+      14.06,
+      13.967,
+      14.019
+    ],
+    "current_after": [
+      14.157,
+      14.212,
+      14.117
+    ],
+    "m15_median": 14.019,
+    "current_median": 14.157,
+    "paired_speedup": 0.993058015159028
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "duplicate",
+    "m15_reference": [
+      14.556,
+      14.639,
+      14.56
+    ],
+    "current_after": [
+      14.937,
+      15.067,
+      15.038
+    ],
+    "m15_median": 14.56,
+    "current_median": 15.038,
+    "paired_speedup": 0.9715935488152917
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "reverse",
+    "m15_reference": [
+      14.692,
+      14.675,
+      14.622
+    ],
+    "current_after": [
+      15.146,
+      15.268,
+      15.248
+    ],
+    "m15_median": 14.675,
+    "current_median": 15.248,
+    "paired_speedup": 0.9611605973277443
+  },
+  {
+    "workload": "any_value_duration",
+    "scenario": "sparse_quarter",
+    "m15_reference": [
+      20.316,
+      20.409,
+      20.44
+    ],
+    "current_after": [
+      21.028,
+      21.391,
+      21.119
+    ],
+    "m15_median": 20.409,
+    "current_median": 21.119,
+    "paired_speedup": 0.966140384249572
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "dense",
+    "m15_reference": [
+      12.838,
+      12.877,
+      12.839
+    ],
+    "current_after": [
+      13.077,
+      13.049,
+      13.051
+    ],
+    "m15_median": 12.839,
+    "current_median": 13.051,
+    "paired_speedup": 0.9837560340203816
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "dense_null10",
+    "m15_reference": [
+      12.613,
+      12.611,
+      12.593
+    ],
+    "current_after": [
+      12.948,
+      12.89,
+      12.872
+    ],
+    "m15_median": 12.611,
+    "current_median": 12.89,
+    "paired_speedup": 0.978325046612803
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "duplicate",
+    "m15_reference": [
+      13.081,
+      13.067,
+      13.098
+    ],
+    "current_after": [
+      13.356,
+      13.307,
+      13.292
+    ],
+    "m15_median": 13.081,
+    "current_median": 13.307,
+    "paired_speedup": 0.9819643796498083
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "reverse",
+    "m15_reference": [
+      13.138,
+      13.055,
+      13.094
+    ],
+    "current_after": [
+      13.335,
+      13.285,
+      13.314
+    ],
+    "m15_median": 13.094,
+    "current_median": 13.314,
+    "paired_speedup": 0.9834760402583745
+  },
+  {
+    "workload": "integer_add",
+    "scenario": "sparse_quarter",
+    "m15_reference": [
+      19.598,
+      19.707,
+      19.65
+    ],
+    "current_after": [
+      20.165,
+      20.101,
+      20.185
+    ],
+    "m15_median": 19.65,
+    "current_median": 20.165,
+    "paired_speedup": 0.9734951696804558
+  },
+  {
+    "workload": "lower",
+    "scenario": "dense",
+    "m15_reference": [
+      32.988,
+      33.134,
+      32.991
+    ],
+    "current_after": [
+      34.058,
+      34.73,
+      34.108
+    ],
+    "m15_median": 32.991,
+    "current_median": 34.108,
+    "paired_speedup": 0.9672510847894923
+  },
+  {
+    "workload": "lower",
+    "scenario": "dense_null10",
+    "m15_reference": [
+      31.067,
+      31.134,
+      30.907
+    ],
+    "current_after": [
+      32.627,
+      32.203,
+      32.245
+    ],
+    "m15_median": 31.067,
+    "current_median": 32.245,
+    "paired_speedup": 0.9585051946038147
+  },
+  {
+    "workload": "lower",
+    "scenario": "duplicate",
+    "m15_reference": [
+      33.322,
+      33.42,
+      33.544
+    ],
+    "current_after": [
+      35.003,
+      34.819,
+      34.803
+    ],
+    "m15_median": 33.42,
+    "current_median": 34.819,
+    "paired_speedup": 0.959820787501077
+  },
+  {
+    "workload": "lower",
+    "scenario": "reverse",
+    "m15_reference": [
+      33.261,
+      33.421,
+      33.486
+    ],
+    "current_after": [
+      35.016,
+      34.663,
+      34.783
+    ],
+    "m15_median": 33.421,
+    "current_median": 34.783,
+    "paired_speedup": 0.9627116694937181
+  },
+  {
+    "workload": "lower",
+    "scenario": "sparse_quarter",
+    "m15_reference": [
+      42.912,
+      43.107,
+      42.982
+    ],
+    "current_after": [
+      44.857,
+      44.612,
+      44.557
+    ],
+    "m15_median": 42.982,
+    "current_median": 44.612,
+    "paired_speedup": 0.964652018762484
+  }
+]
