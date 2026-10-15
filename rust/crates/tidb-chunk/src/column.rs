@@ -522,7 +522,24 @@ impl Column {
         let elem = elem_buf.as_mut().expect("checked fixed column");
         let appended = data.append_owned(|data| {
             data.reserve(bytes);
-            for value in cells.clone() {
+            let start = data.len();
+            data.resize(start + bytes, 0);
+            let mut cells = cells.clone().fuse();
+            let mut written = 0;
+            for target in data[start..].chunks_exact_mut(N.max(1)) {
+                let Some(value) = cells.next() else { break };
+                append_null_bit(null_bitmap, *length, value.is_some());
+                if let Some(value) = value {
+                    elem.copy_from_slice(&value);
+                }
+                target.copy_from_slice(elem);
+                *length += 1;
+                written += 1;
+            }
+            // Keep the physical length consistent even for a bad size hint.
+            data.truncate(start + written * N);
+            // Also preserves zero-width cells, whose byte buffer has no chunks.
+            for value in cells {
                 append_null_bit(null_bitmap, *length, value.is_some());
                 if let Some(value) = value {
                     elem.copy_from_slice(&value);

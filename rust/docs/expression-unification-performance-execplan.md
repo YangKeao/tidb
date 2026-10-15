@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M27 owned fixed-output buffer sized once/filled in place with actual-count/fused-iterator/zero-width/scratch preservation. Chunk273/batch33/fullTiDB1385same4/lintfmt pass. Actual M26/M27 cohorts2940/210groups42native+840M15/60groups agree. Duration15.082→12.879ns,Time10.9→9.55,Int13.424→12.220,Real13.856→12.411; DecimalPLUSflat/JSONmedian slightly slower retained. No new signature, unsafe code or driver.
+
 - [x] (2026-10-16) M26 private result policy Signed/Unsigned/FirstArgument admits one-argRoundInt and UIntIntAnyValue on the shared driver. Batch33/fullTiDB1385same4/TiKV1031same6/lintfmt pass;2940main/210groups42native+840M15/60groups agree. Target11.38–12.10x native gain; broad2–12% old-control losses retained and630longer-control/45groups confirm. Separate Duration profiles2472/2557samples0lost identify shared storage costs without establishing regression cause. Metadata67/131.
 
 - [x] (2026-10-16) M25 UnaryNotInt/ASIN/ACOS source-matched admission: exact native bit/NULL/UInt/window tests, batch32/fullTiDB1384same4/TiKVprofile54/full1030same6/lintfmt pass.2940main/210groups42native +840M15/60groups agree. NOT8.085vsnative47.038, ASIN/ACOS10.686/10.756vs112.748/112.619. Decimal comparisons~1–2% slower retained; metadata66/131.
@@ -74,6 +76,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Surprises & Discoveries
 
+- Observation (2026-10-16): NULL physical backing retains the preceding scratch cell, and safe public iterators may misreport a positive length. Bulk sizing must preserve byte/row consistency and first-None termination rather than assuming a zero-filled NULL or restarting an exhausted iterator.
+  Evidence: independent scalar-byte tests cover0/4/8/16/40widths, reset, inaccurate hints and a nonfused iterator; fullChunk273pass.
+
 - Observation (2026-10-16): a capability/type-fact extension coincides with repeatable slowdowns in unchanged workloads. Longer reversed-order samples confirm Time/Duration/JSON losses; this cannot be dismissed as one noisy pair.
   Evidence: M26 main2940, historical840 and longer630records all checksum-match; Duration profiles locate constructor/output costs, not a proven regression cause.
 
@@ -135,6 +140,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: retain the shared owned fixed-output fill loop, preserving scalar semantics for ownership and unusual counts.
+  Rationale: measured1.10–1.17x common fixed-output gains justify the19line source change; Decimal/varlen flat or slower results and historical losses stay explicit. No function-specific path or unchecked constructor.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: retain exact integer identities with a shared first-argument result flag policy, while publishing confirmed old-workload regressions and profiling the next storage target.
   Rationale: new complete Int/UInt domains gain11–12x over actual native with no f64 narrowing; broad old2–12% losses are explicit and independently repeated. No universal speedup is claimed.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -195,7 +204,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M26 (this TiDB report commit / TiKVd5817d0). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is67/131 static signature names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M27 (this TiDB report commit / unchanged TiKVd5817d0). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is67/131 static signature names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -553,3 +562,22 @@ count, zero-width behavior and shared/frozen scalar semantics. Retain only with
 measured common-substrate gains; do not bypass Duration normalization checks.
 Revision note (2026-10-16): completed M26 and recorded explicit regressions,
 shared result policy, full validation and the profile-backed storage candidate.
+
+M27 in progress: size the existing fixed-output owned buffer once and fill its
+chunks, rather than extending Vec length per row. Keep scratch bytes for NULLs,
+zero-width cells and the shared/frozen scalar path. A fused cloned iterator and
+actual written count preserve normal first-None termination and physical length
+even when a caller reports a bad positive ExactSizeIterator length. Existing
+frozen/reset/NULL tests plus a scalar-byte oracle over0/4/8/16/40byte cells and
+short/long hints protect the storage contract. This safe-Rust-only candidate
+keeps all value normalization and output prevalidation; measure before retain.
+
+M27 outcome: the ordinary owned fixed-output loop is replaced with a common
+sized-buffer fill; boundary cases retain exact scalar bytes and counts. Many
+fixed controls recover/improve, while varlen losses and Decimal's native gap
+remain. Full candidate patch and all measurements are retained. Duration
+normalization still occupies a significant profile share; any next constructor
+call-boundary experiment must preserve every FSP/range/rounding check. Broader
+borrowed-carrier or native mathematical profiles remain separate work.
+Revision note (2026-10-16): completed M27 with actual-code/native/historical
+cohorts, all four living sections and unchanged function-coverage metadata.

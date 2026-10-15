@@ -1,0 +1,15 @@
+any_value_datetime 10.933 9.551 1.15
+any_value_duration 15.082 12.879 1.17
+any_value_int_unsigned 10.771 9.798 1.1
+any_value_json 130.837 132.312 1.0
+any_value_timestamp 10.918 9.542 1.14
+any_value_vector 72.206 71.647 1.01
+decimal_add 131.923 131.975 1.0
+decimal_compare_lt 76.132 75.012 1.01
+decimal_compare_nulleq 76.035 75.146 1.01
+integer_add 13.424 12.22 1.1
+lower 34.695 34.429 1.01
+real_add 13.856 12.411 1.12
+round_int_signed 8.553 7.481 1.14
+round_int_unsigned 8.487 7.483 1.12
+2940 timing records / 210 checksum groups match; all routes prepared only; actual M26/M27 code, no fallback ablation.

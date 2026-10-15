@@ -6,7 +6,19 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新采用结果：整数恒等操作跟随输入 signedness（2026-10-16）
+## 最新采用结果：通用固定输出一次定长再填充（2026-10-16）
+
+owned fixed-cell 缓冲一次定长后填充，保留 NULL scratch、reset、实际迭代终止、零宽 cell 与共享/冻结的原有语义。旧普通 owned 逐行扩展循环已替换，没有新增执行模式或跳过归一化。
+
+三轮实际 M26/M27 代码：Duration **15.082→12.879 ns/row**（1.17 倍），Datetime **10.933→9.551**、Timestamp **10.918→9.542**（约 1.14–1.15 倍），Int **13.424→12.220**、Real **13.856→12.411**、整数恒等操作约快 1.10–1.14 倍。Decimal PLUS **131.923→131.975** 持平，JSON aggregate median **130.837→132.312** 略慢，varlen 旧项未宣称解决。
+
+2940 条主测量 / 210 组（含 42 个真实 native 对照）及 840 条 M15 控制 / 60 组一致。M15 对照中 Int/Datetime/Duration 改善，LOWER **32.997→34.384** 仍慢约 4%。Chunk 273、batch 33、完整 TiDB 1385 / 原有 4 失败通过本轮范围检查；TiKV 与 datatype 代码未变，沿用明确标注的结果。**67 / 131** 元数据计数不变。
+
+[完整结果、物理字节/迭代边界与全部慢项](logs/performance-m27-fixed-output/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：整数恒等操作跟随输入 signedness（2026-10-16）
 
 共享结果事实改为 Signed/Unsigned/FirstArgument，输入权限独立。单参数整数 ROUND 和 IntAnyValue 保留所有位及 NULL，支持 unsigned 结果；两参数 ROUND 继续保留不同的 native 语义，超过 53 位的值没有误经 f64。
 

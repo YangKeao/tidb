@@ -1950,3 +1950,85 @@ fn json_vector_direct_append_preserves_encoded_cells_and_frozen_aliases() {
         }
     }
 }
+
+#[test]
+fn fixed_batch_keeps_scalar_bytes_for_widths_and_actual_iterator_counts() {
+    #[derive(Clone)]
+    struct Hint<const N: usize> {
+        cells: std::vec::IntoIter<Option<[u8; N]>>,
+        hint: usize,
+    }
+    impl<const N: usize> Iterator for Hint<N> {
+        type Item = Option<[u8; N]>;
+        fn next(&mut self) -> Option<Self::Item> {
+            let value = self.cells.next();
+            if value.is_some() {
+                self.hint = self.hint.saturating_sub(1);
+            }
+            value
+        }
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (self.hint, Some(self.hint))
+        }
+    }
+    impl<const N: usize> ExactSizeIterator for Hint<N> {}
+    fn check<const N: usize>() {
+        let cells = vec![None, Some([0x25; N]), None, Some([0xa5; N]), None];
+        for reset in [false, true] {
+            for hint in [1, 3, cells.len(), cells.len() + 3] {
+                let mut actual = Column::new_fixed_len(N, 2);
+                actual.write_elem_buf(&[0x7b; N]);
+                actual.finish_append_fixed();
+                if reset {
+                    actual.reset();
+                }
+                let mut expected = actual.clone();
+                for value in &cells {
+                    match value {
+                        Some(bytes) => {
+                            expected.write_elem_buf(bytes);
+                            expected.finish_append_fixed();
+                        }
+                        None => expected.append_null(),
+                    }
+                }
+                actual.append_fixed_cells(Hint {
+                    cells: cells.clone().into_iter(),
+                    hint,
+                });
+                assert_eq!(actual.length, expected.length, "N={N} hint={hint}");
+                assert_eq!(actual.null_bitmap, expected.null_bitmap);
+                assert_eq!(actual.data.snapshot(), expected.data.snapshot());
+                assert_eq!(actual.elem_buf, expected.elem_buf);
+            }
+        }
+    }
+    // A first None remains the end even if an incorrectly sized iterator resumes.
+    #[derive(Clone)]
+    struct Gap(u8);
+    impl Iterator for Gap {
+        type Item = Option<[u8; 8]>;
+        fn next(&mut self) -> Option<Self::Item> {
+            let state = self.0;
+            self.0 += 1;
+            match state {
+                0 => Some(Some([0x25; 8])),
+                2 => Some(Some([0xa5; 8])),
+                _ => None,
+            }
+        }
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (3, Some(3))
+        }
+    }
+    impl ExactSizeIterator for Gap {}
+    let mut gap = Column::new_fixed_len(8, 1);
+    gap.append_fixed_cells(Gap(0));
+    assert_eq!(gap.length, 1);
+    assert_eq!(gap.data.snapshot(), vec![0x25; 8]);
+    check::<0>();
+    check::<4>();
+    check::<8>();
+    check::<16>();
+    check::<40>();
+}

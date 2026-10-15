@@ -174,3 +174,7 @@ noninteger/scaled rounding policy differences remain unoptimized.67admitted
 static signatures out of131 is metadata, not an SQL coverage percentage.
 
 [The M26 receipt](logs/performance-m26-integer-identities/summary.md) retains the flag/identity proof, unsigned schema selection, broad old-workload regressions and longer confirmation.
+
+## M27 shared fixed-output storage
+
+[The M27 receipt](logs/performance-m27-fixed-output/summary.md) measures the common fixed-output buffer across14workloads, preserves all source/byte/ownership contracts and reports every slower control. No signature is added;67/131 remains metadata only.
