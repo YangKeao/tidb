@@ -6,7 +6,19 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新采用结果：五种整数位运算复用共享 batch（2026-10-16）
+## 最新采用结果：IS NULL 复用普通 nullable kernel（2026-10-16）
+
+七个签名接入同一个 eager driver。NULL 输入返回非 NULL 的 signed 1，非 NULL（包括零值、空串）返回 0；Int 允许 unsigned 输入。Datetime/Timestamp 共用 Time。JSON 保留原来的 cast 边界：Go catalog 先插入 CastJsonAsString 再用 StringIsNull，没有直接替换成 JsonIsNull。
+
+三轮 dense batch / 真实 native：Int **7.932 / 109.261**、Real **8.009 / 108.750**、Datetime **7.989 / 108.466**、Timestamp **7.964 / 108.553**、Duration **10.537 / 108.517**、String **11.168 / 116.607**、Decimal **36.192 / 151.667**、Vector **39.314 / 125.384 ns/row**，快约 **3.19–13.77 倍**。当前 fallback 消融另列，未当作历史 native。
+
+3990 条主测量 / 285 组（含 57 个真实 native 对照）与 840 条历史控制 / 60 组全匹配。旧项这轮基本持平或改善，Vector **70.692→70.805** 略慢。M15 控制中 Int/LOWER 约持平、Duration 改善，Datetime 仍慢约 3%；不据此宣称永久消除了所有回归。batch 30、完整 TiDB 1382 / 原有 4 失败、TiKV 1030 / 原有 6 失败；元数据计数 **63 / 131**。
+
+[完整结果、JSON 边界、历史控制、精确探针与验证](logs/performance-m24-is-null/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：五种整数位运算复用共享 batch（2026-10-16）
 
 AND/OR/XOR/左右移一次接入原有 registry/driver；输入保留 signed/unsigned 全 64 位，结果明确固定 UNSIGNED。catalog 使用 Signed/FirstArgument/Always 类型事实，PB 往返和准入分别验证输入与结果标志。NULL、符号位、移位 63/64/65/负值和 2050 个反向/重复 selection 均验证。
 

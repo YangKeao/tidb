@@ -111,7 +111,7 @@ is_ipv6,"1, Some(1)",,,pending,not_audited,not_audited
 is_used_lock,"1, Some(1)",,,pending,not_audited,not_audited
 is_uuid,"1, Some(1)",,,pending,not_audited,not_audited
 isfalse,"1, Some(1)",,,pending,not_audited,not_audited
-isnull,"1, Some(1)",DecimalIsNull;DurationIsNull;IntIsNull;RealIsNull;StringIsNull;TimeIsNull;VectorFloat32IsNull,,pending,not_audited,not_audited
+isnull,"1, Some(1)",DecimalIsNull;DurationIsNull;IntIsNull;RealIsNull;StringIsNull;TimeIsNull;VectorFloat32IsNull,DecimalIsNull;DurationIsNull;IntIsNull;RealIsNull;StringIsNull;TimeIsNull;VectorFloat32IsNull,pending,not_audited,not_audited
 istrue,"1, Some(1)",,,pending,not_audited,not_audited
 istrue_with_null,"1, Some(1)",IntIsTrueWithNull,,pending,not_audited,not_audited
 json_array,"0, None",,,pending,not_audited,not_audited

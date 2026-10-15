@@ -1945,3 +1945,85 @@ fn bitwise_family_keeps_unsigned_results_shift_limits_and_window_selection() {
         }
     }
 }
+
+#[test]
+fn is_null_batch_returns_nonnull_booleans_for_all_admitted_carriers() {
+    let cases = vec![
+        (ty(), Datum::Int(-1)),
+        (ty().with_unsigned(true), Datum::UInt(u64::MAX)),
+        (real_ty(), Datum::Real(0.0)),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal).with_decimal(0),
+            Datum::Decimal(Decimal::from_literal("0")),
+        ),
+        (
+            string_ty(),
+            Datum::String(StringDatum::new(Vec::new(), Collation::Utf8Mb4Bin)),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime),
+            Datum::Time(Time::from_go_raw_like_go(0)),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Timestamp),
+            Datum::Time(Time::from_go_raw_like_go(1)),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            Datum::Duration(MySqlDuration::from_raw_parts(0, 6)),
+        ),
+        (
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![0.0])),
+        ),
+        // JSON's existing catalog inserts CastJsonAsString, outside this batch closure.
+        (
+            FieldType::new(FieldTypeCode::Json),
+            Datum::Json(BinaryJSON::parse("null").unwrap()),
+        ),
+    ];
+    let selection: Vec<_> = (0..2050).map(|i| (2050 - i) % 3).collect();
+    for (field, value) in cases {
+        for constant in [false, true] {
+            let schema = vec![field.clone()];
+            let rows = vec![vec![Datum::Null], vec![value.clone()], vec![Datum::Null]];
+            let root = call(
+                "isnull",
+                ty(),
+                vec![if constant {
+                    literal(Datum::Null, field.clone())
+                } else {
+                    typed_column(0, &field)
+                }],
+            );
+            let suite = suite(root);
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selection.clone()));
+            let mut actual = output();
+            suite
+                .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+                .unwrap();
+            let expected: Vec<_> = selection
+                .iter()
+                .map(|&row| Datum::Int(i64::from(constant || row != 1)))
+                .collect();
+            assert_eq!(
+                values(&actual),
+                expected,
+                "{:?} constant={constant}",
+                field.eval_type()
+            );
+            let route = suite.batch_route_snapshot();
+            if field.eval_type() == NativeEvalType::Json {
+                assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+            } else {
+                assert_eq!(
+                    (route.prepared, route.fallback, route.refusals),
+                    (1, 0, 0),
+                    "{:?}: {route:?}",
+                    field.eval_type()
+                );
+            }
+        }
+    }
+}

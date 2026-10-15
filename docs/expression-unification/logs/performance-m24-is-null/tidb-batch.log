@@ -1,0 +1,35 @@
+
+running 30 tests
+test evaluator::batch::tests::actual_nonvectorizable_program_does_not_query_global_flag_or_run_values ... ok
+test evaluator::batch::tests::actual_suite_native_and_private_consumers_match_selected_batch_results ... ok
+test evaluator::batch::tests::any_value_batch_round_trips_every_native_eval_type ... ok
+test evaluator::batch::tests::bitwise_family_keeps_unsigned_results_shift_limits_and_window_selection ... ok
+test evaluator::batch::tests::both_input_phases_complete_before_a_right_failure ... ok
+test evaluator::batch::tests::bytes_to_fixed_and_varlen_share_the_whole_selection_driver ... ok
+test evaluator::batch::tests::current_global_flag_is_read_once_per_invoke_and_never_row_fallback ... ok
+test evaluator::batch::tests::decimal_arithmetic_uses_the_exact_shared_representation ... ok
+test evaluator::batch::tests::direct_output_counts_public_vector_and_selection_capacities ... ok
+test evaluator::batch::tests::foreign_suite_decimal_or_control_cannot_do_work_before_private_refusal ... ok
+test evaluator::batch::tests::integer_comparison_family_matches_signed_unsigned_order_and_nulls ... ok
+test evaluator::batch::tests::is_null_batch_returns_nonnull_booleans_for_all_admitted_carriers ... ok
+test evaluator::batch::tests::left_failure_stops_the_later_input_phase ... ok
+test evaluator::batch::tests::malformed_empty_selection_schema_and_native_layout_are_not_skipped ... ok
+test evaluator::batch::tests::mixed_carrier_and_three_argument_calls_use_the_shared_registry ... ok
+test evaluator::batch::tests::narrow_integer_fields_use_the_shared_int_carrier ... ok
+test evaluator::batch::tests::native_decimal_priority_and_leaf_admission_remain_coherent ... ok
+test evaluator::batch::tests::own_batch_facts_preserve_source_ordinals_and_exact_declarations ... ok
+test evaluator::batch::tests::program_metadata_detachment_and_incoming_caps_precede_equality_and_effects ... ok
+test evaluator::batch::tests::real_arithmetic_uses_the_same_batch_carrier_contract ... ok
+test evaluator::batch::tests::real_decimal_comparisons_preserve_order_nulls_and_selection ... ok
+test evaluator::batch::tests::selected_occurrences_complete_the_input_phase_before_failure ... ok
+test evaluator::batch::tests::selected_occurrences_tile_across_driver_windows_for_virtual_constant_broadcasts ... ok
+test evaluator::batch::tests::signed_int_family_reuses_the_same_batch_substrate ... ok
+test evaluator::batch::tests::source_depth_and_retained_limits_are_resources_not_sql_null_or_retry ... ok
+test evaluator::batch::tests::strict_native_kind_validation_precedes_erasure ... ok
+test evaluator::batch::tests::varlen_production_route_streams_reverse_duplicates_across_windows ... ok
+test evaluator::batch::tests::warnings_and_provider_errors_survive_retries ... ok
+test evaluator::batch::tests::whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty ... ok
+test evaluator::batch::tests::wide_selected_input_preserves_reverse_and_duplicate_order_across_windows ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 1451 filtered out; finished in 0.03s
+

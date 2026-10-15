@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M24 seven IS NULL signatures preserve non-NULL signed Boolean results on the same driver; unsigned Int admitted, JSON CastJsonAsString boundary preserved. Batch30/fullTiDB1382same4/TiKV1030same6/lintfmt pass.3990records/285groups57native +840M15/60groups agree; eight native types3.19–13.77x faster than true native. Old controls flat/improve except tiny Vector; M15Datetime remains~3% slower. Metadata63/131.
+
 - [x] (2026-10-16) M23 five integer bit operations admitted with an explicit always-unsigned result fact on the shared catalog/registry/driver. Batch29/fullTiDB1381same4, freshTiKV1029same6/PB/flag/shift/NULL/window/lintfmt pass. Three cohorts3360timings/240groups48native plus840M15/60groups agree; bitbatch11.936–12.027ns vs native79.651–80.606. Old Int/Real/DecimalPLUS slower controls retained. Inventory56/131 is metadata only.
 
 - [x] (2026-10-16) M22 constructor inline hint tested and rejected: PLUS129.435→130.475ns, comparisons flat/slower. All2310main/165groups plus840M15/60groups agree. Datatype516/565,batch28/fullTiDB1379same4, freshTiKVexpr1028same6/lint/fmt pass. Exact patch reverse-applied; adopted runtime remains M21.
@@ -68,6 +70,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Surprises & Discoveries
 
+- Observation (2026-10-16): native JSON IS NULL lowers through CastJsonAsString and StringIsNull, despite an existing direct JsonIsNull wire kernel. Registering the latter would not prove native SQL coverage.
+  Evidence: unchanged catalog PB tests pin the cast; new JSON constant/column golden tests retain native fallback.
+
 - Observation (2026-10-16): bitwise input carrier bits alone do not define the SQL result. Even signed operands require an unsigned result; the prior catalog could only copy the first flag and the batch registry rejected every unsigned result.
   Evidence: Go builtin_op.go sets UnsignedFlag; new PB/golden tests and actual SQL native/current checksums verify the shared fact.
 
@@ -120,6 +125,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: retain the seven existing IS NULL signatures on the ordinary driver, leaving JSON cast support separate.
+  Rationale: full typed child evaluation and existing nullable kernels give correct0/1results and3.19–13.77x true-native gains; no nullness-only shortcut or per-function JSON selector.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: retain five binary bit operations using independent input permission and required result-sign facts, with the same generated kernels and driver.
   Rationale: complete family6.6–6.7x faster than actual native with full flags/NULL/shift-window checks; old small regressions remain explicit. No per-function driver or new semantic mode.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -168,7 +177,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M23 (this TiDB report commit / TiKV57d3d13). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is56/131 static signature names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M24 (this TiDB report commit / TiKVf983e54). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is63/131 static signature names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -460,3 +469,24 @@ so admission must preserve that behavior and full child evaluation rather than
 assuming every eager function propagates NULL.
 Revision note (2026-10-16): completed M23, updated all living sections, coverage
 inventory, guide contract and retained-source evidence.
+
+M24 in progress: seven IS NULL signatures reuse the eager driver and return
+non-NULL signed Int booleans for nullable inputs. Int permits unsigned operands;
+Datetime/Timestamp share Time. JSON stays outside this native batch closure:
+the existing Go catalog inserts CastJsonAsString then StringIsNull, and this
+slice does not invent a separate JSON selector or bypass coercion. New golden
+NULL/zero/empty values plus constants run2050reverse/duplicate rows, asserting
+non-NULL booleans and native JSON fallback. Measure all eight admitted native
+EvalType cases and existing/historical controls before retention.
+
+M24 outcome: seven nullable predicates execute on the same shared driver; NULL
+returns signed1 instead of propagating, with UInt/zero/empty/constant/window
+golden coverage. JSON remains excluded by its actual cast contract. Both raw
+measurement baselines and all old controls are retained in the M24 receipt.
+Later native math admission needs source-policy review: wire SIN/COS/ATAN use
+libm while native uses exact Go cores; wire ROUND and native rounding differ.
+Do not promote those by adding signature rows without preserving their policies.
+ASIN/ACOS use the same f64 primitive with NaN-to-NULL on both sides, and integer
+NOT has a matching zero/nonzero/NULL contract; these are smaller next candidates.
+Revision note (2026-10-16): completed M24 and updated formal living sections,
+report/coverage/source receipts; recorded real mathematical admission boundaries.

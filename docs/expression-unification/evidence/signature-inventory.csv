@@ -29,11 +29,11 @@ Date,date,False,pending,not_audited,not_audited
 DateDiff,datediff,False,pending,not_audited,not_audited
 DateFormatSig,date_format,False,pending,not_audited,not_audited
 DecimalAnyValue,,True,pending,not_audited,not_audited
-DecimalIsNull,isnull,False,pending,not_audited,not_audited
+DecimalIsNull,isnull,True,pending,not_audited,not_audited
 DivideDecimal,div,False,pending,not_audited,not_audited
 DivideReal,div,False,pending,not_audited,not_audited
 DurationAnyValue,,True,pending,not_audited,not_audited
-DurationIsNull,isnull,False,pending,not_audited,not_audited
+DurationIsNull,isnull,True,pending,not_audited,not_audited
 EqDecimal,eq,True,pending,not_audited,not_audited
 EqInt,eq,True,pending,not_audited,not_audited
 EqReal,eq,True,pending,not_audited,not_audited
@@ -60,7 +60,7 @@ IfNullTime,ifnull,False,pending,not_audited,not_audited
 IfReal,if,False,pending,not_audited,not_audited
 IfTime,if,False,pending,not_audited,not_audited
 IntAnyValue,,True,pending,not_audited,not_audited
-IntIsNull,isnull,False,pending,not_audited,not_audited
+IntIsNull,isnull,True,pending,not_audited,not_audited
 IntIsTrueWithNull,istrue_with_null,False,pending,not_audited,not_audited
 JsonAnyValue,,True,pending,not_audited,not_audited
 JsonArrayAppendSig,json_array_append,False,pending,not_audited,not_audited
@@ -105,7 +105,7 @@ PlusInt,plus,True,pending,not_audited,not_audited
 PlusReal,,True,pending,not_audited,not_audited
 Pow,pow;power,False,pending,not_audited,not_audited
 RealAnyValue,,True,pending,not_audited,not_audited
-RealIsNull,isnull,False,pending,not_audited,not_audited
+RealIsNull,isnull,True,pending,not_audited,not_audited
 RegexpLikeSig,regexp,False,pending,not_audited,not_audited
 RightShift,rightshift,True,pending,not_audited,not_audited
 RoundDec,round,False,pending,not_audited,not_audited
@@ -114,13 +114,13 @@ RoundReal,round,False,pending,not_audited,not_audited
 Second,second,False,pending,not_audited,not_audited
 Sin,sin,False,pending,not_audited,not_audited
 StringAnyValue,,True,pending,not_audited,not_audited
-StringIsNull,isnull,False,pending,not_audited,not_audited
+StringIsNull,isnull,True,pending,not_audited,not_audited
 Substring2Args,mid;substr;substring,True,pending,not_audited,not_audited
 Substring2ArgsUtf8,mid;substr;substring,True,pending,not_audited,not_audited
 Substring3Args,mid;substr;substring,True,pending,not_audited,not_audited
 Substring3ArgsUtf8,mid;substr;substring,True,pending,not_audited,not_audited
 TimeAnyValue,,True,pending,not_audited,not_audited
-TimeIsNull,isnull,False,pending,not_audited,not_audited
+TimeIsNull,isnull,True,pending,not_audited,not_audited
 TimestampDiff,timestampdiff,False,pending,not_audited,not_audited
 UnaryNotInt,not,False,pending,not_audited,not_audited
 UnixTimestampDec,unix_timestamp,False,pending,not_audited,not_audited
@@ -128,5 +128,5 @@ UnixTimestampInt,unix_timestamp,False,pending,not_audited,not_audited
 Upper,upper,True,pending,not_audited,not_audited
 UpperUtf8,upper,True,pending,not_audited,not_audited
 VectorFloat32AnyValue,,True,pending,not_audited,not_audited
-VectorFloat32IsNull,isnull,False,pending,not_audited,not_audited
+VectorFloat32IsNull,isnull,True,pending,not_audited,not_audited
 WeekWithoutMode,week,False,pending,not_audited,not_audited
