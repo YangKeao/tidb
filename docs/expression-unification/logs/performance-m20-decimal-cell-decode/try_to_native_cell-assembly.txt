@@ -1,0 +1,355 @@
+
+/home/agent/.slock/agents/1555103c-9f3e-46ca-ac2e-b964c650c2f1/evidence/performance-m20-decimal-cell-decode/after-bin:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000035969f0 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell>:
+ 35969f0:	push   %rbp
+ 35969f1:	push   %r15
+ 35969f3:	push   %r14
+ 35969f5:	push   %r13
+ 35969f7:	push   %r12
+ 35969f9:	push   %rbx
+ 35969fa:	sub    $0x58,%rsp
+ 35969fe:	mov    0x38(%rsi),%rbx
+ 3596a02:	mov    0x40(%rsi),%r13
+ 3596a06:	cmp    %rbx,%r13
+ 3596a09:	jbe    3596a31 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x41>
+ 3596a0b:	movabs $0x8000000000000007,%rax
+ 3596a15:	mov    %rax,0x8(%rdi)
+ 3596a19:	lea    -0x2eb58c4(%rip),%rax        # 6e115c <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x2e5>
+ 3596a20:	mov    %rax,0x10(%rdi)
+ 3596a24:	movq   $0x22,0x18(%rdi)
+ 3596a2c:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596a31:	mov    %rdx,%r14
+ 3596a34:	mov    0x30(%rsi),%r8
+ 3596a38:	movabs $0xe38e38e38e38e38f,%r9
+ 3596a42:	mov    %r8,%rax
+ 3596a45:	mul    %r9
+ 3596a48:	mov    %rdx,%rcx
+ 3596a4b:	shr    $0x3,%rcx
+ 3596a4f:	lea    (%rcx,%rcx,8),%rax
+ 3596a53:	xor    %r11d,%r11d
+ 3596a56:	mov    %r8,%r10
+ 3596a59:	sub    %rax,%r10
+ 3596a5c:	setne  %r11b
+ 3596a60:	lea    (%rcx,%r11,1),%r12
+ 3596a64:	mov    %rbx,%rax
+ 3596a67:	mul    %r9
+ 3596a6a:	shr    $0x3,%rdx
+ 3596a6e:	lea    (%rdx,%rdx,8),%r15
+ 3596a72:	xor    %eax,%eax
+ 3596a74:	mov    %rbx,%r9
+ 3596a77:	sub    %r15,%r9
+ 3596a7a:	setne  %al
+ 3596a7d:	lea    (%rdx,%rax,1),%r15
+ 3596a81:	mov    %r12,(%rsp)
+ 3596a85:	mov    %r15,0x18(%rsp)
+ 3596a8a:	add    %r15,%r12
+ 3596a8d:	je     3596aa5 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xb5>
+ 3596a8f:	mov    0x28(%rsi),%rbp
+ 3596a93:	mov    %rbp,%r15
+ 3596a96:	cmp    $0xa,%rbp
+ 3596a9a:	jb     3596aa0 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xb0>
+ 3596a9c:	mov    0x8(%rsi),%r15
+ 3596aa0:	cmp    %r15,%r12
+ 3596aa3:	jbe    3596adc <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xec>
+ 3596aa5:	movabs $0x8000000000000007,%rax
+ 3596aaf:	mov    %rax,0x8(%rdi)
+ 3596ab3:	lea    -0x2eb5992(%rip),%rax        # 6e1128 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x2b1>
+ 3596aba:	mov    %rax,0x10(%rdi)
+ 3596abe:	movq   $0x34,0x18(%rdi)
+ 3596ac6:	movb   $0x2,0x3(%rdi)
+ 3596aca:	mov    %rdi,%rax
+ 3596acd:	add    $0x58,%rsp
+ 3596ad1:	pop    %rbx
+ 3596ad2:	pop    %r12
+ 3596ad4:	pop    %r13
+ 3596ad6:	pop    %r14
+ 3596ad8:	pop    %r15
+ 3596ada:	pop    %rbp
+ 3596adb:	ret
+ 3596adc:	mov    %r13,0x50(%rsp)
+ 3596ae1:	mov    %r8,%r15
+ 3596ae4:	add    %rbx,%r15
+ 3596ae7:	sets   %r13b
+ 3596aeb:	cmp    %r8,%r15
+ 3596aee:	setb   %r8b
+ 3596af2:	or     %r13b,%r8b
+ 3596af5:	jne    3596b22 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x132>
+ 3596af7:	cmp    %r14,%r15
+ 3596afa:	jbe    3596b4b <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x15b>
+ 3596afc:	movabs $0x8000000000000007,%rax
+ 3596b06:	inc    %rax
+ 3596b09:	mov    %rax,0x8(%rdi)
+ 3596b0d:	lea    -0x314d214(%rip),%rax        # 449900 <anon.fa497137aba019d78473869efa9ca89c.18.llvm.13486849608502984164+0x60>
+ 3596b14:	mov    %rax,0x10(%rdi)
+ 3596b18:	movq   $0x20,0x18(%rdi)
+ 3596b20:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596b22:	movabs $0x8000000000000007,%rax
+ 3596b2c:	inc    %rax
+ 3596b2f:	mov    %rax,0x8(%rdi)
+ 3596b33:	lea    -0x2eb5abc(%rip),%rax        # 6e107e <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x207>
+ 3596b3a:	mov    %rax,0x10(%rdi)
+ 3596b3e:	movq   $0x1f,0x18(%rdi)
+ 3596b46:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596b4b:	mov    %rbp,%r8
+ 3596b4e:	cmp    $0xa,%rbp
+ 3596b52:	jb     3596b58 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x168>
+ 3596b54:	mov    0x8(%rsi),%r8
+ 3596b58:	cmp    %r8,%r12
+ 3596b5b:	mov    0x50(%rsp),%r14
+ 3596b60:	ja     3596f25 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x535>
+ 3596b66:	cmp    $0xa,%rbp
+ 3596b6a:	jb     3596b72 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x182>
+ 3596b6c:	mov    0x10(%rsi),%r8
+ 3596b70:	jmp    3596b76 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x186>
+ 3596b72:	lea    0x4(%rsi),%r8
+ 3596b76:	shl    $0x2,%rdx
+ 3596b7a:	lea    (%rdx,%rcx,4),%rcx
+ 3596b7e:	lea    (%rcx,%r11,4),%rcx
+ 3596b82:	lea    (%rcx,%rax,4),%rax
+ 3596b86:	xor    %ecx,%ecx
+ 3596b88:	nopl   0x0(%rax,%rax,1)
+ 3596b90:	cmp    %rcx,%rax
+ 3596b93:	je     3596bc9 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x1d9>
+ 3596b95:	cmpl   $0x3b9ac9ff,(%r8,%rcx,1)
+ 3596b9d:	lea    0x4(%rcx),%rcx
+ 3596ba1:	jbe    3596b90 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x1a0>
+ 3596ba3:	movabs $0x8000000000000007,%rax
+ 3596bad:	mov    %rax,0x8(%rdi)
+ 3596bb1:	lea    -0x2eb5aab(%rip),%rax        # 6e110d <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x296>
+ 3596bb8:	mov    %rax,0x10(%rdi)
+ 3596bbc:	movq   $0x1b,0x18(%rdi)
+ 3596bc4:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596bc9:	test   %r10,%r10
+ 3596bcc:	je     3596c03 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x213>
+ 3596bce:	mov    %rbp,%rax
+ 3596bd1:	cmp    $0xa,%rbp
+ 3596bd5:	jb     3596bdb <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x1eb>
+ 3596bd7:	mov    0x8(%rsi),%rax
+ 3596bdb:	test   %rax,%rax
+ 3596bde:	je     3596f5e <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x56e>
+ 3596be4:	cmp    $0xa,%rbp
+ 3596be8:	jb     3596bf0 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x200>
+ 3596bea:	mov    0x10(%rsi),%rax
+ 3596bee:	jmp    3596bf4 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x204>
+ 3596bf0:	lea    0x4(%rsi),%rax
+ 3596bf4:	mov    (%rax),%eax
+ 3596bf6:	lea    -0x2eb5ec9(%rip),%rcx        # 6e0d34 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.30.llvm.6048847205501745590>
+ 3596bfd:	cmp    (%rcx,%r10,4),%eax
+ 3596c01:	jae    3596c33 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x243>
+ 3596c03:	test   %r9,%r9
+ 3596c06:	je     3596ca4 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x2b4>
+ 3596c0c:	lea    -0x1(%r12),%rax
+ 3596c11:	mov    %rbp,%rcx
+ 3596c14:	cmp    $0xa,%rbp
+ 3596c18:	jb     3596c1e <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x22e>
+ 3596c1a:	mov    0x8(%rsi),%rcx
+ 3596c1e:	cmp    %rcx,%rax
+ 3596c21:	jae    3596f6f <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x57f>
+ 3596c27:	cmp    $0xa,%rbp
+ 3596c2b:	jb     3596c59 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x269>
+ 3596c2d:	mov    0x10(%rsi),%rax
+ 3596c31:	jmp    3596c5d <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x26d>
+ 3596c33:	movabs $0x8000000000000007,%rax
+ 3596c3d:	mov    %rax,0x8(%rdi)
+ 3596c41:	lea    -0x2eb5b5f(%rip),%rax        # 6e10e9 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x272>
+ 3596c48:	mov    %rax,0x10(%rdi)
+ 3596c4c:	movq   $0x24,0x18(%rdi)
+ 3596c54:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596c59:	lea    0x4(%rsi),%rax
+ 3596c5d:	mov    -0x4(%rax,%r12,4),%eax
+ 3596c62:	mov    $0x9,%ecx
+ 3596c67:	sub    %r9d,%ecx
+ 3596c6a:	shl    $0x2,%ecx
+ 3596c6d:	lea    -0x2eb5f40(%rip),%r8        # 6e0d34 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.30.llvm.6048847205501745590>
+ 3596c74:	xor    %edx,%edx
+ 3596c76:	divl   (%rcx,%r8,1)
+ 3596c7a:	test   %edx,%edx
+ 3596c7c:	je     3596ca4 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x2b4>
+ 3596c7e:	movabs $0x8000000000000007,%rax
+ 3596c88:	mov    %rax,0x8(%rdi)
+ 3596c8c:	lea    -0x2eb5bcd(%rip),%rax        # 6e10c6 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x24f>
+ 3596c93:	mov    %rax,0x10(%rdi)
+ 3596c97:	movq   $0x23,0x18(%rdi)
+ 3596c9f:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596ca4:	mov    %rdi,0x8(%rsp)
+ 3596ca9:	lea    0x10426a0(%rip),%rdx        # 45d9350 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x2b8>
+ 3596cb0:	mov    %rsi,0x10(%rsp)
+ 3596cb5:	mov    %rsi,%rdi
+ 3596cb8:	mov    (%rsp),%rsi
+ 3596cbc:	call   35e0d70 <_RNvXsp_CsgyOYdfKT5hq_8smallvecINtB5_8SmallVecAmj9_EINtNtNtCs4NRVxsYgnAr_4core3ops5index5IndexINtNtBS_5range7RangeTojEE5indexCs1psNxHUTi1o_19tidb_query_datatype>
+ 3596cc1:	test   %rdx,%rdx
+ 3596cc4:	je     3596cfe <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x30e>
+ 3596cc6:	shl    $0x2,%rdx
+ 3596cca:	mov    (%rsp),%rcx
+ 3596cce:	lea    (%rcx,%rcx,8),%rsi
+ 3596cd2:	mov    $0x8,%ecx
+ 3596cd7:	sub    %rsi,%rcx
+ 3596cda:	xor    %esi,%esi
+ 3596cdc:	cmpl   $0x0,(%rax,%rsi,4)
+ 3596ce0:	jne    3596cf1 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x301>
+ 3596ce2:	inc    %rsi
+ 3596ce5:	add    $0x9,%rcx
+ 3596ce9:	add    $0xfffffffffffffffc,%rdx
+ 3596ced:	jne    3596cdc <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x2ec>
+ 3596cef:	jmp    3596cfe <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x30e>
+ 3596cf1:	mov    (%rsp),%r13
+ 3596cf5:	sub    %rsi,%r13
+ 3596cf8:	jne    3596e89 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x499>
+ 3596cfe:	xor    %r13d,%r13d
+ 3596d01:	mov    (%rsp),%rsi
+ 3596d05:	mov    $0x0,%r15d
+ 3596d0b:	test   %rbx,%rbx
+ 3596d0e:	mov    0x8(%rsp),%rdi
+ 3596d13:	mov    0x10(%rsp),%r8
+ 3596d18:	jne    3596d20 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x330>
+ 3596d1a:	mov    $0x1,%r15d
+ 3596d20:	mov    %r15,%rax
+ 3596d23:	movabs $0xe38e38e38e38e38f,%rcx
+ 3596d2d:	mul    %rcx
+ 3596d30:	shr    $0x3,%rdx
+ 3596d34:	movabs $0x8e38e38e38e38e39,%rax
+ 3596d3e:	imul   %r15,%rax
+ 3596d42:	movabs $0x1c71c71c71c71c71,%rcx
+ 3596d4c:	xor    %ebp,%ebp
+ 3596d4e:	cmp    %rcx,%rax
+ 3596d51:	seta   %bpl
+ 3596d55:	add    %rdx,%rbp
+ 3596d58:	mov    0x18(%rsp),%rax
+ 3596d5d:	add    %rbp,%rax
+ 3596d60:	cmp    $0x9,%rax
+ 3596d64:	jbe    3596d8c <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x39c>
+ 3596d66:	movabs $0x8000000000000007,%rax
+ 3596d70:	mov    %rax,0x8(%rdi)
+ 3596d74:	lea    -0x2eb5cde(%rip),%rax        # 6e109d <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.75.llvm.6048847205501745590+0x226>
+ 3596d7b:	mov    %rax,0x10(%rdi)
+ 3596d7f:	movq   $0x29,0x18(%rdi)
+ 3596d87:	jmp    3596ac6 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xd6>
+ 3596d8c:	pxor   %xmm0,%xmm0
+ 3596d90:	movdqa %xmm0,0x30(%rsp)
+ 3596d96:	movdqa %xmm0,0x20(%rsp)
+ 3596d9c:	movl   $0x0,0x40(%rsp)
+ 3596da4:	cmp    $0xa,%r13
+ 3596da8:	jae    3596f3a <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x54a>
+ 3596dae:	lea    0x10425e3(%rip),%rcx        # 45d9398 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x300>
+ 3596db5:	mov    %r8,%rdi
+ 3596db8:	mov    (%rsp),%rdx
+ 3596dbc:	call   35e0d20 <_RNvXsp_CsgyOYdfKT5hq_8smallvecINtB5_8SmallVecAmj9_EINtNtNtCs4NRVxsYgnAr_4core3ops5index5IndexINtNtBS_5range5RangejEE5indexCs1psNxHUTi1o_19tidb_query_datatype>
+ 3596dc1:	cmp    %r13,%rdx
+ 3596dc4:	cmovb  %rdx,%r13
+ 3596dc8:	test   %r13,%r13
+ 3596dcb:	je     3596de2 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x3f2>
+ 3596dcd:	shl    $0x2,%r13
+ 3596dd1:	lea    0x20(%rsp),%rdi
+ 3596dd6:	mov    %rax,%rsi
+ 3596dd9:	mov    %r13,%rdx
+ 3596ddc:	call   *0x10ce736(%rip)        # 4665518 <memcpy@GLIBC_2.14>
+ 3596de2:	lea    0x10425c7(%rip),%rcx        # 45d93b0 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x318>
+ 3596de9:	mov    0x10(%rsp),%rdi
+ 3596dee:	mov    (%rsp),%rsi
+ 3596df2:	mov    %r12,%rdx
+ 3596df5:	call   35e0d20 <_RNvXsp_CsgyOYdfKT5hq_8smallvecINtB5_8SmallVecAmj9_EINtNtNtCs4NRVxsYgnAr_4core3ops5index5IndexINtNtBS_5range5RangejEE5indexCs1psNxHUTi1o_19tidb_query_datatype>
+ 3596dfa:	mov    0x18(%rsp),%rcx
+ 3596dff:	cmp    %rcx,%rdx
+ 3596e02:	cmovb  %rdx,%rcx
+ 3596e06:	test   %rcx,%rcx
+ 3596e09:	je     3596e23 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x433>
+ 3596e0b:	lea    (%rsp,%rbp,4),%rdi
+ 3596e0f:	add    $0x20,%rdi
+ 3596e13:	shl    $0x2,%rcx
+ 3596e17:	mov    %rax,%rsi
+ 3596e1a:	mov    %rcx,%rdx
+ 3596e1d:	call   *0x10ce6f5(%rip)        # 4665518 <memcpy@GLIBC_2.14>
+ 3596e23:	mov    0x10(%rsp),%rax
+ 3596e28:	cmpb   $0x1,0x48(%rax)
+ 3596e2c:	jne    3596e57 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x467>
+ 3596e2e:	movdqa 0x30(%rsp),%xmm0
+ 3596e34:	cmpl   $0x0,0x40(%rsp)
+ 3596e39:	setne  %cl
+ 3596e3c:	por    0x20(%rsp),%xmm0
+ 3596e42:	pxor   %xmm1,%xmm1
+ 3596e46:	pcmpeqd %xmm0,%xmm1
+ 3596e4a:	movmskps %xmm1,%eax
+ 3596e4d:	xor    $0xf,%eax
+ 3596e50:	setne  %al
+ 3596e53:	or     %cl,%al
+ 3596e55:	jmp    3596e59 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x469>
+ 3596e57:	xor    %eax,%eax
+ 3596e59:	mov    0x8(%rsp),%rdi
+ 3596e5e:	mov    0x40(%rsp),%ecx
+ 3596e62:	mov    %ecx,0x24(%rdi)
+ 3596e65:	movaps 0x20(%rsp),%xmm0
+ 3596e6a:	movaps 0x30(%rsp),%xmm1
+ 3596e6f:	movups %xmm1,0x14(%rdi)
+ 3596e73:	movups %xmm0,0x4(%rdi)
+ 3596e77:	mov    %r15b,(%rdi)
+ 3596e7a:	mov    %bl,0x1(%rdi)
+ 3596e7d:	mov    %r14b,0x2(%rdi)
+ 3596e81:	mov    %al,0x3(%rdi)
+ 3596e84:	jmp    3596aca <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0xda>
+ 3596e89:	mov    %rbp,%rax
+ 3596e8c:	cmp    $0xa,%rbp
+ 3596e90:	mov    0x10(%rsp),%r8
+ 3596e95:	jb     3596e9b <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x4ab>
+ 3596e97:	mov    0x8(%r8),%rax
+ 3596e9b:	cmp    %rax,%rsi
+ 3596e9e:	mov    0x8(%rsp),%rdi
+ 3596ea3:	jae    3596f82 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x592>
+ 3596ea9:	cmp    $0xa,%rbp
+ 3596ead:	jb     3596eb5 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x4c5>
+ 3596eaf:	mov    0x10(%r8),%rax
+ 3596eb3:	jmp    3596eb9 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x4c9>
+ 3596eb5:	lea    0x4(%r8),%rax
+ 3596eb9:	mov    (%rax,%rsi,4),%eax
+ 3596ebc:	test   %eax,%eax
+ 3596ebe:	je     3596f51 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x561>
+ 3596ec4:	mov    %eax,%edx
+ 3596ec6:	shr    $0x5,%edx
+ 3596ec9:	imul   $0xa7c5ac5,%rdx,%r15
+ 3596ed0:	shr    $0x27,%r15
+ 3596ed4:	xor    %edx,%edx
+ 3596ed6:	cmp    $0x186a0,%eax
+ 3596edb:	setae  %dl
+ 3596ede:	cmovb  %eax,%r15d
+ 3596ee2:	lea    (%rdx,%rdx,4),%eax
+ 3596ee5:	lea    0x5fff6(%r15),%edx
+ 3596eec:	lea    0x7ff9c(%r15),%r9d
+ 3596ef3:	and    %edx,%r9d
+ 3596ef6:	lea    0xdfc18(%r15),%edx
+ 3596efd:	add    $0x7d8f0,%r15d
+ 3596f04:	and    %edx,%r15d
+ 3596f07:	xor    %r9d,%r15d
+ 3596f0a:	shr    $0x11,%r15d
+ 3596f0e:	add    %eax,%r15d
+ 3596f11:	sub    %rcx,%r15
+ 3596f14:	mov    %r15,%rax
+ 3596f17:	or     %rbx,%rax
+ 3596f1a:	jne    3596d20 <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x330>
+ 3596f20:	jmp    3596d1a <_RNvMsb_NtNtNtCs1psNxHUTi1o_19tidb_query_datatype5codec5mysql7decimalNtB5_7Decimal18try_to_native_cell+0x32a>
+ 3596f25:	lea    0x10423dc(%rip),%rcx        # 45d9308 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x270>
+ 3596f2c:	xor    %edi,%edi
+ 3596f2e:	mov    %r12,%rsi
+ 3596f31:	mov    %r8,%rdx
+ 3596f34:	call   *0x10ce65e(%rip)        # 4665598 <_DYNAMIC+0x2d0>
+ 3596f3a:	lea    0x1042487(%rip),%rcx        # 45d93c8 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x330>
+ 3596f41:	mov    $0x9,%edx
+ 3596f46:	xor    %edi,%edi
+ 3596f48:	mov    %r13,%rsi
+ 3596f4b:	call   *0x10ce647(%rip)        # 4665598 <_DYNAMIC+0x2d0>
+ 3596f51:	lea    0x1042428(%rip),%rdi        # 45d9380 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x2e8>
+ 3596f58:	call   *0x10cf26a(%rip)        # 46661c8 <_DYNAMIC+0xf00>
+ 3596f5e:	lea    0x10423bb(%rip),%rdx        # 45d9320 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x288>
+ 3596f65:	xor    %edi,%edi
+ 3596f67:	xor    %esi,%esi
+ 3596f69:	call   *0x10ce591(%rip)        # 4665500 <_DYNAMIC+0x238>
+ 3596f6f:	lea    0x10423c2(%rip),%rdx        # 45d9338 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x2a0>
+ 3596f76:	mov    %rax,%rdi
+ 3596f79:	mov    %rcx,%rsi
+ 3596f7c:	call   *0x10ce57e(%rip)        # 4665500 <_DYNAMIC+0x238>
+ 3596f82:	lea    0x10423df(%rip),%rdx        # 45d9368 <anon.e6c1f1f18b07e1cda7576d2ecb5d2cdb.107.llvm.6048847205501745590+0x2d0>
+ 3596f89:	mov    %rsi,%rdi
+ 3596f8c:	mov    %rax,%rsi
+ 3596f8f:	call   *0x10ce56b(%rip)        # 4665500 <_DYNAMIC+0x238>

@@ -1,0 +1,6 @@
+try_from_native_cell_bytes: 2 hardware integer divisions
+359c0bc:	divl   (%rbx,%rsi,4)
+359c0ee:	divl   (%rdi,%rbx,1)
+
+try_to_native_cell: 1 hardware integer divisions
+3596c76:	divl   (%rcx,%r8,1)

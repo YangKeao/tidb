@@ -24,7 +24,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-16) M17 direct output cell projection matches130236strict/wide cases×6limits plus197056cell exports. Datatype515/565,batch28,full1379/same4 pass. Three cohorts2310records/165groups and M15reference420records/30groups agree. DecimalPLUS183.142→158.790ns, still2.26xslower than native70.171. Int/Time recover partly but remain2–3%slower than M15; Duration/LOWER regress8%/4%, retained. Profile3395samples identifies input26%,push10%,constructor/output9%each.
 - [x] (2026-10-16) M18 constructor simplification tested and REJECTED: datatype515/565,batch28/full1379same4 all pass, but three cohorts show PLUS156.558→158.373ns and comparisons~3%slower. 2310main records/165groups plus840M15reference/60groups all match. Candidate reverse-applied; TiKV restored clean to44befe0. Exact patch/results retained; no unmeasured optimization remains.
 - [x] (2026-10-16) M19 retains one append inline hint after three cohorts: DecimalPLUS158.749→149.122ns (1.07x), comparisons103→94 (1.09x), Duration/JSON improve. Real/Time controls regress~5%/~3% and are retained. All2310main/165groups/33native plus840M15ref/60groups agree. Datatype515/565, freshTiKVexpr1028/same6, batch28/fullTiDB1379/same4/lintfmt pass.
-- [ ] Audit checked native-cell byte ingress to avoid repeated physical/logical validation while sharing the existing decoder/projection and exact resource/normalization contracts. Other collation/temporal/lazy/effectful families need separate semantic review.
+- [x] (2026-10-16) M20 replaces typed-cell input with one existing checked byte decoder plus unchanged projection/raw view. Old adapter API/facade/guards deleted, source searches0. Datatype516/565,batch28/fullTiDB1379/same4/lintfmt pass. Three cohorts PLUS149.513→132.998ns, comparison94→78; all2310/165groups33native and840M15ref/60groups agree, slower historical controls retained.
+- [ ] Test partial-word arithmetic simplification: canonical head bounds can skip remainder; fractional projection/validation can expose constant powers to codegen. Current assembly has two input and one output hardware divisions. Preserve exact noncanonical-cell/value semantics and keep only measured gains. Other collation/temporal/lazy/effectful families need separate semantic review.
 - [x] (2026-10-16) Measured direct Decimal word owner: 250.597→229.120ns/row (1.09x), datatype564 pass and expression baselines unchanged. Other workloads flat to ~2% slower; no universal improvement claim. All paired checksum/route groups agree; report under `logs/performance-m11-decimal-owner/`.
 
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.
@@ -345,3 +346,16 @@ Duration and JSON benefits; slower controls remain explicit. Four out-of-line
 Decimal append symbols disappear and text grows45652 bytes. Arithmetic and the
 execution mode remain unchanged; subsequent input transport work must not clone
 the physical decoder or relax the logical value boundary.
+
+M20 in progress: consume Decimal raw cell views once per input window and let the
+existing checked native decoder feed the logical projection directly. Replace
+and remove the obsolete typed-cell/facade input adapters; do not clone a decoder
+or retain an alternate batch route. All normalization, word budgets, selections
+and NULL-skipping rules remain. Extend the independent cell corpus to direct
+bytes and verify malformed bytes follow the checked decoder's admission.
+
+M20 outcome: one existing decoder and one logical projection remain; unused
+facade/typed-cell input boundaries are deleted. Decimal improves1.12–1.21x,
+without a new driver or value domain. Assembly inspection confirms two input
+and one output hardware divisions for partial-word powers, a small next target
+that still needs exact equivalence and measurement before retention.

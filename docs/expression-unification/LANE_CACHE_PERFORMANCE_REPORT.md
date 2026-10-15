@@ -6,7 +6,17 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新采用结果：通用 vector append 内联（2026-10-16）
+## 最新采用结果：Decimal cell 只做一次 checked decode（2026-10-16）
+
+输入直接使用每列一次的 raw-cell view，经已有 checked decoder 进入原逻辑归一化，删除了旧 typed-cell/facade 输入适配器与重复校验。三组 dense Decimal PLUS **149.513→132.998 ns/row**（1.12 倍），LT **94.040→78.179**、NULL-safe equality **94.095→77.907**（约 1.20–1.21 倍）。原始 native PLUS **70.492**，当前仍慢约 1.89 倍。
+
+其他 M19 对照基本持平或改善；M15 独立控制中的旧慢项仍可见，未宣称已解决。全部 2310 条主测量 / 165 组（含 33 个 native/current 组）和 840 条历史控制 / 60 组一致。datatype 516 / 565、batch 28 与完整 TiDB 1379 通过/原有 4 失败，旧输入适配器生产源码搜索为零。
+
+[完整结果、删除审计、严格字节/资源对照与全部慢项](logs/performance-m20-decimal-cell-decode/summary.md)。以下是历史阶段。
+
+---
+
+## 历史结果：通用 vector append 内联（2026-10-16）
 
 保留一行 inline hint 改动，移除已观察到的 Decimal vector append 调用边界。三组 dense Decimal PLUS **158.749→149.122 ns/row**（1.07 倍），LT **102.791→94.233**、NULL-safe equality **103.245→94.419**（1.09 倍）。Duration **15.878→14.919**、JSON **131.806→127.864** 也改善。
 

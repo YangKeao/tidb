@@ -254,18 +254,6 @@ impl MyDecimal {
         self.as_shared().append_result_string_bytes(output);
     }
 
-    /// Projects a checked chunk cell directly into shared logical math words,
-    /// preserving native normalization and the per-owner byte limit.
-    pub fn try_to_shared_math(
-        &self,
-        limit: usize,
-    ) -> Result<
-        tidb_query_datatype::codec::mysql::Decimal,
-        tidb_query_datatype::codec::mysql::decimal::NativeDecimalError,
-    > {
-        tidb_query_datatype::codec::mysql::Decimal::try_from_native_cell(self.as_shared(), limit)
-    }
-
     /// Projects strict logical math words directly into a native cell, keeping
     /// the existing logical byte-span resource preflight and zero normalization.
     pub fn try_from_shared_math(
@@ -1236,14 +1224,14 @@ mod shared_math_cell_tests {
                             let old = Decimal::from_my_decimal(&cell)
                                 .try_to_shared_math(1024 * 1024)
                                 .unwrap();
-                            let direct = cell.try_to_shared_math(1024 * 1024).unwrap();
+                            let direct = tidb_query_datatype::codec::mysql::Decimal::try_from_native_cell_bytes(bytes,1024 * 1024).unwrap();
                             assert_native_export(&direct, 1024 * 1024);
                             let old = old.words();
                             let direct = direct.words();
                             assert_eq!((direct.int_digits,direct.storage_frac,direct.result_frac,direct.negative,direct.words),(old.int_digits,old.storage_frac,old.result_frac,old.negative,old.words),"int={integer} frac={fraction} result={result} negative={negative} pattern={pattern}");
                             let boundary = direct.words.len() * 4;
-                            assert!(cell.try_to_shared_math(boundary).is_ok());
-                            assert!(cell.try_to_shared_math(boundary - 1).is_err());
+                            assert!(tidb_query_datatype::codec::mysql::Decimal::try_from_native_cell_bytes(bytes,boundary).is_ok());
+                            assert!(tidb_query_datatype::codec::mysql::Decimal::try_from_native_cell_bytes(bytes,boundary - 1).is_err());
                             cases += 1;
                         }
                     }
@@ -1253,6 +1241,34 @@ mod shared_math_cell_tests {
         assert!(cases > 100_000, "{cases}");
         println!("validated {cases} native cell projections");
     }
+    #[test]
+    fn direct_cell_decoder_preserves_checked_physical_admission() {
+        use tidb_query_datatype::codec::mysql::Decimal as SharedDecimal;
+        let mut valid = [0_u8; 40];
+        valid[0] = 1;
+        valid[4..8].copy_from_slice(&1_i32.to_ne_bytes());
+        assert!(SharedDecimal::try_from_native_cell_bytes(valid, 1024).is_ok());
+        let mut invalid = Vec::new();
+        for (index, value) in [(3, 2), (0, 255), (1, 255), (2, 255)] {
+            let mut bytes = valid;
+            bytes[index] = value;
+            invalid.push(bytes);
+        }
+        let mut overcapacity = valid;
+        overcapacity[0] = 81;
+        overcapacity[1] = 1;
+        invalid.push(overcapacity);
+        for value in [-1_i32, 1_000_000_000] {
+            let mut bytes = valid;
+            bytes[4..8].copy_from_slice(&value.to_ne_bytes());
+            invalid.push(bytes);
+        }
+        for bytes in invalid {
+            assert!(MyDecimal::from_raw_bytes(bytes).is_err());
+            assert!(SharedDecimal::try_from_native_cell_bytes(bytes, 1024).is_err());
+        }
+    }
+
     #[test]
     fn direct_native_export_preserves_logical_and_wide_rejection_contracts() {
         use tidb_query_datatype::codec::mysql::{decimal::DecimalParts, Decimal as SharedDecimal};

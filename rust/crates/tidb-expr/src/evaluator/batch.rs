@@ -1255,18 +1255,21 @@ impl NativeDatumSource for NativeChunk<'_> {
                 Ok(Some(VectorValue::Real(output)))
             }
             NativeEvalType::Decimal => {
+                let cells = column.raw_cells();
                 let mut output = ChunkedVecSized::<TikvDecimal>::with_capacity(physical_rows.len());
                 for &row in physical_rows {
-                    let value = if column.is_null(row) {
+                    let value = if cells.is_null(row) {
                         None
                     } else {
                         Some(
-                            column
-                                .get_my_decimal(row)
-                                .try_to_shared_math(1024 * 1024)
-                                .map_err(|_| {
-                                    binding("batch Decimal column is not representable")
-                                })?,
+                            TikvDecimal::try_from_native_cell_bytes(
+                                cells
+                                    .get(row)
+                                    .try_into()
+                                    .expect("Decimal cell is forty bytes"),
+                                1024 * 1024,
+                            )
+                            .map_err(|_| binding("batch Decimal column is not representable"))?,
                         )
                     };
                     output.push(value);
