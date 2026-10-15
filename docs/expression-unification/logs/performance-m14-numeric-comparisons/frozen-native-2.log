@@ -1,0 +1,210 @@
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.075 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=0 iterations=926 elapsed_ns=75972606 ns_per_row=80.121 checksum=16888324904153552151
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=1 iterations=926 elapsed_ns=76153249 ns_per_row=80.311 checksum=16888324904153552151
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=2 iterations=926 elapsed_ns=76212890 ns_per_row=80.374 checksum=16888324904153552151
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=3 iterations=926 elapsed_ns=76188959 ns_per_row=80.349 checksum=16888324904153552151
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=4 iterations=926 elapsed_ns=76231770 ns_per_row=80.394 checksum=16888324904153552151
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=5 iterations=926 elapsed_ns=76256960 ns_per_row=80.421 checksum=16888324904153552151
+ORIGINAL_NATIVE_PERF name=real_compare_lt sample=6 iterations=926 elapsed_ns=76133209 ns_per_row=80.290 checksum=16888324904153552151
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.072 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=0 iterations=888 elapsed_ns=73637756 ns_per_row=80.982 checksum=13989283569293620798
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=1 iterations=888 elapsed_ns=73761298 ns_per_row=81.118 checksum=13989283569293620798
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=2 iterations=888 elapsed_ns=73835579 ns_per_row=81.199 checksum=13989283569293620798
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=3 iterations=888 elapsed_ns=73765408 ns_per_row=81.122 checksum=13989283569293620798
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=4 iterations=888 elapsed_ns=73629855 ns_per_row=80.973 checksum=13989283569293620798
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=5 iterations=888 elapsed_ns=73757667 ns_per_row=81.114 checksum=13989283569293620798
+ORIGINAL_NATIVE_PERF name=real_compare_le sample=6 iterations=888 elapsed_ns=73614294 ns_per_row=80.956 checksum=13989283569293620798
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.56s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.077 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=0 iterations=918 elapsed_ns=75761242 ns_per_row=80.594 checksum=3678799363627533814
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=1 iterations=918 elapsed_ns=75847152 ns_per_row=80.686 checksum=3678799363627533814
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=2 iterations=918 elapsed_ns=75841303 ns_per_row=80.679 checksum=3678799363627533814
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=3 iterations=918 elapsed_ns=75799032 ns_per_row=80.635 checksum=3678799363627533814
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=4 iterations=918 elapsed_ns=75669689 ns_per_row=80.497 checksum=3678799363627533814
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=5 iterations=918 elapsed_ns=75738181 ns_per_row=80.570 checksum=3678799363627533814
+ORIGINAL_NATIVE_PERF name=real_compare_gt sample=6 iterations=918 elapsed_ns=75797031 ns_per_row=80.632 checksum=3678799363627533814
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.087 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.079 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=0 iterations=917 elapsed_ns=75551038 ns_per_row=80.458 checksum=3281475311307742299
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=1 iterations=917 elapsed_ns=75523368 ns_per_row=80.429 checksum=3281475311307742299
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=2 iterations=917 elapsed_ns=75348505 ns_per_row=80.243 checksum=3281475311307742299
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=3 iterations=917 elapsed_ns=75344984 ns_per_row=80.239 checksum=3281475311307742299
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=4 iterations=917 elapsed_ns=75317164 ns_per_row=80.209 checksum=3281475311307742299
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=5 iterations=917 elapsed_ns=75627648 ns_per_row=80.540 checksum=3281475311307742299
+ORIGINAL_NATIVE_PERF name=real_compare_ge sample=6 iterations=917 elapsed_ns=75531856 ns_per_row=80.438 checksum=3281475311307742299
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.087 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.079 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=0 iterations=909 elapsed_ns=75229852 ns_per_row=80.821 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=1 iterations=909 elapsed_ns=74946427 ns_per_row=80.517 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=2 iterations=909 elapsed_ns=75111100 ns_per_row=80.694 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=3 iterations=909 elapsed_ns=74981267 ns_per_row=80.554 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=4 iterations=909 elapsed_ns=75046668 ns_per_row=80.625 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=5 iterations=909 elapsed_ns=75191931 ns_per_row=80.781 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_eq sample=6 iterations=909 elapsed_ns=75018698 ns_per_row=80.595 checksum=9849038830702170472
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.087 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.083 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=0 iterations=911 elapsed_ns=75216401 ns_per_row=80.630 checksum=613540306107471564
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=1 iterations=911 elapsed_ns=75108039 ns_per_row=80.513 checksum=613540306107471564
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=2 iterations=911 elapsed_ns=75000178 ns_per_row=80.398 checksum=613540306107471564
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=3 iterations=911 elapsed_ns=74828804 ns_per_row=80.214 checksum=613540306107471564
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=4 iterations=911 elapsed_ns=75060038 ns_per_row=80.462 checksum=613540306107471564
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=5 iterations=911 elapsed_ns=75227671 ns_per_row=80.642 checksum=613540306107471564
+ORIGINAL_NATIVE_PERF name=real_compare_ne sample=6 iterations=911 elapsed_ns=75276212 ns_per_row=80.694 checksum=613540306107471564
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.081 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=0 iterations=913 elapsed_ns=75218871 ns_per_row=80.456 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=1 iterations=913 elapsed_ns=75084949 ns_per_row=80.312 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=2 iterations=913 elapsed_ns=75099478 ns_per_row=80.328 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=3 iterations=913 elapsed_ns=75153339 ns_per_row=80.385 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=4 iterations=913 elapsed_ns=75222051 ns_per_row=80.459 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=5 iterations=913 elapsed_ns=75131910 ns_per_row=80.363 checksum=9849038830702170472
+ORIGINAL_NATIVE_PERF name=real_compare_nulleq sample=6 iterations=913 elapsed_ns=75090458 ns_per_row=80.318 checksum=9849038830702170472
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.091 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.079 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=0 iterations=416 elapsed_ns=74895824 ns_per_row=175.818 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=1 iterations=416 elapsed_ns=75121339 ns_per_row=176.348 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=2 iterations=416 elapsed_ns=74982976 ns_per_row=176.023 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=3 iterations=416 elapsed_ns=74629030 ns_per_row=175.192 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=4 iterations=416 elapsed_ns=75125558 ns_per_row=176.358 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=5 iterations=416 elapsed_ns=74915335 ns_per_row=175.864 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_lt sample=6 iterations=416 elapsed_ns=74384356 ns_per_row=174.618 checksum=9094821738295031077
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.086 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.081 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=0 iterations=415 elapsed_ns=75368613 ns_per_row=177.355 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=1 iterations=415 elapsed_ns=76150585 ns_per_row=179.195 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=2 iterations=415 elapsed_ns=75111909 ns_per_row=176.751 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=3 iterations=415 elapsed_ns=75419734 ns_per_row=177.475 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=4 iterations=415 elapsed_ns=75273911 ns_per_row=177.132 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=5 iterations=415 elapsed_ns=74454657 ns_per_row=175.204 checksum=9094821738295031077
+ORIGINAL_NATIVE_PERF name=decimal_compare_le sample=6 iterations=415 elapsed_ns=74408436 ns_per_row=175.095 checksum=9094821738295031077
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.078 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.071 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=0 iterations=422 elapsed_ns=76048614 ns_per_row=175.986 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=1 iterations=422 elapsed_ns=76536642 ns_per_row=177.116 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=2 iterations=422 elapsed_ns=78396033 ns_per_row=181.419 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=3 iterations=422 elapsed_ns=78368893 ns_per_row=181.356 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=4 iterations=422 elapsed_ns=77363597 ns_per_row=179.029 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=5 iterations=422 elapsed_ns=76885808 ns_per_row=177.924 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_gt sample=6 iterations=422 elapsed_ns=78435425 ns_per_row=181.510 checksum=16773301714131587365
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.078 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.59s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.072 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=0 iterations=421 elapsed_ns=76351169 ns_per_row=177.106 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=1 iterations=421 elapsed_ns=76015713 ns_per_row=176.328 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=2 iterations=421 elapsed_ns=76283437 ns_per_row=176.949 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=3 iterations=421 elapsed_ns=76076574 ns_per_row=176.469 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=4 iterations=421 elapsed_ns=75156618 ns_per_row=174.335 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=5 iterations=421 elapsed_ns=75716628 ns_per_row=175.634 checksum=16773301714131587365
+ORIGINAL_NATIVE_PERF name=decimal_compare_ge sample=6 iterations=421 elapsed_ns=76158505 ns_per_row=176.659 checksum=16773301714131587365
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.078 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.079 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=0 iterations=420 elapsed_ns=77648100 ns_per_row=180.543 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=1 iterations=420 elapsed_ns=75273281 ns_per_row=175.022 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=2 iterations=420 elapsed_ns=76237236 ns_per_row=177.263 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=3 iterations=420 elapsed_ns=75999102 ns_per_row=176.709 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=4 iterations=420 elapsed_ns=75536644 ns_per_row=175.634 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=5 iterations=420 elapsed_ns=75342341 ns_per_row=175.182 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_eq sample=6 iterations=420 elapsed_ns=75457503 ns_per_row=175.450 checksum=16467777519820527397
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.077 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.074 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=0 iterations=413 elapsed_ns=73663392 ns_per_row=174.181 checksum=12355096016148800293
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=1 iterations=413 elapsed_ns=73928467 ns_per_row=174.808 checksum=12355096016148800293
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=2 iterations=413 elapsed_ns=74189380 ns_per_row=175.425 checksum=12355096016148800293
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=3 iterations=413 elapsed_ns=73968957 ns_per_row=174.904 checksum=12355096016148800293
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=4 iterations=413 elapsed_ns=74313943 ns_per_row=175.720 checksum=12355096016148800293
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=5 iterations=413 elapsed_ns=74106409 ns_per_row=175.229 checksum=12355096016148800293
+ORIGINAL_NATIVE_PERF name=decimal_compare_ne sample=6 iterations=413 elapsed_ns=74196181 ns_per_row=175.441 checksum=12355096016148800293
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::original_native_all_carriers_performance::original_native_all_carriers_release_performance_probe ... ORIGINAL_NATIVE_CALIBRATION stage=before ns_per_iter=1.078 checksum=14785134113392808001
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=0 iterations=437 elapsed_ns=74272912 ns_per_row=165.977 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=1 iterations=437 elapsed_ns=75053556 ns_per_row=167.722 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=2 iterations=437 elapsed_ns=75385951 ns_per_row=168.465 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=3 iterations=437 elapsed_ns=75559484 ns_per_row=168.853 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=4 iterations=437 elapsed_ns=75771497 ns_per_row=169.326 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=5 iterations=437 elapsed_ns=75573224 ns_per_row=168.883 checksum=16467777519820527397
+ORIGINAL_NATIVE_PERF name=decimal_compare_nulleq sample=6 iterations=437 elapsed_ns=74081378 ns_per_row=165.549 checksum=16467777519820527397
+ORIGINAL_NATIVE_CALIBRATION stage=after ns_per_iter=1.085 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1323 filtered out; finished in 0.58s
+

@@ -1,0 +1,15 @@
+decimal_compare_eq 1634.582 147.14 11.14 175.654
+decimal_compare_ge 1633.398 147.2 11.12 176.259
+decimal_compare_gt 1643.559 147.545 11.13 178.813
+decimal_compare_le 1655.036 147.408 11.24 177.132
+decimal_compare_lt 1633.466 147.324 11.07 175.773
+decimal_compare_ne 1644.747 147.446 11.13 175.229
+decimal_compare_nulleq 1603.675 147.328 10.89 166.678
+real_compare_eq 1217.18 11.719 103.77 80.79
+real_compare_ge 1222.839 11.809 102.96 80.429
+real_compare_gt 1225.585 11.76 103.98 80.689
+real_compare_le 1219.966 11.638 104.39 80.967
+real_compare_lt 1223.032 11.618 105.14 80.729
+real_compare_ne 1209.555 11.724 103.26 80.609
+real_compare_nulleq 1217.628 11.846 102.81 80.363
+2940 current timing records / 210 checksum groups agree, including 42 native/current dense groups.

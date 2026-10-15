@@ -1646,3 +1646,101 @@ fn integer_comparison_family_matches_signed_unsigned_order_and_nulls() {
         }
     }
 }
+
+#[test]
+fn real_decimal_comparisons_preserve_order_nulls_and_selection() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let cases = [
+        (
+            "-9999999999999999999999999999.125",
+            "-9999999999999999999999999999.124",
+            Less,
+        ),
+        ("-1.25", "-2.5", Greater),
+        ("0", "-0.00", Equal),
+        ("1.2500", "1.25", Equal),
+        ("0.000000000000000000000000000001", "0", Greater),
+        (
+            "9999999999999999999999999999.124",
+            "9999999999999999999999999999.125",
+            Less,
+        ),
+    ];
+    for decimal in [false, true] {
+        let field = if decimal {
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(30)
+        } else {
+            real_ty()
+        };
+        let convert = |value: &str| {
+            if decimal {
+                Datum::Decimal(Decimal::from_literal(value))
+            } else {
+                Datum::Real(value.parse().unwrap())
+            }
+        };
+        let mut rows: Vec<_> = cases
+            .iter()
+            .map(|(l, r, _)| vec![convert(l), convert(r)])
+            .collect();
+        let mut orders: Vec<_> = cases.iter().map(|(_, _, o)| Some(*o)).collect();
+        // The very large and very small decimal cases have distinct f64 rounding.
+        if !decimal {
+            orders[0] = Some(Equal);
+            orders[5] = Some(Equal);
+            rows.extend([
+                vec![Datum::Real(f64::NEG_INFINITY), Datum::Real(-f64::MAX)],
+                vec![Datum::Real(f64::INFINITY), Datum::Real(f64::MAX)],
+                vec![Datum::Real(f64::INFINITY), Datum::Real(f64::INFINITY)],
+            ]);
+            orders.extend([Some(Less), Some(Greater), Some(Equal)]);
+        }
+        let nonnull = rows.len();
+        rows.extend([
+            vec![Datum::Null, convert("1")],
+            vec![convert("1"), Datum::Null],
+            vec![Datum::Null, Datum::Null],
+        ]);
+        orders.extend([None, None, None]);
+        let selection: Vec<usize> = (0..2050).map(|i| rows.len() - 1 - i % rows.len()).collect();
+        let schema = vec![field.clone(), field.clone()];
+        for name in ["lt", "le", "gt", "ge", "eq", "ne", "nulleq"] {
+            let suite = suite(call(
+                name,
+                ty(),
+                vec![typed_column(0, &field), typed_column(1, &field)],
+            ));
+            let expected: Vec<_> = selection
+                .iter()
+                .map(|&i| match orders[i] {
+                    Some(order) => Datum::Int(i64::from(match name {
+                        "lt" => order.is_lt(),
+                        "le" => order.is_le(),
+                        "gt" => order.is_gt(),
+                        "ge" => order.is_ge(),
+                        "eq" | "nulleq" => order.is_eq(),
+                        "ne" => !order.is_eq(),
+                        _ => unreachable!(),
+                    })),
+                    None if name == "nulleq" => Datum::Int(i64::from(i == nonnull + 2)),
+                    None => Datum::Null,
+                })
+                .collect();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selection.clone()));
+            let mut actual = output();
+            suite
+                .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+                .unwrap();
+            assert_eq!(values(&actual), expected, "{name} decimal={decimal}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{name} decimal={decimal}: {route:?}"
+            );
+        }
+    }
+}

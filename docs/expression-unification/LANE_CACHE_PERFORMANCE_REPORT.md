@@ -6,7 +6,17 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：LongLong 比较族（2026-10-16）
+## 最新结果：Double / Decimal 比较族（2026-10-16）
+
+十四种比较沿用共享 registry、kernel、driver 和 protobuf 解码路径。dense 1,024 行：Double batch **11.618–11.846 ns/row**，真实冻结 native **80.363–80.967**（约 6.78–6.96 倍）；Decimal batch **147.140–147.545**，真实 native **166.678–178.813**（约 1.13–1.21 倍）。
+
+同一当前二进制的 fallback 消融分别约 1209–1226、1604–1655 ns/row；这是另一种对照，不能把约 103–105 倍 / 11 倍当成历史提升。2940 条 timing、210 个 checksum 组及 42 个 native/current dense 组一致；全部 batch 样本 prepared-only。浮点 NaN、raw FLOAT、unsigned Decimal 与隐式混合类型转换仍不在范围内；Decimal PLUS 的已知 native 差距仍未消除。
+
+[完整比较表、全部形状、重复测量、版本/hash 与验证](logs/performance-m14-numeric-comparisons/summary.md)。以下为历史阶段。
+
+---
+
+## 历史结果：LongLong 比较族（2026-10-16）
 
 新增 LT/LE/GE/NE/NULL-safe equality，GT/EQ 原先已有 batch。七种均补齐 signed/unsigned LongLong 参数支持；算术仍保持 signed-only。dense 1,024 行、ns/selected-row：
 

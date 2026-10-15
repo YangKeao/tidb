@@ -8,8 +8,8 @@ lowering and measured performance are separate gates.
 
 The reproducible source audit inventories 308 static function-name registrations
 (including aliases/internal names) from this checkout's `builtin_registry.rs`.
-It also inventories 112 unique signature names found in the static pushdown
-catalog or the paired TiKV batch registry. There are 37 registry-admitted eager
+It also inventories 126 unique signature names found in the static pushdown
+catalog or the paired TiKV batch registry. There are 51 registry-admitted eager
 signatures. These counts describe different sets and must not be divided to
 produce an SQL/function coverage percentage.
 
@@ -32,7 +32,7 @@ all argument/charset/NULL/SQL-mode combinations pass.
 
 ## Current verified slices
 
-The eager registry contains Int/Real/Decimal PLUS, MINUS, MUL and ABS; the seven LongLong integer comparisons;
+The eager registry contains Int/Real/Decimal PLUS, MINUS, MUL and ABS; the seven LongLong integer comparisons and same-domain Double/Decimal comparisons;
 CHAR_LENGTH; LOWER/UPPER; two-/three-argument SUBSTRING; and ANY_VALUE carriers.
 Exact signed integer arithmetic, static types, charset/coercion and metadata
 restrictions still apply. A signature's registry presence alone does not prove
@@ -40,7 +40,7 @@ that every SQL expression spelling reaches this path.
 
 Focused compatibility tests cover heterogeneous arguments, NULL, selection
 order/duplicates, cross-window execution, carrier transport, resource limits and
-shared/frozen output storage. Release performance evidence measures nine carrier workloads plus seven LongLong
+shared/frozen output storage. Release performance evidence measures nine carrier workloads plus seven LongLong and fourteen Double/Decimal
 comparisons, not every admitted signature or metadata combination. The retained M8/M9/M10
 reports identify each measured workload and historical/current-code comparator.
 Time/JSON/Vector ANY_VALUE measurements prove transport behavior, not performance
@@ -95,3 +95,21 @@ protobuf encoding/decoding/evaluation and seven signed performance probes agains
 both a named current-code ablation and true frozen native. The generated CSV
 cells remain source-inventory defaults; this reviewed receipt supplies evidence
 without turning every metadata row into a coverage claim.
+
+## Reviewed Double and Decimal comparison slice
+
+The same seven comparisons now admit same-domain Double and signed Decimal,
+with signed LongLong boolean results. The shared generated comparer kernels and
+one batch driver are unchanged; the static catalog and typed PB decoder carry
+all fourteen signatures. No raw FLOAT, NaN, unsigned Decimal or implicit mixed
+carrier conversion is admitted by this receipt. String comparison still needs
+derived collation review; temporal comparison needs type/timezone review.
+
+Independent hand-ordered tests cover scale-equivalent decimals and differences
+beyond f64 precision, signed zero, finite extrema/infinities, all NULL combinations
+and 2050 selected occurrences in reverse/duplicate order. PB round trips cover all
+fourteen signatures and NULL states. The M14 report retains current fallback and
+batch ablations plus a true frozen native comparison over all fourteen SQL probes,
+with all five selection shapes retained. This is no claim about casts or all SQL
+workloads. Generated inventory cells remain unreviewed planning metadata; this
+prose receipt states the exact reviewed scope.

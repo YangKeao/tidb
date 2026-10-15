@@ -92,7 +92,63 @@ struct Workload {
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 30] = [
+const WORKLOADS: [Workload; 44] = [
+    Workload {
+        name: "real_compare_lt",
+        sql: "r < q",
+    },
+    Workload {
+        name: "real_compare_le",
+        sql: "r <= q",
+    },
+    Workload {
+        name: "real_compare_gt",
+        sql: "r > q",
+    },
+    Workload {
+        name: "real_compare_ge",
+        sql: "r >= q",
+    },
+    Workload {
+        name: "real_compare_eq",
+        sql: "r = q",
+    },
+    Workload {
+        name: "real_compare_ne",
+        sql: "r != q",
+    },
+    Workload {
+        name: "real_compare_nulleq",
+        sql: "r <=> q",
+    },
+    Workload {
+        name: "decimal_compare_lt",
+        sql: "d < e",
+    },
+    Workload {
+        name: "decimal_compare_le",
+        sql: "d <= e",
+    },
+    Workload {
+        name: "decimal_compare_gt",
+        sql: "d > e",
+    },
+    Workload {
+        name: "decimal_compare_ge",
+        sql: "d >= e",
+    },
+    Workload {
+        name: "decimal_compare_eq",
+        sql: "d = e",
+    },
+    Workload {
+        name: "decimal_compare_ne",
+        sql: "d != e",
+    },
+    Workload {
+        name: "decimal_compare_nulleq",
+        sql: "d <=> e",
+    },
     Workload {
         name: "integer_add",
         sql: "i + j",
@@ -218,6 +274,8 @@ const WORKLOADS: [Workload; 30] = [
 fn tikv_batch_workload(name: &str) -> bool {
     name.starts_with("integer_add")
         || name.starts_with("integer_compare_")
+        || name.starts_with("real_compare_")
+        || name.starts_with("decimal_compare_")
         || matches!(
             name,
             "integer_subtract"
@@ -251,6 +309,7 @@ impl ColumnResolver for Resolver {
             "ts" => (8, 9),
             "dur" => (9, 10),
             "v" => (10, 11),
+            "e" => (11, 12),
             _ => return None,
         };
         Some((index, self.schema[index].clone(), unique_id))
@@ -271,7 +330,7 @@ fn schema() -> Vec<FieldType> {
         FieldType::new(FieldTypeCode::LongLong),
         FieldType::new(FieldTypeCode::LongLong),
         FieldType::new(FieldTypeCode::VarString),
-        decimal,
+        decimal.clone(),
         FieldType::new(FieldTypeCode::Json),
         FieldType::new(FieldTypeCode::Double),
         FieldType::new(FieldTypeCode::Double),
@@ -279,6 +338,7 @@ fn schema() -> Vec<FieldType> {
         FieldType::new(FieldTypeCode::Timestamp),
         duration,
         FieldType::new(FieldTypeCode::VectorFloat32),
+        decimal,
     ]
 }
 
@@ -344,6 +404,7 @@ fn make_input(
             chunk.append_null(8);
             chunk.append_null(9);
             chunk.append_null(10);
+            chunk.append_null(11);
         } else {
             chunk.append_bytes(2, STRINGS[row % STRINGS.len()]);
             chunk.append_datum(3, &Datum::Decimal(decimals[row % decimals.len()].clone()));
@@ -357,6 +418,10 @@ fn make_input(
                 MySqlDuration::from_raw_parts((row as i64 % 17 - 8) * 1_234_567_000, 6),
             );
             chunk.append_vector_float32(10, &vectors[row % vectors.len()]);
+            chunk.append_datum(
+                11,
+                &Datum::Decimal(decimals[(row + 1) % decimals.len()].clone()),
+            );
         }
     }
     chunk.set_sel(selection);

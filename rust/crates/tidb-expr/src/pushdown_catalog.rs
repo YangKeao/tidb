@@ -1388,6 +1388,161 @@ pub const CATALOG: &[BuiltinSignature] = &[
         ScalarFuncSig::EqInt,
         false,
     ),
+    // Go generateCmpSigs selects same-domain Real/Decimal operands and an Int result.
+    signature(
+        "lt",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::LtReal,
+        false,
+    ),
+    signature(
+        "le",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::LeReal,
+        false,
+    ),
+    signature(
+        "gt",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::GtReal,
+        false,
+    ),
+    signature(
+        "ge",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::GeReal,
+        false,
+    ),
+    signature(
+        "eq",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::EqReal,
+        false,
+    ),
+    signature(
+        "ne",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::NeReal,
+        false,
+    ),
+    signature(
+        "nulleq",
+        &[
+            ArgPattern::eval(EvalType::Real),
+            ArgPattern::eval(EvalType::Real),
+        ],
+        &[EvalType::Real, EvalType::Real],
+        EvalType::Int,
+        ScalarFuncSig::NullEqReal,
+        false,
+    ),
+    signature(
+        "lt",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::LtDecimal,
+        false,
+    ),
+    signature(
+        "le",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::LeDecimal,
+        false,
+    ),
+    signature(
+        "gt",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::GtDecimal,
+        false,
+    ),
+    signature(
+        "ge",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::GeDecimal,
+        false,
+    ),
+    signature(
+        "eq",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::EqDecimal,
+        false,
+    ),
+    signature(
+        "ne",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::NeDecimal,
+        false,
+    ),
+    signature(
+        "nulleq",
+        &[
+            ArgPattern::eval(EvalType::Decimal),
+            ArgPattern::eval(EvalType::Decimal),
+        ],
+        &[EvalType::Decimal, EvalType::Decimal],
+        EvalType::Int,
+        ScalarFuncSig::NullEqDecimal,
+        false,
+    ),
     // Go compareFunctionClass.generateCmpSigs: all ETInt comparisons keep
     // operand unsignedness and return ETInt; NULL-safe equality is eager too.
     signature(
@@ -3929,6 +4084,82 @@ mod tests {
                 row.name
             );
             assert_ne!(row.sig, ScalarFuncSig::Unspecified, "{}", row.name);
+        }
+    }
+    #[test]
+    fn real_decimal_comparisons_round_trip_pb() {
+        for decimal in [false, true] {
+            let field = FieldType::new(if decimal {
+                FieldTypeCode::NewDecimal
+            } else {
+                FieldTypeCode::Double
+            });
+            let value = |text: &str| {
+                if decimal {
+                    PbScalar::DecimalLiteral {
+                        value: Decimal::from_literal(text),
+                        field_type: field.clone(),
+                    }
+                } else {
+                    PbScalar::RealLiteral {
+                        value: text.parse().unwrap(),
+                        field_type: field.clone(),
+                    }
+                }
+            };
+            for (name, real, dec) in [
+                ("lt", ScalarFuncSig::LtReal, ScalarFuncSig::LtDecimal),
+                ("le", ScalarFuncSig::LeReal, ScalarFuncSig::LeDecimal),
+                ("gt", ScalarFuncSig::GtReal, ScalarFuncSig::GtDecimal),
+                ("ge", ScalarFuncSig::GeReal, ScalarFuncSig::GeDecimal),
+                ("eq", ScalarFuncSig::EqReal, ScalarFuncSig::EqDecimal),
+                ("ne", ScalarFuncSig::NeReal, ScalarFuncSig::NeDecimal),
+                (
+                    "nulleq",
+                    ScalarFuncSig::NullEqReal,
+                    ScalarFuncSig::NullEqDecimal,
+                ),
+            ] {
+                for nulls in [0, 1, 2, 3] {
+                    let args = vec![
+                        if nulls & 1 != 0 {
+                            PbScalar::NullLiteral {
+                                field_type: field.clone(),
+                            }
+                        } else {
+                            value("-1.25")
+                        },
+                        if nulls & 2 != 0 {
+                            PbScalar::NullLiteral {
+                                field_type: field.clone(),
+                            }
+                        } else {
+                            value("2.5")
+                        },
+                    ];
+                    assert_eq!(
+                        resolve(name, &args).unwrap().sig,
+                        if decimal { dec } else { real }
+                    );
+                    let pb = to_pb(&build_call(name, args).unwrap(), &|_| None).unwrap();
+                    let decoded = crate::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                    let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+                    input.set_num_virtual_rows(1);
+                    let result = decoded
+                        .eval(&crate::context::NoColumns, input.get_row(0))
+                        .unwrap();
+                    let expected = if nulls != 0 {
+                        if name == "nulleq" {
+                            Datum::Int(i64::from(nulls == 3))
+                        } else {
+                            Datum::Null
+                        }
+                    } else {
+                        Datum::Int(i64::from(matches!(name, "lt" | "le" | "ne")))
+                    };
+                    assert_eq!(result, expected, "{name} decimal={decimal} nulls={nulls}");
+                }
+            }
         }
     }
     #[test]

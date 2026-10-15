@@ -1,0 +1,1276 @@
+[
+  {
+    "workload": "decimal_compare_eq",
+    "scenario": "dense",
+    "current_fallback": [
+      1634.582,
+      1626.674,
+      1668.117
+    ],
+    "batch": [
+      146.774,
+      147.177,
+      147.14
+    ],
+    "fallback_median": 1634.582,
+    "batch_median": 147.14,
+    "paired_ablation_speedup": 11.136727213266656,
+    "frozen_native": [
+      175.718,
+      175.634,
+      175.654
+    ],
+    "native_median": 175.654
+  },
+  {
+    "workload": "decimal_compare_eq",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1589.99,
+      1576.338,
+      1607.819
+    ],
+    "batch": [
+      135.723,
+      135.809,
+      135.661
+    ],
+    "fallback_median": 1589.99,
+    "batch_median": 135.723,
+    "paired_ablation_speedup": 11.714963565497372
+  },
+  {
+    "workload": "decimal_compare_eq",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1660.917,
+      1628.999,
+      1672.616
+    ],
+    "batch": [
+      149.967,
+      150.095,
+      149.869
+    ],
+    "fallback_median": 1660.917,
+    "batch_median": 149.967,
+    "paired_ablation_speedup": 11.07521654764048
+  },
+  {
+    "workload": "decimal_compare_eq",
+    "scenario": "reverse",
+    "current_fallback": [
+      1648.719,
+      1642.337,
+      1667.079
+    ],
+    "batch": [
+      148.055,
+      148.41,
+      148.29
+    ],
+    "fallback_median": 1648.719,
+    "batch_median": 148.29,
+    "paired_ablation_speedup": 11.135854918780183
+  },
+  {
+    "workload": "decimal_compare_eq",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1618.995,
+      1610.335,
+      1657.765
+    ],
+    "batch": [
+      147.87,
+      147.205,
+      147.633
+    ],
+    "fallback_median": 1618.995,
+    "batch_median": 147.633,
+    "paired_ablation_speedup": 10.948772570501115
+  },
+  {
+    "workload": "decimal_compare_ge",
+    "scenario": "dense",
+    "current_fallback": [
+      1640.171,
+      1630.972,
+      1633.398
+    ],
+    "batch": [
+      147.2,
+      148.148,
+      146.838
+    ],
+    "fallback_median": 1633.398,
+    "batch_median": 147.2,
+    "paired_ablation_speedup": 11.123809912965308,
+    "frozen_native": [
+      176.259,
+      176.469,
+      176.102
+    ],
+    "native_median": 176.259
+  },
+  {
+    "workload": "decimal_compare_ge",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1588.533,
+      1575.791,
+      1581.837
+    ],
+    "batch": [
+      135.838,
+      136.092,
+      135.697
+    ],
+    "fallback_median": 1581.837,
+    "batch_median": 135.838,
+    "paired_ablation_speedup": 11.657125802339035
+  },
+  {
+    "workload": "decimal_compare_ge",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1647.322,
+      1628.281,
+      1638.197
+    ],
+    "batch": [
+      149.811,
+      149.894,
+      149.665
+    ],
+    "fallback_median": 1638.197,
+    "batch_median": 149.811,
+    "paired_ablation_speedup": 10.945758861457254
+  },
+  {
+    "workload": "decimal_compare_ge",
+    "scenario": "reverse",
+    "current_fallback": [
+      1646.695,
+      1625.371,
+      1642.74
+    ],
+    "batch": [
+      148.407,
+      149.151,
+      148.677
+    ],
+    "fallback_median": 1642.74,
+    "batch_median": 148.677,
+    "paired_ablation_speedup": 11.049052644322929
+  },
+  {
+    "workload": "decimal_compare_ge",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1622.523,
+      1609.507,
+      1634.314
+    ],
+    "batch": [
+      147.89,
+      148.097,
+      147.657
+    ],
+    "fallback_median": 1622.523,
+    "batch_median": 147.89,
+    "paired_ablation_speedup": 10.971147474474272
+  },
+  {
+    "workload": "decimal_compare_gt",
+    "scenario": "dense",
+    "current_fallback": [
+      1644.973,
+      1633.327,
+      1643.559
+    ],
+    "batch": [
+      146.961,
+      147.545,
+      147.633
+    ],
+    "fallback_median": 1643.559,
+    "batch_median": 147.545,
+    "paired_ablation_speedup": 11.132734551218222,
+    "frozen_native": [
+      178.813,
+      179.029,
+      177.204
+    ],
+    "native_median": 178.813
+  },
+  {
+    "workload": "decimal_compare_gt",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1623.946,
+      1578.761,
+      1598.241
+    ],
+    "batch": [
+      135.61,
+      136.35,
+      136.017
+    ],
+    "fallback_median": 1598.241,
+    "batch_median": 136.017,
+    "paired_ablation_speedup": 11.750303270914666
+  },
+  {
+    "workload": "decimal_compare_gt",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1691.639,
+      1626.889,
+      1645.643
+    ],
+    "batch": [
+      150.28,
+      150.712,
+      149.808
+    ],
+    "fallback_median": 1645.643,
+    "batch_median": 150.28,
+    "paired_ablation_speedup": 10.985014151447187
+  },
+  {
+    "workload": "decimal_compare_gt",
+    "scenario": "reverse",
+    "current_fallback": [
+      1682.148,
+      1630.811,
+      1645.444
+    ],
+    "batch": [
+      151.307,
+      148.609,
+      148.406
+    ],
+    "fallback_median": 1645.444,
+    "batch_median": 148.609,
+    "paired_ablation_speedup": 11.087449294502917
+  },
+  {
+    "workload": "decimal_compare_gt",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1669.941,
+      1613.192,
+      1633.739
+    ],
+    "batch": [
+      148.165,
+      148.131,
+      148.019
+    ],
+    "fallback_median": 1633.739,
+    "batch_median": 148.131,
+    "paired_ablation_speedup": 11.037360068639837
+  },
+  {
+    "workload": "decimal_compare_le",
+    "scenario": "dense",
+    "current_fallback": [
+      1655.036,
+      1627.934,
+      1680.671
+    ],
+    "batch": [
+      147.254,
+      147.896,
+      147.408
+    ],
+    "fallback_median": 1655.036,
+    "batch_median": 147.408,
+    "paired_ablation_speedup": 11.239327963926279,
+    "frozen_native": [
+      176.075,
+      177.132,
+      177.186
+    ],
+    "native_median": 177.132
+  },
+  {
+    "workload": "decimal_compare_le",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1610.197,
+      1580.243,
+      1572.938
+    ],
+    "batch": [
+      136.029,
+      136.442,
+      135.853
+    ],
+    "fallback_median": 1580.243,
+    "batch_median": 136.029,
+    "paired_ablation_speedup": 11.581792996291464
+  },
+  {
+    "workload": "decimal_compare_le",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1654.306,
+      1626.055,
+      1651.969
+    ],
+    "batch": [
+      150.25,
+      150.526,
+      150.212
+    ],
+    "fallback_median": 1651.969,
+    "batch_median": 150.25,
+    "paired_ablation_speedup": 10.997583415439513
+  },
+  {
+    "workload": "decimal_compare_le",
+    "scenario": "reverse",
+    "current_fallback": [
+      1658.476,
+      1625.378,
+      1652.866
+    ],
+    "batch": [
+      148.278,
+      148.682,
+      148.433
+    ],
+    "fallback_median": 1652.866,
+    "batch_median": 148.433,
+    "paired_ablation_speedup": 11.135434842656283
+  },
+  {
+    "workload": "decimal_compare_le",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1648.681,
+      1623.145,
+      1642.926
+    ],
+    "batch": [
+      148.307,
+      148.702,
+      147.753
+    ],
+    "fallback_median": 1642.926,
+    "batch_median": 148.307,
+    "paired_ablation_speedup": 11.116676893201266
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "dense",
+    "current_fallback": [
+      1652.298,
+      1626.236,
+      1633.466
+    ],
+    "batch": [
+      147.285,
+      147.324,
+      147.496
+    ],
+    "fallback_median": 1633.466,
+    "batch_median": 147.324,
+    "paired_ablation_speedup": 11.074646092097412,
+    "frozen_native": [
+      175.773,
+      175.864,
+      175.585
+    ],
+    "native_median": 175.773
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1605.39,
+      1580.029,
+      1580.563
+    ],
+    "batch": [
+      135.847,
+      136.144,
+      135.937
+    ],
+    "fallback_median": 1580.563,
+    "batch_median": 135.937,
+    "paired_ablation_speedup": 11.627172881555426
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1656.934,
+      1634.12,
+      1641.755
+    ],
+    "batch": [
+      150.259,
+      150.519,
+      150.314
+    ],
+    "fallback_median": 1641.755,
+    "batch_median": 150.314,
+    "paired_ablation_speedup": 10.922169591654804
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "reverse",
+    "current_fallback": [
+      1655.118,
+      1636.014,
+      1647.213
+    ],
+    "batch": [
+      148.643,
+      148.277,
+      148.642
+    ],
+    "fallback_median": 1647.213,
+    "batch_median": 148.642,
+    "paired_ablation_speedup": 11.081746747218148
+  },
+  {
+    "workload": "decimal_compare_lt",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1639.755,
+      1622.127,
+      1619.743
+    ],
+    "batch": [
+      148.246,
+      147.415,
+      147.664
+    ],
+    "fallback_median": 1622.127,
+    "batch_median": 147.664,
+    "paired_ablation_speedup": 11.003812366448463
+  },
+  {
+    "workload": "decimal_compare_ne",
+    "scenario": "dense",
+    "current_fallback": [
+      1644.747,
+      1637.262,
+      1674.478
+    ],
+    "batch": [
+      147.955,
+      147.114,
+      147.446
+    ],
+    "fallback_median": 1644.747,
+    "batch_median": 147.446,
+    "paired_ablation_speedup": 11.129205921938087,
+    "frozen_native": [
+      175.003,
+      175.229,
+      177.173
+    ],
+    "native_median": 175.229
+  },
+  {
+    "workload": "decimal_compare_ne",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1593.214,
+      1579.214,
+      1622.201
+    ],
+    "batch": [
+      135.853,
+      135.728,
+      135.829
+    ],
+    "fallback_median": 1593.214,
+    "batch_median": 135.829,
+    "paired_ablation_speedup": 11.727484854953515
+  },
+  {
+    "workload": "decimal_compare_ne",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1647.284,
+      1637.242,
+      1674.667
+    ],
+    "batch": [
+      149.929,
+      149.723,
+      150.485
+    ],
+    "fallback_median": 1647.284,
+    "batch_median": 149.929,
+    "paired_ablation_speedup": 10.987093891108458
+  },
+  {
+    "workload": "decimal_compare_ne",
+    "scenario": "reverse",
+    "current_fallback": [
+      1659.608,
+      1640.642,
+      1683.584
+    ],
+    "batch": [
+      148.22,
+      148.129,
+      148.766
+    ],
+    "fallback_median": 1659.608,
+    "batch_median": 148.22,
+    "paired_ablation_speedup": 11.196923492106329
+  },
+  {
+    "workload": "decimal_compare_ne",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1644.749,
+      1620.592,
+      1662.116
+    ],
+    "batch": [
+      147.875,
+      147.209,
+      153.05
+    ],
+    "fallback_median": 1644.749,
+    "batch_median": 147.875,
+    "paired_ablation_speedup": 11.008783430360916
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "dense",
+    "current_fallback": [
+      1603.675,
+      1600.747,
+      1641.595
+    ],
+    "batch": [
+      147.436,
+      147.021,
+      147.328
+    ],
+    "fallback_median": 1603.675,
+    "batch_median": 147.328,
+    "paired_ablation_speedup": 10.887879962726414,
+    "frozen_native": [
+      166.678,
+      168.465,
+      166.122
+    ],
+    "native_median": 166.678
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1570.017,
+      1548.619,
+      1582.582
+    ],
+    "batch": [
+      135.853,
+      135.744,
+      135.978
+    ],
+    "fallback_median": 1570.017,
+    "batch_median": 135.853,
+    "paired_ablation_speedup": 11.556734117023547
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1627.774,
+      1612.166,
+      1617.875
+    ],
+    "batch": [
+      149.731,
+      150.578,
+      151.35
+    ],
+    "fallback_median": 1617.875,
+    "batch_median": 150.578,
+    "paired_ablation_speedup": 10.706517552364886
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "reverse",
+    "current_fallback": [
+      1630.9,
+      1592.804,
+      1618.168
+    ],
+    "batch": [
+      148.051,
+      148.53,
+      148.747
+    ],
+    "fallback_median": 1618.168,
+    "batch_median": 148.53,
+    "paired_ablation_speedup": 10.87865973767538
+  },
+  {
+    "workload": "decimal_compare_nulleq",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1607.662,
+      1570.932,
+      1608.878
+    ],
+    "batch": [
+      147.784,
+      147.503,
+      147.935
+    ],
+    "fallback_median": 1607.662,
+    "batch_median": 147.784,
+    "paired_ablation_speedup": 10.875573731706492
+  },
+  {
+    "workload": "real_compare_eq",
+    "scenario": "dense",
+    "current_fallback": [
+      1216.056,
+      1217.18,
+      1223.195
+    ],
+    "batch": [
+      11.719,
+      12.111,
+      11.617
+    ],
+    "fallback_median": 1217.18,
+    "batch_median": 11.719,
+    "paired_ablation_speedup": 103.7678982848366,
+    "frozen_native": [
+      80.882,
+      80.625,
+      80.79
+    ],
+    "native_median": 80.79
+  },
+  {
+    "workload": "real_compare_eq",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1209.435,
+      1217.165,
+      1208.857
+    ],
+    "batch": [
+      11.607,
+      11.933,
+      11.625
+    ],
+    "fallback_median": 1209.435,
+    "batch_median": 11.625,
+    "paired_ablation_speedup": 103.98769892473118
+  },
+  {
+    "workload": "real_compare_eq",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1215.482,
+      1216.563,
+      1228.556
+    ],
+    "batch": [
+      12.202,
+      12.156,
+      11.786
+    ],
+    "fallback_median": 1216.563,
+    "batch_median": 12.156,
+    "paired_ablation_speedup": 100.07922013820335
+  },
+  {
+    "workload": "real_compare_eq",
+    "scenario": "reverse",
+    "current_fallback": [
+      1219.081,
+      1220.106,
+      1215.236
+    ],
+    "batch": [
+      12.177,
+      12.204,
+      11.806
+    ],
+    "fallback_median": 1219.081,
+    "batch_median": 12.177,
+    "paired_ablation_speedup": 100.11341052804467
+  },
+  {
+    "workload": "real_compare_eq",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1224.157,
+      1215.289,
+      1216.348
+    ],
+    "batch": [
+      19.004,
+      19.137,
+      18.436
+    ],
+    "fallback_median": 1216.348,
+    "batch_median": 19.004,
+    "paired_ablation_speedup": 64.41575457798358
+  },
+  {
+    "workload": "real_compare_ge",
+    "scenario": "dense",
+    "current_fallback": [
+      1222.839,
+      1230.393,
+      1211.691
+    ],
+    "batch": [
+      11.72,
+      11.95,
+      11.809
+    ],
+    "fallback_median": 1222.839,
+    "batch_median": 11.809,
+    "paired_ablation_speedup": 102.96175732217574,
+    "frozen_native": [
+      80.39,
+      80.429,
+      80.592
+    ],
+    "native_median": 80.429
+  },
+  {
+    "workload": "real_compare_ge",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1218.012,
+      1225.722,
+      1207.819
+    ],
+    "batch": [
+      11.495,
+      11.657,
+      11.519
+    ],
+    "fallback_median": 1218.012,
+    "batch_median": 11.519,
+    "paired_ablation_speedup": 105.14900917903405
+  },
+  {
+    "workload": "real_compare_ge",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1229.62,
+      1231.286,
+      1211.976
+    ],
+    "batch": [
+      12.255,
+      12.451,
+      11.897
+    ],
+    "fallback_median": 1229.62,
+    "batch_median": 12.255,
+    "paired_ablation_speedup": 100.3361893104855
+  },
+  {
+    "workload": "real_compare_ge",
+    "scenario": "reverse",
+    "current_fallback": [
+      1223.566,
+      1237.347,
+      1212.465
+    ],
+    "batch": [
+      12.273,
+      12.476,
+      11.898
+    ],
+    "fallback_median": 1223.566,
+    "batch_median": 12.273,
+    "paired_ablation_speedup": 99.69575490915017
+  },
+  {
+    "workload": "real_compare_ge",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1232.252,
+      1243.709,
+      1212.498
+    ],
+    "batch": [
+      18.596,
+      18.96,
+      18.428
+    ],
+    "fallback_median": 1232.252,
+    "batch_median": 18.596,
+    "paired_ablation_speedup": 65.79650531799436
+  },
+  {
+    "workload": "real_compare_gt",
+    "scenario": "dense",
+    "current_fallback": [
+      1236.542,
+      1225.585,
+      1210.757
+    ],
+    "batch": [
+      11.76,
+      11.787,
+      11.698
+    ],
+    "fallback_median": 1225.585,
+    "batch_median": 11.76,
+    "paired_ablation_speedup": 103.97768728259948,
+    "frozen_native": [
+      80.689,
+      80.632,
+      80.693
+    ],
+    "native_median": 80.689
+  },
+  {
+    "workload": "real_compare_gt",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1241.332,
+      1210.832,
+      1206.427
+    ],
+    "batch": [
+      11.539,
+      11.899,
+      11.665
+    ],
+    "fallback_median": 1210.832,
+    "batch_median": 11.665,
+    "paired_ablation_speedup": 103.42280325760822
+  },
+  {
+    "workload": "real_compare_gt",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1224.8,
+      1226.907,
+      1212.508
+    ],
+    "batch": [
+      12.31,
+      12.123,
+      11.934
+    ],
+    "fallback_median": 1224.8,
+    "batch_median": 12.123,
+    "paired_ablation_speedup": 101.20489977728285
+  },
+  {
+    "workload": "real_compare_gt",
+    "scenario": "reverse",
+    "current_fallback": [
+      1242.207,
+      1232.187,
+      1212.402
+    ],
+    "batch": [
+      12.288,
+      12.532,
+      11.898
+    ],
+    "fallback_median": 1232.187,
+    "batch_median": 12.288,
+    "paired_ablation_speedup": 101.091064453125
+  },
+  {
+    "workload": "real_compare_gt",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1246.866,
+      1219.37,
+      1214.729
+    ],
+    "batch": [
+      18.837,
+      18.893,
+      18.79
+    ],
+    "fallback_median": 1219.37,
+    "batch_median": 18.837,
+    "paired_ablation_speedup": 64.64763171899948
+  },
+  {
+    "workload": "real_compare_le",
+    "scenario": "dense",
+    "current_fallback": [
+      1225.534,
+      1219.966,
+      1210.167
+    ],
+    "batch": [
+      11.638,
+      11.687,
+      11.596
+    ],
+    "fallback_median": 1219.966,
+    "batch_median": 11.638,
+    "paired_ablation_speedup": 104.38658338324633,
+    "frozen_native": [
+      80.967,
+      81.114,
+      80.932
+    ],
+    "native_median": 80.967
+  },
+  {
+    "workload": "real_compare_le",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1225.605,
+      1218.348,
+      1209.125
+    ],
+    "batch": [
+      11.4,
+      11.659,
+      11.415
+    ],
+    "fallback_median": 1218.348,
+    "batch_median": 11.415,
+    "paired_ablation_speedup": 105.92422251423567
+  },
+  {
+    "workload": "real_compare_le",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1239.572,
+      1227.145,
+      1206.216
+    ],
+    "batch": [
+      12.185,
+      11.866,
+      11.807
+    ],
+    "fallback_median": 1227.145,
+    "batch_median": 11.866,
+    "paired_ablation_speedup": 102.16109087829253
+  },
+  {
+    "workload": "real_compare_le",
+    "scenario": "reverse",
+    "current_fallback": [
+      1240.433,
+      1230.116,
+      1215.644
+    ],
+    "batch": [
+      12.172,
+      11.883,
+      11.784
+    ],
+    "fallback_median": 1230.116,
+    "batch_median": 11.883,
+    "paired_ablation_speedup": 103.16055668703326
+  },
+  {
+    "workload": "real_compare_le",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1237.93,
+      1230.488,
+      1218.14
+    ],
+    "batch": [
+      18.558,
+      18.567,
+      18.359
+    ],
+    "fallback_median": 1230.488,
+    "batch_median": 18.558,
+    "paired_ablation_speedup": 66.35110844817255
+  },
+  {
+    "workload": "real_compare_lt",
+    "scenario": "dense",
+    "current_fallback": [
+      1223.265,
+      1223.032,
+      1221.508
+    ],
+    "batch": [
+      11.979,
+      11.613,
+      11.618
+    ],
+    "fallback_median": 1223.032,
+    "batch_median": 11.618,
+    "paired_ablation_speedup": 105.13926665519023,
+    "frozen_native": [
+      81.238,
+      80.349,
+      80.729
+    ],
+    "native_median": 80.729
+  },
+  {
+    "workload": "real_compare_lt",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1209.194,
+      1209.636,
+      1209.145
+    ],
+    "batch": [
+      11.716,
+      11.385,
+      11.562
+    ],
+    "fallback_median": 1209.194,
+    "batch_median": 11.562,
+    "paired_ablation_speedup": 104.57922504756962
+  },
+  {
+    "workload": "real_compare_lt",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1237.926,
+      1219.602,
+      1215.23
+    ],
+    "batch": [
+      12.179,
+      12.242,
+      11.833
+    ],
+    "fallback_median": 1219.602,
+    "batch_median": 12.179,
+    "paired_ablation_speedup": 101.64430577223088
+  },
+  {
+    "workload": "real_compare_lt",
+    "scenario": "reverse",
+    "current_fallback": [
+      1232.105,
+      1217.425,
+      1216.919
+    ],
+    "batch": [
+      12.193,
+      11.849,
+      11.878
+    ],
+    "fallback_median": 1217.425,
+    "batch_median": 11.878,
+    "paired_ablation_speedup": 102.45150698770837
+  },
+  {
+    "workload": "real_compare_lt",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1248.589,
+      1219.372,
+      1217.287
+    ],
+    "batch": [
+      18.811,
+      18.643,
+      18.441
+    ],
+    "fallback_median": 1219.372,
+    "batch_median": 18.643,
+    "paired_ablation_speedup": 66.0098150859498
+  },
+  {
+    "workload": "real_compare_ne",
+    "scenario": "dense",
+    "current_fallback": [
+      1209.296,
+      1215.928,
+      1209.555
+    ],
+    "batch": [
+      11.711,
+      11.766,
+      11.724
+    ],
+    "fallback_median": 1209.555,
+    "batch_median": 11.724,
+    "paired_ablation_speedup": 103.26154897105286,
+    "frozen_native": [
+      80.942,
+      80.513,
+      80.609
+    ],
+    "native_median": 80.609
+  },
+  {
+    "workload": "real_compare_ne",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1205.135,
+      1205.755,
+      1202.327
+    ],
+    "batch": [
+      11.572,
+      11.623,
+      11.752
+    ],
+    "fallback_median": 1205.135,
+    "batch_median": 11.623,
+    "paired_ablation_speedup": 103.73870773466405
+  },
+  {
+    "workload": "real_compare_ne",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1219.389,
+      1211.309,
+      1208.933
+    ],
+    "batch": [
+      12.294,
+      12.275,
+      11.916
+    ],
+    "fallback_median": 1211.309,
+    "batch_median": 12.275,
+    "paired_ablation_speedup": 99.18570034163005
+  },
+  {
+    "workload": "real_compare_ne",
+    "scenario": "reverse",
+    "current_fallback": [
+      1220.375,
+      1212.657,
+      1210.325
+    ],
+    "batch": [
+      12.305,
+      12.281,
+      11.925
+    ],
+    "fallback_median": 1212.657,
+    "batch_median": 12.281,
+    "paired_ablation_speedup": 99.17716375457131
+  },
+  {
+    "workload": "real_compare_ne",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1221.371,
+      1221.05,
+      1211.398
+    ],
+    "batch": [
+      18.791,
+      18.714,
+      18.633
+    ],
+    "fallback_median": 1221.05,
+    "batch_median": 18.714,
+    "paired_ablation_speedup": 65.01357806043042
+  },
+  {
+    "workload": "real_compare_nulleq",
+    "scenario": "dense",
+    "current_fallback": [
+      1216.721,
+      1218.907,
+      1217.628
+    ],
+    "batch": [
+      11.846,
+      11.854,
+      11.843
+    ],
+    "fallback_median": 1217.628,
+    "batch_median": 11.846,
+    "paired_ablation_speedup": 102.81415181964029,
+    "frozen_native": [
+      80.658,
+      80.363,
+      79.674
+    ],
+    "native_median": 80.363
+  },
+  {
+    "workload": "real_compare_nulleq",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1224.35,
+      1207.225,
+      1206.34
+    ],
+    "batch": [
+      11.71,
+      11.758,
+      11.918
+    ],
+    "fallback_median": 1207.225,
+    "batch_median": 11.758,
+    "paired_ablation_speedup": 102.67264840959346
+  },
+  {
+    "workload": "real_compare_nulleq",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1227.62,
+      1220.71,
+      1217.281
+    ],
+    "batch": [
+      12.403,
+      12.406,
+      12.058
+    ],
+    "fallback_median": 1220.71,
+    "batch_median": 12.403,
+    "paired_ablation_speedup": 98.97766669354188
+  },
+  {
+    "workload": "real_compare_nulleq",
+    "scenario": "reverse",
+    "current_fallback": [
+      1227.259,
+      1221.324,
+      1234.172
+    ],
+    "batch": [
+      12.404,
+      12.389,
+      12.166
+    ],
+    "fallback_median": 1227.259,
+    "batch_median": 12.389,
+    "paired_ablation_speedup": 98.94058368268301
+  },
+  {
+    "workload": "real_compare_nulleq",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1226.995,
+      1221.664,
+      1216.683
+    ],
+    "batch": [
+      19.102,
+      19.078,
+      19.005
+    ],
+    "fallback_median": 1221.664,
+    "batch_median": 19.078,
+    "paired_ablation_speedup": 64.03522381801028
+  }
+]
