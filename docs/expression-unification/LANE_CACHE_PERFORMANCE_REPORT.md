@@ -6,7 +6,29 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：批量输出（2026-10-16）
+## 最新结果：Decimal 直接构造 word owner（2026-10-16）
+
+共享 Decimal 构造器去掉临时 word Vec、重复校验及拷贝，保留原有输入与资源检查。三组旧/新配对，dense 1,024 行、ns/selected-row：
+
+| workload | M10 | direct word owner | paired speedup |
+|---|---:|---:|---:|
+| `any_value_datetime` | 10.567 | 10.777 | 0.98x |
+| `any_value_duration` | 14.863 | 14.923 | 1.00x |
+| `any_value_json` | 135.419 | 135.900 | 1.00x |
+| `any_value_timestamp` | 10.572 | 10.799 | 0.98x |
+| `any_value_vector` | 81.217 | 83.039 | 0.98x |
+| `decimal_add` | 250.597 | 229.120 | 1.09x |
+| `integer_add` | 13.072 | 13.139 | 0.99x |
+| `lower` | 35.957 | 36.050 | 1.00x |
+| `real_add` | 14.374 | 14.373 | 1.00x |
+
+本轮改善集中在 Decimal（约 9%）；其他 workload 持平或略慢，Time/Vector 约慢 2%，未隔离二进制布局与机器状态因素，不能把它们算作收益。Decimal 与 M9 单独测得的原始 native 73.172 ns/row 相比仍慢约 3.13 倍。所有 1,890 条 timing / 135 个 checksum 组一致，prepared-only。
+
+[完整报告与原始数据](logs/performance-m11-decimal-owner/summary.md)。[函数覆盖计划与盘点](FUNCTION_PERFORMANCE_COVERAGE.md) 已补齐静态清单和验收门槛；待审项明确保留，尚未覆盖所有函数。以下为历史阶段。
+
+---
+
+## 历史结果：批量输出（2026-10-16）
 
 目标列每批只获取一次，定长输出统一批量写入，Decimal 每个值只转换一次。三组旧/新交错对照，dense 1,024 行、ns/selected-row：
 
