@@ -6,7 +6,27 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：变长序列化与输入视图（2026-10-16）
+## 最新结果：LongLong 比较族（2026-10-16）
+
+新增 LT/LE/GE/NE/NULL-safe equality，GT/EQ 原先已有 batch。七种均补齐 signed/unsigned LongLong 参数支持；算术仍保持 signed-only。dense 1,024 行、ns/selected-row：
+
+| comparison | current fallback ablation | batch | ablation speedup | frozen native | native / batch |
+|---|---:|---:|---:|---:|---:|
+| `eq` | 1090.482 | 11.164 | 97.71x | 71.327 | 6.39x |
+| `ge` | 1088.026 | 11.160 | 97.49x | 72.624 | 6.51x |
+| `gt` | 1095.315 | 11.229 | 97.57x | 71.732 | 6.39x |
+| `le` | 1085.500 | 11.197 | 96.88x | 72.077 | 6.44x |
+| `lt` | 1088.006 | 11.192 | 97.20x | 71.763 | 6.41x |
+| `ne` | 1096.537 | 11.183 | 98.19x | 71.978 | 6.44x |
+| `nulleq` | 1137.923 | 11.283 | 100.85x | 78.756 | 6.98x |
+
+“current fallback ablation” 是同一当前二进制内的消融，不是历史实现；“frozen native” 来自真实冻结版本，当前 batch 比这组原始 native 快约 6.39–6.98 倍。1470 条当前 timing / 105 个 checksum 组及 21 个 native/current dense 组均一致。性能输入为 signed；unsigned 正确性另由极值、NULL、列/常量和跨窗口测试验证。
+
+完整方法、版本/hash、全部样本与验证见[比较族报告](logs/performance-m13-integer-comparisons/summary.md)。仍不覆盖所有 raw integer 类型、隐式转换或所有函数；[覆盖计划](FUNCTION_PERFORMANCE_COVERAGE.md) 记录边界。以下是历史阶段。
+
+---
+
+## 历史结果：变长序列化与输入视图（2026-10-16）
 
 JSON/Vector 普通输出缓冲直接序列化，Int/Real/Bytes/JSON 输入每批持有一次 raw view，JSON 少一次中间 payload 拷贝。三组配对，dense 1,024 行、ns/selected-row：
 

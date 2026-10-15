@@ -82,7 +82,7 @@ from_base64,"1, Some(1)",,,pending,not_audited,not_audited
 from_days,"1, Some(1)",,,pending,not_audited,not_audited
 from_unixtime,"1, Some(2)",FromUnixTime1Arg;FromUnixTime2Arg,,pending,not_audited,not_audited
 fts_match_word,"2, Some(2)",,,pending,not_audited,not_audited
-ge,"2, Some(2)",,,pending,not_audited,not_audited
+ge,"2, Some(2)",GeInt,GeInt,pending,not_audited,not_audited
 get_format,"2, Some(2)",,,pending,not_audited,not_audited
 get_lock,"2, Some(2)",,,pending,not_audited,not_audited
 getparam,"1, Some(1)",,,pending,not_audited,not_audited
@@ -146,7 +146,7 @@ last_day,"1, Some(1)",,,pending,not_audited,not_audited
 last_insert_id,"0, Some(1)",,,pending,not_audited,not_audited
 lastval,"1, Some(1)",,,pending,not_audited,not_audited
 lcase,"1, Some(1)",,,pending,not_audited,not_audited
-le,"2, Some(2)",,,pending,not_audited,not_audited
+le,"2, Some(2)",LeInt,LeInt,pending,not_audited,not_audited
 least,"2, None",,,pending,not_audited,not_audited
 left,"2, Some(2)",,,pending,not_audited,not_audited
 leftshift,"2, Some(2)",,,pending,not_audited,not_audited
@@ -162,7 +162,7 @@ log10,"1, Some(1)",,,pending,not_audited,not_audited
 log2,"1, Some(1)",,,pending,not_audited,not_audited
 lower,"1, Some(1)",Lower;LowerUtf8,Lower;LowerUtf8,pending,not_audited,not_audited
 lpad,"3, Some(3)",,,pending,not_audited,not_audited
-lt,"2, Some(2)",,,pending,not_audited,not_audited
+lt,"2, Some(2)",LtInt,LtInt,pending,not_audited,not_audited
 ltrim,"1, Some(1)",,,pending,not_audited,not_audited
 make_set,"2, None",,,pending,not_audited,not_audited
 makedate,"2, Some(2)",,,pending,not_audited,not_audited
@@ -178,11 +178,11 @@ month,"1, Some(1)",Month,,pending,not_audited,not_audited
 monthname,"1, Some(1)",,,pending,not_audited,not_audited
 mul,"2, Some(2)",MultiplyDecimal,MultiplyDecimal,pending,not_audited,not_audited
 name_const,"2, Some(2)",,,pending,not_audited,not_audited
-ne,"2, Some(2)",,,pending,not_audited,not_audited
+ne,"2, Some(2)",NeInt,NeInt,pending,not_audited,not_audited
 nextval,"1, Some(1)",,,pending,not_audited,not_audited
 not,"1, Some(1)",UnaryNotInt,,pending,not_audited,not_audited
 now,"0, Some(1)",,,pending,not_audited,not_audited
-nulleq,"2, Some(2)",,,pending,not_audited,not_audited
+nulleq,"2, Some(2)",NullEqInt,NullEqInt,pending,not_audited,not_audited
 oct,"1, Some(1)",,,pending,not_audited,not_audited
 octet_length,"1, Some(1)",,,pending,not_audited,not_audited
 or,"2, Some(2)",LogicalOr,,pending,not_audited,not_audited

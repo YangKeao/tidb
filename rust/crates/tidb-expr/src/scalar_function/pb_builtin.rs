@@ -92,6 +92,11 @@ impl PbBuiltin {
             },
             EqInt => Kernel::Binary(BinaryOp::Eq, EvalType::Int),
             GtInt => Kernel::Binary(BinaryOp::Gt, EvalType::Int),
+            LtInt => Kernel::Binary(BinaryOp::Lt, EvalType::Int),
+            LeInt => Kernel::Binary(BinaryOp::Le, EvalType::Int),
+            GeInt => Kernel::Binary(BinaryOp::Ge, EvalType::Int),
+            NeInt => Kernel::Binary(BinaryOp::Ne, EvalType::Int),
+            NullEqInt => Kernel::Binary(BinaryOp::NullEq, EvalType::Int),
             LogicalAnd => Kernel::Logic(BinaryOp::LogicAnd),
             LogicalOr => Kernel::Logic(BinaryOp::LogicOr),
             IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull | DurationIsNull
@@ -311,7 +316,10 @@ impl PbBuiltin {
                     return Err(EvalError::Unsupported("protobuf binary builtin arity"));
                 }
                 let left = eval_numeric_operand_row(&args[0], ctx, row, domain)?;
-                if left.is_null() && !(op == BinaryOp::Mod && domain != EvalType::Decimal) {
+                if left.is_null()
+                    && op != BinaryOp::NullEq
+                    && !(op == BinaryOp::Mod && domain != EvalType::Decimal)
+                {
                     return if matches!(
                         op,
                         BinaryOp::Plus
@@ -321,9 +329,17 @@ impl PbBuiltin {
                             | BinaryOp::Div
                     ) {
                         crate::ops::eval_binary_arithmetic_null_in(ctx)
-                    } else if matches!(op, BinaryOp::Eq | BinaryOp::Gt) {
-                        // These are the only comparison signatures admitted
-                        // above. Preserve PB's left-NULL stop before RHS demand.
+                    } else if matches!(
+                        op,
+                        BinaryOp::Eq
+                            | BinaryOp::Ne
+                            | BinaryOp::Lt
+                            | BinaryOp::Le
+                            | BinaryOp::Gt
+                            | BinaryOp::Ge
+                    ) {
+                        // Strict PB comparisons stop before RHS demand. NULL-safe
+                        // equality instead needs both arguments and bypasses this arm.
                         crate::ops::eval_comparison_null_in(op, ctx)
                     } else {
                         Ok(Datum::Null)

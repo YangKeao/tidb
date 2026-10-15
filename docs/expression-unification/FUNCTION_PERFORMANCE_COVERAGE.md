@@ -8,8 +8,8 @@ lowering and measured performance are separate gates.
 
 The reproducible source audit inventories 308 static function-name registrations
 (including aliases/internal names) from this checkout's `builtin_registry.rs`.
-It also inventories 107 unique signature names found in the static pushdown
-catalog or the paired TiKV batch registry. There are 32 registry-admitted eager
+It also inventories 112 unique signature names found in the static pushdown
+catalog or the paired TiKV batch registry. There are 37 registry-admitted eager
 signatures. These counts describe different sets and must not be divided to
 produce an SQL/function coverage percentage.
 
@@ -32,7 +32,7 @@ all argument/charset/NULL/SQL-mode combinations pass.
 
 ## Current verified slices
 
-The eager registry contains Int/Real/Decimal PLUS, MINUS, MUL and ABS; Int EQ/GT;
+The eager registry contains Int/Real/Decimal PLUS, MINUS, MUL and ABS; the seven LongLong integer comparisons;
 CHAR_LENGTH; LOWER/UPPER; two-/three-argument SUBSTRING; and ANY_VALUE carriers.
 Exact signed integer arithmetic, static types, charset/coercion and metadata
 restrictions still apply. A signature's registry presence alone does not prove
@@ -40,8 +40,8 @@ that every SQL expression spelling reaches this path.
 
 Focused compatibility tests cover heterogeneous arguments, NULL, selection
 order/duplicates, cross-window execution, carrier transport, resource limits and
-shared/frozen output storage. Release performance evidence measures nine
-representative workloads, not all 32 admitted signatures. The retained M8/M9/M10
+shared/frozen output storage. Release performance evidence measures nine carrier workloads plus seven LongLong
+comparisons, not every admitted signature or metadata combination. The retained M8/M9/M10
 reports identify each measured workload and historical/current-code comparator.
 Time/JSON/Vector ANY_VALUE measurements prove transport behavior, not performance
 of their date/JSON/vector operations.
@@ -79,3 +79,19 @@ where available, and removal of temporary equivalent routes. End-to-end route
 hit rate and SQL workload results are required before claiming application-level
 performance gains. Full-function completion remains open while any inventory
 row lacks an explicit reviewed execution mode and acceptance receipt.
+
+
+## Reviewed LongLong comparison slice
+
+LT/LE/GT/GE/EQ/NE/NULL-safe equality share the existing eager driver. Physical
+LongLong Int transport preserves unsigned bits; the registry permits unsigned
+operands for this family while retaining signed-only results/arithmetic. The
+older row contract remains signed-only. Raw Tiny/Long/etc and mixed evaluation
+type coercions are not covered by this receipt.
+
+The M13 report retains 56 independent signedness/operator/column-or-literal
+correctness combinations, NULL truth/demand checks, reverse/duplicate windows,
+protobuf encoding/decoding/evaluation and seven signed performance probes against
+both a named current-code ablation and true frozen native. The generated CSV
+cells remain source-inventory defaults; this reviewed receipt supplies evidence
+without turning every metadata row into a coverage claim.

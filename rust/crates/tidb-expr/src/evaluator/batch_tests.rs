@@ -1539,3 +1539,110 @@ fn direct_output_counts_public_vector_and_selection_capacities() {
         )
         .is_err());
 }
+
+#[test]
+fn integer_comparison_family_matches_signed_unsigned_order_and_nulls() {
+    let raw = [
+        (Some(0), Some(0)),
+        (Some(1), Some(2)),
+        (Some(2), Some(1)),
+        (Some(-1), Some(0)),
+        (Some(i64::MIN), Some(i64::MAX)),
+        (Some(i64::MAX), Some(i64::MIN)),
+        (Some(-1), Some(i64::MAX)),
+        (Some(i64::MAX), Some(-1)),
+        (None, Some(1)),
+        (Some(1), None),
+        (None, None),
+        (Some(-1), Some(-1)),
+    ];
+    let selection: Vec<usize> = (0..2050).map(|i| raw.len() - 1 - i % raw.len()).collect();
+    for left_unsigned in [false, true] {
+        for right_unsigned in [false, true] {
+            let schema = vec![
+                ty().with_unsigned(left_unsigned),
+                ty().with_unsigned(right_unsigned),
+            ];
+            let datum = |value: Option<i64>, unsigned| match value {
+                None => Datum::Null,
+                Some(value) if unsigned => Datum::UInt(value as u64),
+                Some(value) => Datum::Int(value),
+            };
+            let rows: Vec<_> = raw
+                .iter()
+                .map(|&(left, right)| {
+                    vec![datum(left, left_unsigned), datum(right, right_unsigned)]
+                })
+                .collect();
+            let number = |value: i64, unsigned| {
+                if unsigned {
+                    (value as u64) as i128
+                } else {
+                    value as i128
+                }
+            };
+            for right_literal in [false, true] {
+                for name in ["lt", "le", "gt", "ge", "eq", "ne", "nulleq"] {
+                    let suite = suite(call(
+                        name,
+                        ty(),
+                        vec![
+                            typed_column(0, &schema[0]),
+                            if right_literal {
+                                literal(datum(Some(-1), right_unsigned), schema[1].clone())
+                            } else {
+                                typed_column(1, &schema[1])
+                            },
+                        ],
+                    ));
+                    let expected: Vec<_> = selection
+                        .iter()
+                        .map(|&row| {
+                            let (left, mut right) = raw[row];
+                            if right_literal {
+                                right = Some(-1);
+                            }
+                            match (left, right) {
+                                (Some(left), Some(right)) => {
+                                    let order = number(left, left_unsigned)
+                                        .cmp(&number(right, right_unsigned));
+                                    let result = match name {
+                                        "lt" => order.is_lt(),
+                                        "le" => order.is_le(),
+                                        "gt" => order.is_gt(),
+                                        "ge" => order.is_ge(),
+                                        "eq" | "nulleq" => order.is_eq(),
+                                        "ne" => !order.is_eq(),
+                                        _ => unreachable!(),
+                                    };
+                                    Datum::Int(i64::from(result))
+                                }
+                                _ if name == "nulleq" => {
+                                    Datum::Int(i64::from(left.is_none() && right.is_none()))
+                                }
+                                _ => Datum::Null,
+                            }
+                        })
+                        .collect();
+                    let mut input = chunk(&schema, &rows);
+                    input.set_sel(Some(selection.clone()));
+                    let mut actual = output();
+                    suite
+                        .run_with_tikv_batch(&Context::new(true), &mut input, &mut actual, &schema)
+                        .unwrap();
+                    assert_eq!(
+                        values(&actual),
+                        expected,
+                        "{name} unsigned={left_unsigned}/{right_unsigned}"
+                    );
+                    let route = suite.batch_route_snapshot();
+                    assert_eq!(
+                        (route.prepared, route.fallback, route.refusals),
+                        (1, 0, 0),
+                        "{name} unsigned={left_unsigned}/{right_unsigned}: {route:?}"
+                    );
+                }
+            }
+        }
+    }
+}

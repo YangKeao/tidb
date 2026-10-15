@@ -1388,6 +1388,63 @@ pub const CATALOG: &[BuiltinSignature] = &[
         ScalarFuncSig::EqInt,
         false,
     ),
+    // Go compareFunctionClass.generateCmpSigs: all ETInt comparisons keep
+    // operand unsignedness and return ETInt; NULL-safe equality is eager too.
+    signature(
+        "lt",
+        &[
+            ArgPattern::eval(EvalType::Int),
+            ArgPattern::eval(EvalType::Int),
+        ],
+        &[EvalType::Int, EvalType::Int],
+        EvalType::Int,
+        ScalarFuncSig::LtInt,
+        false,
+    ),
+    signature(
+        "le",
+        &[
+            ArgPattern::eval(EvalType::Int),
+            ArgPattern::eval(EvalType::Int),
+        ],
+        &[EvalType::Int, EvalType::Int],
+        EvalType::Int,
+        ScalarFuncSig::LeInt,
+        false,
+    ),
+    signature(
+        "ge",
+        &[
+            ArgPattern::eval(EvalType::Int),
+            ArgPattern::eval(EvalType::Int),
+        ],
+        &[EvalType::Int, EvalType::Int],
+        EvalType::Int,
+        ScalarFuncSig::GeInt,
+        false,
+    ),
+    signature(
+        "ne",
+        &[
+            ArgPattern::eval(EvalType::Int),
+            ArgPattern::eval(EvalType::Int),
+        ],
+        &[EvalType::Int, EvalType::Int],
+        EvalType::Int,
+        ScalarFuncSig::NeInt,
+        false,
+    ),
+    signature(
+        "nulleq",
+        &[
+            ArgPattern::eval(EvalType::Int),
+            ArgPattern::eval(EvalType::Int),
+        ],
+        &[EvalType::Int, EvalType::Int],
+        EvalType::Int,
+        ScalarFuncSig::NullEqInt,
+        false,
+    ),
     signature(
         "or",
         &[
@@ -3872,6 +3929,91 @@ mod tests {
                 row.name
             );
             assert_ne!(row.sig, ScalarFuncSig::Unspecified, "{}", row.name);
+        }
+    }
+    #[test]
+    fn integer_comparison_family_resolves_and_encodes_exact_signatures() {
+        for (name, sig) in [
+            ("lt", ScalarFuncSig::LtInt),
+            ("le", ScalarFuncSig::LeInt),
+            ("gt", ScalarFuncSig::GtInt),
+            ("ge", ScalarFuncSig::GeInt),
+            ("eq", ScalarFuncSig::EqInt),
+            ("ne", ScalarFuncSig::NeInt),
+            ("nulleq", ScalarFuncSig::NullEqInt),
+        ] {
+            for (index, args) in [
+                vec![
+                    PbScalar::IntLiteral(-1),
+                    PbScalar::UIntLiteral {
+                        value: u64::MAX,
+                        field_type: FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+                    },
+                ],
+                vec![
+                    PbScalar::UIntLiteral {
+                        value: u64::MAX,
+                        field_type: FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+                    },
+                    PbScalar::IntLiteral(-1),
+                ],
+                vec![
+                    PbScalar::NullLiteral {
+                        field_type: FieldType::new(FieldTypeCode::LongLong),
+                    },
+                    PbScalar::NullLiteral {
+                        field_type: FieldType::new(FieldTypeCode::LongLong),
+                    },
+                ],
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let row = resolve(name, &args).unwrap();
+                assert_eq!(row.sig, sig);
+                assert_eq!(row.arg_types, &[EvalType::Int, EvalType::Int]);
+                let call = build_call(name, args).unwrap();
+                let pb = to_pb(&call, &|_| None).unwrap();
+                assert_eq!(pb.sig, Some(sig as i32));
+                assert_eq!(pb.children.len(), 2);
+                let decoded = crate::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+                input.set_num_virtual_rows(1);
+                let result = decoded
+                    .eval(&crate::context::NoColumns, input.get_row(0))
+                    .unwrap();
+                let order = if index == 0 {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+                let expected = match name {
+                    "lt" => order.is_lt(),
+                    "le" => order.is_le(),
+                    "gt" => order.is_gt(),
+                    "ge" => order.is_ge(),
+                    "eq" | "nulleq" => order.is_eq(),
+                    "ne" => !order.is_eq(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    result,
+                    if index == 2 {
+                        if name == "nulleq" {
+                            Datum::Int(1)
+                        } else {
+                            Datum::Null
+                        }
+                    } else {
+                        Datum::Int(i64::from(expected))
+                    },
+                    "{name} PB signedness case {index}"
+                );
+                assert_eq!(
+                    pb.field_type.as_ref().unwrap().flag.unwrap_or(0) as u32 & UNSIGNED_FLAG,
+                    0
+                );
+            }
         }
     }
 }

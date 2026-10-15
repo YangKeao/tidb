@@ -1,0 +1,24 @@
+{
+  "m12": {
+    "integer_add": 16.249,
+    "real_add": 13.838,
+    "decimal_add": 228.37,
+    "lower": 32.611,
+    "any_value_datetime": 10.095,
+    "any_value_timestamp": 10.098,
+    "any_value_duration": 14.456,
+    "any_value_json": 122.939,
+    "any_value_vector": 75.125
+  },
+  "m13": {
+    "integer_add": 12.862,
+    "real_add": 13.582,
+    "decimal_add": 225.212,
+    "lower": 33.054,
+    "any_value_datetime": 10.078,
+    "any_value_timestamp": 10.072,
+    "any_value_duration": 14.388,
+    "any_value_json": 118.772,
+    "any_value_vector": 71.674
+  }
+}

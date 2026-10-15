@@ -92,10 +92,38 @@ struct Workload {
     sql: &'static str,
 }
 
-const WORKLOADS: [Workload; 23] = [
+const WORKLOADS: [Workload; 30] = [
     Workload {
         name: "integer_add",
         sql: "i + j",
+    },
+    Workload {
+        name: "integer_compare_lt",
+        sql: "i < j",
+    },
+    Workload {
+        name: "integer_compare_le",
+        sql: "i <= j",
+    },
+    Workload {
+        name: "integer_compare_gt",
+        sql: "i > j",
+    },
+    Workload {
+        name: "integer_compare_ge",
+        sql: "i >= j",
+    },
+    Workload {
+        name: "integer_compare_eq",
+        sql: "i = j",
+    },
+    Workload {
+        name: "integer_compare_ne",
+        sql: "i != j",
+    },
+    Workload {
+        name: "integer_compare_nulleq",
+        sql: "i <=> j",
     },
     Workload {
         name: "integer_add_literal",
@@ -189,6 +217,7 @@ const WORKLOADS: [Workload; 23] = [
 
 fn tikv_batch_workload(name: &str) -> bool {
     name.starts_with("integer_add")
+        || name.starts_with("integer_compare_")
         || matches!(
             name,
             "integer_subtract"

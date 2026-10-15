@@ -269,8 +269,7 @@ impl Budget {
 fn check_type(sql: &FieldType) -> Result<()> {
     const DOCUMENTED: u64 = (1 << 25) - 1;
     let excluded = u64::from(
-        FieldTypeFlags::UNSIGNED
-            | FieldTypeFlags::ENUM
+        FieldTypeFlags::ENUM
             | FieldTypeFlags::SET
             | FieldTypeFlags::PARSE_TO_JSON
             | FieldTypeFlags::ENUM_SET_AS_INT,
@@ -301,7 +300,11 @@ fn check_type(sql: &FieldType) -> Result<()> {
         NativeEvalType::VectorFloat32 => sql.code() == FieldTypeCode::VectorFloat32,
         _ => false,
     };
-    if !carrier_ok || sql.is_array() || sql.raw_flags() & (excluded | !DOCUMENTED) != 0 {
+    if (sql.is_unsigned() && sql.eval_type() != NativeEvalType::Int)
+        || !carrier_ok
+        || sql.is_array()
+        || sql.raw_flags() & (excluded | !DOCUMENTED) != 0
+    {
         return Err(BatchFailure::admission(
             "batch source requires an actual closed native EvalType storage",
         ));
@@ -312,6 +315,9 @@ fn strict_literal(value: &Datum, sql: &FieldType) -> Result<ScalarValue> {
     match (sql.eval_type(), value) {
         (NativeEvalType::Int, Datum::Null) => Ok(ScalarValue::Int(None)),
         (NativeEvalType::Int, Datum::Int(value)) => Ok(ScalarValue::Int(Some(*value))),
+        (NativeEvalType::Int, Datum::UInt(value)) if sql.is_unsigned() => {
+            Ok(ScalarValue::Int(Some(*value as i64)))
+        }
         (NativeEvalType::Real, Datum::Null) => Ok(ScalarValue::Real(None)),
         (NativeEvalType::Real, Datum::Real(value)) => Real::new(*value)
             .map(|value| ScalarValue::Real(Some(value)))
@@ -1371,6 +1377,12 @@ impl LocalRuntimeServices for CheckedInputs<'_> {
         let eval_type = match value {
             Datum::Int(_) | Datum::Null
                 if expected.get_tp() == tidb_query_datatype::FieldTypeTp::LongLong as i32 =>
+            {
+                TikvEvalType::Int
+            }
+            Datum::UInt(_)
+                if expected.get_tp() == tidb_query_datatype::FieldTypeTp::LongLong as i32
+                    && expected.get_flag() & (1 << 5) != 0 =>
             {
                 TikvEvalType::Int
             }

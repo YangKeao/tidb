@@ -34,6 +34,7 @@ DurationIsNull,isnull,False,pending,not_audited,not_audited
 EqInt,eq,True,pending,not_audited,not_audited
 FromUnixTime1Arg,from_unixtime,False,pending,not_audited,not_audited
 FromUnixTime2Arg,from_unixtime,False,pending,not_audited,not_audited
+GeInt,ge,True,pending,not_audited,not_audited
 GtInt,gt,True,pending,not_audited,not_audited
 Hour,hour,False,pending,not_audited,not_audited
 IfDecimal,if,False,pending,not_audited,not_audited
@@ -57,10 +58,12 @@ JsonArrayAppendSig,json_array_append,False,pending,not_audited,not_audited
 JsonMemberOfSig,json_memberof,False,pending,not_audited,not_audited
 JsonMergePatchSig,json_merge_patch,False,pending,not_audited,not_audited
 JsonReplaceSig,json_replace,False,pending,not_audited,not_audited
+LeInt,le,True,pending,not_audited,not_audited
 LogicalAnd,and,False,pending,not_audited,not_audited
 LogicalOr,or,False,pending,not_audited,not_audited
 Lower,lower,True,pending,not_audited,not_audited
 LowerUtf8,lower,True,pending,not_audited,not_audited
+LtInt,lt,True,pending,not_audited,not_audited
 MicroSecond,microsecond,False,pending,not_audited,not_audited
 MinusDecimal,minus,True,pending,not_audited,not_audited
 MinusInt,,True,pending,not_audited,not_audited
@@ -76,6 +79,8 @@ Month,month,False,pending,not_audited,not_audited
 MultiplyDecimal,mul,True,pending,not_audited,not_audited
 MultiplyInt,,True,pending,not_audited,not_audited
 MultiplyReal,,True,pending,not_audited,not_audited
+NeInt,ne,True,pending,not_audited,not_audited
+NullEqInt,nulleq,True,pending,not_audited,not_audited
 Pi,pi,False,pending,not_audited,not_audited
 PlusDecimal,plus,True,pending,not_audited,not_audited
 PlusInt,plus,True,pending,not_audited,not_audited

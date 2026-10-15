@@ -1,0 +1,639 @@
+[
+  {
+    "workload": "integer_compare_eq",
+    "scenario": "dense",
+    "current_fallback": [
+      1096.339,
+      1090.482,
+      1088.233
+    ],
+    "batch": [
+      11.164,
+      11.16,
+      11.245
+    ],
+    "fallback_median": 1090.482,
+    "batch_median": 11.164,
+    "paired_ablation_speedup": 97.71344086021504,
+    "frozen_native": [
+      71.327,
+      71.319,
+      71.767
+    ],
+    "native_median": 71.327
+  },
+  {
+    "workload": "integer_compare_eq",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1100.158,
+      1093.486,
+      1096.5
+    ],
+    "batch": [
+      11.124,
+      11.152,
+      11.149
+    ],
+    "fallback_median": 1096.5,
+    "batch_median": 11.149,
+    "paired_ablation_speedup": 98.34962776930668
+  },
+  {
+    "workload": "integer_compare_eq",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1095.428,
+      1092.547,
+      1097.126
+    ],
+    "batch": [
+      11.372,
+      11.408,
+      11.447
+    ],
+    "fallback_median": 1095.428,
+    "batch_median": 11.408,
+    "paired_ablation_speedup": 95.84397658775225
+  },
+  {
+    "workload": "integer_compare_eq",
+    "scenario": "reverse",
+    "current_fallback": [
+      1094.209,
+      1094.382,
+      1098.082
+    ],
+    "batch": [
+      11.404,
+      11.397,
+      11.435
+    ],
+    "fallback_median": 1094.382,
+    "batch_median": 11.404,
+    "paired_ablation_speedup": 96.02369044485391
+  },
+  {
+    "workload": "integer_compare_eq",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1098.078,
+      1093.673,
+      1096.203
+    ],
+    "batch": [
+      17.911,
+      17.891,
+      17.841
+    ],
+    "fallback_median": 1096.203,
+    "batch_median": 17.891,
+    "paired_ablation_speedup": 61.30746468650549
+  },
+  {
+    "workload": "integer_compare_ge",
+    "scenario": "dense",
+    "current_fallback": [
+      1090.488,
+      1088.026,
+      1087.457
+    ],
+    "batch": [
+      11.188,
+      11.16,
+      11.137
+    ],
+    "fallback_median": 1088.026,
+    "batch_median": 11.16,
+    "paired_ablation_speedup": 97.49336917562725,
+    "frozen_native": [
+      72.018,
+      72.996,
+      72.624
+    ],
+    "native_median": 72.624
+  },
+  {
+    "workload": "integer_compare_ge",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1098.125,
+      1101.822,
+      1093.061
+    ],
+    "batch": [
+      11.134,
+      11.113,
+      11.198
+    ],
+    "fallback_median": 1098.125,
+    "batch_median": 11.134,
+    "paired_ablation_speedup": 98.628076163104
+  },
+  {
+    "workload": "integer_compare_ge",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1102.95,
+      1091.599,
+      1113.89
+    ],
+    "batch": [
+      11.445,
+      11.455,
+      11.442
+    ],
+    "fallback_median": 1102.95,
+    "batch_median": 11.445,
+    "paired_ablation_speedup": 96.36959370904326
+  },
+  {
+    "workload": "integer_compare_ge",
+    "scenario": "reverse",
+    "current_fallback": [
+      1099.836,
+      1090.24,
+      1119.608
+    ],
+    "batch": [
+      11.395,
+      11.406,
+      11.485
+    ],
+    "fallback_median": 1099.836,
+    "batch_median": 11.406,
+    "paired_ablation_speedup": 96.51917507678807
+  },
+  {
+    "workload": "integer_compare_ge",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1101.673,
+      1094.637,
+      1093.723
+    ],
+    "batch": [
+      17.933,
+      17.899,
+      17.827
+    ],
+    "fallback_median": 1094.637,
+    "batch_median": 17.899,
+    "paired_ablation_speedup": 61.352050260840294
+  },
+  {
+    "workload": "integer_compare_gt",
+    "scenario": "dense",
+    "current_fallback": [
+      1095.315,
+      1111.134,
+      1093.266
+    ],
+    "batch": [
+      20.336,
+      11.229,
+      11.205
+    ],
+    "fallback_median": 1095.315,
+    "batch_median": 11.229,
+    "paired_ablation_speedup": 97.56947791164659,
+    "frozen_native": [
+      71.52,
+      72.261,
+      71.732
+    ],
+    "native_median": 71.732
+  },
+  {
+    "workload": "integer_compare_gt",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1104.427,
+      1104.156,
+      1098.412
+    ],
+    "batch": [
+      11.13,
+      11.099,
+      11.105
+    ],
+    "fallback_median": 1104.156,
+    "batch_median": 11.105,
+    "paired_ablation_speedup": 99.22973944294698
+  },
+  {
+    "workload": "integer_compare_gt",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1096.112,
+      1096.417,
+      1111.357
+    ],
+    "batch": [
+      11.416,
+      11.394,
+      11.499
+    ],
+    "fallback_median": 1096.417,
+    "batch_median": 11.416,
+    "paired_ablation_speedup": 96.22757591714937
+  },
+  {
+    "workload": "integer_compare_gt",
+    "scenario": "reverse",
+    "current_fallback": [
+      1100.803,
+      1103.604,
+      1108.49
+    ],
+    "batch": [
+      11.386,
+      11.393,
+      11.402
+    ],
+    "fallback_median": 1103.604,
+    "batch_median": 11.393,
+    "paired_ablation_speedup": 96.86684806460107
+  },
+  {
+    "workload": "integer_compare_gt",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1109.39,
+      1108.104,
+      1100.473
+    ],
+    "batch": [
+      17.777,
+      17.658,
+      17.885
+    ],
+    "fallback_median": 1108.104,
+    "batch_median": 17.777,
+    "paired_ablation_speedup": 62.40591775890196
+  },
+  {
+    "workload": "integer_compare_le",
+    "scenario": "dense",
+    "current_fallback": [
+      1107.974,
+      1084.731,
+      1085.5
+    ],
+    "batch": [
+      11.187,
+      11.197,
+      11.249
+    ],
+    "fallback_median": 1085.5,
+    "batch_median": 11.197,
+    "paired_ablation_speedup": 96.87693132088953,
+    "frozen_native": [
+      72.101,
+      72.077,
+      71.559
+    ],
+    "native_median": 72.077
+  },
+  {
+    "workload": "integer_compare_le",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1118.414,
+      1093.281,
+      1095.236
+    ],
+    "batch": [
+      11.139,
+      11.145,
+      11.138
+    ],
+    "fallback_median": 1095.236,
+    "batch_median": 11.139,
+    "paired_ablation_speedup": 98.3332734781828
+  },
+  {
+    "workload": "integer_compare_le",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1095.437,
+      1092.321,
+      1109.122
+    ],
+    "batch": [
+      11.464,
+      11.454,
+      11.495
+    ],
+    "fallback_median": 1095.437,
+    "batch_median": 11.464,
+    "paired_ablation_speedup": 95.5545184926727
+  },
+  {
+    "workload": "integer_compare_le",
+    "scenario": "reverse",
+    "current_fallback": [
+      1106.283,
+      1094.709,
+      1122.047
+    ],
+    "batch": [
+      11.447,
+      11.409,
+      11.41
+    ],
+    "fallback_median": 1106.283,
+    "batch_median": 11.41,
+    "paired_ablation_speedup": 96.64392417227221
+  },
+  {
+    "workload": "integer_compare_le",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1113.877,
+      1095.885,
+      1098.766
+    ],
+    "batch": [
+      17.789,
+      17.837,
+      17.765
+    ],
+    "fallback_median": 1098.766,
+    "batch_median": 17.789,
+    "paired_ablation_speedup": 61.85004221784408
+  },
+  {
+    "workload": "integer_compare_lt",
+    "scenario": "dense",
+    "current_fallback": [
+      1097.53,
+      1085.322,
+      1088.006
+    ],
+    "batch": [
+      11.192,
+      11.166,
+      11.267
+    ],
+    "fallback_median": 1088.006,
+    "batch_median": 11.192,
+    "paired_ablation_speedup": 97.19881783987103,
+    "frozen_native": [
+      71.837,
+      71.763,
+      71.467
+    ],
+    "native_median": 71.763
+  },
+  {
+    "workload": "integer_compare_lt",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1108.362,
+      1091.857,
+      1094.576
+    ],
+    "batch": [
+      11.146,
+      11.125,
+      11.158
+    ],
+    "fallback_median": 1094.576,
+    "batch_median": 11.146,
+    "paired_ablation_speedup": 98.14444943820224
+  },
+  {
+    "workload": "integer_compare_lt",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1104.798,
+      1089.398,
+      1094.859
+    ],
+    "batch": [
+      11.416,
+      11.409,
+      11.376
+    ],
+    "fallback_median": 1094.859,
+    "batch_median": 11.409,
+    "paired_ablation_speedup": 96.24287974683544
+  },
+  {
+    "workload": "integer_compare_lt",
+    "scenario": "reverse",
+    "current_fallback": [
+      1107.385,
+      1088.821,
+      1091.967
+    ],
+    "batch": [
+      11.414,
+      11.386,
+      11.374
+    ],
+    "fallback_median": 1091.967,
+    "batch_median": 11.386,
+    "paired_ablation_speedup": 96.00553894847899
+  },
+  {
+    "workload": "integer_compare_lt",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1109.537,
+      1091.817,
+      1092.219
+    ],
+    "batch": [
+      17.848,
+      17.874,
+      17.72
+    ],
+    "fallback_median": 1092.219,
+    "batch_median": 17.848,
+    "paired_ablation_speedup": 61.63764108352145
+  },
+  {
+    "workload": "integer_compare_ne",
+    "scenario": "dense",
+    "current_fallback": [
+      1088.039,
+      1096.537,
+      1104.541
+    ],
+    "batch": [
+      11.183,
+      11.168,
+      11.229
+    ],
+    "fallback_median": 1096.537,
+    "batch_median": 11.183,
+    "paired_ablation_speedup": 98.18561962750718,
+    "frozen_native": [
+      71.65,
+      72.505,
+      71.978
+    ],
+    "native_median": 71.978
+  },
+  {
+    "workload": "integer_compare_ne",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1104.713,
+      1098.588,
+      1104.252
+    ],
+    "batch": [
+      11.143,
+      11.128,
+      11.142
+    ],
+    "fallback_median": 1104.252,
+    "batch_median": 11.142,
+    "paired_ablation_speedup": 99.1071620893915
+  },
+  {
+    "workload": "integer_compare_ne",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1128.853,
+      1098.425,
+      1105.9
+    ],
+    "batch": [
+      11.427,
+      11.39,
+      11.519
+    ],
+    "fallback_median": 1105.9,
+    "batch_median": 11.427,
+    "paired_ablation_speedup": 96.43766461808603
+  },
+  {
+    "workload": "integer_compare_ne",
+    "scenario": "reverse",
+    "current_fallback": [
+      1121.135,
+      1093.702,
+      1096.219
+    ],
+    "batch": [
+      11.416,
+      11.423,
+      11.423
+    ],
+    "fallback_median": 1096.219,
+    "batch_median": 11.423,
+    "paired_ablation_speedup": 95.96594589862558
+  },
+  {
+    "workload": "integer_compare_ne",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1105.602,
+      1098.682,
+      1104.748
+    ],
+    "batch": [
+      17.891,
+      17.915,
+      17.975
+    ],
+    "fallback_median": 1104.748,
+    "batch_median": 17.915,
+    "paired_ablation_speedup": 61.46025034770514
+  },
+  {
+    "workload": "integer_compare_nulleq",
+    "scenario": "dense",
+    "current_fallback": [
+      1142.626,
+      1137.923,
+      1137.392
+    ],
+    "batch": [
+      11.241,
+      11.283,
+      11.304
+    ],
+    "fallback_median": 1137.923,
+    "batch_median": 11.283,
+    "paired_ablation_speedup": 100.85287600815387,
+    "frozen_native": [
+      78.756,
+      78.533,
+      79.3
+    ],
+    "native_median": 78.756
+  },
+  {
+    "workload": "integer_compare_nulleq",
+    "scenario": "dense_null10",
+    "current_fallback": [
+      1134.463,
+      1144.718,
+      1135.277
+    ],
+    "batch": [
+      11.295,
+      11.379,
+      11.407
+    ],
+    "fallback_median": 1135.277,
+    "batch_median": 11.379,
+    "paired_ablation_speedup": 100.43939796370076
+  },
+  {
+    "workload": "integer_compare_nulleq",
+    "scenario": "duplicate",
+    "current_fallback": [
+      1144.266,
+      1885.868,
+      1132.985
+    ],
+    "batch": [
+      11.494,
+      11.537,
+      11.527
+    ],
+    "fallback_median": 1144.266,
+    "batch_median": 11.527,
+    "paired_ablation_speedup": 99.55333217330782
+  },
+  {
+    "workload": "integer_compare_nulleq",
+    "scenario": "reverse",
+    "current_fallback": [
+      1150.757,
+      1163.562,
+      1152.69
+    ],
+    "batch": [
+      11.484,
+      11.538,
+      11.629
+    ],
+    "fallback_median": 1152.69,
+    "batch_median": 11.538,
+    "paired_ablation_speedup": 100.20524207593174
+  },
+  {
+    "workload": "integer_compare_nulleq",
+    "scenario": "sparse_quarter",
+    "current_fallback": [
+      1156.457,
+      1172.538,
+      1149.721
+    ],
+    "batch": [
+      17.936,
+      18.201,
+      17.977
+    ],
+    "fallback_median": 1156.457,
+    "batch_median": 17.977,
+    "paired_ablation_speedup": 64.42162518542938
+  }
+]
