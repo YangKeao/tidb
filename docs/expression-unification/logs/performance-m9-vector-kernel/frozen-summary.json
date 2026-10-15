@@ -1,0 +1,74 @@
+{
+  "integer_add": {
+    "process_medians": [
+      21.115,
+      21.196,
+      21.22
+    ],
+    "median": 21.196
+  },
+  "real_add": {
+    "process_medians": [
+      109.856,
+      109.812,
+      110.543
+    ],
+    "median": 109.856
+  },
+  "decimal_add": {
+    "process_medians": [
+      73.2,
+      73.172,
+      73.154
+    ],
+    "median": 73.172
+  },
+  "lower": {
+    "process_medians": [
+      150.81,
+      148.969,
+      148.375
+    ],
+    "median": 148.969
+  },
+  "any_value_datetime": {
+    "process_medians": [
+      118.392,
+      118.505,
+      118.66
+    ],
+    "median": 118.505
+  },
+  "any_value_timestamp": {
+    "process_medians": [
+      118.747,
+      119.005,
+      118.315
+    ],
+    "median": 118.747
+  },
+  "any_value_duration": {
+    "process_medians": [
+      120.433,
+      120.343,
+      120.386
+    ],
+    "median": 120.386
+  },
+  "any_value_json": {
+    "process_medians": [
+      140.665,
+      140.761,
+      138.626
+    ],
+    "median": 140.665
+  },
+  "any_value_vector": {
+    "process_medians": [
+      156.671,
+      155.379,
+      154.97
+    ],
+    "median": 155.379
+  }
+}

@@ -6,7 +6,29 @@ TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码
 
 冻结 TiDB 基线：`364aef2bab5cc633ecb76a775ae8f36f86a6687d`
 
-## 最新结果：全 EvalType batch（2026-10-12 测量，2026-10-15 发布）
+## 最新结果：整批 kernel（2026-10-16）
+
+删除逐 lane 的 singleton kernel 调用，改为每个函数节点调用一次完整 vector kernel。三组旧/新二进制交错对照，dense 1,024 行（ns/selected-row）：
+
+| workload | before | vector kernel | speedup (paired) | frozen native (fresh) |
+|---|---:|---:|---:|---:|
+| `any_value_datetime` | 42.812 | 15.755 | 2.72x | 118.505 |
+| `any_value_duration` | 49.070 | 19.711 | 2.49x | 120.386 |
+| `any_value_json` | 214.989 | 143.059 | 1.50x | 140.665 |
+| `any_value_timestamp` | 42.820 | 15.687 | 2.73x | 118.747 |
+| `any_value_vector` | 176.592 | 83.071 | 2.13x | 155.379 |
+| `decimal_add` | 536.500 | 288.082 | 1.86x | 73.172 |
+| `integer_add` | 52.792 | 17.370 | 3.05x | 21.196 |
+| `lower` | 104.976 | 37.813 | 2.78x | 148.969 |
+| `real_add` | 55.483 | 18.447 | 3.00x | 109.856 |
+
+旧/新对照共 1,890 条 timing、135 个 checksum 组全部一致，TiKV 均 prepared，fallback/refusal 为 0。Int 的逐 wrapper 开销已消除，当前为 17.370 ns/row；原始 native 另行复测为 21.196。Decimal 仍约慢 3.94 倍、JSON 约慢 1.02 倍。输入 import 和输出 append 仍存在，下一步继续减少这部分搬运。
+
+表中 speedup 是三组旧/新配对倍率的中位数；native 是随后独立三个进程复测，不属于该配对倍率。方法、全部原始记录、版本/hash 和验证范围见[本轮完整报告](logs/performance-m9-vector-kernel/summary.md)。以下 M8 及 round228 均保留为历史记录。
+
+---
+
+## 历史结果：全 EvalType batch（2026-10-12 测量，2026-10-15 发布）
 
 这轮实现使用共享 eager batch registry/driver，覆盖 Int、Real、Decimal、String、Datetime、Timestamp、Duration、JSON 和 VectorFloat32 的 owned typed carrier；下面每类只测一个代表 workload，不能外推为该类所有函数或 SQL server QPS。
 

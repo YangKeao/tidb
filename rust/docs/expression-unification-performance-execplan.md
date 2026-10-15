@@ -12,6 +12,11 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-15) Replaced per-lane singleton kernel calls with one vector call, removed singleton views/SmallVec dependency, and added aggregate work-budget boundary tests. TiKV profile 48/48 and runtime budget/storage 6/6 pass.
+- [x] (2026-10-16) Measured three interleaved release pairs: Int 52.792→17.370 ns/row (3.05x), Decimal 536.500→288.082 (1.86x), LOWER 104.976→37.813 (2.78x). All nine workloads improve, 1,890 records / 135 checksum groups agree. Frozen native was separately refreshed (Int21.196). Report/evidence retained under `docs/expression-unification/logs/performance-m9-vector-kernel/`.
+- [ ] Reduce typed transport overhead while preserving Chunk selection/alias behavior; measure separately.
+- [ ] Add a reproducible per-function/signature planning inventory and expand shared capability coverage with semantic tests.
+
 - [x] (2026-10-15) Publication review: refreshed TiDB batch 25/25, TiKV profile 48/48, TiDB lint and scoped formatting/diff checks; retained original timing and prior full-suite/build limitations. Published benchmark evidence and historical probes alongside the report.
 
 - [x] (2026-10-10 01:24Z) Received authorization to execute the agreed performance roadmap and moved Raft task #4 to In Progress.
@@ -235,3 +240,23 @@ Do not add a TiKV dependency on TiDB `Chunk`, change protobuf/wire signatures, c
 Change note (2026-10-12): initial plan created from the approved roadmap, current code inspection, repository policies, and the retained round228 evidence. Later updates record all six initial milestones, production evidence, deletion of temporary boundaries, carrier-generalization through every native EvalType, heterogeneous three-argument execution, the final broader-tree validation matrix, and the three-mode all-carrier benchmark.
 
 Change note (2026-10-15): publication requested by YangKeao. Added the corrected historical comparison and immutable current-code ablation evidence to the repository benchmark report; clarified the remaining singleton-kernel and owned materialization costs. Historical benchmark numbers were not remeasured for publication.
+
+
+## Continued optimization (authorized 2026-10-15)
+
+YangKeao requested continued measured improvements, with commits and pushes at
+useful checkpoints, until stopped or no clear cost-effective direction remains.
+First replace `OrdinaryFrame::finish_batch` singleton calls with one generated
+kernel call over all operands. Charge all lane work before invoking the pure
+kernel; check retained output before publication or the next expression effect.
+This budget is retained storage, not a hard allocator peak limit. Then reduce
+input/output transport costs and build a per-signature coverage inventory rather
+than equating carrier support with all-function optimization. Lazy/effectful
+coverage requires an explicit semantic design and must not be silently admitted.
+
+Validation uses focused TiDB batch and TiKV profile/resource tests, library
+regressions, release benchmark with the same current workload definitions, and
+updated comparisons with retained historical baselines. Each useful slice must
+remove its superseded implementation and record remaining gaps. Large redesigns
+should stop with a concrete cost/benefit assessment rather than accumulating
+unmeasured routes.
