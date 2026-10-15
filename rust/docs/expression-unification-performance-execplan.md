@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) M22 constructor inline hint tested and rejected: PLUS129.435→130.475ns, comparisons flat/slower. All2310main/165groups plus840M15/60groups agree. Datatype516/565,batch28/fullTiDB1379same4, freshTiKVexpr1028same6/lint/fmt pass. Exact patch reverse-applied; adopted runtime remains M21.
+
 - [x] (2026-10-16) M21 compares M20/full reciprocal/head-bound binaries in three rotated cohorts. Retain only one head predicate: PLUS132.335→129.283ns, comparisons77.8→74.9. Full math gains another1.8–2ns but is discarded as insufficient for its added surface. All3465main/165groups33native and840M15/60groups agree; datatype516/565,batch28/full1379same4 pass.
 
 - [x] (2026-10-15) Replaced per-lane singleton kernel calls with one vector call, removed singleton views/SmallVec dependency, and added aggregate work-budget boundary tests. TiKV profile 48/48 and runtime budget/storage 6/6 pass.
@@ -113,6 +115,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Decision Log
 
+- Decision: reject and revert M22 constructor inline hint.
+  Rationale: symbol removal and5184 extra text bytes do not produce meaningful Decimal benefit; all slower and anomalous control samples remain archived.
+  Date/Author: 2026-10-16 / TiDBEngineer.
+
 - Decision: retain only the M21 one-line head bound and discard the full reciprocal helper/table/unit.
   Rationale: measured2–4% Decimal benefit from a simple n<d identity justifies one predicate; another1.8–2ns from full reciprocal math does not justify that larger surface. Preserve both experiments and all slower controls.
   Date/Author: 2026-10-16 / TiDBEngineer.
@@ -153,7 +159,7 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Outcomes & Retrospective
 
-Current adopted runtime is M21 (this TiDB report commit / TiKV8d143e4). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. Decimal PLUS is129.283ns/row versus true original native70.046; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. Coverage remains51/126 static names, with no new arithmetic policy or execution mode.
+Current adopted runtime is M21 (this TiDB report commit / TiKV8d143e4). The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. Decimal PLUS is129.283ns/row versus true original native70.046; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage remains51/126 static names, with no new arithmetic policy or execution mode.
 
 The six initial milestones below describe the earlier signed fixed-width checkpoint, not the storage path of the final all-carrier implementation. The latter uses owned typed import/output and still invokes a singleton kernel per lane; full-vector kernels and zero-copy/direct output remain future work. See the current [benchmark report](../../docs/expression-unification/LANE_CACHE_PERFORMANCE_REPORT.md).
 
@@ -409,3 +415,17 @@ constructor call-boundary hint has meaningful measured benefit before considerin
 a broader borrowed-output redesign or unsigned-result catalog contract.
 Revision note (2026-10-16): completed M21 with the smaller measured candidate,
 updated all living sections and archived the superseded alternative.
+
+M22 in progress: try only an inline(always) hint on Decimal::try_new. M21 binary
+still has a344-byte out-of-line constructor, and the earlier profile measured
+about9% self there. Unlike rejected M18, no checks or algorithms change. Existing
+wide/resource/initialized-owner tests cover semantics. Keep only with consistent
+measured benefit, otherwise revert the hint and archive the experiment.
+
+M22 outcome: the inline-only experiment is rejected and source restored exactly
+to M21; its complete receipt/patch lives in performance-m22-constructor-inline.
+Next coverage candidate is binary bit operations. They require an explicit
+always-unsigned result fact in the shared catalog and batch registry, not only
+five signature rows: check native lowering, PB roundtrips, UInt extremes and
+shift counts plus NULL/duplicate/reverse windows before benchmark/promotion.
+Revision note (2026-10-16): recorded M22 negative result and retained M21 baseline.

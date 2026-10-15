@@ -1,0 +1,12 @@
+diff --git a/components/tidb_query_datatype/src/codec/mysql/decimal.rs b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+index c6d5a59..986702a 100644
+--- a/components/tidb_query_datatype/src/codec/mysql/decimal.rs
++++ b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+@@ -3612,6 +3612,7 @@ impl Decimal {
+             .expect("bounded Decimal construction or allocation failed")
+     }
+ 
++    #[inline(always)]
+     fn try_new(int_cnt: usize, frac_cnt: usize, negative: bool) -> Result<Decimal> {
+         checked_fraction(frac_cnt)?;
+         let mut value = Decimal {
