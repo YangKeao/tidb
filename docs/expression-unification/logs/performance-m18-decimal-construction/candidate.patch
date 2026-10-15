@@ -1,0 +1,48 @@
+diff --git a/components/tidb_query_datatype/src/codec/mysql/decimal.rs b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+index 7bd77be..518c530 100644
+--- a/components/tidb_query_datatype/src/codec/mysql/decimal.rs
++++ b/components/tidb_query_datatype/src/codec/mysql/decimal.rs
+@@ -3624,6 +3624,14 @@ impl Decimal {
+ 
+     fn try_new(int_cnt: usize, frac_cnt: usize, negative: bool) -> Result<Decimal> {
+         checked_fraction(frac_cnt)?;
++        int_cnt
++            .checked_add(frac_cnt)
++            .ok_or_else(|| decimal_resource_error("storage precision count overflow"))?;
++        let extent = checked_word_extent(
++            int_cnt.div_ceil(DIGITS_PER_WORD),
++            frac_cnt.div_ceil(DIGITS_PER_WORD),
++        )?
++        .max(WORD_BUF_LEN);
+         let mut value = Decimal {
+             int_cnt,
+             frac_cnt,
+@@ -3631,7 +3639,12 @@ impl Decimal {
+             negative,
+             word_buf: SmallVec::from_buf([0; WORD_BUF_LEN]),
+         };
+-        value.try_ensure_storage()?;
++        // A fresh owner already has all nine inline cells. General storage
++        // resizing also validates separate result metadata and shrinks old
++        // spill storage; neither operation is needed for this constructor.
++        if extent > WORD_BUF_LEN {
++            value.try_reserve_words(extent)?;
++        }
+         Ok(value)
+     }
+ 
+@@ -3849,7 +3862,13 @@ impl Decimal {
+ 
+     /// Creates a new decimal which is zero.
+     pub fn zero() -> Decimal {
+-        Decimal::new(1, 0, false)
++        Decimal {
++            int_cnt: 1,
++            frac_cnt: 0,
++            result_frac_cnt: 0,
++            negative: false,
++            word_buf: SmallVec::from_buf([0; WORD_BUF_LEN]),
++        }
+     }
+ 
+     /// Given a precision count 'prec', get:
