@@ -1,0 +1,292 @@
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21653037 ns_per_iter=1.083 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=235 elapsed_ns=69541250 ns_per_batch=295920.213 ns_per_row=288.985 rows_per_second=3460392.213 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=235 elapsed_ns=69662949 ns_per_batch=296438.081 ns_per_row=289.490 rows_per_second=3454347.016 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=235 elapsed_ns=69711001 ns_per_batch=296642.557 ns_per_row=289.690 rows_per_second=3451965.924 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=235 elapsed_ns=69535049 ns_per_batch=295893.826 ns_per_row=288.959 rows_per_second=3460700.804 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=235 elapsed_ns=69435490 ns_per_batch=295470.170 ns_per_row=288.545 rows_per_second=3465662.876 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=235 elapsed_ns=69634929 ns_per_batch=296318.847 ns_per_row=289.374 rows_per_second=3455736.991 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=235 elapsed_ns=69438480 ns_per_batch=295482.894 ns_per_row=288.558 rows_per_second=3465513.646 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=0 iterations=256 elapsed_ns=76431814 ns_per_batch=298561.773 ns_per_row=291.564 rows_per_second=3429775.983 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=1 iterations=256 elapsed_ns=76321495 ns_per_batch=298130.840 ns_per_row=291.143 rows_per_second=3434733.557 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=2 iterations=256 elapsed_ns=76242983 ns_per_batch=297824.152 ns_per_row=290.844 rows_per_second=3438270.509 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=3 iterations=256 elapsed_ns=76348583 ns_per_batch=298236.652 ns_per_row=291.247 rows_per_second=3433514.935 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=4 iterations=256 elapsed_ns=76499994 ns_per_batch=298828.102 ns_per_row=291.824 rows_per_second=3426719.223 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=5 iterations=256 elapsed_ns=77004125 ns_per_batch=300797.363 ns_per_row=293.747 rows_per_second=3404285.160 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=6 iterations=256 elapsed_ns=77381987 ns_per_batch=302273.387 ns_per_row=295.189 rows_per_second=3387661.782 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=0 iterations=978 elapsed_ns=78216658 ns_per_batch=79976.133 ns_per_row=312.407 rows_per_second=3200954.968 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=1 iterations=978 elapsed_ns=78343638 ns_per_batch=80105.969 ns_per_row=312.914 rows_per_second=3195766.834 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=2 iterations=978 elapsed_ns=78994900 ns_per_batch=80771.881 ns_per_row=315.515 rows_per_second=3169419.798 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=3 iterations=978 elapsed_ns=78401179 ns_per_batch=80164.805 ns_per_row=313.144 rows_per_second=3193421.364 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=4 iterations=978 elapsed_ns=77349156 ns_per_batch=79089.117 ns_per_row=308.942 rows_per_second=3236854.970 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=5 iterations=978 elapsed_ns=77947967 ns_per_batch=79701.398 ns_per_row=311.334 rows_per_second=3211988.839 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=6 iterations=978 elapsed_ns=76385674 ns_per_batch=78103.961 ns_per_row=305.094 rows_per_second=3277682.671 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=0 iterations=237 elapsed_ns=76085314 ns_per_batch=321035.080 ns_per_row=313.511 rows_per_second=3189682.571 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=1 iterations=237 elapsed_ns=75826683 ns_per_batch=319943.810 ns_per_row=312.445 rows_per_second=3200561.997 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=2 iterations=237 elapsed_ns=75896133 ns_per_batch=320236.848 ns_per_row=312.731 rows_per_second=3197633.271 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=3 iterations=237 elapsed_ns=75988573 ns_per_batch=320626.890 ns_per_row=313.112 rows_per_second=3193743.354 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=4 iterations=237 elapsed_ns=75957463 ns_per_batch=320495.624 ns_per_row=312.984 rows_per_second=3195051.420 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=5 iterations=237 elapsed_ns=75818673 ns_per_batch=319910.013 ns_per_row=312.412 rows_per_second=3200900.127 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=6 iterations=237 elapsed_ns=74895841 ns_per_batch=316016.207 ns_per_row=308.610 rows_per_second=3240340.141 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=0 iterations=260 elapsed_ns=77469916 ns_per_batch=297961.215 ns_per_row=290.978 rows_per_second=3436688.895 checksum=16907017100489117437
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=1 iterations=260 elapsed_ns=77213976 ns_per_batch=296976.831 ns_per_row=290.016 rows_per_second=3448080.436 checksum=16907017100489117437
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=2 iterations=260 elapsed_ns=77426407 ns_per_batch=297793.873 ns_per_row=290.814 rows_per_second=3438620.108 checksum=16907017100489117437
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=3 iterations=260 elapsed_ns=77288396 ns_per_batch=297263.062 ns_per_row=290.296 rows_per_second=3444760.323 checksum=16907017100489117437
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=4 iterations=260 elapsed_ns=77298166 ns_per_batch=297300.638 ns_per_row=290.333 rows_per_second=3444324.927 checksum=16907017100489117437
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=5 iterations=260 elapsed_ns=77031425 ns_per_batch=296274.712 ns_per_row=289.331 rows_per_second=3456251.783 checksum=16907017100489117437
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=6 iterations=260 elapsed_ns=76900935 ns_per_batch=295772.827 ns_per_row=288.841 rows_per_second=3462116.553 checksum=16907017100489117437
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21714007 ns_per_iter=1.086 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 2.74s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21486676 ns_per_iter=1.074 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=261 elapsed_ns=75565421 ns_per_batch=289522.686 ns_per_row=282.737 rows_per_second=3536855.833 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=261 elapsed_ns=75947133 ns_per_batch=290985.184 ns_per_row=284.165 rows_per_second=3519079.515 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=261 elapsed_ns=75876302 ns_per_batch=290713.801 ns_per_row=283.900 rows_per_second=3522364.598 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=261 elapsed_ns=76192814 ns_per_batch=291926.490 ns_per_row=285.084 rows_per_second=3507732.370 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=261 elapsed_ns=76233454 ns_per_batch=292082.199 ns_per_row=285.237 rows_per_second=3505862.400 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=261 elapsed_ns=76485804 ns_per_batch=293049.057 ns_per_row=286.181 rows_per_second=3494295.490 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=261 elapsed_ns=76202274 ns_per_batch=291962.736 ns_per_row=285.120 rows_per_second=3507296.908 checksum=12557099716278858750
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=0 iterations=261 elapsed_ns=75662383 ns_per_batch=289894.188 ns_per_row=283.100 rows_per_second=3532323.321 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=1 iterations=261 elapsed_ns=75891113 ns_per_batch=290770.548 ns_per_row=283.956 rows_per_second=3521677.169 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=2 iterations=261 elapsed_ns=75332422 ns_per_batch=288629.969 ns_per_row=281.865 rows_per_second=3547795.131 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=3 iterations=261 elapsed_ns=75786592 ns_per_batch=290370.084 ns_per_row=283.565 rows_per_second=3526534.087 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=4 iterations=261 elapsed_ns=75550972 ns_per_batch=289467.326 ns_per_row=282.683 rows_per_second=3537532.250 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=5 iterations=261 elapsed_ns=75545292 ns_per_batch=289445.563 ns_per_row=282.662 rows_per_second=3537798.226 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=6 iterations=261 elapsed_ns=76252434 ns_per_batch=292154.920 ns_per_row=285.308 rows_per_second=3504989.755 checksum=6465320490690259293
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=0 iterations=1021 elapsed_ns=76699904 ns_per_batch=75122.335 ns_per_row=293.447 rows_per_second=3407774.800 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=1 iterations=1021 elapsed_ns=76717224 ns_per_batch=75139.299 ns_per_row=293.513 rows_per_second=3407005.446 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=2 iterations=1021 elapsed_ns=77249666 ns_per_batch=75660.789 ns_per_row=295.550 rows_per_second=3383522.720 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=3 iterations=1021 elapsed_ns=77239216 ns_per_batch=75650.554 ns_per_row=295.510 rows_per_second=3383980.490 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=4 iterations=1021 elapsed_ns=77325066 ns_per_batch=75734.639 ns_per_row=295.838 rows_per_second=3380223.432 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=5 iterations=1021 elapsed_ns=78192378 ns_per_batch=76584.112 ns_per_row=299.157 rows_per_second=3342729.901 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=6 iterations=1021 elapsed_ns=77582986 ns_per_batch=75987.254 ns_per_row=296.825 rows_per_second=3368986.082 checksum=11606482825203891526
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=0 iterations=262 elapsed_ns=75674862 ns_per_batch=288835.351 ns_per_row=282.066 rows_per_second=3545272.405 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=1 iterations=262 elapsed_ns=75325912 ns_per_batch=287503.481 ns_per_row=280.765 rows_per_second=3561696.007 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=2 iterations=262 elapsed_ns=75619422 ns_per_batch=288623.748 ns_per_row=281.859 rows_per_second=3547871.604 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=3 iterations=262 elapsed_ns=75358642 ns_per_batch=287628.405 ns_per_row=280.887 rows_per_second=3560149.080 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=4 iterations=262 elapsed_ns=75342062 ns_per_batch=287565.122 ns_per_row=280.825 rows_per_second=3560932.537 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=5 iterations=262 elapsed_ns=75472112 ns_per_batch=288061.496 ns_per_row=281.310 rows_per_second=3554796.505 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=reverse physical_rows=1024 selected_rows=1024 sample=6 iterations=262 elapsed_ns=76876515 ns_per_batch=293421.813 ns_per_row=286.545 rows_per_second=3489856.428 checksum=14473539461254292548
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=0 iterations=261 elapsed_ns=75412332 ns_per_batch=288936.138 ns_per_row=282.164 rows_per_second=3544035.742 checksum=6199346276339227497
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=1 iterations=261 elapsed_ns=75253051 ns_per_batch=288325.866 ns_per_row=281.568 rows_per_second=3551537.067 checksum=6199346276339227497
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=2 iterations=261 elapsed_ns=75083001 ns_per_batch=287674.333 ns_per_row=280.932 rows_per_second=3559580.683 checksum=6199346276339227497
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=3 iterations=261 elapsed_ns=75210891 ns_per_batch=288164.333 ns_per_row=281.410 rows_per_second=3553527.906 checksum=6199346276339227497
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=4 iterations=261 elapsed_ns=75219802 ns_per_batch=288198.475 ns_per_row=281.444 rows_per_second=3553106.933 checksum=6199346276339227497
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=5 iterations=261 elapsed_ns=75356312 ns_per_batch=288721.502 ns_per_row=281.955 rows_per_second=3546670.384 checksum=6199346276339227497
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add_literal scenario=duplicate physical_rows=1024 selected_rows=1024 sample=6 iterations=261 elapsed_ns=75485961 ns_per_batch=289218.241 ns_per_row=282.440 rows_per_second=3540578.890 checksum=6199346276339227497
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21728307 ns_per_iter=1.086 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 2.76s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21408306 ns_per_iter=1.070 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=76 elapsed_ns=74279599 ns_per_batch=977363.145 ns_per_row=954.456 rows_per_second=1047717.019 checksum=6245416659986588118
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=76 elapsed_ns=74345480 ns_per_batch=978230.000 ns_per_row=955.303 rows_per_second=1046788.588 checksum=6245416659986588118
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=76 elapsed_ns=74635759 ns_per_batch=982049.461 ns_per_row=959.033 rows_per_second=1042717.339 checksum=6245416659986588118
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=76 elapsed_ns=74500810 ns_per_batch=980273.816 ns_per_row=957.299 rows_per_second=1044606.092 checksum=6245416659986588118
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=76 elapsed_ns=74644991 ns_per_batch=982170.934 ns_per_row=959.151 rows_per_second=1042588.377 checksum=6245416659986588118
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=76 elapsed_ns=74624070 ns_per_batch=981895.658 ns_per_row=958.882 rows_per_second=1042880.668 checksum=6245416659986588118
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=76 elapsed_ns=74988800 ns_per_batch=986694.737 ns_per_row=963.569 rows_per_second=1037808.313 checksum=6245416659986588118
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21644777 ns_per_iter=1.082 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.60s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21510766 ns_per_iter=1.076 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=23 elapsed_ns=74058999 ns_per_batch=3219956.478 ns_per_row=3144.489 rows_per_second=318016.721 checksum=18285284953290540619
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=23 elapsed_ns=73740257 ns_per_batch=3206098.130 ns_per_row=3130.955 rows_per_second=319391.347 checksum=18285284953290540619
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=23 elapsed_ns=74561760 ns_per_batch=3241815.652 ns_per_row=3165.836 rows_per_second=315872.372 checksum=18285284953290540619
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=23 elapsed_ns=74493880 ns_per_batch=3238864.348 ns_per_row=3162.953 rows_per_second=316160.200 checksum=18285284953290540619
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=23 elapsed_ns=74324160 ns_per_batch=3231485.217 ns_per_row=3155.747 rows_per_second=316882.155 checksum=18285284953290540619
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=23 elapsed_ns=74445869 ns_per_batch=3236776.913 ns_per_row=3160.915 rows_per_second=316364.095 checksum=18285284953290540619
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=23 elapsed_ns=73499688 ns_per_batch=3195638.609 ns_per_row=3120.741 rows_per_second=320436.734 checksum=18285284953290540619
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21630246 ns_per_iter=1.082 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.69s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21557676 ns_per_iter=1.078 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=22 elapsed_ns=75440972 ns_per_batch=3429135.091 ns_per_row=3348.765 rows_per_second=298617.573 checksum=10999638683577465091
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=22 elapsed_ns=74637050 ns_per_batch=3392593.182 ns_per_row=3313.079 rows_per_second=301834.009 checksum=10999638683577465091
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=22 elapsed_ns=74677530 ns_per_batch=3394433.182 ns_per_row=3314.876 rows_per_second=301670.395 checksum=10999638683577465091
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=22 elapsed_ns=74641639 ns_per_batch=3392801.773 ns_per_row=3313.283 rows_per_second=301815.452 checksum=10999638683577465091
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=22 elapsed_ns=74946950 ns_per_batch=3406679.545 ns_per_row=3326.835 rows_per_second=300585.948 checksum=10999638683577465091
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=22 elapsed_ns=74973711 ns_per_batch=3407895.955 ns_per_row=3328.023 rows_per_second=300478.657 checksum=10999638683577465091
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=22 elapsed_ns=75081051 ns_per_batch=3412775.045 ns_per_row=3332.788 rows_per_second=300049.076 checksum=10999638683577465091
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21535326 ns_per_iter=1.077 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.70s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21421926 ns_per_iter=1.071 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=54 elapsed_ns=73661787 ns_per_batch=1364107.167 ns_per_row=1332.136 rows_per_second=750674.159 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=54 elapsed_ns=74141839 ns_per_batch=1372997.019 ns_per_row=1340.817 rows_per_second=745813.710 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=54 elapsed_ns=74087208 ns_per_batch=1371985.333 ns_per_row=1339.829 rows_per_second=746363.664 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=54 elapsed_ns=74282660 ns_per_batch=1375604.815 ns_per_row=1343.364 rows_per_second=744399.837 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=54 elapsed_ns=74382199 ns_per_batch=1377448.130 ns_per_row=1345.164 rows_per_second=743403.674 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=54 elapsed_ns=74399169 ns_per_batch=1377762.389 ns_per_row=1345.471 rows_per_second=743234.108 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=54 elapsed_ns=75115681 ns_per_batch=1391031.130 ns_per_row=1358.429 rows_per_second=736144.561 checksum=16453027787094240893
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=0 iterations=53 elapsed_ns=73195827 ns_per_batch=1381053.340 ns_per_row=1348.685 rows_per_second=741463.034 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=1 iterations=53 elapsed_ns=73375187 ns_per_batch=1384437.491 ns_per_row=1351.990 rows_per_second=739650.585 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=2 iterations=53 elapsed_ns=73133306 ns_per_batch=1379873.698 ns_per_row=1347.533 rows_per_second=742096.905 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=3 iterations=53 elapsed_ns=72911336 ns_per_batch=1375685.585 ns_per_row=1343.443 rows_per_second=744356.131 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=4 iterations=53 elapsed_ns=73016537 ns_per_batch=1377670.509 ns_per_row=1345.381 rows_per_second=743283.676 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=5 iterations=53 elapsed_ns=73071526 ns_per_batch=1378708.038 ns_per_row=1346.395 rows_per_second=742724.327 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=6 iterations=53 elapsed_ns=72928356 ns_per_batch=1376006.717 ns_per_row=1343.757 rows_per_second=744182.414 checksum=2157522588755683803
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=0 iterations=216 elapsed_ns=73674448 ns_per_batch=341085.407 ns_per_row=1332.365 rows_per_second=750545.155 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=1 iterations=216 elapsed_ns=74237279 ns_per_batch=343691.106 ns_per_row=1342.543 rows_per_second=744854.886 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=2 iterations=216 elapsed_ns=74360548 ns_per_batch=344261.796 ns_per_row=1344.773 rows_per_second=743620.125 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=3 iterations=216 elapsed_ns=74407930 ns_per_batch=344481.157 ns_per_row=1345.630 rows_per_second=743146.597 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=4 iterations=216 elapsed_ns=74087888 ns_per_batch=342999.481 ns_per_row=1339.842 rows_per_second=746356.813 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=5 iterations=216 elapsed_ns=75141052 ns_per_batch=347875.241 ns_per_row=1358.888 rows_per_second=735896.005 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=6 iterations=216 elapsed_ns=74870809 ns_per_batch=346624.116 ns_per_row=1354.000 rows_per_second=738552.191 checksum=3401019393236013658
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=0 iterations=52 elapsed_ns=71892784 ns_per_batch=1382553.538 ns_per_row=1350.150 rows_per_second=740658.478 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=1 iterations=52 elapsed_ns=71108472 ns_per_batch=1367470.615 ns_per_row=1335.421 rows_per_second=748827.791 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=2 iterations=52 elapsed_ns=70913161 ns_per_batch=1363714.635 ns_per_row=1331.753 rows_per_second=750890.233 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=3 iterations=52 elapsed_ns=71632893 ns_per_batch=1377555.635 ns_per_row=1345.269 rows_per_second=743345.658 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=4 iterations=52 elapsed_ns=72021394 ns_per_batch=1385026.808 ns_per_row=1352.565 rows_per_second=739335.870 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=5 iterations=52 elapsed_ns=72089155 ns_per_batch=1386329.904 ns_per_row=1353.838 rows_per_second=738640.923 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=reverse physical_rows=1024 selected_rows=1024 sample=6 iterations=52 elapsed_ns=72273904 ns_per_batch=1389882.769 ns_per_row=1357.307 rows_per_second=736752.784 checksum=7506114615181569715
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=0 iterations=53 elapsed_ns=73492957 ns_per_batch=1386659.566 ns_per_row=1354.160 rows_per_second=738465.320 checksum=11803777052874497449
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=1 iterations=53 elapsed_ns=73442917 ns_per_batch=1385715.415 ns_per_row=1353.238 rows_per_second=738968.470 checksum=11803777052874497449
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=2 iterations=53 elapsed_ns=72927156 ns_per_batch=1375984.075 ns_per_row=1343.734 rows_per_second=744194.659 checksum=11803777052874497449
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=3 iterations=53 elapsed_ns=73910747 ns_per_batch=1394542.396 ns_per_row=1361.858 rows_per_second=734291.050 checksum=11803777052874497449
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=4 iterations=53 elapsed_ns=74109619 ns_per_batch=1398294.698 ns_per_row=1365.522 rows_per_second=732320.591 checksum=11803777052874497449
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=5 iterations=53 elapsed_ns=73804988 ns_per_batch=1392546.943 ns_per_row=1359.909 rows_per_second=735343.253 checksum=11803777052874497449
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=strcmp scenario=duplicate physical_rows=1024 selected_rows=1024 sample=6 iterations=53 elapsed_ns=73280526 ns_per_batch=1382651.434 ns_per_row=1350.246 rows_per_second=740606.038 checksum=11803777052874497449
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21543326 ns_per_iter=1.077 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 2.84s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21484295 ns_per_iter=1.074 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=62 elapsed_ns=75196912 ns_per_batch=1212853.419 ns_per_row=1184.427 rows_per_second=844289.989 checksum=15273801051735777761
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=62 elapsed_ns=74692529 ns_per_batch=1204718.210 ns_per_row=1176.483 rows_per_second=849991.302 checksum=15273801051735777761
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=62 elapsed_ns=74882720 ns_per_batch=1207785.806 ns_per_row=1179.478 rows_per_second=847832.451 checksum=15273801051735777761
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=62 elapsed_ns=74957131 ns_per_batch=1208985.984 ns_per_row=1180.650 rows_per_second=846990.795 checksum=15273801051735777761
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=62 elapsed_ns=74332448 ns_per_batch=1198910.452 ns_per_row=1170.811 rows_per_second=854108.827 checksum=15273801051735777761
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=62 elapsed_ns=74514099 ns_per_batch=1201840.306 ns_per_row=1173.672 rows_per_second=852026.675 checksum=15273801051735777761
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=62 elapsed_ns=74915370 ns_per_batch=1208312.419 ns_per_row=1179.993 rows_per_second=847462.944 checksum=15273801051735777761
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21471776 ns_per_iter=1.074 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.61s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21364145 ns_per_iter=1.068 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=63 elapsed_ns=76257853 ns_per_batch=1210442.111 ns_per_row=1182.072 rows_per_second=845971.890 checksum=7681852227551195329
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=63 elapsed_ns=75349280 ns_per_batch=1196020.317 ns_per_row=1167.989 rows_per_second=856172.746 checksum=7681852227551195329
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=63 elapsed_ns=75364431 ns_per_batch=1196260.810 ns_per_row=1168.223 rows_per_second=856000.624 checksum=7681852227551195329
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=63 elapsed_ns=75338351 ns_per_batch=1195846.841 ns_per_row=1167.819 rows_per_second=856296.948 checksum=7681852227551195329
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=63 elapsed_ns=75406311 ns_per_batch=1196925.571 ns_per_row=1168.873 rows_per_second=855525.209 checksum=7681852227551195329
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=63 elapsed_ns=75720872 ns_per_batch=1201918.603 ns_per_row=1173.749 rows_per_second=851971.171 checksum=7681852227551195329
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=63 elapsed_ns=75983402 ns_per_batch=1206085.746 ns_per_row=1177.818 rows_per_second=849027.528 checksum=7681852227551195329
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21503366 ns_per_iter=1.075 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.62s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21457346 ns_per_iter=1.073 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=59 elapsed_ns=75572601 ns_per_batch=1280891.542 ns_per_row=1250.871 rows_per_second=799443.174 checksum=9945396935172415917
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=59 elapsed_ns=75675082 ns_per_batch=1282628.508 ns_per_row=1252.567 rows_per_second=798360.549 checksum=9945396935172415917
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=59 elapsed_ns=75508771 ns_per_batch=1279809.678 ns_per_row=1249.814 rows_per_second=800118.969 checksum=9945396935172415917
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=59 elapsed_ns=75907332 ns_per_batch=1286564.949 ns_per_row=1256.411 rows_per_second=795917.844 checksum=9945396935172415917
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=59 elapsed_ns=75893353 ns_per_batch=1286328.017 ns_per_row=1256.180 rows_per_second=796064.446 checksum=9945396935172415917
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=59 elapsed_ns=75956852 ns_per_batch=1287404.271 ns_per_row=1257.231 rows_per_second=795398.946 checksum=9945396935172415917
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=59 elapsed_ns=75595871 ns_per_batch=1281285.949 ns_per_row=1251.256 rows_per_second=799197.088 checksum=9945396935172415917
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21487796 ns_per_iter=1.074 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.62s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21459946 ns_per_iter=1.073 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=44 elapsed_ns=73479527 ns_per_batch=1669989.250 ns_per_row=1630.849 rows_per_second=613177.600 checksum=7750141632575410775
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=44 elapsed_ns=73746168 ns_per_batch=1676049.273 ns_per_row=1636.767 rows_per_second=610960.559 checksum=7750141632575410775
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=44 elapsed_ns=73802418 ns_per_batch=1677327.682 ns_per_row=1638.015 rows_per_second=610494.903 checksum=7750141632575410775
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=44 elapsed_ns=74251698 ns_per_batch=1687538.591 ns_per_row=1647.987 rows_per_second=606800.938 checksum=7750141632575410775
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=44 elapsed_ns=74371099 ns_per_batch=1690252.250 ns_per_row=1650.637 rows_per_second=605826.734 checksum=7750141632575410775
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=44 elapsed_ns=74708969 ns_per_batch=1697931.114 ns_per_row=1658.136 rows_per_second=603086.893 checksum=7750141632575410775
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=44 elapsed_ns=74990160 ns_per_batch=1704321.818 ns_per_row=1664.377 rows_per_second=600825.495 checksum=7750141632575410775
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21802767 ns_per_iter=1.090 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.63s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21478896 ns_per_iter=1.074 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=47 elapsed_ns=75482421 ns_per_batch=1606008.957 ns_per_row=1568.368 rows_per_second=637605.410 checksum=18059723463645726757
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=47 elapsed_ns=75497791 ns_per_batch=1606335.979 ns_per_row=1568.687 rows_per_second=637475.605 checksum=18059723463645726757
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=47 elapsed_ns=76066993 ns_per_batch=1618446.660 ns_per_row=1580.514 rows_per_second=632705.436 checksum=18059723463645726757
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=47 elapsed_ns=75534631 ns_per_batch=1607119.809 ns_per_row=1569.453 rows_per_second=637164.693 checksum=18059723463645726757
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=47 elapsed_ns=76505673 ns_per_batch=1627780.277 ns_per_row=1589.629 rows_per_second=629077.533 checksum=18059723463645726757
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=47 elapsed_ns=76126152 ns_per_batch=1619705.362 ns_per_row=1581.744 rows_per_second=632213.750 checksum=18059723463645726757
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=47 elapsed_ns=75042550 ns_per_batch=1596650.000 ns_per_row=1559.229 rows_per_second=641342.812 checksum=18059723463645726757
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21663276 ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.64s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21355805 ns_per_iter=1.068 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=63 elapsed_ns=75233601 ns_per_batch=1194184.143 ns_per_row=1166.195 rows_per_second=857489.196 checksum=13921216755434672933
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=63 elapsed_ns=74799938 ns_per_batch=1187300.603 ns_per_row=1159.473 rows_per_second=862460.608 checksum=13921216755434672933
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=63 elapsed_ns=74256928 ns_per_batch=1178681.397 ns_per_row=1151.056 rows_per_second=868767.423 checksum=13921216755434672933
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=63 elapsed_ns=72650225 ns_per_batch=1153178.175 ns_per_row=1126.151 rows_per_second=887980.732 checksum=13921216755434672933
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=63 elapsed_ns=72921666 ns_per_batch=1157486.762 ns_per_row=1130.358 rows_per_second=884675.345 checksum=13921216755434672933
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=63 elapsed_ns=72935195 ns_per_batch=1157701.508 ns_per_row=1130.568 rows_per_second=884511.243 checksum=13921216755434672933
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=63 elapsed_ns=72818445 ns_per_batch=1155848.333 ns_per_row=1128.758 rows_per_second=885929.382 checksum=13921216755434672933
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21485277 ns_per_iter=1.074 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.61s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21457865 ns_per_iter=1.073 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=47 elapsed_ns=75436421 ns_per_batch=1605030.234 ns_per_row=1567.412 rows_per_second=637994.212 checksum=10717523322605681724
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=47 elapsed_ns=75296570 ns_per_batch=1602054.681 ns_per_row=1564.507 rows_per_second=639179.182 checksum=10717523322605681724
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=47 elapsed_ns=76307042 ns_per_batch=1623554.085 ns_per_row=1585.502 rows_per_second=630715.052 checksum=10717523322605681724
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=47 elapsed_ns=76458223 ns_per_batch=1626770.702 ns_per_row=1588.643 rows_per_second=629467.938 checksum=10717523322605681724
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=47 elapsed_ns=76477012 ns_per_batch=1627170.468 ns_per_row=1589.034 rows_per_second=629313.290 checksum=10717523322605681724
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=47 elapsed_ns=76439513 ns_per_batch=1626372.617 ns_per_row=1588.255 rows_per_second=629622.012 checksum=10717523322605681724
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=47 elapsed_ns=76764124 ns_per_batch=1633279.234 ns_per_row=1594.999 rows_per_second=626959.542 checksum=10717523322605681724
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21623506 ns_per_iter=1.081 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.64s
+

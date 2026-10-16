@@ -1,0 +1,13 @@
+diff --git a/rust/crates/tidb-expr/src/tests/lane_cache_batch_performance.rs b/rust/crates/tidb-expr/src/tests/lane_cache_batch_performance.rs
+index a7c72165..94c635c5 100644
+--- a/rust/crates/tidb-expr/src/tests/lane_cache_batch_performance.rs
++++ b/rust/crates/tidb-expr/src/tests/lane_cache_batch_performance.rs
+@@ -124,7 +124,7 @@ const WORKLOADS: [Workload; 15] = [
+     },
+     Workload {
+         name: "decimal_add",
+-        sql: "d + cast(0.55 as decimal(10,2))",
++        sql: "d + d",
+     },
+     Workload {
+         name: "json_type",

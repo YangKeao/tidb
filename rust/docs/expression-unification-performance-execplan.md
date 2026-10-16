@@ -12,6 +12,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
 
 ## Progress
 
+- [x] (2026-10-16) Post-M30 requested report complete: every phase/rejected experiment, screenshot-style single-eval and batch1/8/64/256/1024, all64denseworkloads. Production unchanged.4872final/native timings/348checksumgroups +972width/36resultgroups +105retained-initial PLUS timings validate. Extra798initial/final timings/39dense checksumgroups match after old test-only Decimal SQL correction. Initial/final Int288.146→12.841ns (~22.38x); current/native ratio0.597. Preserve both excluded attempts and every slow row;57/64denseexamples faster, not a coverage percentage.
+
 - [x] (2026-10-16) M30 pure niladic Pi reuses explicit-row kernel dispatch; exact bits,2050virtual/empty/reverse/duplicate/nested/resource/RAND refusal tests pass. Batch34/fullTiDB1386same4/TiKV1032same6/lintfmt pass. Three pairs3150records/225groups45native agree: PI4.100ns vs true original67.078 (~16.44x), old14actualM27controls retained;840M15/60groups agree, LOWER remains~1%slower. Metadata68/131. End this authorized pass at the documented ownership/semantic cost boundary, not full coverage.
 
 - [x] (2026-10-16) M29 both input candidates rejected/fully reverted. Actual M27/direct/common rotated cohorts4410records/210checksumgroups incl42native agree. Common importer improves Int/Real8–9% and Duration5%, but DecimalPLUS132.165→137.420ns and comparisons75→82–83 regress4%/10%; direct-only is worse. Batch34/full1386same4 and lint/fmt pass;840M15/60groups agree with LOWER still slower. Preserve both patches/receipts. Runtime remains M27.
@@ -81,6 +83,9 @@ The observable first milestone is a release-profile benchmark which prints a liv
 - [x] (2026-10-12 02:22Z) Corrected the benchmark cohort after review. A disposable probe built the actual frozen original-native TiDB `364aef2b` with paired TiKV `548812e` and measured the same nine dense batch-1,024 workloads. The historical pre-optimization TiKV pair `f388b337`/`608bbfc9` was rebuilt separately; only signed Int PLUS had a TiKV batch route at that revision, so the other eight historical TiKV cells are explicitly N/A rather than simulated with current code.
 
 ## Surprises & Discoveries
+
+- Observation (2026-10-16): a historical workload name is not sufficient to establish an identical query. Old decimal_add was d+CAST(0.55 AS DECIMAL), final was d+d; the supplemental checksum caught the mismatch.
+  Evidence: excluded-different-decimal-query in the final report receipt; alter only the frozen test SQL and rerun, leaving production frozen. Single AST eval and batch1 also require separate tables/entrypoint labels.
 
 - Observation (2026-10-16): the shared generated kernel already accepts an explicit output-row count with no arguments; native admission alone prohibited every zero-argument call.
   Evidence: M30 Pi works across2050virtual rows, empty/repeated selection and nested calls without source reads. Stateful RAND remains registry-excluded and budget refusals still apply.
@@ -154,6 +159,10 @@ The observable first milestone is a release-profile benchmark which prints a liv
   Evidence: the failed first carrier audit produced 72/75 and a panic at the old arithmetic-only assertion. The helper now leaves registered non-arithmetic calls on their existing row evaluator; a native-vs-batch `GT/EQ` regression passes, and the rebuilt audit returns to 73/75 with no panic.
 
 ## Decision Log
+
+- Decision: fulfill the new reporting request with fresh actual native/final and actual initial/final measurements; no new production optimization.
+  Rationale: screenshot uses current/native latency ratios, and old per-phase speedups cannot be multiplied or substitute a same-current fallback for historical code. Retain every slow cell and both excluded attempts.
+  Date/Author: 2026-10-16 / TiDBEngineer.
 
 - Decision: retain only pure niladic Pi admission and finish this measured pass at the next-work cost boundary.
   Rationale: PI16.44x true-native gain needs no new driver; all actual old controls are retained. Further clear common storage work changes borrowed-value ownership/budgets; remaining63signature domains need specific semantic review. No full-function optimization or universal speedup is claimed.
@@ -234,6 +243,8 @@ The observable first milestone is a release-profile benchmark which prints a liv
   Date/Author: 2026-10-12 / YangKeao and TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+Post-M30 reporting is separately requested: final/native fresh data has57faster and7slower dense1024workloads out of64examples, while AST/value still has large native gaps. These are test workloads, not a SQL coverage percentage. Production remains M30; PERFORMANCE_EVOLUTION_REPORT.md now contains the complete history and matched-query supplemental comparison. Only benchmark size/scenario filtering and documentation changed. Decimal PLUS and sixfallbackworkloads still exceed true-native cost; neither single-row nor universal performance is claimed.
 
 Current adopted runtime is M30: pure Pi admission on the retained M27 storage implementation. M28 inline-only and both M29 input experiments are rejected/fully reverted. M29 demonstrates that local fixed-input gains can coexist with larger Decimal comparison losses; all candidates and slow controls remain in their receipts. The one eager driver now has shared full-vector kernels, bulk carrier transport, integer/Double/Decimal comparisons and narrower integer storage support. The new bit operations cost about12ns/row versus true original native80ns; Decimal PLUS remains about131ns and slower than native; remaining gaps and slow controls are explicit. M18 is rejected/reverted; M19/M20 and the one-line M21 bound are retained. Full reciprocal M21 math is discarded with its patch/proof retained. M22 constructor inlining is also rejected/reverted. Coverage is68/131 static signature names, with no new arithmetic policy or execution mode. The authorized measured pass ends at its next-work cost boundary; all63unadmitted names and larger ownership/semantic work are listed in docs/expression-unification/logs/performance-m30-pi/remaining-work-boundary.md.
 
@@ -656,3 +667,9 @@ M30 final checkpoint: admit pure Pi at exact arity0 on the existing vector
 kernel/row-count contract. Keep stateful calls excluded. Publish actual
 original-native results, old-code controls, negative experiments and all63
 unadmitted names; conclude this pass at the documented larger-work boundary.
+
+Post-M30 reporting completion: actual initial/final13SQLs checksum-match after
+matching the historical ignored Decimal query. Keep frozen production intact,
+archive all probes/raw samples and both exclusions; publish the requested
+chronological history and two screenshot-style final tables without multiplying
+phase speedups or labeling current fallback as historical native.

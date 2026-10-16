@@ -1,0 +1,247 @@
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21471906 ns_per_iter=1.074 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=5819 elapsed_ns=76302573 ns_per_batch=13112.661 ns_per_row=12.805 rows_per_second=78092464.850 checksum=1415905436846118828 live_prepared=5856 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=5819 elapsed_ns=76339772 ns_per_batch=13119.053 ns_per_row=12.812 rows_per_second=78054411.795 checksum=1415905436846118828 live_prepared=11675 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=5819 elapsed_ns=76394063 ns_per_batch=13128.383 ns_per_row=12.821 rows_per_second=77998940.834 checksum=1415905436846118828 live_prepared=17494 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=5819 elapsed_ns=76700074 ns_per_batch=13180.972 ns_per_row=12.872 rows_per_second=77687747.733 checksum=1415905436846118828 live_prepared=23313 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=5819 elapsed_ns=76875483 ns_per_batch=13211.116 ns_per_row=12.901 rows_per_second=77510485.365 checksum=1415905436846118828 live_prepared=29132 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=5819 elapsed_ns=76512873 ns_per_batch=13148.801 ns_per_row=12.841 rows_per_second=77877823.252 checksum=1415905436846118828 live_prepared=34951 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=5819 elapsed_ns=76590163 ns_per_batch=13162.083 ns_per_row=12.854 rows_per_second=77799233.826 checksum=1415905436846118828 live_prepared=40770 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=integer_add scenario=dense selection_capacity=1024 measured_calls=40733 vector_allocations=122199 windows=40733 vector_allocations_per_call=3.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21662707 ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21386605 ns_per_iter=1.069 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=7995 elapsed_ns=76614993 ns_per_batch=9582.863 ns_per_row=9.358 rows_per_second=106857413.666 checksum=12557099716278858750 live_prepared=8032 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=7995 elapsed_ns=76514453 ns_per_batch=9570.288 ns_per_row=9.346 rows_per_second=106997824.320 checksum=12557099716278858750 live_prepared=16027 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=7995 elapsed_ns=76538943 ns_per_batch=9573.351 ns_per_row=9.349 rows_per_second=106963588.457 checksum=12557099716278858750 live_prepared=24022 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=7995 elapsed_ns=76506603 ns_per_batch=9569.306 ns_per_row=9.345 rows_per_second=107008802.887 checksum=12557099716278858750 live_prepared=32017 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=7995 elapsed_ns=76629353 ns_per_batch=9584.660 ns_per_row=9.360 rows_per_second=106837389.062 checksum=12557099716278858750 live_prepared=40012 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=7995 elapsed_ns=76779673 ns_per_batch=9603.461 ns_per_row=9.378 rows_per_second=106628221.769 checksum=12557099716278858750 live_prepared=48007 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=integer_add_literal scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=7995 elapsed_ns=76789893 ns_per_batch=9604.740 ns_per_row=9.380 rows_per_second=106614030.573 checksum=12557099716278858750 live_prepared=56002 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=integer_add_literal scenario=dense selection_capacity=1024 measured_calls=55965 vector_allocations=111930 windows=55965 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21617806 ns_per_iter=1.081 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21581806 ns_per_iter=1.079 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=9514 elapsed_ns=75758701 ns_per_batch=7962.865 ns_per_row=7.776 rows_per_second=128596925.124 checksum=6245416659986588118 live_prepared=9551 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=9514 elapsed_ns=75919181 ns_per_batch=7979.733 ns_per_row=7.793 rows_per_second=128325093.496 checksum=6245416659986588118 live_prepared=19065 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=9514 elapsed_ns=75944221 ns_per_batch=7982.365 ns_per_row=7.795 rows_per_second=128282782.702 checksum=6245416659986588118 live_prepared=28579 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=9514 elapsed_ns=75944041 ns_per_batch=7982.346 ns_per_row=7.795 rows_per_second=128283086.753 checksum=6245416659986588118 live_prepared=38093 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=9514 elapsed_ns=75854001 ns_per_batch=7972.882 ns_per_row=7.786 rows_per_second=128435360.977 checksum=6245416659986588118 live_prepared=47607 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=9514 elapsed_ns=75858791 ns_per_batch=7973.386 ns_per_row=7.787 rows_per_second=128427251.101 checksum=6245416659986588118 live_prepared=57121 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=abs scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=9514 elapsed_ns=75811461 ns_per_batch=7968.411 ns_per_row=7.782 rows_per_second=128507429.767 checksum=6245416659986588118 live_prepared=66635 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=abs scenario=dense selection_capacity=1024 measured_calls=66598 vector_allocations=133196 windows=66598 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21598626 ns_per_iter=1.080 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21442385 ns_per_iter=1.072 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=23 elapsed_ns=72170813 ns_per_batch=3137861.435 ns_per_row=3064.318 rows_per_second=326336.909 checksum=18285284953290540619 live_prepared=0 live_fallback=60 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=23 elapsed_ns=72117672 ns_per_batch=3135550.957 ns_per_row=3062.061 rows_per_second=326577.375 checksum=18285284953290540619 live_prepared=0 live_fallback=83 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=23 elapsed_ns=72084122 ns_per_batch=3134092.261 ns_per_row=3060.637 rows_per_second=326729.373 checksum=18285284953290540619 live_prepared=0 live_fallback=106 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=23 elapsed_ns=72124104 ns_per_batch=3135830.609 ns_per_row=3062.335 rows_per_second=326548.251 checksum=18285284953290540619 live_prepared=0 live_fallback=129 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=23 elapsed_ns=72277013 ns_per_batch=3142478.826 ns_per_row=3068.827 rows_per_second=325857.406 checksum=18285284953290540619 live_prepared=0 live_fallback=152 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=23 elapsed_ns=72806155 ns_per_batch=3165485.000 ns_per_row=3091.294 rows_per_second=323489.134 checksum=18285284953290540619 live_prepared=0 live_fallback=175 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=lazy_if scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=23 elapsed_ns=72683264 ns_per_batch=3160141.913 ns_per_row=3086.076 rows_per_second=324036.081 checksum=18285284953290540619 live_prepared=0 live_fallback=198 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_SCRATCH route=production_fallback name=lazy_if scenario=dense selection_capacity=0 measured_calls=161 vector_allocations=0 windows=0 vector_allocations_per_call=0.000 windows_per_call=0.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21584265 ns_per_iter=1.079 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.67s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21540056 ns_per_iter=1.077 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=22 elapsed_ns=73904827 ns_per_batch=3359310.318 ns_per_row=3280.576 rows_per_second=304824.474 checksum=10999638683577465091 live_prepared=0 live_fallback=59 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=22 elapsed_ns=74515548 ns_per_batch=3387070.364 ns_per_row=3307.686 rows_per_second=302326.167 checksum=10999638683577465091 live_prepared=0 live_fallback=81 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=22 elapsed_ns=73999177 ns_per_batch=3363598.955 ns_per_row=3284.765 rows_per_second=304435.818 checksum=10999638683577465091 live_prepared=0 live_fallback=103 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=22 elapsed_ns=74206537 ns_per_batch=3373024.409 ns_per_row=3293.969 rows_per_second=303585.114 checksum=10999638683577465091 live_prepared=0 live_fallback=125 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=22 elapsed_ns=74257937 ns_per_batch=3375360.773 ns_per_row=3296.251 rows_per_second=303374.978 checksum=10999638683577465091 live_prepared=0 live_fallback=147 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=22 elapsed_ns=74200757 ns_per_batch=3372761.682 ns_per_row=3293.713 rows_per_second=303608.762 checksum=10999638683577465091 live_prepared=0 live_fallback=169 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=coalesce_nullif scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=22 elapsed_ns=74424778 ns_per_batch=3382944.455 ns_per_row=3303.657 rows_per_second=302694.890 checksum=10999638683577465091 live_prepared=0 live_fallback=191 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_SCRATCH route=production_fallback name=coalesce_nullif scenario=dense selection_capacity=0 measured_calls=154 vector_allocations=0 windows=0 vector_allocations_per_call=0.000 windows_per_call=0.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21504476 ns_per_iter=1.075 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.70s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21531196 ns_per_iter=1.077 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=55 elapsed_ns=75106948 ns_per_batch=1365580.873 ns_per_row=1333.575 rows_per_second=749864.047 checksum=16453027787094240893 live_prepared=0 live_fallback=92 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=55 elapsed_ns=75389180 ns_per_batch=1370712.364 ns_per_row=1338.586 rows_per_second=747056.806 checksum=16453027787094240893 live_prepared=0 live_fallback=147 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=55 elapsed_ns=75246009 ns_per_batch=1368109.255 ns_per_row=1336.044 rows_per_second=748478.235 checksum=16453027787094240893 live_prepared=0 live_fallback=202 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=55 elapsed_ns=75200270 ns_per_batch=1367277.636 ns_per_row=1335.232 rows_per_second=748933.481 checksum=16453027787094240893 live_prepared=0 live_fallback=257 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=55 elapsed_ns=75075219 ns_per_batch=1365003.982 ns_per_row=1333.012 rows_per_second=750180.962 checksum=16453027787094240893 live_prepared=0 live_fallback=312 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=55 elapsed_ns=75065879 ns_per_batch=1364834.164 ns_per_row=1332.846 rows_per_second=750274.302 checksum=16453027787094240893 live_prepared=0 live_fallback=367 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=strcmp scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=55 elapsed_ns=75152560 ns_per_batch=1366410.182 ns_per_row=1334.385 rows_per_second=749408.936 checksum=16453027787094240893 live_prepared=0 live_fallback=422 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_SCRATCH route=production_fallback name=strcmp scenario=dense selection_capacity=0 measured_calls=385 vector_allocations=0 windows=0 vector_allocations_per_call=0.000 windows_per_call=0.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21558746 ns_per_iter=1.078 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.62s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21387715 ns_per_iter=1.069 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=2220 elapsed_ns=74860958 ns_per_batch=33721.152 ns_per_row=32.931 rows_per_second=30366696.616 checksum=15273801051735777761 live_prepared=2257 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=2220 elapsed_ns=74964799 ns_per_batch=33767.927 ns_per_row=32.976 rows_per_second=30324632.765 checksum=15273801051735777761 live_prepared=4477 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=2220 elapsed_ns=74961679 ns_per_batch=33766.522 ns_per_row=32.975 rows_per_second=30325894.915 checksum=15273801051735777761 live_prepared=6697 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=2220 elapsed_ns=75295679 ns_per_batch=33916.973 ns_per_row=33.122 rows_per_second=30191373.930 checksum=15273801051735777761 live_prepared=8917 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=2220 elapsed_ns=75002829 ns_per_batch=33785.058 ns_per_row=32.993 rows_per_second=30309256.735 checksum=15273801051735777761 live_prepared=11137 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=2220 elapsed_ns=74963599 ns_per_batch=33767.387 ns_per_row=32.976 rows_per_second=30325118.195 checksum=15273801051735777761 live_prepared=13357 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=lower scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=2220 elapsed_ns=75074129 ns_per_batch=33817.175 ns_per_row=33.025 rows_per_second=30280471.186 checksum=15273801051735777761 live_prepared=15577 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=lower scenario=dense selection_capacity=1024 measured_calls=15540 vector_allocations=31080 windows=15540 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21580096 ns_per_iter=1.079 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21457466 ns_per_iter=1.073 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=2361 elapsed_ns=76831453 ns_per_batch=32541.911 ns_per_row=31.779 rows_per_second=31467112.824 checksum=7681852227551195329 live_prepared=2398 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=2361 elapsed_ns=76490902 ns_per_batch=32397.671 ns_per_row=31.638 rows_per_second=31607209.966 checksum=7681852227551195329 live_prepared=4759 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=2361 elapsed_ns=76454752 ns_per_batch=32382.360 ns_per_row=31.623 rows_per_second=31622154.762 checksum=7681852227551195329 live_prepared=7120 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=2361 elapsed_ns=76525391 ns_per_batch=32412.279 ns_per_row=31.653 rows_per_second=31592965.007 checksum=7681852227551195329 live_prepared=9481 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=2361 elapsed_ns=76599302 ns_per_batch=32443.584 ns_per_row=31.683 rows_per_second=31562480.817 checksum=7681852227551195329 live_prepared=11842 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=2361 elapsed_ns=76671872 ns_per_batch=32474.321 ns_per_row=31.713 rows_per_second=31532606.899 checksum=7681852227551195329 live_prepared=14203 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=upper scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=2361 elapsed_ns=76603631 ns_per_batch=32445.418 ns_per_row=31.685 rows_per_second=31560697.169 checksum=7681852227551195329 live_prepared=16564 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=upper scenario=dense selection_capacity=1024 measured_calls=16527 vector_allocations=33054 windows=16527 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21653925 ns_per_iter=1.083 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21388505 ns_per_iter=1.069 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=63 elapsed_ns=75030639 ns_per_batch=1190962.524 ns_per_row=1163.049 rows_per_second=859808.751 checksum=9945396935172415917 live_prepared=0 live_fallback=100 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=63 elapsed_ns=75029798 ns_per_batch=1190949.175 ns_per_row=1163.036 rows_per_second=859818.388 checksum=9945396935172415917 live_prepared=0 live_fallback=163 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=63 elapsed_ns=75181899 ns_per_batch=1193363.476 ns_per_row=1165.394 rows_per_second=858078.884 checksum=9945396935172415917 live_prepared=0 live_fallback=226 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=63 elapsed_ns=75295760 ns_per_batch=1195170.794 ns_per_row=1167.159 rows_per_second=856781.311 checksum=9945396935172415917 live_prepared=0 live_fallback=289 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=63 elapsed_ns=75378330 ns_per_batch=1196481.429 ns_per_row=1168.439 rows_per_second=855842.787 checksum=9945396935172415917 live_prepared=0 live_fallback=352 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=63 elapsed_ns=75236609 ns_per_batch=1194231.889 ns_per_row=1166.242 rows_per_second=857454.913 checksum=9945396935172415917 live_prepared=0 live_fallback=415 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=concat scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=63 elapsed_ns=74984458 ns_per_batch=1190229.492 ns_per_row=1162.333 rows_per_second=860338.285 checksum=9945396935172415917 live_prepared=0 live_fallback=478 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_SCRATCH route=production_fallback name=concat scenario=dense selection_capacity=0 measured_calls=441 vector_allocations=0 windows=0 vector_allocations_per_call=0.000 windows_per_call=0.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21477626 ns_per_iter=1.074 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.62s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21349905 ns_per_iter=1.067 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=1856 elapsed_ns=74720148 ns_per_batch=40258.700 ns_per_row=39.315 rows_per_second=25435495.658 checksum=7750141632575410775 live_prepared=1893 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=1856 elapsed_ns=74801249 ns_per_batch=40302.397 ns_per_row=39.358 rows_per_second=25407917.988 checksum=7750141632575410775 live_prepared=3749 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=1856 elapsed_ns=74715707 ns_per_batch=40256.308 ns_per_row=39.313 rows_per_second=25437007.509 checksum=7750141632575410775 live_prepared=5605 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=1856 elapsed_ns=74708227 ns_per_batch=40252.277 ns_per_row=39.309 rows_per_second=25439554.334 checksum=7750141632575410775 live_prepared=7461 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=1856 elapsed_ns=74843428 ns_per_batch=40325.123 ns_per_row=39.380 rows_per_second=25393599.021 checksum=7750141632575410775 live_prepared=9317 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=1856 elapsed_ns=74745199 ns_per_batch=40272.198 ns_per_row=39.328 rows_per_second=25426970.902 checksum=7750141632575410775 live_prepared=11173 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=substring scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=1856 elapsed_ns=74714118 ns_per_batch=40255.452 ns_per_row=39.312 rows_per_second=25437548.497 checksum=7750141632575410775 live_prepared=13029 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=substring scenario=dense selection_capacity=1024 measured_calls=12992 vector_allocations=25984 windows=12992 vector_allocations_per_call=2.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21501946 ns_per_iter=1.075 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.57s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21509485 ns_per_iter=1.075 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=578 elapsed_ns=75004519 ns_per_batch=129765.604 ns_per_row=126.724 rows_per_second=7891151.199 checksum=18059723463645726757 live_prepared=615 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=578 elapsed_ns=74793548 ns_per_batch=129400.602 ns_per_row=126.368 rows_per_second=7913409.857 checksum=18059723463645726757 live_prepared=1193 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=578 elapsed_ns=74822248 ns_per_batch=129450.256 ns_per_row=126.416 rows_per_second=7910374.465 checksum=18059723463645726757 live_prepared=1771 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=578 elapsed_ns=74831758 ns_per_batch=129466.709 ns_per_row=126.432 rows_per_second=7909369.175 checksum=18059723463645726757 live_prepared=2349 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=578 elapsed_ns=74850648 ns_per_batch=129499.391 ns_per_row=126.464 rows_per_second=7907373.093 checksum=18059723463645726757 live_prepared=2927 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=578 elapsed_ns=75001978 ns_per_batch=129761.208 ns_per_row=126.720 rows_per_second=7891418.544 checksum=18059723463645726757 live_prepared=3505 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_PERF mode=batch_tikv route=tikv_batch name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=578 elapsed_ns=74920719 ns_per_batch=129620.621 ns_per_row=126.583 rows_per_second=7899977.575 checksum=18059723463645726757 live_prepared=4083 live_fallback=0 live_refusals=0 refusal=None
+EXPR_BATCH_SCRATCH route=tikv_batch name=decimal_add scenario=dense selection_capacity=1024 measured_calls=4046 vector_allocations=12138 windows=4046 vector_allocations_per_call=3.000 windows_per_call=1.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21455325 ns_per_iter=1.073 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.58s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21379065 ns_per_iter=1.069 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=67 elapsed_ns=74311387 ns_per_batch=1109125.179 ns_per_row=1083.130 rows_per_second=923250.161 checksum=13921216755434672933 live_prepared=0 live_fallback=104 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=67 elapsed_ns=74679748 ns_per_batch=1114623.104 ns_per_row=1088.499 rows_per_second=918696.191 checksum=13921216755434672933 live_prepared=0 live_fallback=171 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=67 elapsed_ns=74230397 ns_per_batch=1107916.373 ns_per_row=1081.950 rows_per_second=924257.484 checksum=13921216755434672933 live_prepared=0 live_fallback=238 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=67 elapsed_ns=74584828 ns_per_batch=1113206.388 ns_per_row=1087.116 rows_per_second=919865.365 checksum=13921216755434672933 live_prepared=0 live_fallback=305 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=67 elapsed_ns=74803608 ns_per_batch=1116471.761 ns_per_row=1090.304 rows_per_second=917175.011 checksum=13921216755434672933 live_prepared=0 live_fallback=372 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=67 elapsed_ns=75268079 ns_per_batch=1123404.164 ns_per_row=1097.074 rows_per_second=911515.225 checksum=13921216755434672933 live_prepared=0 live_fallback=439 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=json_type scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=67 elapsed_ns=75282969 ns_per_batch=1123626.403 ns_per_row=1097.291 rows_per_second=911334.940 checksum=13921216755434672933 live_prepared=0 live_fallback=506 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_SCRATCH route=production_fallback name=json_type scenario=dense selection_capacity=0 measured_calls=469 vector_allocations=0 windows=0 vector_allocations_per_call=0.000 windows_per_call=0.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21467845 ns_per_iter=1.073 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.61s
+
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_INPUT_SIGN unsigned=false
+EXPR_BATCH_INPUT_DOMAIN real=original
+EXPR_BATCH_CONFIG samples=7 warmup_batches=32 target_sample_ns=75000000 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=21373555 ns_per_iter=1.069 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=49 elapsed_ns=74871527 ns_per_batch=1527990.347 ns_per_row=1492.178 rows_per_second=670161.302 checksum=10717523322605681724 live_prepared=0 live_fallback=86 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=1 iterations=49 elapsed_ns=75053568 ns_per_batch=1531705.469 ns_per_row=1495.806 rows_per_second=668535.838 checksum=10717523322605681724 live_prepared=0 live_fallback=135 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=2 iterations=49 elapsed_ns=75178429 ns_per_batch=1534253.653 ns_per_row=1498.295 rows_per_second=667425.492 checksum=10717523322605681724 live_prepared=0 live_fallback=184 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=3 iterations=49 elapsed_ns=75273998 ns_per_batch=1536204.041 ns_per_row=1500.199 rows_per_second=666578.119 checksum=10717523322605681724 live_prepared=0 live_fallback=233 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=4 iterations=49 elapsed_ns=75203058 ns_per_batch=1534756.286 ns_per_row=1498.785 rows_per_second=667206.911 checksum=10717523322605681724 live_prepared=0 live_fallback=282 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=5 iterations=49 elapsed_ns=75262439 ns_per_batch=1535968.143 ns_per_row=1499.969 rows_per_second=666680.494 checksum=10717523322605681724 live_prepared=0 live_fallback=331 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_PERF mode=batch_tikv route=production_fallback name=regexp_like scenario=dense physical_rows=1024 selected_rows=1024 sample=6 iterations=49 elapsed_ns=75371720 ns_per_batch=1538198.367 ns_per_row=1502.147 rows_per_second=665713.878 checksum=10717523322605681724 live_prepared=0 live_fallback=380 live_refusals=1 refusal=Some(Admission)
+EXPR_BATCH_SCRATCH route=production_fallback name=regexp_like scenario=dense selection_capacity=0 measured_calls=343 vector_allocations=0 windows=0 vector_allocations_per_call=0.000 windows_per_call=0.000
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21530305 ns_per_iter=1.077 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1484 filtered out; finished in 0.63s
+

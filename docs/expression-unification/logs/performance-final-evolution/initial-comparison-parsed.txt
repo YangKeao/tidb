@@ -1,0 +1,14 @@
+abs 960.187 7.802 0.008
+coalesce_nullif 3326.835 3293.969 0.989
+concat 1248.058 1165.394 0.934
+decimal_add 1569.453 126.77 0.081
+integer_add 288.146 12.841 0.045
+integer_add_literal 280.918 9.388 0.033
+json_type 1142.745 1088.499 0.961
+lazy_if 3134.403 3077.433 0.978
+lower 1172.749 33.107 0.028
+regexp_like 1559.815 1498.785 0.959
+strcmp 1343.364 1334.385 0.994
+substring 1643.162 39.308 0.024
+upper 1171.483 31.867 0.027
+798total timings /546dense timings /39dense checksum groups match; same selected payloads, initial schema6/current12 columns explicitly disclosed.

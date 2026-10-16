@@ -1,0 +1,10 @@
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=1 warmup_batches=32 target_sample_ns=1 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=28889312 ns_per_iter=1.444 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=production_fallback name=decimal_add scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=1 elapsed_ns=1576804 ns_per_batch=1576804.000 ns_per_row=1539.848 rows_per_second=649414.892 checksum=18059723463645726757
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=21555126 ns_per_iter=1.078 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.12s
+

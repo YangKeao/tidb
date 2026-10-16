@@ -1,0 +1,258 @@
+[
+  [
+    "pure_pi",
+    "pi()"
+  ],
+  [
+    "round_int_signed",
+    "round(i)"
+  ],
+  [
+    "round_int_unsigned",
+    "round(i)"
+  ],
+  [
+    "any_value_int_unsigned",
+    "any_value(i)"
+  ],
+  [
+    "integer_not",
+    "not i"
+  ],
+  [
+    "real_asin",
+    "asin(r)"
+  ],
+  [
+    "real_acos",
+    "acos(r)"
+  ],
+  [
+    "isnull_int",
+    "isnull(i)"
+  ],
+  [
+    "isnull_real",
+    "isnull(r)"
+  ],
+  [
+    "isnull_decimal",
+    "isnull(d)"
+  ],
+  [
+    "isnull_string",
+    "isnull(s)"
+  ],
+  [
+    "isnull_datetime",
+    "isnull(dt)"
+  ],
+  [
+    "isnull_timestamp",
+    "isnull(ts)"
+  ],
+  [
+    "isnull_duration",
+    "isnull(dur)"
+  ],
+  [
+    "isnull_vector",
+    "isnull(v)"
+  ],
+  [
+    "integer_bit_bitand",
+    "i & j"
+  ],
+  [
+    "integer_bit_bitor",
+    "i | j"
+  ],
+  [
+    "integer_bit_bitxor",
+    "i ^ j"
+  ],
+  [
+    "integer_bit_leftshift",
+    "i << j"
+  ],
+  [
+    "integer_bit_rightshift",
+    "i >> j"
+  ],
+  [
+    "real_compare_lt",
+    "r < q"
+  ],
+  [
+    "real_compare_le",
+    "r <= q"
+  ],
+  [
+    "real_compare_gt",
+    "r > q"
+  ],
+  [
+    "real_compare_ge",
+    "r >= q"
+  ],
+  [
+    "real_compare_eq",
+    "r = q"
+  ],
+  [
+    "real_compare_ne",
+    "r != q"
+  ],
+  [
+    "real_compare_nulleq",
+    "r <=> q"
+  ],
+  [
+    "decimal_compare_lt",
+    "d < e"
+  ],
+  [
+    "decimal_compare_le",
+    "d <= e"
+  ],
+  [
+    "decimal_compare_gt",
+    "d > e"
+  ],
+  [
+    "decimal_compare_ge",
+    "d >= e"
+  ],
+  [
+    "decimal_compare_eq",
+    "d = e"
+  ],
+  [
+    "decimal_compare_ne",
+    "d != e"
+  ],
+  [
+    "decimal_compare_nulleq",
+    "d <=> e"
+  ],
+  [
+    "integer_add",
+    "i + j"
+  ],
+  [
+    "integer_compare_lt",
+    "i < j"
+  ],
+  [
+    "integer_compare_le",
+    "i <= j"
+  ],
+  [
+    "integer_compare_gt",
+    "i > j"
+  ],
+  [
+    "integer_compare_ge",
+    "i >= j"
+  ],
+  [
+    "integer_compare_eq",
+    "i = j"
+  ],
+  [
+    "integer_compare_ne",
+    "i != j"
+  ],
+  [
+    "integer_compare_nulleq",
+    "i <=> j"
+  ],
+  [
+    "integer_add_literal",
+    "i + 7"
+  ],
+  [
+    "integer_add_nested",
+    "(i + j) + (i + 11)"
+  ],
+  [
+    "integer_subtract",
+    "i - j"
+  ],
+  [
+    "integer_multiply",
+    "i * j"
+  ],
+  [
+    "abs",
+    "abs(i)"
+  ],
+  [
+    "lazy_if",
+    "if(i > 0, i, j)"
+  ],
+  [
+    "coalesce_nullif",
+    "coalesce(nullif(i, 0), j)"
+  ],
+  [
+    "strcmp",
+    "strcmp(s, 'beta')"
+  ],
+  [
+    "char_length",
+    "char_length(s)"
+  ],
+  [
+    "lower",
+    "lower(s)"
+  ],
+  [
+    "upper",
+    "upper(s)"
+  ],
+  [
+    "concat",
+    "concat(s, '-x')"
+  ],
+  [
+    "substring",
+    "substring(s, 2, 3)"
+  ],
+  [
+    "decimal_add",
+    "d + d"
+  ],
+  [
+    "real_add",
+    "r + q"
+  ],
+  [
+    "json_type",
+    "json_type(js)"
+  ],
+  [
+    "regexp_like",
+    "regexp_like(s, '^a')"
+  ],
+  [
+    "any_value_datetime",
+    "any_value(dt)"
+  ],
+  [
+    "any_value_timestamp",
+    "any_value(ts)"
+  ],
+  [
+    "any_value_duration",
+    "any_value(dur)"
+  ],
+  [
+    "any_value_json",
+    "any_value(js)"
+  ],
+  [
+    "any_value_vector",
+    "any_value(v)"
+  ]
+]

@@ -1,0 +1,14 @@
+
+running 1 test
+test tests::lane_cache_batch_performance::lane_cache_batch_release_performance_probe ... EXPR_BATCH_CONFIG samples=1 warmup_batches=32 target_sample_ns=1 dense_sizes=1,8,64,256,1024
+EXPR_BATCH_CALIBRATION stage=before iterations=20000000 elapsed_ns=22823972 ns_per_iter=1.141 checksum=14785134113392808001
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense physical_rows=1024 selected_rows=1024 sample=0 iterations=1 elapsed_ns=255372 ns_per_batch=255372.000 ns_per_row=249.387 rows_per_second=4009836.630 checksum=1415905436846118828
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=dense_null10 physical_rows=1024 selected_rows=1024 sample=0 iterations=1 elapsed_ns=263782 ns_per_batch=263782.000 ns_per_row=257.600 rows_per_second=3881993.464 checksum=15407105518167250567
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=sparse_quarter physical_rows=1024 selected_rows=256 sample=0 iterations=1 elapsed_ns=69080 ns_per_batch=69080.000 ns_per_row=269.844 rows_per_second=3705848.292 checksum=17570596653957651844
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=reverse physical_rows=1024 selected_rows=1024 sample=0 iterations=1 elapsed_ns=279752 ns_per_batch=279752.000 ns_per_row=273.195 rows_per_second=3660384.912 checksum=9801591478098761502
+EXPR_BATCH_PERF mode=current_production route=tikv_numeric name=integer_add scenario=duplicate physical_rows=1024 selected_rows=1024 sample=0 iterations=1 elapsed_ns=259212 ns_per_batch=259212.000 ns_per_row=253.137 rows_per_second=3950434.393 checksum=16907017100489117437
+EXPR_BATCH_CALIBRATION stage=after iterations=20000000 elapsed_ns=22191997 ns_per_iter=1.110 checksum=14785134113392808001
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1464 filtered out; finished in 0.10s
+

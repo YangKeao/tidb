@@ -202,3 +202,9 @@ validation, all3150main/225groups and840historical/60groups samples.
 lists all63unadmitted static signature names and the ownership/semantic work
 needed next. This measured pass ends at that cost boundary; broad full-function
 optimization remains unfinished.
+
+## 最终同条件复测
+
+[完整性能演进报告](PERFORMANCE_EVOLUTION_REPORT.md)覆盖64个benchmark workload，
+包含58个batch和6个canonical fallback；逐一保留更慢项。它与68个准入
+签名、308个静态函数名是不同集合，不能互相代替或算作SQL覆盖率。

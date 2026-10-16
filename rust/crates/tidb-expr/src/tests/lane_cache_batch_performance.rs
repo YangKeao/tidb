@@ -39,7 +39,7 @@ use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
 const SAMPLES: usize = 7;
 const WARMUP_BATCHES: usize = 32;
 const TARGET_SAMPLE_NS: u128 = 100_000_000;
-const DENSE_BATCH_SIZES: [usize; 4] = [1, 16, 256, 1024];
+const DENSE_BATCH_SIZES: [usize; 5] = [1, 8, 64, 256, 1024];
 
 fn target_sample_ns() -> u128 {
     std::env::var("EXPR_BATCH_PERF_TARGET_NS")
@@ -650,6 +650,9 @@ fn bench_scenario(
     selection: Option<Vec<usize>>,
     null_every_ten: bool,
 ) {
+    if std::env::var("EXPR_BATCH_PERF_SCENARIO").is_ok_and(|filter| filter != scenario) {
+        return;
+    }
     let schema = schema();
     let resolver = Resolver {
         schema: schema.clone(),
@@ -782,7 +785,7 @@ fn lane_cache_batch_release_performance_probe() {
     );
     println!(
         "EXPR_BATCH_CONFIG samples={} warmup_batches={WARMUP_BATCHES} \
-         target_sample_ns={} dense_sizes=1,16,256,1024",
+         target_sample_ns={} dense_sizes=1,8,64,256,1024",
         sample_count(),
         target_sample_ns()
     );

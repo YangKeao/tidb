@@ -1,0 +1,210 @@
+[
+  {
+    "workload": "abs",
+    "initial": [
+      958.882,
+      960.187,
+      964.499
+    ],
+    "initial_median": 960.187,
+    "current": [
+      7.804,
+      7.787,
+      7.802
+    ],
+    "current_median": 7.802,
+    "ratio": 0.008109878596565043
+  },
+  {
+    "workload": "coalesce_nullif",
+    "initial": [
+      3326.835,
+      3345.327,
+      3326.758
+    ],
+    "initial_median": 3326.835,
+    "current": [
+      3382.71,
+      3293.969,
+      3289.164
+    ],
+    "current_median": 3293.969,
+    "ratio": 0.9886995086507646
+  },
+  {
+    "workload": "concat",
+    "initial": [
+      1252.567,
+      1247.971,
+      1248.058
+    ],
+    "initial_median": 1248.058,
+    "current": [
+      1214.546,
+      1165.394,
+      1163.717
+    ],
+    "current_median": 1165.394,
+    "ratio": 0.9338309944702241
+  },
+  {
+    "workload": "decimal_add",
+    "initial": [
+      1569.453,
+      1559.679,
+      1570.427
+    ],
+    "initial_median": 1569.453,
+    "current": [
+      126.77,
+      126.464,
+      127.126
+    ],
+    "current_median": 126.77,
+    "ratio": 0.08094995819608299
+  },
+  {
+    "workload": "integer_add",
+    "initial": [
+      288.985,
+      287.38,
+      288.146
+    ],
+    "initial_median": 288.146,
+    "current": [
+      12.922,
+      12.841,
+      12.811
+    ],
+    "current_median": 12.841,
+    "ratio": 0.04468299812095483
+  },
+  {
+    "workload": "integer_add_literal",
+    "initial": [
+      285.084,
+      280.454,
+      280.918
+    ],
+    "initial_median": 280.918,
+    "current": [
+      9.399,
+      9.358,
+      9.388
+    ],
+    "current_median": 9.388,
+    "ratio": 0.03336732583596597
+  },
+  {
+    "workload": "json_type",
+    "initial": [
+      1130.568,
+      1142.745,
+      1146.982
+    ],
+    "initial_median": 1142.745,
+    "current": [
+      1086.951,
+      1088.499,
+      1104.828
+    ],
+    "current_median": 1088.499,
+    "ratio": 0.9614202772411744
+  },
+  {
+    "workload": "lazy_if",
+    "initial": [
+      3155.747,
+      3134.403,
+      3132.048
+    ],
+    "initial_median": 3134.403,
+    "current": [
+      3080.97,
+      3064.318,
+      3077.433
+    ],
+    "current_median": 3077.433,
+    "ratio": 0.9776400801045687
+  },
+  {
+    "workload": "lower",
+    "initial": [
+      1179.478,
+      1172.164,
+      1172.749
+    ],
+    "initial_median": 1172.749,
+    "current": [
+      33.107,
+      32.976,
+      33.228
+    ],
+    "current_median": 33.107,
+    "ratio": 0.02813258213014561
+  },
+  {
+    "workload": "regexp_like",
+    "initial": [
+      1588.255,
+      1559.815,
+      1555.365
+    ],
+    "initial_median": 1559.815,
+    "current": [
+      1513.02,
+      1498.785,
+      1491.103
+    ],
+    "current_median": 1498.785,
+    "ratio": 0.9586836530332109
+  },
+  {
+    "workload": "strcmp",
+    "initial": [
+      1343.364,
+      1342.909,
+      1351.376
+    ],
+    "initial_median": 1343.364,
+    "current": [
+      1348.359,
+      1334.385,
+      1312.6
+    ],
+    "current_median": 1334.385,
+    "ratio": 0.9936525855437709
+  },
+  {
+    "workload": "substring",
+    "initial": [
+      1647.987,
+      1643.162,
+      1617.2
+    ],
+    "initial_median": 1643.162,
+    "current": [
+      39.308,
+      39.315,
+      39.207
+    ],
+    "current_median": 39.308,
+    "ratio": 0.0239264296520976
+  },
+  {
+    "workload": "upper",
+    "initial": [
+      1168.873,
+      1171.483,
+      1176.474
+    ],
+    "initial_median": 1171.483,
+    "current": [
+      31.867,
+      31.683,
+      32.033
+    ],
+    "current_median": 31.867,
+    "ratio": 0.02722797103888399
+  }
+]

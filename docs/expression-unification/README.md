@@ -1,6 +1,8 @@
 # Expression unification experiment
 
-Current working checkpoint **rust-real-cluster-sql-smoke-231** (paired commits recorded after validation/push). Accelerated M0–M6 Demo: **COMPLETE**.
+Latest performance checkpoint: **M30**. The [performance evolution and final comparison report](PERFORMANCE_EVOLUTION_REPORT.md) lists every optimization, rejected experiment, direct single-eval tables, batch1/8/64/256/1024 ratios, and all64dense1024workloads. Production remains M30; this follow-up changes only test probes and documentation. Counts are workload/signature metadata, not full SQL coverage or server throughput.
+
+Historical accelerated-demo checkpoint **rust-real-cluster-sql-smoke-231** (paired commits recorded after validation/push). Accelerated M0–M6 Demo: **COMPLETE**.
 
 Functional TiKV-only ownership/native deletion is **240/245 (97.96%)**; strict per-family final-audit count remains **0** and five approved no-credit exceptions remain explicit. Those exceptions use one closed host adapter and are absent from the generic native family dispatcher; JSON schema validation alone retains a dedicated lazy cache adapter. The previously recorded TiDB lint, TiKV clippy, production-crate compilation and targeted semantic/lifecycle gates remain the accelerated-Demo evidence.
 

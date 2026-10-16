@@ -1,0 +1,1 @@
+Excluded partial first attempt: actual physical_rows used requested sizes, but the legacy CONFIG dense_sizes string was stale. Collector stopped; print string corrected and current binary rebuilt before restarting all formal pairs. No samples here contribute to the final tables.

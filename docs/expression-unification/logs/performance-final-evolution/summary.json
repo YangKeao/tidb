@@ -1,0 +1,2978 @@
+{
+  "batch": [
+    {
+      "workload": "integer_add",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        2049.255,
+        2035.924,
+        2040.026
+      ],
+      "current_median": 2040.026,
+      "native": [
+        75.458,
+        75.713,
+        75.625
+      ],
+      "native_median": 75.625,
+      "paired_current_over_native": [
+        27.15755784674919,
+        26.89001888711318,
+        26.975550413223143
+      ],
+      "ratio": 26.975550413223143
+    },
+    {
+      "workload": "integer_add",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        267.822,
+        265.58,
+        263.202
+      ],
+      "current_median": 265.58,
+      "native": [
+        28.255,
+        28.291,
+        28.846
+      ],
+      "native_median": 28.291,
+      "paired_current_over_native": [
+        9.47874712440276,
+        9.387437701035664,
+        9.124384663384872
+      ],
+      "ratio": 9.387437701035664
+    },
+    {
+      "workload": "integer_add",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        43.388,
+        43.674,
+        43.559
+      ],
+      "current_median": 43.559,
+      "native": [
+        22.843,
+        22.702,
+        22.635
+      ],
+      "native_median": 22.702,
+      "paired_current_over_native": [
+        1.8994002539071049,
+        1.9237952603294861,
+        1.924409100949856
+      ],
+      "ratio": 1.9237952603294861
+    },
+    {
+      "workload": "integer_add",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        19.271,
+        19.239,
+        19.041
+      ],
+      "current_median": 19.239,
+      "native": [
+        21.662,
+        21.721,
+        21.779
+      ],
+      "native_median": 21.721,
+      "paired_current_over_native": [
+        0.8896223802049673,
+        0.8857327010726946,
+        0.8742825657743698
+      ],
+      "ratio": 0.8857327010726946
+    },
+    {
+      "workload": "integer_add",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        12.901,
+        12.874,
+        12.966
+      ],
+      "current_median": 12.901,
+      "native": [
+        21.599,
+        21.707,
+        21.635
+      ],
+      "native_median": 21.635,
+      "paired_current_over_native": [
+        0.5972961711190333,
+        0.5930805730870227,
+        0.5993066789923734
+      ],
+      "ratio": 0.5972961711190333
+    },
+    {
+      "workload": "integer_add_literal",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        2012.549,
+        1996.211,
+        1995.385
+      ],
+      "current_median": 1996.211,
+      "native": [
+        93.441,
+        93.675,
+        92.891
+      ],
+      "native_median": 93.441,
+      "paired_current_over_native": [
+        21.53817917188386,
+        21.309965305577798,
+        21.480929261177078
+      ],
+      "ratio": 21.480929261177078
+    },
+    {
+      "workload": "integer_add_literal",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        257.723,
+        259.777,
+        258.324
+      ],
+      "current_median": 258.324,
+      "native": [
+        29.974,
+        29.366,
+        29.226
+      ],
+      "native_median": 29.366,
+      "paired_current_over_native": [
+        8.598218455995196,
+        8.8461826602193,
+        8.838842126873333
+      ],
+      "ratio": 8.838842126873333
+    },
+    {
+      "workload": "integer_add_literal",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        39.384,
+        38.833,
+        38.856
+      ],
+      "current_median": 38.856,
+      "native": [
+        22.161,
+        22.242,
+        22.299
+      ],
+      "native_median": 22.242,
+      "paired_current_over_native": [
+        1.7771761202111818,
+        1.745931121302041,
+        1.7424996636620478
+      ],
+      "ratio": 1.745931121302041
+    },
+    {
+      "workload": "integer_add_literal",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        15.513,
+        15.571,
+        15.561
+      ],
+      "current_median": 15.561,
+      "native": [
+        20.957,
+        20.96,
+        20.804
+      ],
+      "native_median": 20.957,
+      "paired_current_over_native": [
+        0.7402299947511571,
+        0.7428912213740457,
+        0.7479811574697174
+      ],
+      "ratio": 0.7428912213740457
+    },
+    {
+      "workload": "integer_add_literal",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        9.381,
+        9.399,
+        9.417
+      ],
+      "current_median": 9.399,
+      "native": [
+        20.619,
+        20.683,
+        20.598
+      ],
+      "native_median": 20.619,
+      "paired_current_over_native": [
+        0.4549687181725593,
+        0.45443117536140787,
+        0.45718030876784155
+      ],
+      "ratio": 0.4549687181725593
+    },
+    {
+      "workload": "abs",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        1844.452,
+        1906.735,
+        1886.16
+      ],
+      "current_median": 1886.16,
+      "native": [
+        109.898,
+        109.985,
+        109.607
+      ],
+      "native_median": 109.898,
+      "paired_current_over_native": [
+        16.783308158474224,
+        17.336318588898486,
+        17.20838997509283
+      ],
+      "ratio": 17.20838997509283
+    },
+    {
+      "workload": "abs",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        237.67,
+        239.613,
+        237.446
+      ],
+      "current_median": 237.67,
+      "native": [
+        101.259,
+        101.302,
+        101.297
+      ],
+      "native_median": 101.297,
+      "paired_current_over_native": [
+        2.3471493891900965,
+        2.3653333596572623,
+        2.344057573274628
+      ],
+      "ratio": 2.3471493891900965
+    },
+    {
+      "workload": "abs",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        35.592,
+        35.415,
+        35.241
+      ],
+      "current_median": 35.415,
+      "native": [
+        101.709,
+        101.799,
+        101.409
+      ],
+      "native_median": 101.709,
+      "paired_current_over_native": [
+        0.3499395333746276,
+        0.3478914331182035,
+        0.3475135343016892
+      ],
+      "ratio": 0.3478914331182035
+    },
+    {
+      "workload": "abs",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        13.605,
+        13.689,
+        13.455
+      ],
+      "current_median": 13.605,
+      "native": [
+        100.112,
+        100.109,
+        100.083
+      ],
+      "native_median": 100.109,
+      "paired_current_over_native": [
+        0.1358977944701934,
+        0.13674095236192552,
+        0.13443841611462487
+      ],
+      "ratio": 0.1358977944701934
+    },
+    {
+      "workload": "abs",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.803,
+        7.786,
+        7.768
+      ],
+      "current_median": 7.786,
+      "native": [
+        99.653,
+        100.207,
+        99.463
+      ],
+      "native_median": 99.653,
+      "paired_current_over_native": [
+        0.07830170692302288,
+        0.0776991627331424,
+        0.07809939374440747
+      ],
+      "ratio": 0.07809939374440747
+    },
+    {
+      "workload": "lazy_if",
+      "batch_size": 1,
+      "route": "production_fallback",
+      "current": [
+        3183.093,
+        3185.217,
+        3188.318
+      ],
+      "current_median": 3185.217,
+      "native": [
+        109.715,
+        109.986,
+        109.316
+      ],
+      "native_median": 109.715,
+      "paired_current_over_native": [
+        29.01237752358383,
+        28.96020402596694,
+        29.16606901094076
+      ],
+      "ratio": 29.01237752358383
+    },
+    {
+      "workload": "lazy_if",
+      "batch_size": 8,
+      "route": "production_fallback",
+      "current": [
+        3103.565,
+        3103.671,
+        3093.397
+      ],
+      "current_median": 3103.565,
+      "native": [
+        101.044,
+        100.746,
+        100.591
+      ],
+      "native_median": 100.746,
+      "paired_current_over_native": [
+        30.714985550849136,
+        30.8068905961527,
+        30.75222435406746
+      ],
+      "ratio": 30.75222435406746
+    },
+    {
+      "workload": "lazy_if",
+      "batch_size": 64,
+      "route": "production_fallback",
+      "current": [
+        3109.857,
+        3101.418,
+        3073.008
+      ],
+      "current_median": 3101.418,
+      "native": [
+        99.898,
+        99.823,
+        99.351
+      ],
+      "native_median": 99.823,
+      "paired_current_over_native": [
+        31.130322929387976,
+        31.069172435210326,
+        30.9308210284748
+      ],
+      "ratio": 31.069172435210326
+    },
+    {
+      "workload": "lazy_if",
+      "batch_size": 256,
+      "route": "production_fallback",
+      "current": [
+        3062.524,
+        3089.53,
+        3065.434
+      ],
+      "current_median": 3065.434,
+      "native": [
+        99.577,
+        99.572,
+        99.044
+      ],
+      "native_median": 99.572,
+      "paired_current_over_native": [
+        30.755335067334826,
+        31.02810026915197,
+        30.950224142805222
+      ],
+      "ratio": 30.950224142805222
+    },
+    {
+      "workload": "lazy_if",
+      "batch_size": 1024,
+      "route": "production_fallback",
+      "current": [
+        3108.799,
+        3095.085,
+        3093.457
+      ],
+      "current_median": 3095.085,
+      "native": [
+        99.743,
+        99.313,
+        99.003
+      ],
+      "native_median": 99.313,
+      "paired_current_over_native": [
+        31.168091996430828,
+        31.16495322868104,
+        31.246093552720623
+      ],
+      "ratio": 31.168091996430828
+    },
+    {
+      "workload": "coalesce_nullif",
+      "batch_size": 1,
+      "route": "production_fallback",
+      "current": [
+        3374.703,
+        3392.705,
+        3334.062
+      ],
+      "current_median": 3374.703,
+      "native": [
+        190.695,
+        188.106,
+        186.31
+      ],
+      "native_median": 188.106,
+      "paired_current_over_native": [
+        17.69686148037442,
+        18.036133881960172,
+        17.895239117599697
+      ],
+      "ratio": 17.895239117599697
+    },
+    {
+      "workload": "coalesce_nullif",
+      "batch_size": 8,
+      "route": "production_fallback",
+      "current": [
+        3285.635,
+        3299.255,
+        3261.859
+      ],
+      "current_median": 3285.635,
+      "native": [
+        171.108,
+        172.089,
+        175.923
+      ],
+      "native_median": 172.089,
+      "paired_current_over_native": [
+        19.202112116324194,
+        19.171794827095283,
+        18.541401635942997
+      ],
+      "ratio": 19.171794827095283
+    },
+    {
+      "workload": "coalesce_nullif",
+      "batch_size": 64,
+      "route": "production_fallback",
+      "current": [
+        3271.926,
+        3302.024,
+        3304.237
+      ],
+      "current_median": 3302.024,
+      "native": [
+        171.6,
+        172.393,
+        165.947
+      ],
+      "native_median": 171.6,
+      "paired_current_over_native": [
+        19.067167832167833,
+        19.154049178330904,
+        19.91139942270725
+      ],
+      "ratio": 19.154049178330904
+    },
+    {
+      "workload": "coalesce_nullif",
+      "batch_size": 256,
+      "route": "production_fallback",
+      "current": [
+        3273.501,
+        3298.312,
+        3266.342
+      ],
+      "current_median": 3273.501,
+      "native": [
+        165.921,
+        169.577,
+        165.37
+      ],
+      "native_median": 165.921,
+      "paired_current_over_native": [
+        19.729274775344894,
+        19.450232047978204,
+        19.751720384592126
+      ],
+      "ratio": 19.729274775344894
+    },
+    {
+      "workload": "coalesce_nullif",
+      "batch_size": 1024,
+      "route": "production_fallback",
+      "current": [
+        3305.633,
+        3348.656,
+        3272.003
+      ],
+      "current_median": 3305.633,
+      "native": [
+        169.319,
+        173.85,
+        170.099
+      ],
+      "native_median": 170.099,
+      "paired_current_over_native": [
+        19.52310727089104,
+        19.261754385964913,
+        19.235874402553808
+      ],
+      "ratio": 19.261754385964913
+    },
+    {
+      "workload": "strcmp",
+      "batch_size": 1,
+      "route": "production_fallback",
+      "current": [
+        1415.806,
+        1417.013,
+        1416.18
+      ],
+      "current_median": 1416.18,
+      "native": [
+        94.163,
+        94.402,
+        93.925
+      ],
+      "native_median": 94.163,
+      "paired_current_over_native": [
+        15.035693425230718,
+        15.010412914980614,
+        15.077774820335375
+      ],
+      "ratio": 15.035693425230718
+    },
+    {
+      "workload": "strcmp",
+      "batch_size": 8,
+      "route": "production_fallback",
+      "current": [
+        1329.97,
+        1327.818,
+        1336.161
+      ],
+      "current_median": 1329.97,
+      "native": [
+        91.484,
+        91.612,
+        91.333
+      ],
+      "native_median": 91.484,
+      "paired_current_over_native": [
+        14.537733374141927,
+        14.493930926079553,
+        14.62955339253063
+      ],
+      "ratio": 14.537733374141927
+    },
+    {
+      "workload": "strcmp",
+      "batch_size": 64,
+      "route": "production_fallback",
+      "current": [
+        1316.799,
+        1331.898,
+        1316.388
+      ],
+      "current_median": 1316.799,
+      "native": [
+        88.274,
+        88.056,
+        88.589
+      ],
+      "native_median": 88.274,
+      "paired_current_over_native": [
+        14.917178331105422,
+        15.125579176887435,
+        14.85949722877558
+      ],
+      "ratio": 14.917178331105422
+    },
+    {
+      "workload": "strcmp",
+      "batch_size": 256,
+      "route": "production_fallback",
+      "current": [
+        1313.922,
+        1356.434,
+        1310.9
+      ],
+      "current_median": 1313.922,
+      "native": [
+        89.958,
+        89.858,
+        88.577
+      ],
+      "native_median": 89.858,
+      "paired_current_over_native": [
+        14.605949443073435,
+        15.09530592712947,
+        14.799552931347868
+      ],
+      "ratio": 14.799552931347868
+    },
+    {
+      "workload": "strcmp",
+      "batch_size": 1024,
+      "route": "production_fallback",
+      "current": [
+        1322.696,
+        1336.062,
+        1318.165
+      ],
+      "current_median": 1322.696,
+      "native": [
+        88.031,
+        93.717,
+        87.742
+      ],
+      "native_median": 88.031,
+      "paired_current_over_native": [
+        15.025343344958024,
+        14.256346233874323,
+        15.023192997652206
+      ],
+      "ratio": 15.023192997652206
+    },
+    {
+      "workload": "lower",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        2004.505,
+        2020.637,
+        2001.78
+      ],
+      "current_median": 2004.505,
+      "native": [
+        168.542,
+        169.195,
+        168.502
+      ],
+      "native_median": 168.542,
+      "paired_current_over_native": [
+        11.893207627772307,
+        11.942651969620853,
+        11.879858992771599
+      ],
+      "ratio": 11.893207627772307
+    },
+    {
+      "workload": "lower",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        288.395,
+        287.941,
+        293.633
+      ],
+      "current_median": 288.395,
+      "native": [
+        157.103,
+        157.233,
+        157.142
+      ],
+      "native_median": 157.142,
+      "paired_current_over_native": [
+        1.8357065110150663,
+        1.8313013171535235,
+        1.8685838286390652
+      ],
+      "ratio": 1.8357065110150663
+    },
+    {
+      "workload": "lower",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        66.114,
+        65.927,
+        65.967
+      ],
+      "current_median": 65.967,
+      "native": [
+        156.581,
+        156.25,
+        155.473
+      ],
+      "native_median": 156.25,
+      "paired_current_over_native": [
+        0.4222351370855979,
+        0.42193280000000005,
+        0.4242987528381133
+      ],
+      "ratio": 0.4222351370855979
+    },
+    {
+      "workload": "lower",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        40.116,
+        40.202,
+        40.055
+      ],
+      "current_median": 40.116,
+      "native": [
+        154.08,
+        154.299,
+        154.398
+      ],
+      "native_median": 154.299,
+      "paired_current_over_native": [
+        0.26035825545171337,
+        0.26054608260584966,
+        0.25942693558206714
+      ],
+      "ratio": 0.26035825545171337
+    },
+    {
+      "workload": "lower",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        33.274,
+        33.32,
+        33.178
+      ],
+      "current_median": 33.274,
+      "native": [
+        154.044,
+        161.243,
+        153.554
+      ],
+      "native_median": 154.044,
+      "paired_current_over_native": [
+        0.216003219859261,
+        0.20664462953430537,
+        0.21606731182515596
+      ],
+      "ratio": 0.216003219859261
+    },
+    {
+      "workload": "upper",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        2013.651,
+        2013.14,
+        2007.478
+      ],
+      "current_median": 2013.14,
+      "native": [
+        171.597,
+        172.373,
+        172.68
+      ],
+      "native_median": 172.373,
+      "paired_current_over_native": [
+        11.73476809035123,
+        11.678975245543096,
+        11.625422747278202
+      ],
+      "ratio": 11.678975245543096
+    },
+    {
+      "workload": "upper",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        288.05,
+        291.948,
+        286.087
+      ],
+      "current_median": 288.05,
+      "native": [
+        157.777,
+        158.146,
+        156.953
+      ],
+      "native_median": 157.777,
+      "paired_current_over_native": [
+        1.8256780139057025,
+        1.8460662931721321,
+        1.8227558568488655
+      ],
+      "ratio": 1.8256780139057025
+    },
+    {
+      "workload": "upper",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        64.052,
+        64.857,
+        64.503
+      ],
+      "current_median": 64.503,
+      "native": [
+        155.775,
+        157.839,
+        155.685
+      ],
+      "native_median": 155.775,
+      "paired_current_over_native": [
+        0.41118279569892474,
+        0.410906049835592,
+        0.4143173716157626
+      ],
+      "ratio": 0.41118279569892474
+    },
+    {
+      "workload": "upper",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        38.484,
+        38.791,
+        38.695
+      ],
+      "current_median": 38.695,
+      "native": [
+        154.461,
+        154.749,
+        153.886
+      ],
+      "native_median": 154.461,
+      "paired_current_over_native": [
+        0.24915027094217956,
+        0.25067044051980947,
+        0.2514523738351767
+      ],
+      "ratio": 0.25067044051980947
+    },
+    {
+      "workload": "upper",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        31.658,
+        32.165,
+        31.74
+      ],
+      "current_median": 31.74,
+      "native": [
+        154.188,
+        155.967,
+        154.507
+      ],
+      "native_median": 154.507,
+      "paired_current_over_native": [
+        0.20532077723298833,
+        0.206229522911898,
+        0.20542758580517387
+      ],
+      "ratio": 0.20542758580517387
+    },
+    {
+      "workload": "concat",
+      "batch_size": 1,
+      "route": "production_fallback",
+      "current": [
+        1254.101,
+        1250.285,
+        1350.928
+      ],
+      "current_median": 1254.101,
+      "native": [
+        94.489,
+        95.097,
+        94.29
+      ],
+      "native_median": 94.489,
+      "paired_current_over_native": [
+        13.272454994761295,
+        13.147470477512437,
+        14.327372998197053
+      ],
+      "ratio": 13.272454994761295
+    },
+    {
+      "workload": "concat",
+      "batch_size": 8,
+      "route": "production_fallback",
+      "current": [
+        1174.401,
+        1187.177,
+        1182.312
+      ],
+      "current_median": 1182.312,
+      "native": [
+        87.616,
+        87.238,
+        86.581
+      ],
+      "native_median": 87.238,
+      "paired_current_over_native": [
+        13.403955898466034,
+        13.60848483459043,
+        13.655559533846917
+      ],
+      "ratio": 13.60848483459043
+    },
+    {
+      "workload": "concat",
+      "batch_size": 64,
+      "route": "production_fallback",
+      "current": [
+        1162.567,
+        1176.279,
+        1164.83
+      ],
+      "current_median": 1164.83,
+      "native": [
+        86.009,
+        88.129,
+        85.916
+      ],
+      "native_median": 86.009,
+      "paired_current_over_native": [
+        13.516806380727598,
+        13.34724097629611,
+        13.557777363936868
+      ],
+      "ratio": 13.516806380727598
+    },
+    {
+      "workload": "concat",
+      "batch_size": 256,
+      "route": "production_fallback",
+      "current": [
+        1206.348,
+        1176.059,
+        1170.919
+      ],
+      "current_median": 1176.059,
+      "native": [
+        86.344,
+        86.422,
+        86.361
+      ],
+      "native_median": 86.361,
+      "paired_current_over_native": [
+        13.971416658945614,
+        13.608328897734374,
+        13.558423362397379
+      ],
+      "ratio": 13.608328897734374
+    },
+    {
+      "workload": "concat",
+      "batch_size": 1024,
+      "route": "production_fallback",
+      "current": [
+        1164.751,
+        1183.635,
+        1176.495
+      ],
+      "current_median": 1176.495,
+      "native": [
+        86.176,
+        86.312,
+        86.257
+      ],
+      "native_median": 86.257,
+      "paired_current_over_native": [
+        13.51595571852952,
+        13.713446565946798,
+        13.639414772134433
+      ],
+      "ratio": 13.639414772134433
+    },
+    {
+      "workload": "substring",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        2263.629,
+        2312.265,
+        2269.886
+      ],
+      "current_median": 2269.886,
+      "native": [
+        306.688,
+        305.872,
+        306.147
+      ],
+      "native_median": 306.147,
+      "paired_current_over_native": [
+        7.380885460141903,
+        7.559583747449913,
+        7.41436630115598
+      ],
+      "ratio": 7.41436630115598
+    },
+    {
+      "workload": "substring",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        333.6,
+        328.563,
+        325.426
+      ],
+      "current_median": 328.563,
+      "native": [
+        296.789,
+        294.952,
+        293.689
+      ],
+      "native_median": 294.952,
+      "paired_current_over_native": [
+        1.1240308771551508,
+        1.113954134910087,
+        1.1080632914409458
+      ],
+      "ratio": 1.113954134910087
+    },
+    {
+      "workload": "substring",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        74.351,
+        74.799,
+        74.444
+      ],
+      "current_median": 74.444,
+      "native": [
+        298.464,
+        294.948,
+        290.693
+      ],
+      "native_median": 294.948,
+      "paired_current_over_native": [
+        0.24911212072477754,
+        0.2536006346881485,
+        0.2560914779509655
+      ],
+      "ratio": 0.2536006346881485
+    },
+    {
+      "workload": "substring",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        46.869,
+        47.466,
+        46.878
+      ],
+      "current_median": 46.878,
+      "native": [
+        288.958,
+        290.232,
+        298.797
+      ],
+      "native_median": 290.232,
+      "paired_current_over_native": [
+        0.16220004291281084,
+        0.163545026048127,
+        0.1568891253928252
+      ],
+      "ratio": 0.16220004291281084
+    },
+    {
+      "workload": "substring",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        39.372,
+        39.455,
+        39.4
+      ],
+      "current_median": 39.4,
+      "native": [
+        292.978,
+        296.501,
+        294.591
+      ],
+      "native_median": 294.591,
+      "paired_current_over_native": [
+        0.13438551700127654,
+        0.13306869116798933,
+        0.13374475119742285
+      ],
+      "ratio": 0.13374475119742285
+    },
+    {
+      "workload": "decimal_add",
+      "batch_size": 1,
+      "route": "tikv_batch",
+      "current": [
+        2224.664,
+        2209.365,
+        2189.441
+      ],
+      "current_median": 2209.365,
+      "native": [
+        132.324,
+        133.357,
+        131.514
+      ],
+      "native_median": 132.324,
+      "paired_current_over_native": [
+        16.812248722831836,
+        16.567296804817143,
+        16.647969037516916
+      ],
+      "ratio": 16.647969037516916
+    },
+    {
+      "workload": "decimal_add",
+      "batch_size": 8,
+      "route": "tikv_batch",
+      "current": [
+        386.369,
+        388.36,
+        383.868
+      ],
+      "current_median": 386.369,
+      "native": [
+        83.687,
+        84.013,
+        83.819
+      ],
+      "native_median": 83.819,
+      "paired_current_over_native": [
+        4.6168341558426045,
+        4.622617928177782,
+        4.579725360598432
+      ],
+      "ratio": 4.6168341558426045
+    },
+    {
+      "workload": "decimal_add",
+      "batch_size": 64,
+      "route": "tikv_batch",
+      "current": [
+        156.882,
+        157.741,
+        156.179
+      ],
+      "current_median": 156.882,
+      "native": [
+        72.984,
+        73.702,
+        72.669
+      ],
+      "native_median": 72.984,
+      "paired_current_over_native": [
+        2.1495396251233148,
+        2.140253995821009,
+        2.1491832831055886
+      ],
+      "ratio": 2.1491832831055886
+    },
+    {
+      "workload": "decimal_add",
+      "batch_size": 256,
+      "route": "tikv_batch",
+      "current": [
+        132.352,
+        132.613,
+        131.391
+      ],
+      "current_median": 132.352,
+      "native": [
+        71.629,
+        72.29,
+        71.199
+      ],
+      "native_median": 71.629,
+      "paired_current_over_native": [
+        1.8477432324896341,
+        1.8344584313183012,
+        1.845405132094552
+      ],
+      "ratio": 1.845405132094552
+    },
+    {
+      "workload": "decimal_add",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        126.764,
+        127.53,
+        126.711
+      ],
+      "current_median": 126.764,
+      "native": [
+        70.432,
+        71.043,
+        70.349
+      ],
+      "native_median": 70.432,
+      "paired_current_over_native": [
+        1.79980690595184,
+        1.795110003800515,
+        1.8011769890119262
+      ],
+      "ratio": 1.79980690595184
+    },
+    {
+      "workload": "json_type",
+      "batch_size": 1,
+      "route": "production_fallback",
+      "current": [
+        1143.283,
+        1150.269,
+        1148.283
+      ],
+      "current_median": 1148.283,
+      "native": [
+        149.411,
+        150.915,
+        153.178
+      ],
+      "native_median": 150.915,
+      "paired_current_over_native": [
+        7.651933257926123,
+        7.621966007355134,
+        7.496396349345206
+      ],
+      "ratio": 7.621966007355134
+    },
+    {
+      "workload": "json_type",
+      "batch_size": 8,
+      "route": "production_fallback",
+      "current": [
+        1107.077,
+        1118.818,
+        1111.435
+      ],
+      "current_median": 1111.435,
+      "native": [
+        150.005,
+        148.603,
+        147.602
+      ],
+      "native_median": 148.603,
+      "paired_current_over_native": [
+        7.38026732442252,
+        7.528905876731963,
+        7.529945393693851
+      ],
+      "ratio": 7.528905876731963
+    },
+    {
+      "workload": "json_type",
+      "batch_size": 64,
+      "route": "production_fallback",
+      "current": [
+        1080.518,
+        1094.087,
+        1083.928
+      ],
+      "current_median": 1083.928,
+      "native": [
+        145.312,
+        145.53,
+        146.122
+      ],
+      "native_median": 145.53,
+      "paired_current_over_native": [
+        7.435848381413785,
+        7.517948189376761,
+        7.417965809392152
+      ],
+      "ratio": 7.435848381413785
+    },
+    {
+      "workload": "json_type",
+      "batch_size": 256,
+      "route": "production_fallback",
+      "current": [
+        1087.091,
+        1093.402,
+        1088.279
+      ],
+      "current_median": 1088.279,
+      "native": [
+        144.922,
+        146.056,
+        144.128
+      ],
+      "native_median": 144.922,
+      "paired_current_over_native": [
+        7.5012144463918515,
+        7.486183381716602,
+        7.550781250000001
+      ],
+      "ratio": 7.5012144463918515
+    },
+    {
+      "workload": "json_type",
+      "batch_size": 1024,
+      "route": "production_fallback",
+      "current": [
+        1089.349,
+        1093.544,
+        1089.79
+      ],
+      "current_median": 1089.79,
+      "native": [
+        144.181,
+        145.075,
+        144.393
+      ],
+      "native_median": 144.393,
+      "paired_current_over_native": [
+        7.555426859294913,
+        7.537783904876789,
+        7.547388031275754
+      ],
+      "ratio": 7.547388031275754
+    },
+    {
+      "workload": "regexp_like",
+      "batch_size": 1,
+      "route": "production_fallback",
+      "current": [
+        1597.898,
+        1605.158,
+        1600.663
+      ],
+      "current_median": 1600.663,
+      "native": [
+        257.61,
+        263.837,
+        259.352
+      ],
+      "native_median": 259.352,
+      "paired_current_over_native": [
+        6.202779395209813,
+        6.083900286919575,
+        6.171778123939665
+      ],
+      "ratio": 6.171778123939665
+    },
+    {
+      "workload": "regexp_like",
+      "batch_size": 8,
+      "route": "production_fallback",
+      "current": [
+        1516.803,
+        1521.44,
+        1538.176
+      ],
+      "current_median": 1521.44,
+      "native": [
+        249.421,
+        258.645,
+        250.657
+      ],
+      "native_median": 250.657,
+      "paired_current_over_native": [
+        6.081296282189552,
+        5.882348392584431,
+        6.136577075445728
+      ],
+      "ratio": 6.081296282189552
+    },
+    {
+      "workload": "regexp_like",
+      "batch_size": 64,
+      "route": "production_fallback",
+      "current": [
+        1504.286,
+        1516.211,
+        1513.727
+      ],
+      "current_median": 1513.727,
+      "native": [
+        248.792,
+        249.31,
+        247.428
+      ],
+      "native_median": 248.792,
+      "paired_current_over_native": [
+        6.046360011575935,
+        6.081629296859332,
+        6.117848424592205
+      ],
+      "ratio": 6.081629296859332
+    },
+    {
+      "workload": "regexp_like",
+      "batch_size": 256,
+      "route": "production_fallback",
+      "current": [
+        1522.039,
+        1510.029,
+        1499.869
+      ],
+      "current_median": 1510.029,
+      "native": [
+        253.188,
+        261.16,
+        252.161
+      ],
+      "native_median": 253.188,
+      "paired_current_over_native": [
+        6.011497385342118,
+        5.782007198652167,
+        5.9480609610526605
+      ],
+      "ratio": 5.9480609610526605
+    },
+    {
+      "workload": "regexp_like",
+      "batch_size": 1024,
+      "route": "production_fallback",
+      "current": [
+        1502.981,
+        1523.505,
+        1503.21
+      ],
+      "current_median": 1503.21,
+      "native": [
+        260.26,
+        258.875,
+        265.199
+      ],
+      "native_median": 260.26,
+      "paired_current_over_native": [
+        5.774921232613541,
+        5.885098985997104,
+        5.668234043114793
+      ],
+      "ratio": 5.774921232613541
+    },
+    {
+      "workload": "pure_pi",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        4.08,
+        4.115,
+        4.042
+      ],
+      "current_median": 4.08,
+      "native": [
+        67.213,
+        68.833,
+        67.375
+      ],
+      "native_median": 67.375,
+      "paired_current_over_native": [
+        0.06070254266287772,
+        0.05978237182746648,
+        0.05999257884972171
+      ],
+      "ratio": 0.05999257884972171
+    },
+    {
+      "workload": "round_int_signed",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.607,
+        7.64,
+        7.552
+      ],
+      "current_median": 7.607,
+      "native": [
+        104.112,
+        105.166,
+        104.339
+      ],
+      "native_median": 104.339,
+      "paired_current_over_native": [
+        0.07306554479790994,
+        0.07264705323013142,
+        0.07237945542893837
+      ],
+      "ratio": 0.07264705323013142
+    },
+    {
+      "workload": "round_int_unsigned",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.542,
+        7.602,
+        7.55
+      ],
+      "current_median": 7.55,
+      "native": [
+        103.98,
+        104.263,
+        103.955
+      ],
+      "native_median": 103.98,
+      "paired_current_over_native": [
+        0.072533179457588,
+        0.07291177119399979,
+        0.07262757924101775
+      ],
+      "ratio": 0.07262757924101775
+    },
+    {
+      "workload": "any_value_int_unsigned",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        9.845,
+        9.945,
+        9.971
+      ],
+      "current_median": 9.945,
+      "native": [
+        125.451,
+        126.521,
+        125.577
+      ],
+      "native_median": 125.577,
+      "paired_current_over_native": [
+        0.07847685550533676,
+        0.07860355197951328,
+        0.07940148275560015
+      ],
+      "ratio": 0.07860355197951328
+    },
+    {
+      "workload": "integer_not",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.645,
+        7.679,
+        7.629
+      ],
+      "current_median": 7.645,
+      "native": [
+        47.28,
+        47.211,
+        46.92
+      ],
+      "native_median": 47.211,
+      "paired_current_over_native": [
+        0.16169627749576987,
+        0.16265277159983904,
+        0.16259590792838874
+      ],
+      "ratio": 0.16259590792838874
+    },
+    {
+      "workload": "real_asin",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        10.145,
+        10.244,
+        10.073
+      ],
+      "current_median": 10.145,
+      "native": [
+        114.146,
+        114.34,
+        111.618
+      ],
+      "native_median": 114.146,
+      "paired_current_over_native": [
+        0.0888774026247087,
+        0.08959244358929508,
+        0.09024530093712485
+      ],
+      "ratio": 0.08959244358929508
+    },
+    {
+      "workload": "real_acos",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        10.251,
+        10.321,
+        10.272
+      ],
+      "current_median": 10.272,
+      "native": [
+        111.944,
+        112.705,
+        111.928
+      ],
+      "native_median": 111.944,
+      "paired_current_over_native": [
+        0.09157257200028585,
+        0.09157535158156249,
+        0.09177328282467301
+      ],
+      "ratio": 0.09157535158156249
+    },
+    {
+      "workload": "isnull_int",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.539,
+        7.609,
+        7.572
+      ],
+      "current_median": 7.572,
+      "native": [
+        101.742,
+        102.196,
+        101.783
+      ],
+      "native_median": 101.783,
+      "paired_current_over_native": [
+        0.0740991920740697,
+        0.07445496888332225,
+        0.0743935627757091
+      ],
+      "ratio": 0.0743935627757091
+    },
+    {
+      "workload": "isnull_real",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.549,
+        7.57,
+        7.481
+      ],
+      "current_median": 7.549,
+      "native": [
+        101.545,
+        101.748,
+        101.305
+      ],
+      "native_median": 101.545,
+      "paired_current_over_native": [
+        0.07434142498399725,
+        0.07439949679600581,
+        0.07384630571047825
+      ],
+      "ratio": 0.07434142498399725
+    },
+    {
+      "workload": "isnull_decimal",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        36.045,
+        36.021,
+        35.893
+      ],
+      "current_median": 36.021,
+      "native": [
+        143.892,
+        143.629,
+        143.82
+      ],
+      "native_median": 143.82,
+      "paired_current_over_native": [
+        0.25050037528146113,
+        0.2507919709807908,
+        0.24956890557641498
+      ],
+      "ratio": 0.25050037528146113
+    },
+    {
+      "workload": "isnull_string",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        10.866,
+        10.857,
+        10.784
+      ],
+      "current_median": 10.857,
+      "native": [
+        111.112,
+        111.562,
+        110.807
+      ],
+      "native_median": 111.112,
+      "paired_current_over_native": [
+        0.09779321765425877,
+        0.09731808321830013,
+        0.09732237133033111
+      ],
+      "ratio": 0.09732237133033111
+    },
+    {
+      "workload": "isnull_datetime",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.67,
+        7.708,
+        7.565
+      ],
+      "current_median": 7.67,
+      "native": [
+        101.761,
+        102.38,
+        101.661
+      ],
+      "native_median": 101.761,
+      "paired_current_over_native": [
+        0.07537268698224271,
+        0.07528814221527642,
+        0.0744139837302407
+      ],
+      "ratio": 0.07528814221527642
+    },
+    {
+      "workload": "isnull_timestamp",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        7.591,
+        7.647,
+        7.557
+      ],
+      "current_median": 7.591,
+      "native": [
+        101.684,
+        102.638,
+        101.673
+      ],
+      "native_median": 101.684,
+      "paired_current_over_native": [
+        0.07465284607214508,
+        0.07450456945770573,
+        0.07432651736449206
+      ],
+      "ratio": 0.07450456945770573
+    },
+    {
+      "workload": "isnull_duration",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        10.178,
+        10.237,
+        10.175
+      ],
+      "current_median": 10.178,
+      "native": [
+        102.005,
+        102.305,
+        101.952
+      ],
+      "native_median": 102.005,
+      "paired_current_over_native": [
+        0.09977942257732465,
+        0.10006353550657347,
+        0.09980186754551162
+      ],
+      "ratio": 0.09980186754551162
+    },
+    {
+      "workload": "isnull_vector",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        39.168,
+        39.281,
+        39.147
+      ],
+      "current_median": 39.168,
+      "native": [
+        118.728,
+        119.657,
+        118.711
+      ],
+      "native_median": 118.728,
+      "paired_current_over_native": [
+        0.32989690721649484,
+        0.32828000033428884,
+        0.3297672498757487
+      ],
+      "ratio": 0.3297672498757487
+    },
+    {
+      "workload": "integer_bit_bitand",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.202,
+        11.238,
+        11.155
+      ],
+      "current_median": 11.202,
+      "native": [
+        80.456,
+        80.515,
+        80.385
+      ],
+      "native_median": 80.456,
+      "paired_current_over_native": [
+        0.13923138112757283,
+        0.13957647643296278,
+        0.13876967095851214
+      ],
+      "ratio": 0.13923138112757283
+    },
+    {
+      "workload": "integer_bit_bitor",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.229,
+        11.29,
+        11.244
+      ],
+      "current_median": 11.244,
+      "native": [
+        80.144,
+        80.376,
+        79.969
+      ],
+      "native_median": 80.144,
+      "paired_current_over_native": [
+        0.1401103014573767,
+        0.14046481536777145,
+        0.1406044842376421
+      ],
+      "ratio": 0.14046481536777145
+    },
+    {
+      "workload": "integer_bit_bitxor",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.305,
+        11.403,
+        11.286
+      ],
+      "current_median": 11.305,
+      "native": [
+        80.724,
+        81.021,
+        80.465
+      ],
+      "native_median": 80.724,
+      "paired_current_over_native": [
+        0.14004509191814082,
+        0.14074128929536786,
+        0.14025974025974025
+      ],
+      "ratio": 0.14025974025974025
+    },
+    {
+      "workload": "integer_bit_leftshift",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.561,
+        11.344,
+        11.244
+      ],
+      "current_median": 11.344,
+      "native": [
+        79.718,
+        80.161,
+        80.168
+      ],
+      "native_median": 80.161,
+      "paired_current_over_native": [
+        0.14502370857271882,
+        0.1415152006586744,
+        0.14025546352659413
+      ],
+      "ratio": 0.1415152006586744
+    },
+    {
+      "workload": "integer_bit_rightshift",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.217,
+        11.237,
+        11.178
+      ],
+      "current_median": 11.217,
+      "native": [
+        79.844,
+        80.043,
+        80.207
+      ],
+      "native_median": 80.043,
+      "paired_current_over_native": [
+        0.14048644857472073,
+        0.14038704196494384,
+        0.13936439462889774
+      ],
+      "ratio": 0.14038704196494384
+    },
+    {
+      "workload": "real_compare_lt",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.295,
+        11.322,
+        11.287
+      ],
+      "current_median": 11.295,
+      "native": [
+        80.971,
+        81.105,
+        81.494
+      ],
+      "native_median": 81.105,
+      "paired_current_over_native": [
+        0.13949438687925306,
+        0.13959681893841316,
+        0.13850099393820406
+      ],
+      "ratio": 0.13949438687925306
+    },
+    {
+      "workload": "real_compare_le",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.215,
+        11.317,
+        11.286
+      ],
+      "current_median": 11.286,
+      "native": [
+        81.052,
+        81.641,
+        81.123
+      ],
+      "native_median": 81.123,
+      "paired_current_over_native": [
+        0.1383679613087894,
+        0.1386190761994586,
+        0.13912207388779999
+      ],
+      "ratio": 0.1386190761994586
+    },
+    {
+      "workload": "real_compare_gt",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.355,
+        11.43,
+        11.61
+      ],
+      "current_median": 11.43,
+      "native": [
+        81.062,
+        81.717,
+        80.681
+      ],
+      "native_median": 81.062,
+      "paired_current_over_native": [
+        0.1400779650144334,
+        0.13987297624729247,
+        0.14390005081741675
+      ],
+      "ratio": 0.1400779650144334
+    },
+    {
+      "workload": "real_compare_ge",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.438,
+        11.438,
+        11.386
+      ],
+      "current_median": 11.438,
+      "native": [
+        81.726,
+        81.851,
+        80.785
+      ],
+      "native_median": 81.726,
+      "paired_current_over_native": [
+        0.13995546093042607,
+        0.13974172581886599,
+        0.14094200656062386
+      ],
+      "ratio": 0.13995546093042607
+    },
+    {
+      "workload": "real_compare_eq",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.325,
+        11.361,
+        11.217
+      ],
+      "current_median": 11.325,
+      "native": [
+        80.143,
+        80.286,
+        79.634
+      ],
+      "native_median": 80.143,
+      "paired_current_over_native": [
+        0.14130990853848743,
+        0.1415066138554667,
+        0.14085692041087977
+      ],
+      "ratio": 0.14130990853848743
+    },
+    {
+      "workload": "real_compare_ne",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.4,
+        11.436,
+        11.379
+      ],
+      "current_median": 11.4,
+      "native": [
+        80.243,
+        80.683,
+        79.846
+      ],
+      "native_median": 80.243,
+      "paired_current_over_native": [
+        0.14206846703139217,
+        0.14173989564096526,
+        0.1425118352829196
+      ],
+      "ratio": 0.14206846703139217
+    },
+    {
+      "workload": "real_compare_nulleq",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.499,
+        11.59,
+        11.463
+      ],
+      "current_median": 11.499,
+      "native": [
+        79.633,
+        79.954,
+        79.803
+      ],
+      "native_median": 79.803,
+      "paired_current_over_native": [
+        0.14439993470043827,
+        0.14495835105185484,
+        0.14364121649562045
+      ],
+      "ratio": 0.14439993470043827
+    },
+    {
+      "workload": "decimal_compare_lt",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.716,
+        73.924,
+        73.191
+      ],
+      "current_median": 73.716,
+      "native": [
+        167.449,
+        168.268,
+        168.509
+      ],
+      "native_median": 168.268,
+      "paired_current_over_native": [
+        0.440229562433935,
+        0.4393229847624029,
+        0.43434475309924103
+      ],
+      "ratio": 0.4393229847624029
+    },
+    {
+      "workload": "decimal_compare_le",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.475,
+        74.537,
+        73.781
+      ],
+      "current_median": 73.781,
+      "native": [
+        167.57,
+        168.414,
+        167.726
+      ],
+      "native_median": 167.726,
+      "paired_current_over_native": [
+        0.4384734737721549,
+        0.4425819706200198,
+        0.43989005878635395
+      ],
+      "ratio": 0.43989005878635395
+    },
+    {
+      "workload": "decimal_compare_gt",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.595,
+        74.24,
+        73.727
+      ],
+      "current_median": 73.727,
+      "native": [
+        167.423,
+        168.467,
+        167.464
+      ],
+      "native_median": 167.464,
+      "paired_current_over_native": [
+        0.4395752077074237,
+        0.44067977704832395,
+        0.4402558161754168
+      ],
+      "ratio": 0.4402558161754168
+    },
+    {
+      "workload": "decimal_compare_ge",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.684,
+        74.122,
+        73.499
+      ],
+      "current_median": 73.684,
+      "native": [
+        167.616,
+        168.705,
+        167.452
+      ],
+      "native_median": 167.616,
+      "paired_current_over_native": [
+        0.43960003818251236,
+        0.4393586437864912,
+        0.4389257817165516
+      ],
+      "ratio": 0.4393586437864912
+    },
+    {
+      "workload": "decimal_compare_eq",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.521,
+        73.908,
+        73.199
+      ],
+      "current_median": 73.521,
+      "native": [
+        167.69,
+        167.752,
+        166.695
+      ],
+      "native_median": 167.69,
+      "paired_current_over_native": [
+        0.4384340151469974,
+        0.4405789498783919,
+        0.4391193497105492
+      ],
+      "ratio": 0.4391193497105492
+    },
+    {
+      "workload": "decimal_compare_ne",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.616,
+        73.782,
+        73.05
+      ],
+      "current_median": 73.616,
+      "native": [
+        167.371,
+        167.314,
+        166.327
+      ],
+      "native_median": 167.314,
+      "paired_current_over_native": [
+        0.4398372477908359,
+        0.4409792366448713,
+        0.4391950795721681
+      ],
+      "ratio": 0.4398372477908359
+    },
+    {
+      "workload": "decimal_compare_nulleq",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        73.532,
+        73.908,
+        73.338
+      ],
+      "current_median": 73.532,
+      "native": [
+        167.369,
+        167.043,
+        165.832
+      ],
+      "native_median": 167.043,
+      "paired_current_over_native": [
+        0.43934061863308016,
+        0.4424489502702897,
+        0.4422427517005162
+      ],
+      "ratio": 0.4422427517005162
+    },
+    {
+      "workload": "integer_compare_lt",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.18,
+        11.2,
+        11.124
+      ],
+      "current_median": 11.18,
+      "native": [
+        72.042,
+        71.874,
+        71.528
+      ],
+      "native_median": 71.874,
+      "paired_current_over_native": [
+        0.15518725188084728,
+        0.15582825500180872,
+        0.15551951683256907
+      ],
+      "ratio": 0.15551951683256907
+    },
+    {
+      "workload": "integer_compare_le",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.224,
+        11.204,
+        11.173
+      ],
+      "current_median": 11.204,
+      "native": [
+        71.968,
+        71.898,
+        71.532
+      ],
+      "native_median": 71.898,
+      "paired_current_over_native": [
+        0.1559582036460649,
+        0.15583187293109685,
+        0.1561958284404183
+      ],
+      "ratio": 0.1559582036460649
+    },
+    {
+      "workload": "integer_compare_gt",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.141,
+        11.254,
+        11.19
+      ],
+      "current_median": 11.19,
+      "native": [
+        71.963,
+        72.404,
+        72.96
+      ],
+      "native_median": 72.404,
+      "paired_current_over_native": [
+        0.15481566916332004,
+        0.15543340146953208,
+        0.1533717105263158
+      ],
+      "ratio": 0.15481566916332004
+    },
+    {
+      "workload": "integer_compare_ge",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.171,
+        11.229,
+        11.192
+      ],
+      "current_median": 11.192,
+      "native": [
+        72.277,
+        72.372,
+        72.801
+      ],
+      "native_median": 72.372,
+      "paired_current_over_native": [
+        0.15455815819693677,
+        0.15515669043276403,
+        0.15373415200340654
+      ],
+      "ratio": 0.15455815819693677
+    },
+    {
+      "workload": "integer_compare_eq",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.132,
+        11.211,
+        11.139
+      ],
+      "current_median": 11.139,
+      "native": [
+        72.161,
+        71.943,
+        71.564
+      ],
+      "native_median": 71.943,
+      "paired_current_over_native": [
+        0.15426615484818668,
+        0.15583170009590927,
+        0.15565088592029513
+      ],
+      "ratio": 0.15565088592029513
+    },
+    {
+      "workload": "integer_compare_ne",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.188,
+        11.196,
+        11.154
+      ],
+      "current_median": 11.188,
+      "native": [
+        71.579,
+        72.037,
+        71.806
+      ],
+      "native_median": 71.806,
+      "paired_current_over_native": [
+        0.1563028262479219,
+        0.15542013132140425,
+        0.15533520875692838
+      ],
+      "ratio": 0.15542013132140425
+    },
+    {
+      "workload": "integer_compare_nulleq",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.253,
+        11.291,
+        11.255
+      ],
+      "current_median": 11.255,
+      "native": [
+        79.529,
+        78.975,
+        78.869
+      ],
+      "native_median": 78.975,
+      "paired_current_over_native": [
+        0.14149555508053666,
+        0.1429692940804052,
+        0.14270499182188187
+      ],
+      "ratio": 0.14270499182188187
+    },
+    {
+      "workload": "integer_add_nested",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        23.147,
+        23.195,
+        23.16
+      ],
+      "current_median": 23.16,
+      "native": [
+        39.024,
+        39.197,
+        39.042
+      ],
+      "native_median": 39.042,
+      "paired_current_over_native": [
+        0.5931478064780648,
+        0.5917544710054341,
+        0.5932073151990164
+      ],
+      "ratio": 0.5931478064780648
+    },
+    {
+      "workload": "integer_subtract",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        13.344,
+        13.273,
+        13.191
+      ],
+      "current_median": 13.273,
+      "native": [
+        22.529,
+        22.576,
+        22.5
+      ],
+      "native_median": 22.529,
+      "paired_current_over_native": [
+        0.5923032535842692,
+        0.5879252303330971,
+        0.5862666666666667
+      ],
+      "ratio": 0.5879252303330971
+    },
+    {
+      "workload": "integer_multiply",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        11.866,
+        11.978,
+        11.828
+      ],
+      "current_median": 11.866,
+      "native": [
+        21.636,
+        21.708,
+        21.556
+      ],
+      "native_median": 21.636,
+      "paired_current_over_native": [
+        0.5484377888704012,
+        0.5517781463055095,
+        0.5487103358693635
+      ],
+      "ratio": 0.5487103358693635
+    },
+    {
+      "workload": "char_length",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        14.614,
+        14.644,
+        14.59
+      ],
+      "current_median": 14.614,
+      "native": [
+        65.441,
+        65.775,
+        65.518
+      ],
+      "native_median": 65.518,
+      "paired_current_over_native": [
+        0.2233156583793035,
+        0.22263778031166856,
+        0.22268689520437132
+      ],
+      "ratio": 0.22268689520437132
+    },
+    {
+      "workload": "real_add",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        12.875,
+        12.974,
+        12.792
+      ],
+      "current_median": 12.875,
+      "native": [
+        107.797,
+        107.6,
+        107.07
+      ],
+      "native_median": 107.6,
+      "paired_current_over_native": [
+        0.11943746115383545,
+        0.12057620817843867,
+        0.11947324180442702
+      ],
+      "ratio": 0.11947324180442702
+    },
+    {
+      "workload": "any_value_datetime",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        9.803,
+        9.843,
+        9.786
+      ],
+      "current_median": 9.803,
+      "native": [
+        129.305,
+        129.894,
+        129.345
+      ],
+      "native_median": 129.345,
+      "paired_current_over_native": [
+        0.07581300027067786,
+        0.07577717215575777,
+        0.07565812362286907
+      ],
+      "ratio": 0.07577717215575777
+    },
+    {
+      "workload": "any_value_timestamp",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        9.828,
+        9.896,
+        9.74
+      ],
+      "current_median": 9.828,
+      "native": [
+        130.097,
+        129.923,
+        129.694
+      ],
+      "native_median": 129.923,
+      "paired_current_over_native": [
+        0.07554363282781308,
+        0.07616819192906568,
+        0.07509985041713572
+      ],
+      "ratio": 0.07554363282781308
+    },
+    {
+      "workload": "any_value_duration",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        13.272,
+        13.137,
+        13.084
+      ],
+      "current_median": 13.137,
+      "native": [
+        130.737,
+        127.474,
+        126.977
+      ],
+      "native_median": 127.474,
+      "paired_current_over_native": [
+        0.10151678560774685,
+        0.10305630952194172,
+        0.10304228324814729
+      ],
+      "ratio": 0.10304228324814729
+    },
+    {
+      "workload": "any_value_json",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        122.838,
+        122.019,
+        121.502
+      ],
+      "current_median": 122.019,
+      "native": [
+        158.272,
+        150.026,
+        149.575
+      ],
+      "native_median": 150.026,
+      "paired_current_over_native": [
+        0.776119591589163,
+        0.8133190247023849,
+        0.8123148921945512
+      ],
+      "ratio": 0.8123148921945512
+    },
+    {
+      "workload": "any_value_vector",
+      "batch_size": 1024,
+      "route": "tikv_batch",
+      "current": [
+        72.626,
+        70.939,
+        70.328
+      ],
+      "current_median": 70.939,
+      "native": [
+        163.17,
+        162.26,
+        161.511
+      ],
+      "native_median": 162.26,
+      "paired_current_over_native": [
+        0.4450940736655023,
+        0.43719339331936397,
+        0.435437833955582
+      ],
+      "ratio": 0.43719339331936397
+    }
+  ],
+  "width": [
+    {
+      "tier": "ast",
+      "workload": "decimal_add",
+      "frozen_native": [
+        374.776,
+        339.71,
+        335.425
+      ],
+      "frozen_native_median": 339.71,
+      "one_shot": [
+        3367.265,
+        3365.593,
+        3408.451
+      ],
+      "one_shot_median": 3367.265,
+      "lane_cache": [
+        2235.248,
+        2232.345,
+        2252.558
+      ],
+      "lane_cache_median": 2235.248,
+      "one_shot_ratio": 9.907253245415207,
+      "lane_cache_ratio": 6.571325542374378
+    },
+    {
+      "tier": "ast",
+      "workload": "integer_add",
+      "frozen_native": [
+        30.997,
+        31.078,
+        30.877
+      ],
+      "frozen_native_median": 30.997,
+      "one_shot": [
+        1945.561,
+        1970.149,
+        1902.34
+      ],
+      "one_shot_median": 1945.561,
+      "lane_cache": [
+        1020.009,
+        1031.065,
+        1003.595
+      ],
+      "lane_cache_median": 1020.009,
+      "one_shot_ratio": 62.766106397393294,
+      "lane_cache_ratio": 32.90670064844985
+    },
+    {
+      "tier": "ast",
+      "workload": "json_type",
+      "frozen_native": [
+        228.618,
+        227.548,
+        227.056
+      ],
+      "frozen_native_median": 227.548,
+      "one_shot": [
+        1922.172,
+        1917.719,
+        1893.75
+      ],
+      "one_shot_median": 1917.719,
+      "lane_cache": [
+        1153.712,
+        1145.166,
+        1122.715
+      ],
+      "lane_cache_median": 1145.166,
+      "one_shot_ratio": 8.407789412907121,
+      "lane_cache_ratio": 5.032634872642255
+    },
+    {
+      "tier": "ast",
+      "workload": "lazy_if",
+      "frozen_native": [
+        92.582,
+        93.888,
+        92.23
+      ],
+      "frozen_native_median": 92.582,
+      "one_shot": [
+        3686.39,
+        3733.787,
+        3693.407
+      ],
+      "one_shot_median": 3693.407,
+      "lane_cache": [
+        1982.437,
+        1997.194,
+        1998.216
+      ],
+      "lane_cache_median": 1997.194,
+      "one_shot_ratio": 39.81756712967964,
+      "lane_cache_ratio": 21.41276922079886
+    },
+    {
+      "tier": "ast",
+      "workload": "regexp_like",
+      "frozen_native": [
+        7700.424,
+        7700.182,
+        7679.465
+      ],
+      "frozen_native_median": 7700.182,
+      "one_shot": [
+        10423.542,
+        10312.057,
+        10359.461
+      ],
+      "one_shot_median": 10359.461,
+      "lane_cache": [
+        9162.008,
+        9090.048,
+        9123.701
+      ],
+      "lane_cache_median": 9123.701,
+      "one_shot_ratio": 1.3489821231036276,
+      "lane_cache_ratio": 1.1880646633587104
+    },
+    {
+      "tier": "ast",
+      "workload": "strcmp",
+      "frozen_native": [
+        167.953,
+        168.482,
+        168.96
+      ],
+      "frozen_native_median": 168.482,
+      "one_shot": [
+        2570.844,
+        2574.178,
+        2569.25
+      ],
+      "one_shot_median": 2570.844,
+      "lane_cache": [
+        1450.035,
+        1446.59,
+        1441.456
+      ],
+      "lane_cache_median": 1446.59,
+      "one_shot_ratio": 15.278652912477297,
+      "lane_cache_ratio": 8.586021058629408
+    },
+    {
+      "tier": "chunk",
+      "workload": "decimal_add",
+      "frozen_native": [
+        513.238,
+        487.365,
+        473.618
+      ],
+      "frozen_native_median": 487.365,
+      "one_shot": [
+        3589.4,
+        3588.429,
+        3570.638
+      ],
+      "one_shot_median": 3588.429,
+      "lane_cache": [
+        2440.706,
+        2434.691,
+        2412.988
+      ],
+      "lane_cache_median": 2434.691,
+      "one_shot_ratio": 7.362918962174141,
+      "lane_cache_ratio": 4.995621351553763
+    },
+    {
+      "tier": "chunk",
+      "workload": "integer_add",
+      "frozen_native": [
+        90.939,
+        90.833,
+        90.877
+      ],
+      "frozen_native_median": 90.877,
+      "one_shot": [
+        2042.071,
+        2049.873,
+        1996.697
+      ],
+      "one_shot_median": 2042.071,
+      "lane_cache": [
+        1124.38,
+        1139.246,
+        1113.429
+      ],
+      "lane_cache_median": 1124.38,
+      "one_shot_ratio": 22.455393175645213,
+      "lane_cache_ratio": 12.364112207083872
+    },
+    {
+      "tier": "chunk",
+      "workload": "json_type",
+      "frozen_native": [
+        214.202,
+        214.233,
+        213.762
+      ],
+      "frozen_native_median": 214.202,
+      "one_shot": [
+        1862.454,
+        1911.281,
+        1859.789
+      ],
+      "one_shot_median": 1862.454,
+      "lane_cache": [
+        1159.739,
+        1172.181,
+        1153.775
+      ],
+      "lane_cache_median": 1159.739,
+      "one_shot_ratio": 8.700278814756599,
+      "lane_cache_ratio": 5.414230492712487
+    },
+    {
+      "tier": "chunk",
+      "workload": "lazy_if",
+      "frozen_native": [
+        31.306,
+        31.256,
+        31.289
+      ],
+      "frozen_native_median": 31.289,
+      "one_shot": [
+        3709.892,
+        3674.167,
+        3646.987
+      ],
+      "one_shot_median": 3674.167,
+      "lane_cache": [
+        2001.926,
+        1962.58,
+        1952.54
+      ],
+      "lane_cache_median": 1962.58,
+      "one_shot_ratio": 117.55077425134374,
+      "lane_cache_ratio": 62.790504223189146
+    },
+    {
+      "tier": "chunk",
+      "workload": "regexp_like",
+      "frozen_native": [
+        246.508,
+        248.152,
+        245.892
+      ],
+      "frozen_native_median": 246.508,
+      "one_shot": [
+        2627.513,
+        2623.998,
+        2618.02
+      ],
+      "one_shot_median": 2623.998,
+      "lane_cache": [
+        1496.114,
+        1485.062,
+        1506.716
+      ],
+      "lane_cache_median": 1496.114,
+      "one_shot_ratio": 10.647032030322256,
+      "lane_cache_ratio": 6.069231018871599
+    },
+    {
+      "tier": "chunk",
+      "workload": "strcmp",
+      "frozen_native": [
+        75.671,
+        75.637,
+        75.842
+      ],
+      "frozen_native_median": 75.671,
+      "one_shot": [
+        2443.0,
+        2421.159,
+        2419.146
+      ],
+      "one_shot_median": 2421.159,
+      "lane_cache": [
+        1322.887,
+        1331.955,
+        1313.546
+      ],
+      "lane_cache_median": 1322.887,
+      "one_shot_ratio": 32.01024630802385,
+      "lane_cache_ratio": 17.482086928942394
+    }
+  ],
+  "initial_unified_plus": {
+    "process_medians": [
+      256.588,
+      253.84,
+      257.137
+    ],
+    "median": 256.588,
+    "paired_initial_over_final": 19.831636587999384
+  },
+  "counts": {
+    "batch_timings": 4872,
+    "batch_checksum_groups": 348,
+    "width_timings": 972,
+    "width_result_groups": 36,
+    "initial_timings": 105
+  }
+}

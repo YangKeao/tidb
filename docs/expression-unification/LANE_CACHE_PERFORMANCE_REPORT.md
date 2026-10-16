@@ -1,5 +1,7 @@
 # Lane cache 与真实 batch 表达式性能报告
 
+最新的逐条调优历程、统一口径最终表和全部64个workload复测，见 [完整性能演进报告](PERFORMANCE_EVOLUTION_REPORT.md)。下文保留各阶段原始口径与当时的测量，不把不同阶段倍率连乘。
+
 历史报告日期：2026-10-08
 
 TiDB 当前提交：`f5109ab113f75ebab762fef5e292efaa54542a73`（运行时代码与 `c1072a80` 相同，本轮只增加 probe/test-only route 观测）

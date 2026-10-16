@@ -1,0 +1,1 @@
+Excluded initial/final supplemental attempt: original historical decimal_add was d+CAST(0.55 AS DECIMAL(10,2)), whereas final was d+d. Its checksum differed; no latency ratio is used. Rebuild the historical test-only probe with d+d and rerun all thirteen supplemental pairs. Production remains frozen f388/608. Main native/final matrix was already matched and is unaffected.
