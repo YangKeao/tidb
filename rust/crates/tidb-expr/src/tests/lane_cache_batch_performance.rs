@@ -371,6 +371,7 @@ fn tikv_batch_workload(name: &str) -> bool {
                 | "strcmp"
                 | "lazy_if"
                 | "coalesce_nullif"
+                | "json_type"
                 | "lower"
                 | "upper"
                 | "substring"

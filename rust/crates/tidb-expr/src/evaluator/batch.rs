@@ -131,6 +131,17 @@ impl BatchFailure {
             FailureKind::Admission(message) => LocalError::InvalidSpec(message.into()),
             FailureKind::Bridge(error) => LocalError::BindingContract(error.to_string()),
         };
+        if let Some(disposition) = local.native_json_type_disposition() {
+            use tidb_query_expr::local::NativeJsonTypeDisposition;
+            let error = match disposition {
+                NativeJsonTypeDisposition::EmptyText => crate::context::JsonError::EmptyText,
+                NativeJsonTypeDisposition::InvalidText => crate::context::JsonError::InvalidText,
+                NativeJsonTypeDisposition::InvalidUtf8 => {
+                    return EvalError::Unsupported("invalid UTF-8 string datum").into()
+                }
+            };
+            return EvalError::Json(error).into();
+        }
         EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
             local,
             Some(phase),
@@ -190,14 +201,15 @@ enum SourceKind {
     Call { function: FunctionRef, arity: usize },
 }
 impl SourceKind {
-    fn capture(node: &Expression, sql: &FieldType) -> Result<Self> {
+    fn capture(node: &Expression, sql: &FieldType, raw_json_bytes: bool) -> Result<Self> {
         Ok(match node {
             Expression::Constant(value) => Self::Constant {
-                value: strict_literal(
+                value: source_literal(
                     value
                         .literal_value()
                         .ok_or_else(|| BatchFailure::admission("nonliteral batch source"))?,
                     sql,
+                    raw_json_bytes,
                 )?,
             },
             Expression::Column(column) => Self::Column {
@@ -218,6 +230,7 @@ impl SourceKind {
 struct NodeRecord {
     sql: FieldType,
     kind: SourceKind,
+    raw_json_bytes: bool,
 }
 
 struct BatchSource {
@@ -251,6 +264,7 @@ impl std::fmt::Debug for BatchSource {
 struct CheckedNode<'a> {
     node: &'a Expression,
     sql: &'a FieldType,
+    raw_json_bytes: bool,
 }
 struct Budget {
     used: usize,
@@ -329,6 +343,30 @@ fn check_type(sql: &FieldType) -> Result<()> {
         ));
     }
     Ok(())
+}
+fn native_json_bytes_type() -> FieldType {
+    FieldType::new(FieldTypeCode::Blob).with_collation(tidb_datatype::Collation::Binary)
+}
+fn source_literal(value: &Datum, sql: &FieldType, raw_json_bytes: bool) -> Result<ScalarValue> {
+    if raw_json_bytes {
+        return match (sql.eval_type(), value) {
+            (NativeEvalType::Json, Datum::Null) => Ok(ScalarValue::Bytes(None)),
+            (NativeEvalType::Json, Datum::Json(value)) => {
+                Ok(ScalarValue::Bytes(Some(value.encoded())))
+            }
+            _ => Err(BatchFailure::admission(
+                "native JSON byte view requires an actual JSON literal",
+            )),
+        };
+    }
+    strict_literal(value, sql)
+}
+fn raw_json_argument(function: &ScalarFunction) -> bool {
+    function.func_name.lowercase() == "json_type"
+        && function.args.len() == 1
+        && function.args[0]
+            .static_type()
+            .is_some_and(|field| field.eval_type() == NativeEvalType::Json)
 }
 fn strict_literal(value: &Datum, sql: &FieldType) -> Result<ScalarValue> {
     match (sql.eval_type(), value) {
@@ -506,6 +544,35 @@ fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
         .get_static_type()
         .ok_or_else(|| BatchFailure::admission("batch call has no return type"))?
         .eval_type();
+    if name == "json_type" && function.args.len() == 1 && ret == NativeEvalType::String {
+        let argument = &function.args[0];
+        let operation = match argument.static_type().map(FieldType::eval_type) {
+            Some(NativeEvalType::String) => {
+                if let Expression::Constant(constant) = argument {
+                    if !matches!(
+                        constant.literal_value(),
+                        Some(Datum::Null | Datum::String(_) | Datum::Bytes(_))
+                    ) {
+                        return Err(BatchFailure::admission(
+                            "JSON_TYPE text source needs actual String/Bytes datum kind",
+                        ));
+                    }
+                }
+                tidb_query_expr::LocalFunctionId::JsonTypeTextSqlNative
+            }
+            Some(NativeEvalType::Json)
+                if matches!(argument, Expression::Column(_) | Expression::Constant(_)) =>
+            {
+                tidb_query_expr::LocalFunctionId::JsonTypeBinarySqlNative
+            }
+            _ => {
+                return Err(BatchFailure::admission(
+                    "JSON_TYPE needs a ready string or raw native JSON leaf",
+                ))
+            }
+        };
+        return Ok((FunctionRef::Local(operation), 1));
+    }
     let control = match name {
         "if" => Some("If"),
         "ifnull" => Some("IfNull"),
@@ -762,14 +829,17 @@ fn preflight<'a>(
     }
     let mut pending = Vec::new();
     let mut checked = Vec::new();
-    budget.array::<(&Expression, usize)>(1)?;
+    budget.array::<(&Expression, usize, bool)>(1)?;
     reserve(&mut pending, 1)?;
-    pending.push((root, 1usize));
+    pending.push((root, 1usize, false));
     let mut scheduled = 1usize;
-    while let Some((node, depth)) = pending.pop() {
+    while let Some((node, depth, raw_json_bytes)) = pending.pop() {
         let (sql, collation) = parts(node)?;
         check_type(sql)?;
         budget.field(sql, 3)?; // native source, projected declaration, C snapshot
+        if raw_json_bytes {
+            budget.field(&native_json_bytes_type(), 3)?;
+        }
         budget.array::<CheckedNode<'_>>(1)?;
         budget.array::<NodeRecord>(1)?;
         budget.array::<BuildNode>(1)?;
@@ -779,12 +849,25 @@ fn preflight<'a>(
         budget.add(collate.len())?;
         match node {
             Expression::Constant(value) => {
-                strict_literal(
-                    value.literal_value().ok_or_else(|| {
-                        BatchFailure::admission("parameter/deferred batch source")
-                    })?,
-                    sql,
-                )?;
+                let literal = value
+                    .literal_value()
+                    .ok_or_else(|| BatchFailure::admission("parameter/deferred batch source"))?;
+                if raw_json_bytes {
+                    if let Datum::Json(value) = literal {
+                        budget.add(
+                            value
+                                .value()
+                                .len()
+                                .checked_add(1)
+                                .ok_or_else(|| resource("native JSON literal size overflow"))?
+                                .checked_mul(3)
+                                .ok_or_else(|| {
+                                    resource("native JSON literal clone size overflow")
+                                })?,
+                        )?;
+                    }
+                }
+                source_literal(literal, sql, raw_json_bytes)?;
             }
             Expression::Column(column) => {
                 if column.virtual_expr.is_some() || column.correlated_col_unique_id != 0 {
@@ -820,16 +903,20 @@ fn preflight<'a>(
                     .checked_add(1)
                     .filter(|depth| *depth <= limits.tree.max_depth)
                     .ok_or_else(|| resource("batch source depth policy exceeded"))?;
-                budget.array::<(&Expression, usize)>(arity)?;
+                budget.array::<(&Expression, usize, bool)>(arity)?;
                 reserve(&mut pending, arity)?;
                 for child in function.args.iter().rev() {
-                    pending.push((child, child_depth));
+                    pending.push((child, child_depth, raw_json_argument(function)));
                 }
             }
             Expression::CorrelatedColumn(_) => unreachable!(),
         }
         reserve(&mut checked, 1)?;
-        checked.push(CheckedNode { node, sql });
+        checked.push(CheckedNode {
+            node,
+            sql,
+            raw_json_bytes,
+        });
     }
     for item in &checked {
         if let Expression::Column(column) = item.node {
@@ -947,8 +1034,12 @@ fn lower(
     reserve(&mut nodes, checked.len())?;
     reserve(&mut build, checked.len())?;
     for (ordinal, item) in checked.into_iter().enumerate() {
-        let field = projected(item.sql, new_collation)?;
-        let kind = SourceKind::capture(item.node, item.sql)?;
+        let field = if item.raw_json_bytes {
+            projected(&native_json_bytes_type(), new_collation)?
+        } else {
+            projected(item.sql, new_collation)?
+        };
+        let kind = SourceKind::capture(item.node, item.sql, item.raw_json_bytes)?;
         let construction = match &kind {
             SourceKind::Constant { value, .. } => BuildKind::Literal(value.clone()),
             SourceKind::Column { .. } => {
@@ -984,6 +1075,7 @@ fn lower(
         nodes.push(NodeRecord {
             sql: snapshot_field_type(item.sql),
             kind,
+            raw_json_bytes: item.raw_json_bytes,
         });
     }
     let mut stack = Vec::new();
@@ -1465,10 +1557,18 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch slot has no native column"));
         };
         // Physical already: get_row would apply the actual Chunk Sel twice.
-        Ok(self
+        let value = self
             .input
             .physical_row(row.input_row)
-            .get_datum(*index, &node.sql))
+            .get_datum(*index, &node.sql);
+        if node.raw_json_bytes {
+            return match value {
+                Datum::Null => Ok(Datum::Null),
+                Datum::Json(value) => Ok(Datum::Bytes(value.encoded())),
+                _ => Err(binding("native JSON view read a non-JSON source")),
+            };
+        }
+        Ok(value)
     }
 
     fn read_batch(
@@ -1496,6 +1596,25 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch slot has no native column"));
         };
         let column = self.input.column(*index);
+        if node.raw_json_bytes {
+            let cells = column.raw_cells();
+            let payload = physical_rows
+                .iter()
+                .try_fold(0usize, |total, &row| {
+                    total.checked_add(if cells.is_null(row) {
+                        0
+                    } else {
+                        cells.get(row).len()
+                    })
+                })
+                .ok_or_else(|| resource("native JSON byte view size overflow"))?;
+            let mut output = ChunkedVecBytes::try_with_capacities(physical_rows.len(), payload)
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+            for &row in physical_rows {
+                output.push_ref((!cells.is_null(row)).then(|| cells.get(row)));
+            }
+            return Ok(Some(VectorValue::Bytes(output)));
+        }
         match node.sql.eval_type() {
             NativeEvalType::Int => {
                 let cells = column.raw_cells();

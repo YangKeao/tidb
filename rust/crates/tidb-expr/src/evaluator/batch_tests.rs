@@ -2726,3 +2726,194 @@ fn demanded_controls_select_native_carriers_without_losing_payload_metadata() {
         assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
     }
 }
+
+#[test]
+fn native_json_type_preserves_raw_tags_payloads_and_selected_rows() {
+    let json = FieldType::new(FieldTypeCode::Json);
+    let make = |tag, payload: &[u8]| Datum::Json(BinaryJSON::from_encoded_parts(tag, payload));
+    let cases = vec![
+        (Datum::Null, None),
+        (make(4, &[0]), Some("NULL")),
+        (make(4, &[9]), Some("BOOLEAN")),
+        (make(0x0e, &[]), Some("DATE")),
+        (make(0x0d, &[0xfc, 1, b'x']), Some("BLOB")),
+        (
+            Datum::Json(BinaryJSON::parse("[1,true]").unwrap()),
+            Some("ARRAY"),
+        ),
+    ];
+    let rows: Vec<_> = cases.iter().map(|(value, _)| vec![value.clone()]).collect();
+    for vectorized in [false, true] {
+        let ctx = Context::new(vectorized);
+        let root = call("json_type", string_ty(), vec![typed_column(0, &json)]);
+        for selection in [
+            None,
+            Some(vec![]),
+            Some(
+                (0..2050)
+                    .map(|index| 2050 - index)
+                    .map(|index| index % cases.len())
+                    .collect(),
+            ),
+        ] {
+            let suite = EvaluatorSuite::new(vec![root.clone()], false);
+            let mut input = chunk(&[json.clone()], &rows);
+            input.set_sel(selection.clone());
+            let mut output = output_for(&string_ty());
+            suite
+                .run_with_tikv_batch(&ctx, &mut input, &mut output, &[json.clone()])
+                .unwrap();
+            let selected = selection.unwrap_or_else(|| (0..cases.len()).collect());
+            for (row, physical) in selected.into_iter().enumerate() {
+                let actual = output.get_row(row).get_datum(0, &string_ty());
+                let expected = cases[physical].1.map_or(Datum::Null, |value| {
+                    Datum::String(StringDatum::new(
+                        value.as_bytes().to_vec(),
+                        Collation::Utf8Mb4Bin,
+                    ))
+                });
+                assert_eq!(actual, expected);
+            }
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        }
+    }
+    // Literal JSON leaves use the same raw view, including source-specific tags.
+    let root = call(
+        "json_type",
+        string_ty(),
+        vec![literal(make(0x0e, &[]), json)],
+    );
+    let suite = self::suite(root);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    suite
+        .run_with_tikv_batch(&Context::new(true), &mut input, &mut output, &[])
+        .unwrap();
+    assert_eq!(output.get_row(0).get_string(0), "DATE");
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+}
+
+#[test]
+fn native_json_type_errors_keep_native_sql_disposition_and_do_not_retry() {
+    let json = FieldType::new(FieldTypeCode::Json);
+    let text = string_ty();
+    let cases = vec![
+        (text.clone(), Datum::new_string(b" ".to_vec())),
+        (text.clone(), Datum::new_string(b"{".to_vec())),
+        (text, Datum::new_string(vec![0xff])),
+        (
+            json.clone(),
+            Datum::Json(BinaryJSON::from_encoded_parts(0xff, [])),
+        ),
+        (
+            json.clone(),
+            Datum::Json(BinaryJSON::from_encoded_parts(0x0d, [0xfc, 1, b'x', b'y'])),
+        ),
+    ];
+    for (field, value) in cases {
+        let root = call("json_type", string_ty(), vec![typed_column(0, &field)]);
+        let rows = vec![vec![value.clone()]];
+        let mut input = chunk(&[field.clone()], &rows);
+        let expected = root
+            .eval(&Context::new(true), input.get_row(0))
+            .unwrap_err();
+        let suite = self::suite(root);
+        let mut output = output_for(&string_ty());
+        let error = suite
+            .run_with_tikv_batch(
+                &Context::new(true),
+                &mut input,
+                &mut output,
+                &[field.clone()],
+            )
+            .unwrap_err();
+        let EvaluatorError::Eval(actual) = error else {
+            panic!("unexpected error carrier")
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(output.num_rows(), 0);
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        // Also validate the literal producer, without converting an invalid tag
+        // to the wire Json enum at preparation time.
+        let root = call("json_type", string_ty(), vec![literal(value, field)]);
+        let suite = self::suite(root);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let EvaluatorError::Eval(actual) = suite
+            .run_with_tikv_batch(&Context::new(true), &mut input, &mut output, &[])
+            .unwrap_err()
+        else {
+            panic!("unexpected literal error")
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(suite.batch_route_snapshot().fallback, 0);
+    }
+}
+
+#[test]
+fn native_json_type_skipped_bad_document_is_never_read_or_parsed() {
+    let json = FieldType::new(FieldTypeCode::Json);
+    let root = call(
+        "if",
+        string_ty(),
+        vec![
+            column(0),
+            literal(Datum::new_string(b"safe".to_vec()), string_ty()),
+            call("json_type", string_ty(), vec![typed_column(1, &json)]),
+        ],
+    );
+    let suite = self::suite(root);
+    let schema = [ty(), json];
+    let rows = vec![
+        vec![
+            Datum::Int(1),
+            Datum::Json(BinaryJSON::from_encoded_parts(0xff, [])),
+        ],
+        vec![
+            Datum::Int(0),
+            Datum::Json(BinaryJSON::from_encoded_parts(0x0e, [])),
+        ],
+    ];
+    let mut input = chunk(&schema, &rows);
+    input.set_sel(Some(vec![1, 0, 1, 0]));
+    let mut output = output_for(&string_ty());
+    suite
+        .run_with_tikv_batch(&Context::new(true), &mut input, &mut output, &schema)
+        .unwrap();
+    assert_eq!(
+        (0..4)
+            .map(|row| output.get_row(row).get_string(0))
+            .collect::<Vec<_>>(),
+        ["DATE", "safe", "DATE", "safe"]
+    );
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+}
+
+#[test]
+fn raw_json_literal_source_budget_fails_before_preparation_clones() {
+    let root = call(
+        "json_type",
+        string_ty(),
+        vec![literal(
+            Datum::Json(BinaryJSON::from_encoded_parts(4, vec![0; 600_000])),
+            FieldType::new(FieldTypeCode::Json),
+        )],
+    );
+    let suite = self::suite(root);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    let error = suite
+        .run_with_tikv_batch(&Context::new(true), &mut input, &mut output, &[])
+        .unwrap_err();
+    let EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(error)) = error else {
+        panic!("expected source resource failure")
+    };
+    assert_eq!(
+        error.class(),
+        crate::ExpressionRuntimeFailureClass::ResourceLimit
+    );
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+    assert_eq!(output.num_rows(), 0);
+}

@@ -26,7 +26,8 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N1: Terminal preparation errors are cached and propagated; regression fails before fix, batch35 pass, full1387 pass/same4 known failures/95ignored, lint and scoped fmt pass.
 - [x] (2026-10-17) N2: multi-output/leaf/direct-column scheduling, selected raw-column alias-safe copy, suite metadata/node caps. Batch40/Chunk275/pinned-nightly Projection9 pass; full1392 retains same4 inherited failures; lint/fmt pass.
 - [x] (2026-10-17) N3a: STRCMP uses its existing native collation kernel in composed shared graphs; batch41/full1393 retain same4 failures, TiKV1033 retains same6, actual rewritten SQL25 scenarios all prepared without fallback/refusal; scoped project clippy/lint/fmt pass.
-- [ ] N3b: Admit CONCAT and JSON_TYPE with exact native SQL contracts.
+- [x] (2026-10-17) N3b: JSON_TYPE SQL kernels, explicit native failure kinds and raw native JSON leaf view. Frontbatch47/full1399same4, coreprofile60/full1036same6 pass;25 SQL routes pass without fallback/refusal; lint/scoped project clippy/fmt pass.
+- [ ] N3c: CONCAT/CONCAT_WS with packet policy and demanded prefixes.
 - [x] (2026-10-17) N4a: shared frame controls IF/IFNULL/COALESCE/CASE and AND/OR, exact native carriers, signed Int NULLIF, compiled singleton window. Batch43/core profile59/Projection9 pass; full1395 and1035 retain exactly the inherited4/6 failures. Both25-scenario SQL cohorts pass with no fallback/refusal; lint/scoped project clippy/fmt pass.
 - [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
@@ -190,3 +191,21 @@ kind/FSP. Conditions needing truth coercion, unsigned branches and effectful
 calls remain explicitly unfinished. Eager arithmetic's row/vector argument
 policy and source-shaped SQL error adaptation require separate validation;
 these changes do not establish complete SQL diagnostic parity.
+
+N3b: Native JSON_TYPE has representation-sensitive behavior: unknown tags and
+opaque framing failures are SQL document errors, while malformed Literal tags
+still report BOOLEAN and temporal tags report their native type without decoding
+an instant. The existing report worker already uses the correct shared primitive;
+the new SQL graph kernel returns its actual String/error instead of the opaque
+report envelope. An explicit failure-kind enum bridges native JSON errors and
+invalid UTF-8; a forged numeric code/message is not a disposition.
+
+JSON_TYPE's direct JSON columns/literals now have an explicit raw-byte projection.
+The original SQL declaration remains in NodeRecord and row-schema validation;
+only its lowered checked carrier is Blob. This preserves every type-code byte
+and payload without passing through wire JsonType. NativeChunk performs the
+projection after reading under the original native schema; selected raw cell
+copies preserve duplicates and NULL. Raw JSON literal source bytes are gated
+before cloning. Computed JSON subtrees, non-String/Bytes text datum kinds and
+other implicit coercions are still unfinished, not silently reclassified as
+supported. No source or failure path calls the legacy expression evaluator.
