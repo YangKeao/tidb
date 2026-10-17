@@ -1889,7 +1889,7 @@ fn arithmetic_host_metadata(
         }
     }
     Ok(NativeHostMetadata::Arithmetic {
-                                    operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
+                                    batch:None, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
                                     argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].sql),snapshot_field_type(checked[right].sql)],
                                     literal:[matches!(sql.args[0],Expression::Constant(_)),matches!(sql.args[1],Expression::Constant(_))],
                                     binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),

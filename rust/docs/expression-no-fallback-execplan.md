@@ -646,3 +646,40 @@ its N6b core evidence remains applicable. See evidence/no-fallback-n6c.md.
 Next implement actual window providers and per-edge lowering, preserving the
 bulk integer versus generic arithmetic distinction described above. No new
 frontend root fallback is retired by this value-interface checkpoint.
+
+
+N6d outcome: NativeBatchHosts now implements explicit
+window arithmetic callbacks over actual native capabilities. Window tasks own
+a physical map and complete converted left operand; they share the row host's
+generation namespace, task installation and cancellation. Each complete typed
+source vector precedes numeric casts; literal normalization occurs once before
+broadcast. Both operands finish before shared PreparedArithmetic.compute and
+publication. The metadata distinguishes bulk integer mode, generic domain,
+requested integer output and source-owner classes. Existing row metadata
+explicitly has no window mode.
+
+Initial existing batch106 tests pass. Direct new provider/reference tests are
+running, covering empty/repeated selections, constants, integer signedness,
+real/Decimal/string diagnostics, actual native overflow and input-failure order.
+Their source descriptors are immutable; runtime bindings own values only.
+Source lowering still emits existing operations: actual window root promotion
+and whole-selection phases beyond1024 remain separate unfinished steps.
+
+
+N6d validation:98 direct window/native batch cases pass with exact values,
+native errors, diagnostics and configuration reads, including integer signedness
+and overflow. An additional148 provider resource-refusal invocations prove
+pre-input and post-left-input/pre-conversion refusal, no right demand or
+context effect, and task cleanup. Full frontend1466 pass with the exact
+inherited four failures and95 ignored; all107 batch tests pass within that run.
+Projection22, required lint, pinned formatting and diff checks pass. The paired
+TiKVe9b0a92 changes only the maintenance guide; SDK code remains N6b's ec9cc67.
+See evidence/no-fallback-n6d.md.
+
+Next linearize the provider's repeated payload bookkeeping before widening
+selection phases, then implement whole-selection execution and per-edge source
+lowering. Source promotion cannot reuse the caller's current1024 root tiling:
+a right failure in the first tile would preempt a left failure in a later tile.
+Audit actual SDK kernel width assumptions before choosing a checked wide-frame
+profile or phase-internal tiling. This checkpoint still closes no frontend
+root fallback; remaining family/caller/source/multi-output migration is active.

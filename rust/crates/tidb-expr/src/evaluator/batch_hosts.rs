@@ -20,8 +20,27 @@ use super::*;
 use tidb_query_datatype::codec::data_type::ScalarValueRef;
 use tidb_query_expr::local::{
     ArgMode, ConcatDemand, ConcatDemandAction, ConcatKind, HostArgReply, HostArgRequest,
-    HostCatalogKey, HostInvocation, HostSlot, HostStart, HostStep, HostTaskId, LocalHostServices,
+    HostCatalogKey, HostInvocation, HostSlot, HostStart, HostStep, HostTaskId, HostWindowArgReply,
+    HostWindowInvocation, LocalHostServices,
 };
+
+#[path = "batch_arithmetic_window.rs"]
+mod arithmetic_window;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum WindowArithmeticSource {
+    Literal,
+    Column,
+    Computed,
+    IntegerReady,
+}
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WindowArithmeticMetadata {
+    pub domain: NativeEvalType,
+    pub integer: bool,
+    pub output_integer: bool,
+    pub sources: [WindowArithmeticSource; 2],
+}
 
 pub(super) enum NativeHostMetadata {
     Plain,
@@ -48,6 +67,7 @@ pub(super) enum NativeHostMetadata {
         output_role: NativeValueRole,
     },
     Arithmetic {
+        batch: Option<WindowArithmeticMetadata>,
         operation: SqlBatchHostOperation,
         name: Box<str>,
         result_type: FieldType,
@@ -98,6 +118,11 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    WindowArithmetic {
+        next: usize,
+        rows: Vec<usize>,
+        left: Vec<Datum>,
+    },
     Arithmetic {
         next: usize,
         typed: bool,
@@ -144,7 +169,9 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
-            SqlDemand::Arithmetic { next, .. } => Ok(Some(*next)),
+            SqlDemand::WindowArithmetic { next, .. } | SqlDemand::Arithmetic { next, .. } => {
+                Ok(Some(*next))
+            }
             SqlDemand::Comparison { left_token } => Ok(Some(usize::from(left_token.is_some()))),
             SqlDemand::Nullable { next }
             | SqlDemand::Conditional { next }
@@ -160,7 +187,8 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::Nullable { .. }
+            SqlDemand::WindowArithmetic { .. }
+            | SqlDemand::Nullable { .. }
             | SqlDemand::Conditional { .. }
             | SqlDemand::Logical { .. }
             | SqlDemand::Truth
@@ -194,6 +222,12 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::WindowArithmetic { rows, left, .. } = &self.demand {
+            return bytes
+                .checked_add(array_bytes::<usize>(rows.capacity())?)
+                .and_then(|bytes| bytes.checked_add(arithmetic_window::values_bytes(left).ok()?))
+                .ok_or_else(|| resource("window arithmetic retained bytes overflow"));
+        }
         if let SqlDemand::Arithmetic {
             left: Some(value), ..
         } = &self.demand
@@ -315,6 +349,61 @@ impl<'a> NativeBatchHosts<'a> {
     }
     pub(super) fn take_native_error(&mut self) -> Option<EvalError> {
         self.native_error.take()
+    }
+    fn install_task(
+        &mut self,
+        host_slot: HostSlot,
+        row: InputRow,
+        arity: usize,
+        demand: SqlDemand,
+    ) -> LocalResult<HostStart> {
+        let generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| resource("SQL host generation space exhausted"))?;
+        let slot = match self.slots.iter().position(|slot| slot.task.is_none()) {
+            Some(slot) => slot,
+            None => {
+                self.check_bytes(
+                    self.retained_bytes()?
+                        .checked_add(std::mem::size_of::<TaskSlot>())
+                        .ok_or_else(|| resource("SQL host slot size overflow"))?,
+                )?;
+                self.slots
+                    .try_reserve_exact(1)
+                    .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+                self.slots.push(TaskSlot {
+                    generation: 0,
+                    task: None,
+                });
+                self.check_bytes(self.retained_bytes()?)?;
+                self.slots.len() - 1
+            }
+        };
+        let task = NativeTask {
+            slot: host_slot,
+            row,
+            arity,
+            demand,
+            values: Vec::new(),
+        };
+        self.check_bytes(
+            self.retained_bytes()?
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("SQL host task size overflow"))?,
+        )?;
+        self.slots[slot] = TaskSlot {
+            generation,
+            task: Some(task),
+        };
+        self.generation = generation;
+        Ok(HostStart::Pending {
+            task: HostTaskId { slot, generation },
+            request: HostArgRequest {
+                index: 0,
+                mode: ArgMode::Fresh,
+            },
+        })
     }
     fn retained_bytes(&self) -> LocalResult<usize> {
         self.slots
@@ -646,6 +735,7 @@ impl<'a> NativeBatchHosts<'a> {
             overflow_expressions,
             output_node,
             output_role,
+            batch: None,
         }) = self.metadata.get(slot.index())
         else {
             return Err(binding("arithmetic source descriptor missing"));
@@ -1693,6 +1783,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             | SqlBatchHostOperation::MultiplyNative) => {
                 let Some(NativeHostMetadata::Arithmetic {
                     operation: descriptor_operation,
+                    batch: None,
                     name,
                     mode,
                     ..
@@ -1927,48 +2018,27 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 }
             }
         };
-        let generation = self
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| resource("SQL host generation space exhausted"))?;
-        let slot = match self.slots.iter().position(|slot| slot.task.is_none()) {
-            Some(slot) => slot,
-            None => {
-                self.check_bytes(
-                    self.retained_bytes()?
-                        .checked_add(std::mem::size_of::<TaskSlot>())
-                        .ok_or_else(|| resource("SQL host slot size overflow"))?,
-                )?;
-                self.slots
-                    .try_reserve_exact(1)
-                    .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-                self.slots.push(TaskSlot {
-                    generation: 0,
-                    task: None,
-                });
-                self.check_bytes(self.retained_bytes()?)?;
-                self.slots.len() - 1
-            }
-        };
-        let task = NativeTask {
-            slot: invocation.slot,
-            row: invocation.row,
-            arity: invocation.arg_types.len(),
+        self.install_task(
+            invocation.slot,
+            invocation.row,
+            invocation.arg_types.len(),
             demand,
-            values: Vec::new(),
-        };
-        self.slots[slot] = TaskSlot {
-            generation,
-            task: Some(task),
-        };
-        self.generation = generation;
-        Ok(HostStart::Pending {
-            task: HostTaskId { slot, generation },
-            request: HostArgRequest {
-                index: 0,
-                mode: ArgMode::Fresh,
-            },
-        })
+        )
+    }
+    fn start_window(
+        &mut self,
+        _ctx: &mut EvalContext,
+        invocation: HostWindowInvocation<'_>,
+    ) -> LocalResult<HostStart> {
+        self.start_arithmetic_window(invocation)
+    }
+    fn resume_window(
+        &mut self,
+        _ctx: &mut EvalContext,
+        id: &HostTaskId,
+        reply: HostWindowArgReply<'_>,
+    ) -> LocalResult<HostStep> {
+        self.resume_arithmetic_window(id, reply)
     }
     fn resume(
         &mut self,
