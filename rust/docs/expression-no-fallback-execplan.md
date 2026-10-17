@@ -27,7 +27,8 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N2: multi-output/leaf/direct-column scheduling, selected raw-column alias-safe copy, suite metadata/node caps. Batch40/Chunk275/pinned-nightly Projection9 pass; full1392 retains same4 inherited failures; lint/fmt pass.
 - [x] (2026-10-17) N3a: STRCMP uses its existing native collation kernel in composed shared graphs; batch41/full1393 retain same4 failures, TiKV1033 retains same6, actual rewritten SQL25 scenarios all prepared without fallback/refusal; scoped project clippy/lint/fmt pass.
 - [ ] N3b: Admit CONCAT and JSON_TYPE with exact native SQL contracts.
-- [ ] N4: Execute lazy control flow with demanded rows in the shared engine.
+- [x] (2026-10-17) N4a: shared frame controls IF/IFNULL/COALESCE/CASE and AND/OR, exact native carriers, signed Int NULLIF, compiled singleton window. Batch43/core profile59/Projection9 pass; full1395 and1035 retain exactly the inherited4/6 failures. Both25-scenario SQL cohorts pass with no fallback/refusal; lint/scoped project clippy/fmt pass.
+- [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -171,3 +172,21 @@ resource accounting and must not expose arbitrary Rust callbacks as an unchecked
 escape into the old interpreter.
 
 N3a discovery: a native collation literal adds a lowered graph node without adding a SQL call. Reindex lowered preorder ordinals while preserving original SQL source IDs; nested sibling calls test both identities. STRCMP is explicitly admitted only with a known constant policy. Existing opaque ready-value and row contracts remain closed.
+
+N4a findings: existing ControlFrame already schedules lazy child programs
+iteratively, but its unannotated selection was signed-Int-only, and its null
+helper supported only lineaged Int/Bytes. Reusing it required typed selected
+payloads, typed generated NULL and complete null discrimination, rather than
+calling a native expression callback. BatchCallSignature describes actual
+variable-arity controls while the historical batch_signature API remains the
+fixed eager registry. BatchFacts snapshots determine the allowed occurrence
+window without another source traversal/allocation. The frontend tiles all
+control-containing graphs at width1; this is a deliberate initial performance
+cost and is not an alternate expression route.
+
+Native COALESCE changes temporal FSP on the selected value. Until that transform
+is in the shared program, frontend admission requires matching temporal
+kind/FSP. Conditions needing truth coercion, unsigned branches and effectful
+calls remain explicitly unfinished. Eager arithmetic's row/vector argument
+policy and source-shaped SQL error adaptation require separate validation;
+these changes do not establish complete SQL diagnostic parity.

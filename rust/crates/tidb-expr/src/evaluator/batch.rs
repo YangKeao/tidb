@@ -506,6 +506,116 @@ fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
         .get_static_type()
         .ok_or_else(|| BatchFailure::admission("batch call has no return type"))?
         .eval_type();
+    let control = match name {
+        "if" => Some("If"),
+        "ifnull" => Some("IfNull"),
+        "coalesce" => Some("Coalesce"),
+        "case" => Some("CaseWhen"),
+        "and" | "logicand" => Some("LogicalAnd"),
+        "or" | "logicor" => Some("LogicalOr"),
+        _ => None,
+    };
+    if let Some(control) = control {
+        use tipb::ScalarFuncSig as Sig;
+        let signature = match (control, ret) {
+            ("If", NativeEvalType::Int) => Sig::IfInt,
+            ("If", NativeEvalType::Real) => Sig::IfReal,
+            ("If", NativeEvalType::Decimal) => Sig::IfDecimal,
+            ("If", NativeEvalType::String) => Sig::IfString,
+            ("If", NativeEvalType::Datetime) => Sig::IfTime,
+            ("If", NativeEvalType::Timestamp) => Sig::IfTime,
+            ("If", NativeEvalType::Duration) => Sig::IfDuration,
+            ("If", NativeEvalType::Json) => Sig::IfJson,
+            ("IfNull", NativeEvalType::Int) => Sig::IfNullInt,
+            ("IfNull", NativeEvalType::Real) => Sig::IfNullReal,
+            ("IfNull", NativeEvalType::Decimal) => Sig::IfNullDecimal,
+            ("IfNull", NativeEvalType::String) => Sig::IfNullString,
+            ("IfNull", NativeEvalType::Datetime) => Sig::IfNullTime,
+            ("IfNull", NativeEvalType::Timestamp) => Sig::IfNullTime,
+            ("IfNull", NativeEvalType::Duration) => Sig::IfNullDuration,
+            ("IfNull", NativeEvalType::Json) => Sig::IfNullJson,
+            ("Coalesce", NativeEvalType::Int) => Sig::CoalesceInt,
+            ("Coalesce", NativeEvalType::Real) => Sig::CoalesceReal,
+            ("Coalesce", NativeEvalType::Decimal) => Sig::CoalesceDecimal,
+            ("Coalesce", NativeEvalType::String) => Sig::CoalesceString,
+            ("Coalesce", NativeEvalType::Datetime) => Sig::CoalesceTime,
+            ("Coalesce", NativeEvalType::Timestamp) => Sig::CoalesceTime,
+            ("Coalesce", NativeEvalType::Duration) => Sig::CoalesceDuration,
+            ("Coalesce", NativeEvalType::Json) => Sig::CoalesceJson,
+            ("CaseWhen", NativeEvalType::Int) => Sig::CaseWhenInt,
+            ("CaseWhen", NativeEvalType::Real) => Sig::CaseWhenReal,
+            ("CaseWhen", NativeEvalType::Decimal) => Sig::CaseWhenDecimal,
+            ("CaseWhen", NativeEvalType::String) => Sig::CaseWhenString,
+            ("CaseWhen", NativeEvalType::Datetime) => Sig::CaseWhenTime,
+            ("CaseWhen", NativeEvalType::Timestamp) => Sig::CaseWhenTime,
+            ("CaseWhen", NativeEvalType::Duration) => Sig::CaseWhenDuration,
+            ("CaseWhen", NativeEvalType::Json) => Sig::CaseWhenJson,
+            ("LogicalAnd", NativeEvalType::Int) => Sig::LogicalAnd,
+            ("LogicalOr", NativeEvalType::Int) => Sig::LogicalOr,
+            _ => {
+                return Err(BatchFailure::admission(
+                    "control result needs a supported shared carrier",
+                ))
+            }
+        };
+        let function_ref = FunctionRef::TiPb(signature);
+        let contract =
+            tidb_query_expr::local::batch_signature_for_arity(function_ref, function.args.len())
+                .ok_or_else(|| {
+                    BatchFailure::admission("control arity is outside shared demand contract")
+                })?;
+        let exact = function
+            .get_static_type()
+            .is_some_and(|field| !field.is_unsigned())
+            && function.args.iter().enumerate().all(|(index, arg)| {
+                arg.static_type().is_some_and(|field| {
+                    !field.is_unsigned()
+                        && Some(batch_eval_type(field.eval_type())) == contract.argument_type(index)
+                })
+            });
+        // Native COALESCE stamps temporal FSP on the selected payload.
+        // Until that transform is a shared node, only admit already matching
+        // metadata, including DATE/DATETIME/TIMESTAMP identity.
+        let exact = exact
+            && !(name == "coalesce"
+                && matches!(
+                    ret,
+                    NativeEvalType::Datetime | NativeEvalType::Timestamp | NativeEvalType::Duration
+                )
+                && function.args.iter().any(|arg| {
+                    arg.static_type().is_none_or(|field| {
+                        function.get_static_type().is_none_or(|result| {
+                            field.code() != result.code() || field.decimal() != result.decimal()
+                        })
+                    })
+                }));
+        return exact
+            .then_some((function_ref, function.args.len()))
+            .ok_or_else(|| {
+                BatchFailure::admission(
+                    "control arguments require explicit carrier/unsigned conversion",
+                )
+            });
+    }
+    if name == "nullif" && function.args.len() == 2 && ret == NativeEvalType::Int {
+        let exact = function.args.iter().all(|arg| {
+            arg.static_type().is_some_and(|field| {
+                field.code() == FieldTypeCode::LongLong && !field.is_unsigned()
+            })
+        }) && function.get_static_type().is_some_and(|field| {
+            !field.is_unsigned() && function.args[0].static_type() == Some(field)
+        });
+        return exact
+            .then_some((
+                FunctionRef::Local(tidb_query_expr::LocalFunctionId::NullIfIntSignedSigned),
+                2,
+            ))
+            .ok_or_else(|| {
+                BatchFailure::admission(
+                    "NULLIF requires its exact signed first argument declaration",
+                )
+            });
+    }
     if name == "strcmp" {
         let function_ref = FunctionRef::Local(tidb_query_expr::LocalFunctionId::StrcmpNative);
         let exact = ret == NativeEvalType::Int
@@ -612,10 +722,9 @@ fn batch_eval_type(native: NativeEvalType) -> TikvEvalType {
 /// this view so adding a signature cannot leave its mandatory consumer behind.
 pub(crate) fn batch_call_signature(
     function: &ScalarFunction,
-) -> Option<(&'static [TikvEvalType], TikvEvalType)> {
+) -> Option<tidb_query_expr::local::BatchCallSignature> {
     let (function, arity) = batch_fact(function).ok()?;
-    let (arguments, result) = tidb_query_expr::local::batch_signature(function)?;
-    (arguments.len() == arity).then_some((arguments, result))
+    tidb_query_expr::local::batch_signature_for_arity(function, arity)
 }
 fn projected(sql: &FieldType, new_collation: bool) -> Result<tipb::FieldType> {
     let collation = tidb_datatype::get_collation_by_name(sql.collation_name())
@@ -1013,13 +1122,14 @@ impl PreparedBatch {
             },
             &source.facts,
         )?;
+        let window_size = program.max_batch_size();
         Ok(Self {
             source,
             program,
             limits: execution,
             max_materialization_retained_bytes,
             selection: Vec::new(),
-            window_size: BATCH_MAX_SIZE,
+            window_size,
             vector_allocations: 0,
             windows: 0,
         })
@@ -1922,7 +2032,7 @@ impl PreparedBatchSuite {
 
     pub(crate) fn set_window_size(&mut self, size: usize) {
         for worker in &mut self.workers {
-            worker.window_size = size;
+            worker.window_size = size.min(worker.program.max_batch_size());
         }
     }
 

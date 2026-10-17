@@ -3789,9 +3789,7 @@ fn batch_supported(expression: &Expression, target: EvalType) -> bool {
             }
         }),
         Expression::ScalarFunction(function) => {
-            if let Some((arguments, result)) =
-                crate::evaluator::batch::batch_call_signature(function)
-            {
+            if let Some(signature) = crate::evaluator::batch::batch_call_signature(function) {
                 let carrier_matches = |carrier, native| match carrier {
                     tidb_query_datatype::EvalType::Int => native == EvalType::Int,
                     tidb_query_datatype::EvalType::Real => native == EvalType::Real,
@@ -3807,9 +3805,12 @@ fn batch_supported(expression: &Expression, target: EvalType) -> bool {
                     }
                     _ => false,
                 };
-                return carrier_matches(result, target)
-                    && arguments.len() == function.args.len()
-                    && arguments.iter().zip(&function.args).all(|(&carrier, arg)| {
+                return carrier_matches(signature.output_type(), target)
+                    && signature.arity() == function.args.len()
+                    && function.args.iter().enumerate().all(|(index, arg)| {
+                        let Some(carrier) = signature.argument_type(index) else {
+                            return false;
+                        };
                         let Some(expected) = arg.static_type().map(FieldType::eval_type) else {
                             return false;
                         };

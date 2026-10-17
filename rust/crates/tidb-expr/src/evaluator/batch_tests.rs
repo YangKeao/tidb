@@ -674,14 +674,13 @@ fn varlen_production_route_streams_reverse_duplicates_across_windows() {
     );
 }
 
-#[test]
-fn any_value_batch_round_trips_every_native_eval_type() {
+fn native_carrier_cases() -> Vec<(FieldType, Datum)> {
     let mut decimal = FieldType::new(FieldTypeCode::NewDecimal);
     decimal.set_flen(20);
     decimal.set_decimal(4);
     let mut duration = FieldType::new(FieldTypeCode::Duration);
     duration.set_decimal(6);
-    let cases = vec![
+    vec![
         (ty(), Datum::Int(-17)),
         (real_ty(), Datum::Real(3.25)),
         (decimal, Datum::Decimal(Decimal::from_literal("123.4567"))),
@@ -712,7 +711,12 @@ fn any_value_batch_round_trips_every_native_eval_type() {
             FieldType::new(FieldTypeCode::VectorFloat32),
             Datum::VectorFloat32(VectorFloat32::must_create(vec![1.25, -2.5, 3.0])),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn any_value_batch_round_trips_every_native_eval_type() {
+    let cases = native_carrier_cases();
 
     for (field, value) in cases {
         let schema = vec![field.clone()];
@@ -1380,7 +1384,7 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         Expression::ScalarFunction(opaque),
         pb,
         call("cast", ty(), vec![int(1)]),
-        call("if", ty(), vec![int(1), int(2), int(3)]),
+        call("if", ty(), vec![int(1), int(2)]), // malformed even in a dead branch
         literal(Datum::UInt(1), ty().with_unsigned(true)),
         literal(Datum::UInt(1), ty()),
         literal(Datum::Null, FieldType::new(FieldTypeCode::Null)),
@@ -1407,7 +1411,15 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         )
         .is_err());
     }
-    let root = call("if", ty(), vec![int(1), plus(int(1), int(2)), int(0)]);
+    let root = call(
+        "if",
+        ty(),
+        vec![
+            int(1),
+            plus(int(1), int(2)),
+            call("cast", ty(), vec![int(0)]),
+        ],
+    );
     assert!(PreparedBatch::compile(
         &suite(root),
         &[],
@@ -2595,5 +2607,122 @@ fn native_strcmp_batch_keeps_sql_collation_and_nested_call_identities() {
                 vec![0, 1, 4]
             );
         }
+    }
+}
+
+#[test]
+fn demanded_controls_preserve_skipped_errors_and_selected_occurrence_order() {
+    let overflow = plus(int(i64::MAX), int(1));
+    let ctx = Context::new(true);
+    let roots = vec![
+        call("if", ty(), vec![column(0), int(7), overflow.clone()]),
+        call("ifnull", ty(), vec![column(1), overflow.clone()]),
+        call("coalesce", ty(), vec![null(), column(1), overflow.clone()]),
+        call(
+            "case",
+            ty(),
+            vec![
+                int(0),
+                overflow.clone(),
+                column(0),
+                int(9),
+                overflow.clone(),
+            ],
+        ),
+        call("and", ty(), vec![int(0), overflow.clone()]),
+        call("or", ty(), vec![int(1), overflow.clone()]),
+        call(
+            "coalesce",
+            ty(),
+            vec![call("nullif", ty(), vec![column(0), int(0)]), column(1)],
+        ),
+    ];
+    let schema = [ty(), ty()];
+    for (root, expected) in roots.into_iter().zip([7, 5, 5, 9, 0, 1, 1]) {
+        let suite = EvaluatorSuite::new(vec![root], false);
+        for selection in [Some(vec![]), None, Some((0..2050).map(|i| i % 2).collect())] {
+            let mut input = chunk(&schema, &vec![vec![Datum::Int(1), Datum::Int(5)]; 2]);
+            input.set_sel(selection.clone());
+            let mut output = Chunk::new_with_capacity(&[ty()], 0);
+            suite
+                .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+                .unwrap();
+            assert_eq!(output.num_rows(), selection.as_ref().map_or(2, Vec::len));
+            for row in 0..output.num_rows() {
+                assert_eq!(
+                    output.get_row(row).get_datum(0, &ty()),
+                    Datum::Int(expected)
+                );
+            }
+        }
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (3, 0, 0));
+    }
+    let suite = EvaluatorSuite::new(
+        vec![call("if", ty(), vec![column(0), overflow, int(4)])],
+        false,
+    );
+    let mut input = chunk(&[ty()], &[vec![Datum::Int(0)], vec![Datum::Int(1)]]);
+    input.set_sel(Some(vec![0]));
+    let mut output = Chunk::new_with_capacity(&[ty()], 0);
+    suite
+        .run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        .unwrap();
+    assert_eq!(output.get_row(0).get_datum(0, &ty()), Datum::Int(4));
+    input.set_sel(Some(vec![1]));
+    output.reset();
+    assert!(suite
+        .run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        .is_err());
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+}
+
+#[test]
+fn demanded_controls_select_native_carriers_without_losing_payload_metadata() {
+    for (field, value) in native_carrier_cases() {
+        if field.eval_type() == NativeEvalType::VectorFloat32 {
+            continue;
+        }
+        let schema = [ty(), field.clone()];
+        let choose = call(
+            "if",
+            field.clone(),
+            vec![
+                column(0),
+                typed_column(1, &field),
+                literal(Datum::Null, field.clone()),
+            ],
+        );
+        let coalesce = call(
+            "coalesce",
+            field.clone(),
+            vec![literal(Datum::Null, field.clone()), choose],
+        );
+        let suite = EvaluatorSuite::new(vec![coalesce], false);
+        let rows = vec![
+            vec![Datum::Int(1), value.clone()],
+            vec![Datum::Int(0), value],
+            vec![Datum::Int(1), Datum::Null],
+        ];
+        let selection: Vec<_> = (0..2050).map(|index| (2050 - index) % 3).collect();
+        let mut expected_input = chunk(&schema, &rows);
+        expected_input.set_sel(Some(selection.clone()));
+        let mut expected = output_for(&field);
+        suite
+            .run(&Context::new(true), &mut expected_input, &mut expected)
+            .unwrap();
+        let mut actual_input = chunk(&schema, &rows);
+        actual_input.set_sel(Some(selection));
+        let mut actual = output_for(&field);
+        suite
+            .run_with_tikv_batch(&Context::new(true), &mut actual_input, &mut actual, &schema)
+            .unwrap();
+        assert_eq!(
+            values_for(&actual, &field),
+            values_for(&expected, &field),
+            "{field:?}"
+        );
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
     }
 }

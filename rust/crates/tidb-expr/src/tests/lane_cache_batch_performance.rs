@@ -369,6 +369,8 @@ fn tikv_batch_workload(name: &str) -> bool {
                 | "abs"
                 | "char_length"
                 | "strcmp"
+                | "lazy_if"
+                | "coalesce_nullif"
                 | "lower"
                 | "upper"
                 | "substring"
