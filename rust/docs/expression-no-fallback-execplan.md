@@ -47,6 +47,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5e1: native NOT/IS NULL/TRUE/FALSE and UNKNOWN predicates compose through checked native values and direct existing kernels. 95focused/full1447same4/core1043same6/72SQL/Projection18/lint/clippy/fmt pass; JSON IS NULL migration gap retired. Receipt rust/docs/evidence/no-fallback-n5e1.md.
 - [x] (2026-10-18) N5f1: shared plain comparison preparation and direct existing core value entries, with immutable metadata facts and finite vector-copy budget. 23,328 comparison cases/new2tests/95batch/full1449same4/core1043same6/Projection18/lint/clippy/fmt pass. Native comparison HostFrame is next. Receipt rust/docs/evidence/no-fallback-n5f1.md.
 - [x] (2026-10-18) N5f2: six native comparison hosts preserve raw operand demand, immutable type/constant/column facts and original typed integer priority. 98focused/full1452same4/core1043same6/90SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f2.md.
+- [x] (2026-10-18) N5f3: native NULL-safe equality shares comparison frames and pure generic preparation, preserving presence, sentinel priority and duration-versus-datetime conversion disposition. 98focused/full1453same4/core1043same6/132SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f3.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -481,3 +482,12 @@ the original unfoldable-call predicate. It preserves duration-column/constant
 and Decimal-column/text distinctions without an expression owner in the host.
 Null-safe equality, NULLIF, arithmetic producers, effects, additional source
 forms/callers and migration dispatch removal remain outstanding.
+
+
+N5f3 outcome: NULL-safe equality uses the same native comparison demand and
+publication protocol while retaining its distinct generic preparation policy.
+Actual NULL presence and duration-only normalization call the original pure
+core kernels directly. Datetime conversion NULL and sentinel-before-NULL
+behavior remain unchanged. Existing callers share the extracted preparation;
+their legacy adapter remains a migration dependency. NULLIF, arithmetic,
+effects, source forms, callers and global dispatch removal remain outstanding.

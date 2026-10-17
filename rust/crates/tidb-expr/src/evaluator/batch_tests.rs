@@ -6221,6 +6221,9 @@ fn native_comparison_producers_preserve_values_diagnostics_and_raw_operand_deman
         )
     };
     let pairs = vec![
+        (null(), null()),
+        (null(), int(0)),
+        (int(0), null()),
         (cast("1tail"), int(2)),
         (unsigned(), int(-1)),
         (int(-1), unsigned()),
@@ -6261,7 +6264,7 @@ fn native_comparison_producers_preserve_values_diagnostics_and_raw_operand_deman
             call("if", ty(), vec![int(1), int(3), cast("bad")]),
         ),
     ];
-    for name in ["eq", "ne", "lt", "le", "gt", "ge"] {
+    for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
         for (left, right) in &pairs {
             let root = call(
                 "cast_signed",
@@ -6416,6 +6419,13 @@ fn rewritten_native_comparisons_preserve_column_constant_domains_and_composition
     ];
     for sql in [
         "cast((a = 1) as signed)",
+        "cast((a <=> 1) as signed)",
+        "cast((t <=> 'not a time') as signed)",
+        "cast((dt <=> 'not a datetime') as signed)",
+        "cast((u <=> cast('-1' as signed)) as char)",
+        "cast((NULL <=> cast(a as json)) as signed)",
+        "if(t <=> '01:00:00', cast('1' as json), cast('0' as json))",
+        "cast((f <=> f) as signed)",
         "cast((u < cast('-1' as signed)) as char)",
         "cast((d = '1.000000000000000000000000000000000000001') as signed)",
         "cast((t = '01:00:00') as signed)",
@@ -6525,7 +6535,7 @@ fn native_comparison_handles_and_borrowed_copy_budget_are_terminal() {
         duration_column: false,
     };
     let metadata = [NativeHostMetadata::Comparison {
-        operation: ComparisonOp::Eq,
+        operation: SqlBatchHostOperation::CompareNative(ComparisonOp::Eq),
         name: "eq".into(),
         result_type: ty(),
         argument_nodes: [3, 8],

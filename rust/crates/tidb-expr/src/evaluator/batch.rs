@@ -235,7 +235,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
         }
         Expression::ScalarFunction(function)
             if (native_selection_operation(function).is_some()
-                || native_comparison_kind(function.func_name.lowercase()).is_some())
+                || native_comparison_operation(function.func_name.lowercase()).is_some())
                 && nullable_prefers_native(root, limits) =>
         {
             NativeView::RootValue
@@ -354,7 +354,7 @@ fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize)
                     "and" | "logicand" | "or" | "logicor"
                 ) || native_boolean_operation(function.func_name.lowercase())
                     .is_some()
-                    || native_comparison_kind(function.func_name.lowercase()).is_some()
+                    || native_comparison_operation(function.func_name.lowercase()).is_some()
                     || (function.func_name.lowercase() == "if" && index == 0)
                     || (function.func_name.lowercase() == "case"
                         && index % 2 == 0
@@ -754,6 +754,13 @@ fn native_comparison_kind(name: &str) -> Option<tidb_query_expr::ComparisonOp> {
         _ => return None,
     })
 }
+fn native_comparison_operation(name: &str) -> Option<SqlBatchHostOperation> {
+    if name == "nulleq" {
+        Some(SqlBatchHostOperation::NullSafeEqNative)
+    } else {
+        native_comparison_kind(name).map(SqlBatchHostOperation::CompareNative)
+    }
+}
 fn native_boolean_operation(name: &str) -> Option<SqlBatchHostOperation> {
     match name {
         "not" => Some(SqlBatchHostOperation::UnaryNotNative),
@@ -782,17 +789,16 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
         || native_selection_operation(function).is_some()
-        || native_comparison_kind(function.func_name.lowercase()).is_some()
+        || native_comparison_operation(function.func_name.lowercase()).is_some()
 }
 fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
-        if let Some(operation) = native_selection_operation(function).or_else(|| {
-            native_comparison_kind(function.func_name.lowercase())
-                .map(SqlBatchHostOperation::CompareNative)
-        }) {
+        if let Some(operation) = native_selection_operation(function)
+            .or_else(|| native_comparison_operation(function.func_name.lowercase()))
+        {
             if !operation.accepts_arity(function.args.len())
                 || function.get_static_type().is_none()
                 || function.args.iter().any(|arg| arg.static_type().is_none())
@@ -1433,7 +1439,10 @@ fn preflight<'a>(
                     }
                     if matches!(
                         resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::CompareNative(_))
+                        CallTarget::Host(
+                            SqlBatchHostOperation::CompareNative(_)
+                                | SqlBatchHostOperation::NullSafeEqNative
+                        )
                     ) {
                         budget.field(sql, 1)?;
                     }
@@ -1690,6 +1699,7 @@ fn lower(
                                         | SqlBatchHostOperation::IsUnknownNative
                                         | SqlBatchHostOperation::IsNotUnknownNative
                                         | SqlBatchHostOperation::CompareNative(_)
+                                        | SqlBatchHostOperation::NullSafeEqNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1743,7 +1753,8 @@ fn lower(
                                     })?,
                                 }
                             }
-                            SqlBatchHostOperation::CompareNative(operation) => {
+                            operation @ (SqlBatchHostOperation::CompareNative(_)
+                            | SqlBatchHostOperation::NullSafeEqNative) => {
                                 let left = ordinal
                                     .checked_add(1)
                                     .ok_or_else(|| resource("comparison child ordinal overflow"))?;

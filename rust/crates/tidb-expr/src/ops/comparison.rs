@@ -36,6 +36,80 @@ pub(crate) enum PreparedComparison {
     Duration(ComparisonOp, i64, i64),
 }
 
+pub(crate) enum PreparedNullSafeComparison {
+    Presence(Option<i64>),
+    Comparison {
+        value: PreparedComparison,
+        normalize_duration: bool,
+    },
+}
+impl PreparedNullSafeComparison {
+    pub(crate) fn compute(self, available: usize) -> LocalResult<Option<i64>> {
+        finite_allowance(available)?;
+        use tidb_query_expr::impl_op::{int_is_true, is_null, KeepNullOff};
+        match self {
+            Self::Presence(other) => is_null::<i64>(other.as_ref()).map_err(LocalError::Evaluation),
+            Self::Comparison {
+                value,
+                normalize_duration,
+            } => {
+                let result = value.compute(available)?;
+                if normalize_duration {
+                    int_is_true::<KeepNullOff>(result.as_ref()).map_err(LocalError::Evaluation)
+                } else {
+                    Ok(result)
+                }
+            }
+        }
+    }
+}
+fn finite_allowance(available: usize) -> LocalResult<()> {
+    if available == usize::MAX {
+        Err(LocalError::ResourceLimit(
+            "comparison requires a finite value allowance".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+pub(super) fn prepare_null_safe<O: ComparisonOperand>(
+    left: Datum,
+    right: Datum,
+    collation: tidb_datatype::Collation,
+    operands: ComparisonOperands<O>,
+    ctx: &dyn crate::Columns,
+) -> Result<PreparedNullSafeComparison, EvalError> {
+    // The original generic null-safe owner rejects sentinels before actual
+    // NULL. It does not use the ordinary typed integer comparison shortcut.
+    if left.is_range_sentinel() || right.is_range_sentinel() {
+        return Err(EvalError::Unsupported("range sentinel expression operand"));
+    }
+    let other = if left.is_null() {
+        Some(&right)
+    } else if right.is_null() {
+        Some(&left)
+    } else {
+        None
+    };
+    if let Some(other) = other {
+        return Ok(PreparedNullSafeComparison::Presence(
+            (!other.is_null()).then_some(0),
+        ));
+    }
+    let normalize_duration = matches!(
+        (&left, &right),
+        (Datum::Duration(_), Datum::String(_) | Datum::Bytes(_))
+            | (Datum::String(_) | Datum::Bytes(_), Datum::Duration(_))
+    ) && ((operands.lhs.is_duration_column()
+        && operands.rhs.is_constant())
+        || (operands.rhs.is_duration_column() && operands.lhs.is_constant()));
+    let value = prepare(ComparisonOp::Eq, left, right, collation, operands, ctx)?;
+    Ok(PreparedNullSafeComparison::Comparison {
+        value,
+        normalize_duration,
+    })
+}
+
 pub(super) fn prepare_int(op: ComparisonOp, left: Integer, right: Integer) -> PreparedComparison {
     PreparedComparison::Integer(op, left, right)
 }
@@ -58,11 +132,7 @@ impl PreparedComparison {
     /// Execute the same pure value helper as the registered RPN kernel, with
     /// no argument program, callback or expression owner at this boundary.
     pub(crate) fn compute(self, available: usize) -> LocalResult<Option<i64>> {
-        if available == usize::MAX {
-            return Err(LocalError::ResourceLimit(
-                "comparison requires a finite value allowance".into(),
-            ));
-        }
+        finite_allowance(available)?;
         let result = match self {
             Self::Null => impl_compare::compare_null_native(None),
             Self::Integer(op, left, right) => {
@@ -549,6 +619,97 @@ mod tests {
         );
         assert!(matches!(
             PreparedComparison::Null.compute(usize::MAX),
+            Err(LocalError::ResourceLimit(_))
+        ));
+    }
+    #[test]
+    fn null_safe_equality_keeps_duration_false_datetime_null_and_presence_order() {
+        let context = Context::default();
+        let duration_type = FieldType::new(FieldTypeCode::Duration);
+        let time_type = FieldType::new(FieldTypeCode::Datetime);
+        let text_type = FieldType::new(FieldTypeCode::VarString);
+        let time =
+            tidb_datatype::parse_datetime("2026-10-17 12:34:56", &chrono_tz::UTC, true, false)
+                .unwrap()
+                .time;
+        let cases = [
+            (
+                Datum::Duration(MySqlDuration::from_nanoseconds(3_600_000_000_000, 0).unwrap()),
+                duration_type,
+                Some(0),
+            ),
+            (Datum::Time(time), time_type, None),
+        ];
+        for (left, field, expected) in cases {
+            let prepared = prepare_null_safe(
+                left,
+                Datum::new_string("not a time"),
+                Collation::Binary,
+                ComparisonOperands {
+                    lhs: facts(&field, false),
+                    rhs: facts(&text_type, true),
+                },
+                &context,
+            )
+            .unwrap();
+            assert_eq!(prepared.compute(1024 * 1024).unwrap(), expected);
+        }
+        assert_eq!(context.0.borrow().len(), 2);
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let pair = || ComparisonOperands {
+            lhs: facts(&integer, true),
+            rhs: facts(&integer, true),
+        };
+        assert_eq!(
+            prepare_null_safe(
+                Datum::Null,
+                Datum::Null,
+                Collation::Binary,
+                pair(),
+                &context
+            )
+            .unwrap()
+            .compute(1024)
+            .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            prepare_null_safe(
+                Datum::Null,
+                Datum::Int(0),
+                Collation::Binary,
+                pair(),
+                &context
+            )
+            .unwrap()
+            .compute(1024)
+            .unwrap(),
+            Some(0)
+        );
+        let error = match prepare_null_safe(
+            Datum::MinNotNull,
+            Datum::Null,
+            Collation::Binary,
+            pair(),
+            &context,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("sentinel rejection precedes actual NULL"),
+        };
+        assert_eq!(
+            error,
+            EvalError::Unsupported("range sentinel expression operand")
+        );
+        assert!(matches!(
+            prepare_null_safe(
+                Datum::Null,
+                Datum::Null,
+                Collation::Binary,
+                pair(),
+                &context
+            )
+            .unwrap()
+            .compute(usize::MAX),
             Err(LocalError::ResourceLimit(_))
         ));
     }

@@ -38,7 +38,7 @@ pub(super) enum NativeHostMetadata {
         output_role: NativeValueRole,
     },
     Comparison {
-        operation: tidb_query_expr::ComparisonOp,
+        operation: SqlBatchHostOperation,
         name: Box<str>,
         result_type: FieldType,
         argument_nodes: [usize; 2],
@@ -670,22 +670,41 @@ impl<'a> NativeBatchHosts<'a> {
         let signed = operands.map(|operand| !operand.unsigned);
         let (left, right) =
             crate::binary_literal::cast_signed_literal_operands(binary, left, right, signed);
-        let prepared = match crate::ops::prepare_native_comparison(
-            *operation,
-            left,
-            right,
-            *collation,
-            *operands,
-            self.context,
-        ) {
-            Ok(value) => value,
-            Err(error) => return self.native_failure(error),
-        };
         let available = self
             .max_retained_bytes
             .checked_sub(base)
             .ok_or_else(|| resource("comparison value allowance exhausted"))?;
-        let result = prepared.compute(available)?.map_or(Datum::Null, Datum::Int);
+        let computed = match *operation {
+            SqlBatchHostOperation::CompareNative(op) => {
+                let prepared = match crate::ops::prepare_native_comparison(
+                    op,
+                    left,
+                    right,
+                    *collation,
+                    *operands,
+                    self.context,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return self.native_failure(error),
+                };
+                prepared.compute(available)?
+            }
+            SqlBatchHostOperation::NullSafeEqNative => {
+                let prepared = match crate::ops::prepare_native_null_safe_comparison(
+                    left,
+                    right,
+                    *collation,
+                    *operands,
+                    self.context,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return self.native_failure(error),
+                };
+                prepared.compute(available)?
+            }
+            _ => return Err(binding("comparison descriptor has another operation")),
+        };
+        let result = computed.map_or(Datum::Null, Datum::Int);
         let result =
             match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
                 Ok(value) => value,
@@ -1251,7 +1270,8 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
-            SqlBatchHostOperation::CompareNative(operation) => {
+            operation @ (SqlBatchHostOperation::CompareNative(_)
+            | SqlBatchHostOperation::NullSafeEqNative) => {
                 let Some(NativeHostMetadata::Comparison {
                     operation: descriptor_operation,
                     name,
@@ -1263,7 +1283,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 };
                 if self.native_values.is_none()
                     || *descriptor_operation != operation
-                    || native_comparison_kind(name) != Some(operation)
+                    || native_comparison_operation(name) != Some(operation)
                     || operands.iter().any(|operand| operand.eval_type.is_none())
                     || invocation.arg_types.len() != 2
                 {

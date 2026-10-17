@@ -1749,6 +1749,18 @@ mod tests {
         let bad = || call("cast_json", json.clone(), vec![text("bad JSON")]);
         let pairs = [
             (
+                value(Datum::Null, integer.clone()),
+                value(Datum::Null, integer.clone()),
+            ),
+            (
+                value(Datum::Null, integer.clone()),
+                value(Datum::Int(0), integer.clone()),
+            ),
+            (
+                value(Datum::Int(0), integer.clone()),
+                value(Datum::Null, integer.clone()),
+            ),
+            (
                 value(Datum::Int(-1), integer.clone().with_unsigned(true)),
                 value(Datum::Int(-1), integer.clone()),
             ),
@@ -1765,7 +1777,7 @@ mod tests {
             (text("1tail"), value(Datum::Int(0), integer.clone())),
         ];
         let mut cases = Vec::new();
-        for name in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
             for (left, right) in &pairs {
                 cases.push(call(
                     "cast_signed",

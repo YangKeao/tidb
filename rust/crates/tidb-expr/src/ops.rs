@@ -707,6 +707,25 @@ pub(crate) fn prepare_native_comparison(
     )
 }
 
+pub(crate) fn prepare_native_null_safe_comparison(
+    left: Datum,
+    right: Datum,
+    collation: tidb_datatype::Collation,
+    facts: [OperandFacts; 2],
+    ctx: &dyn crate::Columns,
+) -> Result<comparison::PreparedNullSafeComparison, EvalError> {
+    comparison::prepare_null_safe(
+        left,
+        right,
+        collation,
+        ComparisonOperands {
+            lhs: facts[0],
+            rhs: facts[1],
+        },
+        ctx,
+    )
+}
+
 fn comparison_into_evaluated(
     value: comparison::PreparedComparison,
 ) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
@@ -891,42 +910,27 @@ pub(crate) fn eval_null_safe_eq_values_in(
     let mut duration_text = false;
     let computed = crate::tikv::evaluate_prepared_args_in(
         ctx,
-        || {
-            // This rejection precedes actual-NULL handling in the old ladder.
-            if l.is_range_sentinel() || r.is_range_sentinel() {
-                return Err(EvalError::Unsupported("range sentinel expression operand"));
+        || match comparison::prepare_null_safe(
+            l,
+            r,
+            collation,
+            ComparisonOperands {
+                lhs: operands.lhs,
+                rhs: operands.rhs,
+            },
+            ctx,
+        )? {
+            comparison::PreparedNullSafeComparison::Presence(other) => Ok((
+                crate::tikv::EvaluatedBytesOp::IsNull,
+                crate::tikv::EvaluatedArgs::Int(other),
+            )),
+            comparison::PreparedNullSafeComparison::Comparison {
+                value,
+                normalize_duration,
+            } => {
+                duration_text = normalize_duration;
+                Ok(comparison_into_evaluated(value))
             }
-            let other = if l.is_null() {
-                Some(&r)
-            } else if r.is_null() {
-                Some(&l)
-            } else {
-                None
-            };
-            if let Some(other) = other {
-                // IsNull's documented presence-only transport: None means this
-                // actual operand is NULL; Some(0) means it is present. This is
-                // not a numeric predicate or a fabricated NullWitness.
-                return Ok((
-                    crate::tikv::EvaluatedBytesOp::IsNull,
-                    crate::tikv::EvaluatedArgs::Int((!other.is_null()).then_some(0)),
-                ));
-            }
-            duration_text = matches!(
-                (&l, &r),
-                (Datum::Duration(_), Datum::String(_) | Datum::Bytes(_))
-                    | (Datum::String(_) | Datum::Bytes(_), Datum::Duration(_))
-            ) && ((operands.lhs.is_duration_column()
-                && operands.rhs.is_constant())
-                || (operands.rhs.is_duration_column() && operands.lhs.is_constant()));
-            prepare_comparison(
-                tidb_query_expr::ComparisonOp::Eq,
-                l,
-                r,
-                collation,
-                operands,
-                ctx,
-            )
         },
         crate::tikv::EvaluatedBytesResult::into_boolean_datum,
     )?;
