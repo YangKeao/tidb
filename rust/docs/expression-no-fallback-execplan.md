@@ -33,6 +33,8 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N4a: shared frame controls IF/IFNULL/COALESCE/CASE and AND/OR, exact native carriers, signed Int NULLIF, compiled singleton window. Batch43/core profile59/Projection9 pass; full1395 and1035 retain exactly the inherited4/6 failures. Both25-scenario SQL cohorts pass with no fallback/refusal; lint/scoped project clippy/fmt pass.
 - [x] (2026-10-17) N4b1: native integer cast_char through the same HostFrame/shared string-cast primitive, exact unsigned bits/length/charset/warning contents and source-only metadata. Front63/full1415same4, core1042same6,24 actual rewritten SQL executions without fallback/refusal; lint/scoped clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n4b1.md.
 - [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
+- [x] (2026-10-17) N5a1: TEST-ONLY native value store prototype; all19 exact representations, namespace/generation/role/source/row validation, logical resource gates. Three tests/full1418same4/lint/fmt pass. No new production SQL coverage. Receipt rust/docs/evidence/no-fallback-n5a1-prototype.md.
+- [ ] N5a: lossless invocation-scoped native value handles; validate namespace/generation/role/source/row provenance and bounded value retention before extending CHAR beyond wire carriers. Prototype first, then integrate demanded native leaves and validate all19 kinds/representation edges.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -273,3 +275,26 @@ CONCAT/REGEXP. Metadata snapshots carry only original value-kernel parameters.
 Do not generalize this to all string coercions: raw native Float32/NaN, hybrid
 and other storage kinds need lossless argument transport before wider admission.
 Continue broader native value/context coverage before retiring global routing.
+
+
+N5a plan: add evaluator/batch_values.rs with an invocation-local store of actual
+Datum owners. Shared frames transport only private Bytes handles, checked by
+namespace, window generation, ABI role, source-node ordinal and selected-row
+occurrence. Handles are minted only by native source bindings and unwrapped only
+by the matching closed native operation. SQL bytes are stored as values rather
+than interpreted as handles. Keep original native SQL declarations in source and
+row-schema validation. Reset after frame/task completion and root consumption,
+and drop on failure. Native payload charges are a conservative logical policy
+separate from frame byte caches and external source/SDK transient allocations;
+do not call this a full allocator tracker. Validate the store in isolation
+before integrating native CHAR inputs. Use existing native value-only cast
+helpers, never an Expression or ScalarFunction evaluation callback. Preserve
+NaN bits, Float32 kind, Enum/Set names+ordinals, raw bytes/JSON tags, Decimal
+coefficient/scale/declaration and temporal raw/FSP/kind. Add stale/cross-store,
+wrong-role/source/row and resource-denial tests, then actual SQL/caller coverage.
+
+
+N5a1 outcome: test-only ownership/handle protocol is runnable and verified for
+all19 native storage kinds and adversarial provenance/lifecycle cases. Keep the
+prototype behind cfg(test) until actual native input bindings and the closed
+consumer are integrated. This checkpoint adds no production SQL coverage.

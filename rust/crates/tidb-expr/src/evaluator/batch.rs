@@ -57,6 +57,9 @@ use tidb_query_expr::types::BATCH_MAX_SIZE;
 
 #[path = "batch_hosts.rs"]
 mod hosts;
+#[cfg(test)]
+#[path = "batch_values.rs"]
+mod native_values;
 use hosts::{NativeBatchHosts, NativeHostMetadata};
 use tidb_query_expr::local::LocalHostServices;
 
