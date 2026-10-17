@@ -1681,6 +1681,13 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            SqlBatchHostOperation::AddWindowNative
+            | SqlBatchHostOperation::SubtractWindowNative
+            | SqlBatchHostOperation::MultiplyWindowNative => {
+                return Err(binding(
+                    "window operation requires its explicit window callbacks",
+                ));
+            }
             operation @ (SqlBatchHostOperation::AddNative
             | SqlBatchHostOperation::SubtractNative
             | SqlBatchHostOperation::MultiplyNative) => {

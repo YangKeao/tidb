@@ -576,3 +576,20 @@ Next complete bulk-aware orchestration and remaining source/caller profiles,
 then migrate other functions, effects and dynamic sources and remove global
 migration dispatch. The goal is not complete at this checkpoint. The N5g3
 receipt records the phase evidence and regression commands for this change.
+
+
+N6a outcome: the existing canonical HostFrame has explicit whole-window
+callbacks with checked row maps, full-vector Fresh/Reuse and compact retained
+copies. Nested window graphs preserve complete argument phases. Missing window
+callbacks are terminal contract errors, never row retries. Five protocol tests
+cover phase order, exact error identity, cache/failure scope, cancellation,
+limits and unchanged row-host admission. Core1049 and frontend1464 pass with
+exactly their inherited failure sets; Projection22, lint, clippy and formatting
+checks pass. See evidence/no-fallback-n6a.md and paired TiKVae8e9f0.
+
+Next implement frontend window providers and canonical row-host wrapping with
+per-edge row/bulk demand semantics. Current mixed row/control descendants still
+force singleton admission, and windows are bounded at1024. Whole-selection
+phase preservation must precede wider root/caller promotion. No new frontend
+root fallback is removed by this protocol-only step; all remaining migration
+work listed above remains active.
