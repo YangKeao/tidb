@@ -145,3 +145,55 @@ impl Operands<'_> {
         }
     }
 }
+
+/// The metadata queries comparison preparation needs; no value evaluation.
+pub(super) trait ComparisonOperand: Copy {
+    fn is_unsigned(self) -> bool;
+    fn eval_type(self) -> Option<EvalType>;
+    fn is_constant(self) -> bool;
+    fn is_duration_column(self) -> bool;
+    fn is_string_kind(self) -> bool {
+        self.eval_type().is_some_and(EvalType::is_string_kind)
+    }
+}
+impl ComparisonOperand for Operand<'_> {
+    fn is_unsigned(self) -> bool {
+        self.is_unsigned()
+    }
+    fn eval_type(self) -> Option<EvalType> {
+        self.eval_type()
+    }
+    fn is_constant(self) -> bool {
+        self.is_constant()
+    }
+    fn is_duration_column(self) -> bool {
+        self.is_duration_column()
+    }
+}
+/// Owned declaration facts for a compiled value-only comparison recipe.
+#[derive(Clone, Copy)]
+pub(crate) struct OperandFacts {
+    pub(crate) eval_type: Option<EvalType>,
+    pub(crate) unsigned: bool,
+    pub(crate) constant: bool,
+    pub(crate) duration_column: bool,
+}
+impl ComparisonOperand for OperandFacts {
+    fn is_unsigned(self) -> bool {
+        self.unsigned
+    }
+    fn eval_type(self) -> Option<EvalType> {
+        self.eval_type
+    }
+    fn is_constant(self) -> bool {
+        self.constant
+    }
+    fn is_duration_column(self) -> bool {
+        self.duration_column
+    }
+}
+#[derive(Clone, Copy)]
+pub(super) struct ComparisonOperands<O: ComparisonOperand> {
+    pub(super) lhs: O,
+    pub(super) rhs: O,
+}

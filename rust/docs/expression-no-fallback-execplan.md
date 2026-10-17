@@ -45,6 +45,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5d2: native IF/CASE use the same staged driver, original pure truth conversion/branch selector and checked native result publication. 90focused/full1442same4/core1043same6/30SQL/Projection16/lint/clippy/fmt pass; CAST(IF) migration gap retired. Receipt rust/docs/evidence/no-fallback-n5d2.md.
 - [x] (2026-10-18) N5d3: native AND/OR and rewriter IsTrueWithNull share checked frames and direct RPN value kernels, preserving nullable demand and warning prefixes. 93focused/full1445same4/core1043same6/36SQL/Projection17/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d3.md.
 - [x] (2026-10-18) N5e1: native NOT/IS NULL/TRUE/FALSE and UNKNOWN predicates compose through checked native values and direct existing kernels. 95focused/full1447same4/core1043same6/72SQL/Projection18/lint/clippy/fmt pass; JSON IS NULL migration gap retired. Receipt rust/docs/evidence/no-fallback-n5e1.md.
+- [x] (2026-10-18) N5f1: shared plain comparison preparation and direct existing core value entries, with immutable metadata facts and finite vector-copy budget. 23,328 comparison cases/new2tests/95batch/full1449same4/core1043same6/Projection18/lint/clippy/fmt pass. Native comparison HostFrame is next. Receipt rust/docs/evidence/no-fallback-n5f1.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -450,3 +451,17 @@ The old JSON IS NULL fallback assertion is retired: this route now prepares
 and returns identical values without an intermediate JSON-to-text conversion.
 This extends native producer closure but does not complete comparison, NULLIF,
 arithmetic, effectful operations, source forms or caller integration.
+
+
+N5f1 outcome: comparison domain/coercion preparation is now a shared pure value
+module, and core profile tables expose direct calls to the same helpers as
+their generated kernels. Owned metadata facts let a future compiled host keep
+column/constant/type distinctions without expression owners. Existing metadata
+queries remain lazy at their original branches. Native vector representation
+copies require a finite source-plus-copy allowance before allocation.
+
+Current comparison callers still adapt the prepared values back into their
+existing argument program; this checkpoint deliberately records that remaining
+work. N5f2 must connect the checked native comparison frame and preserve both
+raw operand demands before any comparison coercion. It must then retire those
+legacy callers as source/caller coverage expands; global fallback remains.

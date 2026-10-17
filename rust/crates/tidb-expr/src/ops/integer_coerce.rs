@@ -30,8 +30,12 @@ use super::*;
 /// UNSIGNED` stays a `Real`, and its signedness travels separately -- so this
 /// touches `Datum::Int` alone.
 pub(super) fn unsigned_operand(value: Datum, operand: Operand<'_>) -> Datum {
+    unsigned_operand_flag(value, operand.is_unsigned())
+}
+
+pub(super) fn unsigned_operand_flag(value: Datum, unsigned: bool) -> Datum {
     match value {
-        Datum::Int(bits) if operand.is_unsigned() => Datum::UInt(bits as u64),
+        Datum::Int(bits) if unsigned => Datum::UInt(bits as u64),
         other => other,
     }
 }
