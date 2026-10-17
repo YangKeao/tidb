@@ -30,6 +30,13 @@ pub(super) enum NativeHostMetadata {
         charset: Box<str>,
         unsigned: bool,
     },
+    Nullable {
+        name: Box<str>,
+        result_type: FieldType,
+        argument_nodes: Box<[usize]>,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     ValueCast {
         cast_type: tidb_ast::CastType,
         name: Box<str>,
@@ -56,6 +63,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Nullable {
+        next: usize,
+    },
     ValueCast,
     CastCharNative {
         len: Option<u32>,
@@ -82,6 +92,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Nullable { next } => Ok(Some(*next)),
             SqlDemand::Concat { demand, .. } => demand.next_argument(),
             SqlDemand::RegexpLike { next, .. } => Ok(*next),
             SqlDemand::CastCharInt { .. }
@@ -91,6 +102,9 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::Nullable { .. } => Err(LocalError::HostContract(
+                "native nullable control does not buffer a prefix".into(),
+            )),
             SqlDemand::Concat { demand, .. } => demand.observe(len),
             SqlDemand::CastCharInt { .. }
             | SqlDemand::CastCharNative { .. }
@@ -388,6 +402,20 @@ impl<'a> NativeBatchHosts<'a> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
+        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+    }
+    fn finish_native_value(
+        &mut self,
+        id: &HostTaskId,
+        result: Datum,
+        output_node: usize,
+        output_role: NativeValueRole,
+        row: InputRow,
+        base: usize,
+    ) -> LocalResult<VectorValue> {
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("native result has no value store"))?;
         let live = base
             .checked_add(
                 native_payload_bytes(&result)?
@@ -401,9 +429,9 @@ impl<'a> NativeBatchHosts<'a> {
         )?;
         let token = store.borrow_mut().insert_clone(
             &result,
-            *output_role,
+            output_role,
             NativeValueOrigin {
-                node: *output_node,
+                node: output_node,
                 row,
             },
         )?;
@@ -421,6 +449,74 @@ impl<'a> NativeBatchHosts<'a> {
         )?;
         self.slots[id.slot].task = None;
         Ok(VectorValue::Bytes(output))
+    }
+    fn resume_nullable(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
+        let task = self.task(id)?;
+        let SqlDemand::Nullable { next } = task.demand else {
+            return Err(binding("nullable resume has another task kind"));
+        };
+        let Some(NativeHostMetadata::Nullable {
+            name,
+            result_type,
+            argument_nodes,
+            output_node,
+            output_role,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("nullable selection lost its source metadata"));
+        };
+        let node = *argument_nodes
+            .get(next)
+            .ok_or_else(|| binding("nullable argument source missing"))?;
+        let row = task.row;
+        let arity = task.arity;
+        let origin = NativeValueOrigin { node, row };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("nullable selection has no value store"))?;
+        let (is_null, payload) = {
+            let store = store.borrow();
+            let value = store.get(token, NativeValueRole::CharInput, origin)?;
+            (value.is_null(), native_payload_bytes(value)?)
+        };
+        if matches!(
+            tidb_query_expr::native_if_null_choose_first((!is_null).then_some(())),
+            tidb_query_expr::NativeIfNullChoice::NeedSecond
+        ) && next + 1 < arity
+        {
+            let SqlDemand::Nullable { next: cursor } = &mut self.slots[id.slot]
+                .task
+                .as_mut()
+                .expect("validated task")
+                .demand
+            else {
+                unreachable!()
+            };
+            *cursor = next + 1;
+            return Ok(HostStep::NeedArg(HostArgRequest {
+                index: next + 1,
+                mode: ArgMode::Fresh,
+            }));
+        }
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("nullable selected payload allowance overflow"))?,
+            )
+            .ok_or_else(|| resource("nullable selected size overflow"))?;
+        self.check_bytes(base)?;
+        let value = store
+            .borrow()
+            .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
+        let value =
+            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            };
+        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+            .map(HostStep::Ready)
     }
     fn finish_native_cast(
         &mut self,
@@ -720,6 +816,33 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            operation @ (SqlBatchHostOperation::CoalesceNative
+            | SqlBatchHostOperation::IfNullNative) => {
+                let Some(NativeHostMetadata::Nullable {
+                    name,
+                    argument_nodes,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(LocalError::HostContract(
+                        "native nullable selection has no descriptor".into(),
+                    ));
+                };
+                let expected = if operation == SqlBatchHostOperation::IfNullNative {
+                    "ifnull"
+                } else {
+                    "coalesce"
+                };
+                if self.native_values.is_none()
+                    || name.as_ref() != expected
+                    || argument_nodes.len() != invocation.arg_types.len()
+                {
+                    return Err(LocalError::HostContract(
+                        "native nullable selection descriptor differs".into(),
+                    ));
+                }
+                SqlDemand::Nullable { next: 0 }
+            }
             SqlBatchHostOperation::CastNative => {
                 if self.native_values.is_none()
                     || !matches!(
@@ -853,6 +976,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Nullable { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native nullable argument cannot be wire NULL"));
+            };
+            return self.resume_nullable(id, token);
         }
         if matches!(task.demand, SqlDemand::ValueCast) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -1296,6 +1425,85 @@ mod tests {
                 assert!(provider.take_native_error().is_none());
                 provider.cancel(&task);
             }
+        }
+    }
+    #[test]
+    fn native_nullable_selected_input_keeps_resource_and_provenance_failures_terminal() {
+        let argument = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![argument.clone(), argument.clone()];
+        let output = argument.clone();
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::IfNullNative,
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: output.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::Nullable {
+            name: "ifnull".into(),
+            result_type: native_bytes_type(),
+            argument_nodes: vec![3, 8].into_boxed_slice(),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let origin = NativeValueOrigin { node: 3, row };
+        let large = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Bytes(vec![b'x'; 16384]),
+                NativeValueRole::CharInput,
+                origin,
+            )
+            .unwrap();
+        let wrong = store
+            .borrow_mut()
+            .insert_clone(&Datum::Null, NativeValueRole::Output, origin)
+            .unwrap();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        for (token, resource_failure) in [(large, true), (wrong, false)] {
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &output,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("request")
+            };
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &argument,
+                        values: &values,
+                    },
+                )
+                .unwrap_err();
+            if resource_failure {
+                assert!(matches!(error, LocalError::ResourceLimit(_)));
+            } else {
+                assert!(matches!(error, LocalError::BindingContract(_)));
+            }
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
         }
     }
 }

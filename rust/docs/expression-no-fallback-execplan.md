@@ -41,6 +41,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5c1: native computed CAST islands through one HostFrame, plain shared result coercion and direct real→unsigned primitive (no nested evaluated-args program). 79focused/full1431same4/core1043same6/24SQL/Projection13/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c1.md.
 - [x] (2026-10-18) N5c2: JSON CAST joins native computed islands with pre-argument type admission and shared literal/nonliteral value conversion. 82focused/full1434same4/156inputcases/24SQL/Projection14/lint/fmt pass; poisoned vector-NULL input proves zero argument demand. Receipt rust/docs/evidence/no-fallback-n5c2.md.
 - [x] (2026-10-18) N5c3: correct native-value producer capability gaps to admission rather than terminal binding errors; RED valid CAST(ABS/PLUS/IF) SQL regression,83focused/full1435same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c3.md.
+- [x] (2026-10-18) N5d1: native COALESCE/IFNULL share the existing staged driver and pure nullable selector, preserve actual NULL/value kind/FSP and mint own producer handles. 87focused/full1439same4/core1043same6/30SQL/Projection15/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d1.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -380,3 +381,25 @@ resource and native execution failures retain their terminal behavior. The
 compatibility regression test documents this temporary state and must be
 updated as those producers acquire unified recipes; it is not a requirement
 to keep fallback in the completed architecture.
+
+
+N5d1 outcome: native nullable controls request one original argument at a time
+in the same HostFrame, classify actual Datum NULL using the existing pure SDK
+selector, and stop at the first non-NULL. Selected data passes through the
+shared native result boundary and acquires the control node's own provenance;
+all-NULL also mints an owned control result. No old evaluated-args/control
+wrapper or expression evaluation callback is used.
+
+Preflight now computes subtree ends in-place in linear reverse order, allowing
+variable-arity descriptors to join exact child producer ordinals without an
+extra traversal/array. Metadata/kind classification is bounded and stops its
+sibling iterator when the node/depth budget ends. Source arity/node and pending
+metadata policy checks precede potentially large argument declaration scans.
+
+An intermediate preference moved already prepared COALESCE(IF(...)) trees into
+a native island that cannot yet produce IF handles. Before committing, the
+selector was restricted to complete native producer trees when choosing a
+nullable root, retaining those existing typed fast paths. Missing native
+producers still use the explicit admission migration state, never a terminal
+protocol error. General native IF/CASE/logical/nullif and other producers remain
+outstanding; this checkpoint does not remove global fallback.

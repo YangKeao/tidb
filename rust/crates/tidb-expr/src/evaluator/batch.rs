@@ -224,12 +224,18 @@ impl NativeView {
 // Only native leaf roots use the native output ABI. Ordinary representable
 // literals keep their existing broadcast fast path. This inspects borrowed
 // kinds/declarations, never converts a payload before the complete byte gate.
-fn root_source_view(root: &Expression) -> NativeView {
+fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::Column(_) => NativeView::RootValue,
         Expression::ScalarFunction(function)
             if native_cast_name(function).is_some()
                 && function.func_name.lowercase() != "cast_char" =>
+        {
+            NativeView::RootValue
+        }
+        Expression::ScalarFunction(function)
+            if native_nullable_operation(function).is_some()
+                && nullable_prefers_native(root, limits) =>
         {
             NativeView::RootValue
         }
@@ -255,6 +261,92 @@ fn root_source_view(root: &Expression) -> NativeView {
             }
         }
         _ => NativeView::Typed,
+    }
+}
+
+// Bounded metadata/kind inspection only: no payload conversion or detached copy
+// precedes preflight's complete source byte gate. Existing closed Int/String
+// controls keep their typed frame fast path.
+fn nullable_prefers_native(root: &Expression, limits: CompileLimits) -> bool {
+    let mut remaining = limits.max_nodes;
+    if !nullable_needs_native(root, limits.max_depth, &mut remaining) {
+        return false;
+    }
+    // Until every producer can yield native handles, retain already prepared
+    // typed control trees rather than moving a supported IF/kernel child into
+    // an incomplete native island.
+    remaining = limits.max_nodes;
+    native_value_tree_complete(root, limits.max_depth, &mut remaining)
+}
+fn native_value_tree_complete(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return true;
+    } // full preflight owns the limit error
+    *remaining -= 1;
+    match node {
+        Expression::Constant(_) | Expression::Column(_) => true,
+        Expression::ScalarFunction(function) => {
+            if !native_value_call(function) {
+                return false;
+            }
+            for child in &function.args {
+                // Stop the sibling iterator too: returning true from the
+                // recursive leaf alone would still scan an oversized arity.
+                if depth == 1 || *remaining == 0 {
+                    return true;
+                }
+                if !native_value_tree_complete(child, depth - 1, remaining) {
+                    return false;
+                }
+            }
+            true
+        }
+        Expression::CorrelatedColumn(_) => false,
+    }
+}
+fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return true;
+    }
+    *remaining -= 1;
+    let Some(field) = node.static_type() else {
+        return false;
+    };
+    if check_type(field).is_err()
+        || field.is_unsigned()
+        || field.eval_type() == NativeEvalType::VectorFloat32
+    {
+        return true;
+    }
+    match node {
+        Expression::Constant(value) => match (field.eval_type(), value.literal_value()) {
+            (_, Some(Datum::Null)) | (NativeEvalType::Int, Some(Datum::Int(_))) => false,
+            (NativeEvalType::Real, Some(Datum::Real(value))) => value.is_nan(),
+            (NativeEvalType::String, Some(Datum::String(_) | Datum::Bytes(_) | Datum::Raw(_))) => {
+                false
+            }
+            (NativeEvalType::Decimal, Some(Datum::Decimal(_)))
+            | (NativeEvalType::Datetime | NativeEvalType::Timestamp, Some(Datum::Time(_)))
+            | (NativeEvalType::Duration, Some(Datum::Duration(_)))
+            | (NativeEvalType::Json, Some(Datum::Json(_))) => false,
+            _ => true,
+        },
+        Expression::Column(_) => field.eval_type() == NativeEvalType::Real,
+        Expression::ScalarFunction(function) => {
+            native_cast_name(function).is_some()
+                || (function.func_name.lowercase() == "coalesce"
+                    && matches!(
+                        field.eval_type(),
+                        NativeEvalType::Datetime
+                            | NativeEvalType::Timestamp
+                            | NativeEvalType::Duration
+                    ))
+                || function
+                    .args
+                    .iter()
+                    .any(|child| nullable_needs_native(child, depth - 1, remaining))
+        }
+        Expression::CorrelatedColumn(_) => false,
     }
 }
 
@@ -345,6 +437,7 @@ struct CheckedNode<'a> {
     node: &'a Expression,
     sql: &'a FieldType,
     view: NativeView,
+    subtree_end: usize,
 }
 struct Budget {
     used: usize,
@@ -470,7 +563,7 @@ fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<Sc
     strict_literal(value, sql)
 }
 fn argument_view(function: &ScalarFunction, view: NativeView) -> NativeView {
-    if view.value_role().is_some() && native_cast_name(function).is_some() {
+    if view.value_role().is_some() && native_value_call(function) {
         return NativeView::ValueToken;
     }
     if matches!(
@@ -622,10 +715,33 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     )
     .then_some(target)
 }
+fn native_nullable_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
+    match function.func_name.lowercase() {
+        "coalesce" => Some(SqlBatchHostOperation::CoalesceNative),
+        "ifnull" => Some(SqlBatchHostOperation::IfNullNative),
+        _ => None,
+    }
+}
+fn native_value_call(function: &ScalarFunction) -> bool {
+    native_cast_name(function).is_some() || native_nullable_operation(function).is_some()
+}
 fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if view.value_role().is_some() {
+        if let Some(operation) = native_nullable_operation(function) {
+            if !operation.accepts_arity(function.args.len())
+                || function.get_static_type().is_none()
+                || function.args.iter().any(|arg| arg.static_type().is_none())
+            {
+                return Err(BatchFailure::admission(
+                    "native nullable control requires typed arguments and valid arity",
+                ));
+            }
+            return Ok((CallTarget::Host(operation), function.args.len()));
+        }
+    }
     if view.value_role().is_some() && native_cast_name(function).is_some() {
         if function.args.len() != 1
             || function.get_static_type().is_none()
@@ -656,7 +772,7 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
                         && function.args.first().is_some_and(|arg| match arg {
                             Expression::Constant(value) => matches!(value.literal_value(), Some(Datum::Null | Datum::Int(_)))
                                 || matches!(value.literal_value(), Some(Datum::UInt(_)) if field.is_unsigned()),
-                            Expression::ScalarFunction(function) if native_cast_name(function).is_some() => false,
+                            Expression::ScalarFunction(function) if native_value_call(function) => false,
                             _ => true,
                         })
                 })
@@ -687,7 +803,7 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
             && function.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
                     if matches!(operation, SqlBatchHostOperation::CastCharNative { .. } | SqlBatchHostOperation::CastNative) {
-                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some()) || matches!(arg, Expression::ScalarFunction(function) if native_cast_name(function).is_some())
+                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some()) || matches!(arg, Expression::ScalarFunction(function) if native_value_call(function))
                     } else {
                         batch_eval_type(field.eval_type()) == operation.argument_type()
                             && (!field.is_unsigned() || field.eval_type() == NativeEvalType::Int)
@@ -1124,14 +1240,14 @@ fn preflight<'a>(
     let mut checked = Vec::new();
     budget.array::<(&Expression, usize, NativeView)>(1)?;
     reserve(&mut pending, 1)?;
-    pending.push((root, 1usize, root_source_view(root)));
+    pending.push((root, 1usize, root_source_view(root, limits.tree)));
     let mut scheduled = 1usize;
     while let Some((node, depth, view)) = pending.pop() {
         let (sql, collation) = parts(node)?;
         if view.value_role().is_none() {
             check_type(sql)?;
         } else if !matches!(node, Expression::Constant(_) | Expression::Column(_))
-            && !matches!(node, Expression::ScalarFunction(function) if native_cast_name(function).is_some())
+            && !matches!(node, Expression::ScalarFunction(function) if native_value_call(function))
         {
             // The source is valid SQL but this producer does not yet have a
             // native-value recipe. It is a migration capability gap, not a
@@ -1183,6 +1299,19 @@ fn preflight<'a>(
                 budget.field(sql, 1)?; // projected binding declaration copy
             }
             Expression::ScalarFunction(function) => {
+                let arity = function.args.len();
+                let policy_nodes = usize::from(native_batch_policy(function).is_some());
+                if policy_nodes != 0 {
+                    budget.array::<NodeRecord>(1)?;
+                    budget.array::<BuildNode>(1)?;
+                    budget.array::<LocalExpr>(1)?;
+                    budget.field(&native_policy_type(), 3)?;
+                }
+                scheduled = scheduled
+                    .checked_add(arity.saturating_add(policy_nodes))
+                    .filter(|nodes| *nodes <= limits.tree.max_nodes)
+                    .ok_or_else(|| resource("batch source node policy exceeded"))?;
+                budget.array::<(&Expression, usize, NativeView)>(arity)?;
                 check_batch_call(function, view)?;
                 budget.add(function.func_name.original().len())?;
                 budget.add(function.func_name.lowercase().len())?;
@@ -1217,6 +1346,16 @@ fn preflight<'a>(
                         )?;
                         budget.add(sql.charset_name().len())?;
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(
+                            SqlBatchHostOperation::CoalesceNative
+                                | SqlBatchHostOperation::IfNullNative
+                        )
+                    ) {
+                        budget.array::<usize>(function.args.len())?;
+                        budget.field(sql, 1)?;
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -1228,23 +1367,10 @@ fn preflight<'a>(
                         )?;
                     }
                 }
-                let arity = function.args.len();
-                let policy_nodes = usize::from(native_batch_policy(function).is_some());
-                if policy_nodes != 0 {
-                    budget.array::<NodeRecord>(1)?;
-                    budget.array::<BuildNode>(1)?;
-                    budget.array::<LocalExpr>(1)?;
-                    budget.field(&native_policy_type(), 3)?;
-                }
-                scheduled = scheduled
-                    .checked_add(arity.saturating_add(policy_nodes))
-                    .filter(|nodes| *nodes <= limits.tree.max_nodes)
-                    .ok_or_else(|| resource("batch source node policy exceeded"))?;
                 let child_depth = depth
                     .checked_add(1)
                     .filter(|depth| *depth <= limits.tree.max_depth)
                     .ok_or_else(|| resource("batch source depth policy exceeded"))?;
-                budget.array::<(&Expression, usize, NativeView)>(arity)?;
                 reserve(&mut pending, arity)?;
                 for child in function.args.iter().rev() {
                     pending.push((child, child_depth, argument_view(function, view)));
@@ -1253,7 +1379,12 @@ fn preflight<'a>(
             Expression::CorrelatedColumn(_) => unreachable!(),
         }
         reserve(&mut checked, 1)?;
-        checked.push(CheckedNode { node, sql, view });
+        checked.push(CheckedNode {
+            node,
+            sql,
+            view,
+            subtree_end: 0,
+        });
     }
     // Even a temporary representability conversion must wait for the complete
     // source/schema/payload byte gate, including literals later in the graph.
@@ -1276,6 +1407,23 @@ fn preflight<'a>(
                 ));
             }
         }
+    }
+    for index in (0..checked.len()).rev() {
+        let mut end = index
+            .checked_add(1)
+            .ok_or_else(|| resource("source subtree ordinal overflow"))?;
+        if let Expression::ScalarFunction(function) = checked[index].node {
+            for _ in &function.args {
+                end = checked
+                    .get(end)
+                    .ok_or_else(|| binding("source subtree is incomplete"))?
+                    .subtree_end;
+            }
+        }
+        if end <= index || end > checked.len() {
+            return Err(binding("source subtree join differs").into());
+        }
+        checked[index].subtree_end = end;
     }
     Ok(checked)
 }
@@ -1388,7 +1536,7 @@ fn lower(
     let mut build = Vec::new();
     reserve(&mut nodes, checked.len())?;
     reserve(&mut build, checked.len())?;
-    for (ordinal, item) in checked.into_iter().enumerate() {
+    for (ordinal, item) in checked.iter().enumerate() {
         let field = if item.view != NativeView::Typed {
             projected(&native_bytes_type(), new_collation)?
         } else {
@@ -1434,6 +1582,8 @@ fn lower(
                                     operation,
                                     SqlBatchHostOperation::CastCharNative { .. }
                                         | SqlBatchHostOperation::CastNative
+                                        | SqlBatchHostOperation::CoalesceNative
+                                        | SqlBatchHostOperation::IfNullNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1450,6 +1600,30 @@ fn lower(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::CoalesceNative
+                            | SqlBatchHostOperation::IfNullNative => {
+                                let mut argument_nodes = Vec::new();
+                                reserve(&mut argument_nodes, *arity)?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("nullable child ordinal overflow"))?;
+                                for _ in 0..*arity {
+                                    argument_nodes.push(child);
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("nullable child source missing"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::Nullable {
+                                    name: sql.func_name.lowercase().into(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    argument_nodes: argument_nodes.into_boxed_slice(),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role().ok_or_else(|| {
+                                        binding("nullable control lacks native result role")
+                                    })?,
+                                }
+                            }
                             SqlBatchHostOperation::CastNative => NativeHostMetadata::ValueCast {
                                 cast_type: crate::scalar_function::cast_type_of(
                                     native_cast_name(sql).expect("checked native cast"),

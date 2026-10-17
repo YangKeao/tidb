@@ -4963,3 +4963,314 @@ fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connect
         assert_eq!(route.refusal, Some(BatchRefusal::Admission));
     }
 }
+
+#[test]
+fn native_nullable_controls_keep_actual_values_short_circuit_and_result_metadata() {
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let bad_signed = || {
+        call(
+            "cast_signed",
+            ty(),
+            vec![literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                vector.clone(),
+            )],
+        )
+    };
+    let bad_json = || {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![literal(Datum::Null, vector.clone())],
+        )
+    };
+    let json_null = || call("cast_json", json.clone(), vec![null()]);
+    let json_doc = || {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![literal(Datum::new_string("{\"a\":1}"), string_ty())],
+        )
+    };
+    let signed = || {
+        call(
+            "cast_signed",
+            ty(),
+            vec![literal(Datum::new_string("12.5tail"), string_ty())],
+        )
+    };
+    let time =
+        tidb_datatype::parse_datetime("2026-10-18 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let precise_time = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let merged_time = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+    let unsigned = ty().with_unsigned(true);
+    let cases = [
+        call("coalesce", ty(), vec![signed(), bad_signed()]),
+        call("ifnull", json.clone(), vec![json_doc(), bad_json()]),
+        call(
+            "coalesce",
+            json.clone(),
+            vec![json_null(), json_doc(), bad_json()],
+        ),
+        call("ifnull", json.clone(), vec![json_null(), json_null()]),
+        call(
+            "coalesce",
+            json.clone(),
+            vec![json_null(), json_null(), json_null()],
+        ),
+        call("ifnull", json.clone(), vec![json_null(), bad_json()]),
+        call(
+            "ifnull",
+            real_ty(),
+            vec![
+                literal(Datum::Real(f64::from_bits(0x7ff8000000000042)), real_ty()),
+                call(
+                    "cast_double",
+                    real_ty(),
+                    vec![literal(
+                        Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                        vector.clone(),
+                    )],
+                ),
+            ],
+        ),
+        call(
+            "coalesce",
+            merged_time.clone(),
+            vec![
+                literal(Datum::Null, precise_time.clone()),
+                literal(Datum::Time(time), precise_time),
+            ],
+        ),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call(
+                "coalesce",
+                unsigned.clone(),
+                vec![
+                    literal(Datum::UInt(u64::MAX), unsigned.clone()),
+                    literal(Datum::Int(1), unsigned.clone()),
+                ],
+            )],
+        ),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call(
+                "ifnull",
+                unsigned.clone(),
+                vec![
+                    literal(Datum::Int(-1), unsigned.clone()),
+                    literal(Datum::UInt(u64::MAX), unsigned),
+                ],
+            )],
+        ),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call("coalesce", ty(), vec![signed(), bad_signed()])],
+        ),
+        call(
+            "ifnull",
+            json.clone(),
+            vec![
+                call(
+                    "cast_json",
+                    json.clone(),
+                    vec![literal(Datum::new_string("null"), string_ty())],
+                ),
+                bad_json(),
+            ],
+        ),
+    ];
+    for root in cases {
+        let field = root.static_type().unwrap().clone();
+        for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for _ in &selected {
+                match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut input = Chunk::new_with_capacity(&[], 2);
+            input.set_num_virtual_rows(2);
+            input.set_sel(Some(selected));
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost nullable error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error);
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows());
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0)
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref()
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{root:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rewritten_native_nullable_controls_keep_selected_columns_and_skipped_json_errors() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            let index = match path.last()?.as_str() {
+                "v" => 0,
+                "w" => 1,
+                _ => return None,
+            };
+            Some((index, string_ty(), index as i64 + 1))
+        }
+    }
+    let schema = [string_ty(), string_ty()];
+    let rows = vec![
+        vec![
+            Datum::new_string("{\"a\":1}"),
+            Datum::new_string("bad JSON"),
+        ],
+        vec![Datum::Null, Datum::new_string("12")],
+        vec![Datum::Null, Datum::new_string("bad JSON")],
+        vec![Datum::new_string("null"), Datum::new_string("bad JSON")],
+        vec![Datum::new_string("bad JSON"), Datum::new_string("12")],
+    ];
+    for sql in [
+        "coalesce(cast(v as json), cast(w as json))",
+        "ifnull(cast(v as json), cast(w as json))",
+        "cast(coalesce(cast(v as json), cast(w as json)) as char)",
+        "concat(cast(ifnull(cast(v as json), cast(w as json)) as char), '!')",
+        "regexp_like(cast(coalesce(cast(v as json), cast(w as json)) as char), 'a|1')",
+        "coalesce(cast(null as json), ifnull(cast(v as json), cast(w as json)))",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [
+            vec![],
+            vec![0, 1, 3, 0],
+            vec![2, 0],
+            vec![4, 0],
+            (0..2050).map(|i| [0, 1, 3][i % 3]).collect(),
+        ] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for row in selected {
+                match root.eval(&reference, input.physical_row(row)) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost nullable SQL error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error, "{sql}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{sql}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_nullable_node_policy_precedes_argument_declaration_capability_scan() {
+    let root = call(
+        "coalesce",
+        ty(),
+        vec![
+            call("cast_signed", ty(), vec![int(1)]),
+            Expression::Constant(Constant::default()),
+        ],
+    );
+    let suite = self::suite(root);
+    let mut source_limits = limits();
+    source_limits.tree.max_nodes = 1;
+    let error = match PreparedBatchSuite::compile(
+        &suite,
+        &[],
+        true,
+        93,
+        source_limits,
+        ExecutionLimits::default(),
+        1 << 20,
+    ) {
+        Ok(_) => panic!("the source exceeds its node policy"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+}
