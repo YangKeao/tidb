@@ -361,6 +361,31 @@ fn check_type(sql: &FieldType) -> Result<()> {
 fn native_json_bytes_type() -> FieldType {
     FieldType::new(FieldTypeCode::Blob).with_collation(tidb_datatype::Collation::Binary)
 }
+// Borrowed logical payload policy, before any conversion/clone. Charge the
+// source record, lowered literal and compiled literal copy groups. Decimal uses
+// its source coefficient bytes conservatively (shared words may be smaller);
+// fixed inline cells are already charged with the node scaffolding. This is not
+// an allocator-capacity or statement peak-memory measurement.
+fn literal_copy_budget(value: &Datum, sql: &FieldType) -> LocalResult<usize> {
+    let bytes = match (sql.eval_type(), value) {
+        (NativeEvalType::String, value) => value.as_raw_bytes().map_or(0, <[u8]>::len),
+        (NativeEvalType::Decimal, Datum::Decimal(value)) => value.coefficient_bytes().len(),
+        (NativeEvalType::Json, Datum::Json(value)) => value
+            .value()
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| resource("native JSON literal size overflow"))?,
+        (NativeEvalType::VectorFloat32, Datum::VectorFloat32(value)) => value
+            .len()
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| resource("native vector literal size overflow"))?,
+        _ => 0,
+    };
+    bytes
+        .checked_mul(3)
+        .ok_or_else(|| resource("native literal copy size overflow"))
+}
+
 fn source_literal(value: &Datum, sql: &FieldType, raw_json_bytes: bool) -> Result<ScalarValue> {
     if raw_json_bytes {
         return match (sql.eval_type(), value) {
@@ -910,22 +935,7 @@ fn preflight<'a>(
                 let literal = value
                     .literal_value()
                     .ok_or_else(|| BatchFailure::admission("parameter/deferred batch source"))?;
-                if raw_json_bytes {
-                    if let Datum::Json(value) = literal {
-                        budget.add(
-                            value
-                                .value()
-                                .len()
-                                .checked_add(1)
-                                .ok_or_else(|| resource("native JSON literal size overflow"))?
-                                .checked_mul(3)
-                                .ok_or_else(|| {
-                                    resource("native JSON literal clone size overflow")
-                                })?,
-                        )?;
-                    }
-                }
-                source_literal(literal, sql, raw_json_bytes)?;
+                budget.add(literal_copy_budget(literal, sql)?)?;
             }
             Expression::Column(column) => {
                 if column.virtual_expr.is_some() || column.correlated_col_unique_id != 0 {
@@ -990,7 +1000,16 @@ fn preflight<'a>(
             raw_json_bytes,
         });
     }
+    // Even a temporary representability conversion must wait for the complete
+    // source/schema/payload byte gate, including literals later in the graph.
     for item in &checked {
+        if let Expression::Constant(value) = item.node {
+            source_literal(
+                value.literal_value().expect("checked literal"),
+                item.sql,
+                item.raw_json_bytes,
+            )?;
+        }
         if let Expression::Column(column) = item.node {
             let field = &row_schema[column.index as usize];
             if field.collation() != item.sql.collation() || field != item.sql {

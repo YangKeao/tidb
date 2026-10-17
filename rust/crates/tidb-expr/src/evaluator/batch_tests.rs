@@ -3532,3 +3532,94 @@ fn regexp_host_task_denial_does_not_read_context_or_retry() {
     assert_eq!(context.reads.get(), 0);
     assert_eq!(output.num_rows(), 0);
 }
+
+#[test]
+fn all_owned_literal_payloads_are_gated_before_source_snapshot_clones() {
+    let candidates = [
+        (
+            "String",
+            literal(Datum::new_string(vec![b'x'; 100_000]), string_ty()),
+        ),
+        (
+            "JSON",
+            literal(
+                Datum::Json(BinaryJSON::from_encoded_parts(4, vec![0; 100_000])),
+                FieldType::new(FieldTypeCode::Json),
+            ),
+        ),
+        (
+            "Vector",
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0; 8192])),
+                FieldType::new(FieldTypeCode::VectorFloat32),
+            ),
+        ),
+        (
+            "Decimal",
+            literal(
+                Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'; 100_000], 0, 0)),
+                FieldType::new(FieldTypeCode::NewDecimal),
+            ),
+        ),
+    ];
+    let mut ungated = Vec::new();
+    for (name, root) in candidates {
+        let result = preflight(
+            &root,
+            &[],
+            BatchSourceLimits {
+                max_metadata_bytes: 65536,
+                ..limits()
+            },
+        );
+        if !matches!(result, Err(error) if matches!(error.local_error(), Some(LocalError::ResourceLimit(_))))
+        {
+            ungated.push(name);
+        }
+    }
+    assert!(
+        ungated.is_empty(),
+        "literal copies bypassed source byte gate: {ungated:?}"
+    );
+}
+
+#[test]
+fn complete_literal_budget_precedes_even_earlier_temporary_conversions() {
+    // This first argument is a small unrepresentable literal. The complete
+    // source byte gate must reject the later huge literal before trying even
+    // this first temporary conversion. No input evaluation/context is involved.
+    let root = call(
+        "concat",
+        string_ty(),
+        vec![
+            literal(Datum::Int(1), string_ty()),
+            text(Some(&vec![b'x'; 100_000])),
+        ],
+    );
+    let error = preflight(
+        &root,
+        &[],
+        BatchSourceLimits {
+            max_metadata_bytes: 65536,
+            ..limits()
+        },
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    let small = call(
+        "concat",
+        string_ty(),
+        vec![literal(Datum::Int(1), string_ty()), text(Some(b"x"))],
+    );
+    assert_eq!(
+        preflight(&small, &[], limits())
+            .map(|_| ())
+            .unwrap_err()
+            .refusal(),
+        BatchRefusal::Admission
+    );
+}

@@ -24,6 +24,7 @@ previous user contract; demand and side-effect ordering do not.
   tikv-client-rs BUILD.bazel must not be staged.
 - [x] Read both AGENTS.md files, root PLANS.md, and existing implementation.
 - [x] (2026-10-17) N1: Terminal preparation errors are cached and propagated; regression fails before fix, batch35 pass, full1387 pass/same4 known failures/95ignored, lint and scoped fmt pass.
+- [x] (2026-10-17) N1b: all ordinary String/JSON/Vector/Decimal literal payloads gated in borrowed form before any snapshot/temporary conversion; four-family regression red before fix,59 focused/full1411same4 pass; lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n1b.md.
 - [x] (2026-10-17) N2: multi-output/leaf/direct-column scheduling, selected raw-column alias-safe copy, suite metadata/node caps. Batch40/Chunk275/pinned-nightly Projection9 pass; full1392 retains same4 inherited failures; lint/fmt pass.
 - [x] (2026-10-17) N3a: STRCMP uses its existing native collation kernel in composed shared graphs; batch41/full1393 retain same4 failures, TiKV1033 retains same6, actual rewritten SQL25 scenarios all prepared without fallback/refusal; scoped project clippy/lint/fmt pass.
 - [x] (2026-10-17) N3b: JSON_TYPE SQL kernels, explicit native failure kinds and raw native JSON leaf view. Frontbatch47/full1399same4, coreprofile60/full1036same6 pass;25 SQL routes pass without fallback/refusal; lint/scoped project clippy/fmt pass.
@@ -256,3 +257,10 @@ Next audit the source-literal preclone byte gate (String/JSON/vector/Decimal),
 then extend native coercions and argument/result transport beyond ready wire
 carriers while retaining one driver. Complete N4b/N5 before deleting migration
 routing; replacing supported SQL by an unsupported error is not completion.
+
+
+N1b outcome: the source-literal audit reproduced an actual gate bypass for all
+four heap-bearing literal families. Borrowed logical payload charging now
+precedes every temporary conversion and detached copy in this preflight.
+Decimal source bytes are deliberately conservative, not physical heap numbers.
+This closes a resource-policy gap; it does not expand SQL type/function coverage.
