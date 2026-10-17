@@ -30,10 +30,10 @@ use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
 use crate::ReadyValueCache;
 
-// Private consumer checkpoint; the public suite still selects Native below.
+// Compiled shared projection execution; the legacy run entry remains during migration.
 pub(crate) mod batch;
 
-use batch::{BatchSourceLimits, PreparedBatch};
+use batch::{BatchSourceLimits, PreparedBatchSuite};
 
 /// Go `HasGetSetVarFunc`: whether an expression contains a user-variable read
 /// or assignment at any depth.
@@ -410,7 +410,7 @@ enum BatchLane {
         reason: BatchRefusal,
         error: EvaluatorError,
     },
-    Prepared(PreparedBatch),
+    Prepared(PreparedBatchSuite),
 }
 
 /// Bounded reason why a suite could not prepare the closed batch path.
@@ -437,7 +437,8 @@ pub enum BatchRefusal {
 /// Allocation-free snapshot of the route actually used by this evaluator lane.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BatchRouteSnapshot {
-    /// Calls that executed the prepared TiKV batch route.
+    /// Calls handled by the compiled shared projection, including direct columns.
+    /// The scratch snapshot separately counts actual shared-program windows.
     pub prepared: u64,
     /// Calls that executed the canonical native fallback route.
     pub fallback: u64,
@@ -618,10 +619,11 @@ impl EvaluatorSuite {
         })
     }
 
-    /// Projection-lane entry for the checked pure, strict, eager batch class.
-    /// Admission is cached before evaluation. Unsupported suites retain the
-    /// native route; admitted suites pass the real Chunk selection to TiKV's
-    /// eager RPN vector entry and never retry natively after an engine error.
+    /// Projection-lane entry for checked pure calculations and direct columns.
+    /// Preparation covers all outputs before evaluation. Unsupported suites
+    /// temporarily retain migration routing; prepared calculations use shared
+    /// RPN programs and never replay after an execution error. Disabling the
+    /// vector optimization selects one-row windows in that same execution model.
     pub fn run_with_tikv_batch<C: Columns>(
         &self,
         ctx: &C,
@@ -658,7 +660,7 @@ impl EvaluatorSuite {
         debug_assert!((1..=BATCH_MAX_SIZE).contains(&window_size));
         let mut lane = self.batch_lane.borrow_mut();
         if matches!(*lane, BatchLane::Uninitialized) {
-            *lane = match PreparedBatch::compile(
+            *lane = match PreparedBatchSuite::compile(
                 self,
                 row_schema,
                 true,
@@ -699,11 +701,12 @@ impl EvaluatorSuite {
             drop(lane);
             return self.run(ctx, input, output);
         };
-        worker.window_size = window_size;
+        worker.set_window_size(window_size);
         self.batch_route_prepared
             .set(self.batch_route_prepared.get().saturating_add(1));
         let mut tikv_ctx = TikvEvalContext::default();
-        self.run_batch(ctx, &mut tikv_ctx, worker, input, output, row_schema)
+        worker
+            .run(self, ctx, &mut tikv_ctx, input, output, row_schema)
             .map_err(batch::BatchFailure::into_evaluator_error)
     }
 
@@ -1088,7 +1091,7 @@ mod tests {
         assert!(output.get_row(2).is_null(0));
         assert!(output.get_row(3).is_null(0));
         let first = match &*suite.batch_lane.borrow() {
-            BatchLane::Prepared(worker) => worker as *const PreparedBatch,
+            BatchLane::Prepared(worker) => worker as *const PreparedBatchSuite,
             _ => panic!("checked batch suite did not retain its TiKV worker"),
         };
         let first_scratch = suite
@@ -1105,7 +1108,7 @@ mod tests {
             .unwrap();
         assert_eq!(next_output.get_row(0).get_int64(0), 7);
         let second = match &*suite.batch_lane.borrow() {
-            BatchLane::Prepared(worker) => worker as *const PreparedBatch,
+            BatchLane::Prepared(worker) => worker as *const PreparedBatchSuite,
             _ => panic!("checked batch suite lost its TiKV worker"),
         };
         assert_eq!(first, second);

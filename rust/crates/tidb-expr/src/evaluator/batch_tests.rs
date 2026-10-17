@@ -2341,3 +2341,175 @@ fn preparation_resource_failure_is_cached_without_entering_another_evaluator() {
         );
     }
 }
+
+#[test]
+fn complete_projection_keeps_multiple_outputs_and_selected_columns_in_shared_execution() {
+    let schema = [ty(), string_ty()];
+    let rows = vec![
+        vec![
+            Datum::Int(2),
+            Datum::String(StringDatum::new(b"Ab".to_vec(), Collation::Utf8Mb4Bin)),
+        ],
+        vec![Datum::Null, Datum::Null],
+        vec![
+            Datum::Int(7),
+            Datum::String(StringDatum::new(b"XYZ".to_vec(), Collation::Utf8Mb4Bin)),
+        ],
+    ];
+    let out_schema = [ty(), ty(), string_ty(), ty(), ty(), ty()];
+    for enabled in [true, false] {
+        for selection in [
+            None,
+            Some(vec![]),
+            Some((0..2050).map(|i| (2050 - i) % 3).collect()),
+        ] {
+            let suite = EvaluatorSuite::new(
+                vec![
+                    column(0),
+                    plus(column(0), int(1)),
+                    call("lower", string_ty(), vec![string_column(1)]),
+                    int(42),
+                    call("char_length", ty(), vec![string_column(1)]),
+                    column(0),
+                ],
+                false,
+            );
+            let ctx = Context::new(enabled);
+            for _ in 0..2 {
+                let mut input = chunk(&schema, &rows);
+                input.set_sel(selection.clone());
+                let mut out = Chunk::new_with_capacity(&out_schema, 0);
+                suite
+                    .run_with_tikv_batch(&ctx, &mut input, &mut out, &schema)
+                    .unwrap();
+                let selected = selection.clone().unwrap_or_else(|| vec![0, 1, 2]);
+                assert_eq!(out.num_rows(), selected.len());
+                for (logical, physical) in selected.into_iter().enumerate() {
+                    let (number, lower, length) = match physical {
+                        0 => (Datum::Int(3), Some(b"ab".to_vec()), Datum::Int(2)),
+                        1 => (Datum::Null, None, Datum::Null),
+                        2 => (Datum::Int(8), Some(b"xyz".to_vec()), Datum::Int(3)),
+                        _ => unreachable!(),
+                    };
+                    let row = out.get_row(logical);
+                    assert_eq!(row.get_datum(0, &ty()), rows[physical][0]);
+                    assert_eq!(row.get_datum(1, &ty()), number);
+                    assert_eq!(
+                        row.get_datum(2, &string_ty()),
+                        lower.map_or(Datum::Null, |s| Datum::String(StringDatum::new(
+                            s,
+                            Collation::Utf8Mb4Bin
+                        )))
+                    );
+                    assert_eq!(row.get_datum(3, &ty()), Datum::Int(42));
+                    assert_eq!(row.get_datum(4, &ty()), length);
+                    assert_eq!(row.get_datum(5, &ty()), rows[physical][0]);
+                }
+                if selection.is_none() {
+                    assert!(out.columns_share_identity(0, &out, 5));
+                } else {
+                    assert_eq!(
+                        input.physical_rows(),
+                        3,
+                        "selected input owners stay intact"
+                    );
+                }
+            }
+            assert_eq!(
+                ctx.calls.get(),
+                2,
+                "one execution-mode choice per invocation"
+            );
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (2, 0, 0));
+        }
+    }
+}
+
+#[test]
+fn projection_late_error_does_not_move_direct_column_owners_or_retry() {
+    let suite = EvaluatorSuite::new(vec![column(0), plus(int(i64::MAX), int(1))], false);
+    let mut input = chunk(&[ty()], &[vec![Datum::Int(7)]]);
+    let mut out = Chunk::new_with_capacity(&[ty(), ty()], 0);
+    assert!(suite
+        .run_with_tikv_batch(&Context::new(true), &mut input, &mut out, &[ty()])
+        .is_err());
+    assert_eq!(input.get_row(0).get_datum(0, &ty()), Datum::Int(7));
+    assert_eq!(input.column(0).rows(), 1);
+    assert_eq!(out.column(0).rows(), 0);
+    let route = suite.batch_route_snapshot();
+    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+}
+
+#[test]
+fn projection_validates_later_destination_before_any_kernel_runs() {
+    let suite = EvaluatorSuite::new(
+        vec![
+            plus(column(0), int(1)),
+            call("lower", string_ty(), vec![string_column(1)]),
+        ],
+        false,
+    );
+    let schema = [ty(), string_ty()];
+    let mut input = chunk(
+        &schema,
+        &[vec![
+            Datum::Int(7),
+            Datum::String(StringDatum::new(b"A".to_vec(), Collation::Utf8Mb4Bin)),
+        ]],
+    );
+    let mut out = Chunk::new_with_capacity(&[ty(), ty()], 0); // wrong second layout
+    let ctx = Context::new(true);
+    assert!(suite
+        .run_with_tikv_batch(&ctx, &mut input, &mut out, &schema)
+        .is_err());
+    assert_eq!(ctx.calls.get(), 0);
+    assert_eq!(out.column(0).rows(), 0);
+    assert_eq!(input.column(0).rows(), 1);
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+}
+
+#[test]
+fn projection_leaf_roots_and_direct_only_selection_need_no_scalar_interpreter() {
+    for avoid_column_evaluator in [false, true] {
+        let suite = EvaluatorSuite::new(vec![column(0), column(0)], avoid_column_evaluator);
+        let schema = [ty()];
+        let mut input = chunk(&schema, &[vec![Datum::Int(7)], vec![Datum::Null]]);
+        input.set_sel(Some(vec![1, 0, 1]));
+        let mut out = Chunk::new_with_capacity(&[ty(), ty()], 0);
+        suite
+            .run_with_tikv_batch(&Context::new(true), &mut input, &mut out, &schema)
+            .unwrap();
+        for (row, expected) in [Datum::Null, Datum::Int(7), Datum::Null]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(out.get_row(row).get_datum(0, &ty()), expected);
+            assert_eq!(out.get_row(row).get_datum(1, &ty()), expected);
+        }
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+    }
+}
+
+#[test]
+fn complete_projection_source_budget_is_shared_across_outputs() {
+    let suite = EvaluatorSuite::new(vec![int(1), int(2)], false);
+    let mut limits = limits();
+    limits.tree.max_nodes = 1;
+    let error = PreparedBatchSuite::compile(
+        &suite,
+        &[],
+        true,
+        0,
+        limits,
+        ExecutionLimits::default(),
+        8192,
+    )
+    .err()
+    .expect("two roots cannot each consume a one-node suite budget");
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+}

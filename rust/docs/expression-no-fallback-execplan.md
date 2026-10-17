@@ -24,7 +24,7 @@ previous user contract; demand and side-effect ordering do not.
   tikv-client-rs BUILD.bazel must not be staged.
 - [x] Read both AGENTS.md files, root PLANS.md, and existing implementation.
 - [x] (2026-10-17) N1: Terminal preparation errors are cached and propagated; regression fails before fix, batch35 pass, full1387 pass/same4 known failures/95ignored, lint and scoped fmt pass.
-- [ ] N2: Remove single-output/column-owner shape refusals through projection scheduling.
+- [x] (2026-10-17) N2: multi-output/leaf/direct-column scheduling, selected raw-column alias-safe copy, suite metadata/node caps. Batch40/Chunk275/pinned-nightly Projection9 pass; full1392 retains same4 inherited failures; lint/fmt pass.
 - [ ] N3: Admit shared STRCMP, CONCAT and JSON_TYPE with exact native SQL contracts.
 - [ ] N4: Execute lazy control flow with demanded rows in the shared engine.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
@@ -33,6 +33,14 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+
+The system compiler is Rust1.97.1 while the full repository pins
+nightly-2026-08-22 (Rust1.100). Expression/Chunk-only tests also run on the system
+compiler with RUSTC_BOOTSTRAP, but jemalloc mem-profiling requires the pinned
+intrinsic signature. For caller/server validation use the existing
+/home/agent/tidb/expression-unification/tools/cargo-tidb wrapper, not an allocator
+source workaround. The initial offline Projection test also needed the locked
+paste crate downloaded; --locked preserved dependency versions.
 
 The existing public run_with_tikv_window catches every preparation error,
 including ResourceLimit and contract errors, stores only a bounded refusal code,
@@ -64,7 +72,7 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 ## Outcomes & Retrospective
 
 
-N1 regression reproduced the bug before implementation: the oversized metadata gate returned successful generic evaluation instead of a resource error. Cached typed errors now pass batch35 and full1387 with exactly the same4 inherited failures. The first candidate exposed the existing JSON-to-String catalog conversion gap; explicit carrier admission fixed its classification without swallowing InvalidSpec. TiKV is unchanged. Next is N2; ordinary unsupported-expression routing is still present and goal remains incomplete. None of the remaining fallback workloads has been
+N1 regression reproduced the bug before implementation: the oversized metadata gate returned successful generic evaluation instead of a resource error. Cached typed errors now pass batch35 and full1387 with exactly the same4 inherited failures. The first candidate exposed the existing JSON-to-String catalog conversion gap; explicit carrier admission fixed its classification without swallowing InvalidSpec. TiKV is unchanged. N2 now also passes batch40, Chunk275 and the pinned-nightly production Projection caller tests9. Multiple pure outputs, literals, direct selected columns and vector-off one-row execution no longer trigger an alternate evaluator. Ordinary unsupported-function/context routing is still present; next is N3/N4, and the goal remains incomplete. None of the remaining fallback workloads has been
 claimed fixed. Each self-contained code milestone must have targeted regression
 coverage, required lint, and a Signed-off-by commit; temporary migration routing
 must be reported explicitly until removed. Do not use the earlier performance
@@ -109,6 +117,10 @@ Run commands from the TiDB worktree unless noted. Use the established environmen
     export CARGO_TARGET_DIR=/home/agent/tidb/expression-unification/target-tidb
     cargo test --manifest-path rust/Cargo.toml --release --locked --offline -j2 -p tidb-expr --lib evaluator::batch::tests
     make lint
+
+For full callers, from the rust/ directory use the repository-pinned toolchain:
+
+    RUSTFLAGS='' CARGO_BUILD_JOBS=12 /home/agent/tidb/expression-unification/tools/cargo-tidb test --release --locked --offline -j12 -p tidb-executor --lib projection::tests
 
 Check the target's existing artifacts and toolchain before building. Save output
 under /home/agent/.slock/agents/1555103c-9f3e-46ca-ac2e-b964c650c2f1/evidence/no-fallback/.

@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Private, mandatory projection consumer for the checked batch entry.
-//! Public EvaluatorSuite::run still uses the native consumer. No filter, grouping,
-//! row fallback, D4 diagnostic conversion or control/result-lineage composition.
+//! Shared pure projection lowering and execution, including multiple outputs,
+//! literal/column roots and selected direct-column transport. Every calculated
+//! output uses the shared RPN program; no value callback enters a native tree.
+//! The legacy single-invocation consumer is retained only for adversarial tests.
 //!
 //! Native source metadata is deep-detached when EvaluatorProgram takes
 //! ownership, then validated and sealed once during preparation.
@@ -58,9 +59,12 @@ use crate::pushdown_catalog::CATALOG;
 use crate::scalar_function::ScalarFunction;
 
 use super::{
-    BatchConsumer, BatchInvocation, BatchRefusal, BatchScratchSnapshot, Chunk, Columns, EvalError,
-    EvaluatorError, EvaluatorProgram, EvaluatorSuite, Expression,
+    BatchRefusal, BatchScratchSnapshot, Chunk, Columns, EvalError, EvaluatorError,
+    EvaluatorProgram, EvaluatorSuite, Expression,
 };
+
+#[cfg(test)]
+use super::{BatchConsumer, BatchInvocation};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BatchSourceLimits {
@@ -625,11 +629,6 @@ fn preflight<'a>(
     if limits.tree.max_nodes == 0 || limits.tree.max_depth == 0 {
         return Err(resource("batch source node/depth policy is zero").into());
     }
-    if !matches!(root, Expression::ScalarFunction(_)) {
-        return Err(BatchFailure::admission(
-            "native batch entry does not admit a leaf root",
-        ));
-    }
     let mut budget = Budget {
         used: 0,
         max: limits.max_metadata_bytes,
@@ -714,6 +713,7 @@ fn preflight<'a>(
     Ok(checked)
 }
 
+#[cfg(test)]
 fn suite_shape(suite: &EvaluatorSuite) -> Result<&Expression> {
     let program = &suite.program;
     if program.calculated.len() != 1
@@ -726,7 +726,13 @@ fn suite_shape(suite: &EvaluatorSuite) -> Result<&Expression> {
             "private batch suite requires one calculation and no owner swap",
         ));
     }
-    Ok(&program.calculated[0])
+    let root = &program.calculated[0];
+    if !matches!(root, Expression::ScalarFunction(_)) {
+        return Err(BatchFailure::admission(
+            "private consumer requires a call root",
+        ));
+    }
+    Ok(root)
 }
 enum BuildKind {
     Literal(ScalarValue),
@@ -740,12 +746,17 @@ struct BuildNode {
 
 fn lower(
     suite: &EvaluatorSuite,
+    calculated_slot: usize,
     row_schema: &[FieldType],
     new_collation: bool,
     unit: u64,
     limits: BatchSourceLimits,
 ) -> Result<Arc<BatchSource>> {
-    let root = suite_shape(suite)?;
+    let root = suite
+        .program
+        .calculated
+        .get(calculated_slot)
+        .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
     let checked = preflight(root, row_schema, limits)?;
     let mut nodes = Vec::new();
     let mut bindings = Vec::new();
@@ -836,8 +847,8 @@ fn lower(
     Ok(Arc::new(BatchSource {
         owner: Arc::clone(&suite.program),
         root_identity: root as *const Expression as usize,
-        calculated_slot: 0,
-        output_index: 0,
+        calculated_slot,
+        output_index: suite.program.calculated_output_indexes[calculated_slot],
         unit,
         nodes: nodes.into_boxed_slice(),
         bindings: bindings.into_boxed_slice(),
@@ -862,6 +873,7 @@ pub(crate) struct PreparedBatch {
     windows: u64,
 }
 impl PreparedBatch {
+    #[cfg(test)]
     pub(crate) fn compile(
         suite: &EvaluatorSuite,
         row_schema: &[FieldType],
@@ -871,7 +883,37 @@ impl PreparedBatch {
         execution: ExecutionLimits,
         max_materialization_retained_bytes: usize,
     ) -> Result<Self> {
-        let source = lower(suite, row_schema, new_collation, unit, source_limits)?;
+        suite_shape(suite)?;
+        Self::compile_calculation(
+            suite,
+            0,
+            row_schema,
+            new_collation,
+            unit,
+            source_limits,
+            execution,
+            max_materialization_retained_bytes,
+        )
+    }
+
+    fn compile_calculation(
+        suite: &EvaluatorSuite,
+        calculated_slot: usize,
+        row_schema: &[FieldType],
+        new_collation: bool,
+        unit: u64,
+        source_limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        max_materialization_retained_bytes: usize,
+    ) -> Result<Self> {
+        let source = lower(
+            suite,
+            calculated_slot,
+            row_schema,
+            new_collation,
+            unit,
+            source_limits,
+        )?;
         let program = compile_batch(
             &source.expr,
             &source.schema,
@@ -899,6 +941,7 @@ impl PreparedBatch {
             windows: self.windows,
         }
     }
+    #[cfg(test)]
     pub(crate) fn declared_type_snapshot(&self) -> FieldType {
         snapshot_field_type(&self.source.nodes[0].sql)
     }
@@ -915,7 +958,11 @@ impl PreparedBatch {
                 "batch worker belongs to another native program",
             ));
         }
-        let root = suite_shape(suite)?;
+        let root = suite
+            .program
+            .calculated
+            .get(self.source.calculated_slot)
+            .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
         if root as *const Expression as usize != self.source.root_identity {
             return Err(BatchFailure::admission(
                 "batch worker root belongs to another native program",
@@ -954,13 +1001,14 @@ impl PreparedBatch {
                 .into());
             }
         }
-        if output.num_cols() != 1
-            || output.column(0).type_size() != get_fixed_len(&self.source.nodes[0].sql)
+        if output.num_cols() != projection_output_count(&suite.program)?
+            || output.column(self.source.output_index).type_size()
+                != get_fixed_len(&self.source.nodes[0].sql)
             || output.sel().is_some()
             || output.is_incomplete_chunk()
         {
             return Err(LocalError::InvalidBatch(
-                "batch destination layout is not one supported column".into(),
+                "batch destination layout differs from its declared output".into(),
             )
             .into());
         }
@@ -1539,6 +1587,7 @@ impl LocalRuntimeServices for CheckedInputs<'_> {
     }
 }
 
+#[cfg(test)]
 struct Consumer<'a> {
     worker: &'a mut PreparedBatch,
     ctx: &'a mut EvalContext,
@@ -1546,6 +1595,7 @@ struct Consumer<'a> {
     #[cfg(test)]
     override_source: Option<&'a mut dyn NativeDatumSource>,
 }
+#[cfg(test)]
 impl BatchConsumer for Consumer<'_> {
     type Error = BatchFailure;
     fn before_run(&mut self, suite: &EvaluatorSuite, input: &Chunk, output: &Chunk) -> Result<()> {
@@ -1576,57 +1626,13 @@ impl BatchConsumer for Consumer<'_> {
         // Consume the native eligibility evidence without calling its value
         // worker. The actual suite/global decision minted it for THIS call.
         drop(invocation.candidate);
-        // TiKV deliberately bounds one driver invocation. A TiDB Chunk may be
-        // wider than that boundary, so keep one canonical prepared route and
-        // stream it through consecutive whole-selection windows. This is not a
-        // Every window uses the same sealed batch program and typed carrier.
-        // and preserves occurrence order, duplicates, NULLs and first error.
-        let mut start = 0;
-        while start < self.worker.selection.len() {
-            let end = self
-                .worker
-                .selection
-                .len()
-                .min(start.saturating_add(self.worker.window_size));
-            let selection = &self.worker.selection[start..end];
-            let mut native = NativeChunk {
-                source: &source,
-                input: invocation.input,
-                selection,
-            };
+        self.worker.execute_chunk(
+            self.ctx,
+            invocation.input,
+            output,
             #[cfg(test)]
-            let provider: &mut dyn NativeDatumSource = match self.override_source.as_mut() {
-                Some(source) => &mut **source,
-                None => &mut native,
-            };
-            #[cfg(not(test))]
-            let provider: &mut dyn NativeDatumSource = &mut native;
-            let mut checked = CheckedInputs { source: provider };
-            let values = self
-                .worker
-                .program
-                .eval_with_bindings(
-                    self.worker.limits,
-                    self.ctx,
-                    invocation.input.physical_rows(),
-                    selection,
-                    &mut checked,
-                )
-                .map_err(BatchFailure::from)?;
-            self.worker.windows = self.worker.windows.saturating_add(1);
-            let vectors = source
-                .bindings
-                .len()
-                .saturating_add(source.facts.call_sites().len());
-            self.worker.vector_allocations = self
-                .worker
-                .vector_allocations
-                .saturating_add(u64::try_from(vectors).unwrap_or(u64::MAX));
-            self.worker
-                .write_output(values, selection, output, invocation.output_index)?;
-            start = end;
-        }
-        Ok(())
+            self.override_source.take(),
+        )
     }
     fn requires_batch_candidate_before_native_specialization(&self) -> bool {
         true
@@ -1638,6 +1644,7 @@ impl BatchConsumer for Consumer<'_> {
     }
 }
 
+#[cfg(test)]
 impl EvaluatorSuite {
     pub(crate) fn run_batch<C: Columns>(
         &self,
@@ -1666,3 +1673,269 @@ impl EvaluatorSuite {
 #[cfg(test)]
 #[path = "batch_tests.rs"]
 mod tests;
+
+impl PreparedBatch {
+    fn execute_chunk(
+        &mut self,
+        ctx: &mut EvalContext,
+        input: &Chunk,
+        output: &mut Chunk,
+        #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
+    ) -> Result<()> {
+        let source = Arc::clone(&self.source);
+        // TiKV deliberately bounds one driver invocation. A TiDB Chunk may be
+        // wider than that boundary, so keep one canonical prepared route and
+        // stream it through consecutive whole-selection windows. Every window
+        // uses the same sealed program and preserves occurrence order, repeats,
+        // NULLs and failure propagation without entering another evaluator.
+        let mut start = 0;
+        while start < self.selection.len() {
+            let end = self
+                .selection
+                .len()
+                .min(start.saturating_add(self.window_size));
+            let selection = &self.selection[start..end];
+            let mut native = NativeChunk {
+                source: &source,
+                input,
+                selection,
+            };
+            #[cfg(test)]
+            let provider: &mut dyn NativeDatumSource = match override_source.as_mut() {
+                Some(source) => &mut **source,
+                None => &mut native,
+            };
+            #[cfg(not(test))]
+            let provider: &mut dyn NativeDatumSource = &mut native;
+            let mut checked = CheckedInputs { source: provider };
+            let values = self
+                .program
+                .eval_with_bindings(
+                    self.limits,
+                    ctx,
+                    input.physical_rows(),
+                    selection,
+                    &mut checked,
+                )
+                .map_err(BatchFailure::from)?;
+            self.windows = self.windows.saturating_add(1);
+            let vectors = source
+                .bindings
+                .len()
+                .saturating_add(source.facts.call_sites().len());
+            self.vector_allocations = self
+                .vector_allocations
+                .saturating_add(u64::try_from(vectors).unwrap_or(u64::MAX));
+            self.write_output(values, selection, output, self.source.output_index)?;
+            start = end;
+        }
+        Ok(())
+    }
+}
+
+fn projection_output_count(program: &EvaluatorProgram) -> Result<usize> {
+    program
+        .column_mapping
+        .values()
+        .try_fold(program.calculated.len(), |count, outputs| {
+            count
+                .checked_add(outputs.len())
+                .ok_or_else(|| resource("projection output count overflow").into())
+        })
+}
+
+/// A complete pure projection: one shared program per calculated output and
+/// direct-column ownership transfer only after every calculation succeeds.
+/// There is no nested EvaluatorSuite or native expression value callback.
+pub(crate) struct PreparedBatchSuite {
+    owner: Arc<EvaluatorProgram>,
+    workers: Vec<PreparedBatch>,
+    schema: Box<[FieldType]>,
+    source_limits: BatchSourceLimits,
+    output_count: usize,
+}
+
+impl PreparedBatchSuite {
+    pub(crate) fn compile(
+        suite: &EvaluatorSuite,
+        row_schema: &[FieldType],
+        new_collation: bool,
+        unit: u64,
+        source_limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        max_materialization_retained_bytes: usize,
+    ) -> Result<Self> {
+        if !suite.program.vectorizable {
+            return Err(BatchFailure::admission(
+                "projection requires ordered effectful evaluation",
+            ));
+        }
+        let count = suite.program.calculated.len();
+        let groups = count
+            .checked_add(1)
+            .ok_or_else(|| resource("projection source group overflow"))?;
+        let worker_bytes = array_bytes::<PreparedBatch>(count)?;
+        let metadata_bytes = source_limits
+            .max_metadata_bytes
+            .checked_sub(worker_bytes)
+            .ok_or_else(|| resource("projection worker metadata policy exceeded"))?;
+        let limits = BatchSourceLimits {
+            max_metadata_bytes: metadata_bytes / groups,
+            ..source_limits
+        };
+        let mut budget = Budget {
+            used: 0,
+            max: limits.max_metadata_bytes,
+        };
+        for field in row_schema {
+            budget.field(field, 1)?;
+        }
+        for &index in suite.program.column_mapping.keys() {
+            let field = row_schema
+                .get(index)
+                .ok_or_else(|| binding("projection column outside row schema"))?;
+            check_type(field)?;
+        }
+        let mut workers = Vec::new();
+        reserve(&mut workers, count)?;
+        let mut remaining_nodes = limits.tree.max_nodes;
+        for slot in 0..count {
+            let mut calculation_limits = limits;
+            calculation_limits.tree.max_nodes = remaining_nodes;
+            let worker = PreparedBatch::compile_calculation(
+                suite,
+                slot,
+                row_schema,
+                new_collation,
+                unit,
+                calculation_limits,
+                execution,
+                max_materialization_retained_bytes / count.max(1),
+            )?;
+            remaining_nodes = remaining_nodes
+                .checked_sub(worker.source.nodes.len())
+                .ok_or_else(|| resource("projection source node policy exceeded"))?;
+            workers.push(worker);
+        }
+        let mut schema = Vec::new();
+        reserve(&mut schema, row_schema.len())?;
+        schema.extend(row_schema.iter().map(snapshot_field_type));
+        Ok(Self {
+            owner: Arc::clone(&suite.program),
+            workers,
+            schema: schema.into_boxed_slice(),
+            source_limits: limits,
+            output_count: projection_output_count(&suite.program)?,
+        })
+    }
+
+    pub(crate) fn set_window_size(&mut self, size: usize) {
+        for worker in &mut self.workers {
+            worker.window_size = size;
+        }
+    }
+
+    pub(crate) fn scratch_snapshot(&self) -> BatchScratchSnapshot {
+        self.workers
+            .iter()
+            .fold(BatchScratchSnapshot::default(), |mut total, worker| {
+                let next = worker.scratch_snapshot();
+                total.selection_capacity = total
+                    .selection_capacity
+                    .saturating_add(next.selection_capacity);
+                total.vector_allocations = total
+                    .vector_allocations
+                    .saturating_add(next.vector_allocations);
+                total.windows = total.windows.saturating_add(next.windows);
+                total
+            })
+    }
+
+    pub(crate) fn run<C: Columns>(
+        &mut self,
+        suite: &EvaluatorSuite,
+        native_ctx: &C,
+        ctx: &mut EvalContext,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        row_schema: &[FieldType],
+    ) -> Result<()> {
+        if !Arc::ptr_eq(&suite.program, &self.owner) {
+            return Err(binding("projection worker belongs to another program").into());
+        }
+        // Bound metadata before comparing it, even for a projection containing
+        // only direct columns or an empty selected-row set.
+        let mut budget = Budget {
+            used: 0,
+            max: self.source_limits.max_metadata_bytes,
+        };
+        for field in row_schema {
+            budget.field(field, 1)?;
+        }
+        if row_schema.len() != self.schema.len()
+            || row_schema
+                .iter()
+                .zip(self.schema.iter())
+                .any(|(a, b)| a.collation() != b.collation() || a != b)
+            || input.num_cols() != row_schema.len()
+            || output.num_cols() != self.output_count
+            || output.sel().is_some()
+            || output.is_incomplete_chunk()
+        {
+            return Err(binding("projection input/output schema differs from preparation").into());
+        }
+        for (index, field) in row_schema.iter().enumerate() {
+            if input.column(index).rows() != input.physical_rows()
+                || input.column(index).type_size() != get_fixed_len(field)
+            {
+                return Err(binding("projection input column layout differs").into());
+            }
+        }
+        if input
+            .sel()
+            .is_some_and(|rows| rows.iter().any(|&row| row >= input.physical_rows()))
+        {
+            return Err(binding("projection selection exceeds physical rows").into());
+        }
+        for (&index, outputs) in &self.owner.column_mapping {
+            if outputs
+                .iter()
+                .any(|&out| output.column(out).type_size() != get_fixed_len(&row_schema[index]))
+            {
+                return Err(binding("projection direct output layout differs").into());
+            }
+        }
+        // Validate every output before any kernel or ownership move.
+        for worker in &mut self.workers {
+            worker.validate_invocation(suite, input, output, row_schema)?;
+        }
+        let vectorized = native_ctx.enable_vectorized_expression();
+        for worker in &mut self.workers {
+            if !vectorized {
+                worker.window_size = 1;
+            }
+            worker.execute_chunk(
+                ctx,
+                input,
+                output,
+                #[cfg(test)]
+                None,
+            )?;
+        }
+        if let Some(helper) = &suite.column_swap_helper {
+            if input.sel().is_some() {
+                helper
+                    .copy_selected_columns(input, output)
+                    .map_err(EvaluatorError::Chunk)?;
+            } else {
+                helper
+                    .swap_columns(input, output)
+                    .map_err(EvaluatorError::Chunk)?;
+            }
+        }
+        if self.output_count == 0 {
+            output.set_num_virtual_rows(input.num_rows());
+        }
+        Ok(())
+    }
+}

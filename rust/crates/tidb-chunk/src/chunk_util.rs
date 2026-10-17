@@ -299,6 +299,64 @@ impl ColumnSwapHelper {
         Ok(())
     }
 
+    /// Materialize selected physical occurrences into direct projection outputs.
+    /// Repeated output aliases are populated once and then share that owner.
+    /// All indices, layouts and destination aliases are checked before copying.
+    pub fn copy_selected_columns(
+        &self,
+        input: &Chunk,
+        output: &mut Chunk,
+    ) -> Result<(), &'static str> {
+        let selected = input
+            .sel()
+            .ok_or("selected column copy requires a selection")?;
+        if output.has_sel() {
+            return Err(MSG_ERR_SEL_NOT_NIL);
+        }
+        for (&index, outputs) in &self.input_idx_to_output_idxes {
+            if index >= input.num_cols()
+                || selected
+                    .iter()
+                    .any(|&row| row >= input.column(index).rows())
+                || outputs.iter().any(|&out| {
+                    out >= output.num_cols()
+                        || output.column(out).type_size() != input.column(index).type_size()
+                })
+            {
+                return Err("selected column copy has invalid indices or layouts");
+            }
+        }
+        let merged = self
+            .merged_input_idx_to_output_idxes
+            .get_or_init(|| self.merge_input_indexes(input));
+        let mut destinations = Vec::with_capacity(merged.len());
+        for outputs in merged.values() {
+            let Some(&first) = outputs.first() else {
+                continue;
+            };
+            if (0..input.num_cols()).any(|index| output.columns_share_identity(first, input, index))
+                || destinations
+                    .iter()
+                    .any(|&other| output.columns_share_identity(first, output, other))
+            {
+                return Err("selected column destination aliases a live source or another output");
+            }
+            destinations.push(first);
+        }
+        for (&index, outputs) in merged {
+            let Some((&first, rest)) = outputs.split_first() else {
+                continue;
+            };
+            for &row in selected {
+                output.append_column_range_from(first, input, index, row, row + 1);
+            }
+            for &out in rest {
+                output.make_ref(first, out);
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn merged_mapping(&self) -> Option<&HashMap<usize, Vec<usize>>> {
         self.merged_input_idx_to_output_idxes.get()
@@ -843,5 +901,61 @@ mod disk_writer_failure_tests {
             .expect_err("partial progress followed by failure must not be accepted");
         assert_eq!(error.kind(), io::ErrorKind::StorageFull);
         assert_eq!(file.off_write(), 2);
+    }
+}
+
+#[cfg(test)]
+mod selected_projection_tests {
+    use super::*;
+    use tidb_datatype::{Datum, FieldType, FieldTypeCode};
+
+    #[test]
+    fn selected_direct_aliases_are_copied_once_and_reusable() {
+        let field = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_empty(&[field.clone(), field.clone()]);
+        for value in [Datum::Int(11), Datum::Null, Datum::Int(37)] {
+            input.append_datum(0, &value);
+        }
+        input.make_ref(0, 1);
+        let helper = ColumnSwapHelper::from_mapping(HashMap::from([(0, vec![0, 1]), (1, vec![2])]));
+        let mut output = Chunk::new_empty(&[field.clone(), field.clone(), field.clone()]);
+        // Destinations can retain aliases from the previous projection batch.
+        output.make_ref(0, 1);
+        output.make_ref(0, 2);
+        for (selection, expected) in [
+            (
+                vec![2, 0, 2, 1],
+                vec![Datum::Int(37), Datum::Int(11), Datum::Int(37), Datum::Null],
+            ),
+            (vec![0], vec![Datum::Int(11)]),
+            (vec![], vec![]),
+        ] {
+            output.reset();
+            input.set_sel(Some(selection));
+            helper.copy_selected_columns(&input, &mut output).unwrap();
+            assert_eq!(output.num_rows(), expected.len());
+            for column in 0..3 {
+                assert_eq!(output.column(column).rows(), expected.len());
+                for (row, value) in expected.iter().enumerate() {
+                    assert_eq!(&output.get_row(row).get_datum(column, &field), value);
+                }
+            }
+            assert!(output.columns_share_identity(0, &output, 1));
+            assert!(output.columns_share_identity(1, &output, 2));
+            assert_eq!(input.column(0).rows(), 3);
+        }
+    }
+
+    #[test]
+    fn invalid_selected_copy_does_not_touch_any_destination() {
+        let field = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_empty(&[field.clone()]);
+        input.append_int64(0, 17);
+        input.set_sel(Some(vec![0, 1]));
+        let helper = ColumnSwapHelper::from_mapping(HashMap::from([(0, vec![0])]));
+        let mut output = Chunk::new_empty(&[field]);
+        assert!(helper.copy_selected_columns(&input, &mut output).is_err());
+        assert_eq!(output.column(0).rows(), 0);
+        assert_eq!(input.column(0).rows(), 1);
     }
 }
