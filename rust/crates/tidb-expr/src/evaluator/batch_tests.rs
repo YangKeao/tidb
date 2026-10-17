@@ -6419,6 +6419,16 @@ fn rewritten_native_comparisons_preserve_column_constant_domains_and_composition
     ];
     for sql in [
         "cast((a = 1) as signed)",
+        "nullif(a, b)",
+        "cast(nullif(a, b) as char)",
+        "nullif(u, cast('-1' as signed))",
+        "nullif(d, '9007199254740992')",
+        "nullif(t, 'not a time')",
+        "nullif(dt, 'not a datetime')",
+        "nullif(cast(a as json), cast(b as json))",
+        "coalesce(nullif(a, b), cast('fallback' as char))",
+        "cast(nullif(f, f) as char)",
+        "nullif(NULL, cast(a as json))",
         "cast((a <=> 1) as signed)",
         "cast((t <=> 'not a time') as signed)",
         "cast((dt <=> 'not a datetime') as signed)",
@@ -6517,88 +6527,192 @@ fn native_comparison_handles_and_borrowed_copy_budget_are_terminal() {
         HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
     };
     use tidb_query_expr::ComparisonOp;
-    let field = projected(&native_bytes_type(), true).unwrap();
-    let args = vec![field.clone(); 2];
-    let catalog = HostCatalog::for_sql_batch(vec![(
-        SqlBatchHostOperation::CompareNative(ComparisonOp::Eq),
-        HostSignature {
-            arg_types: args.clone().into_boxed_slice(),
-            return_type: field.clone(),
-        },
-    )])
-    .unwrap();
-    let slot = catalog.slot(0).unwrap();
-    let facts = crate::ops::OperandFacts {
-        eval_type: Some(NativeEvalType::Int),
-        unsigned: false,
-        constant: false,
-        duration_column: false,
-    };
-    let metadata = [NativeHostMetadata::Comparison {
-        operation: SqlBatchHostOperation::CompareNative(ComparisonOp::Eq),
-        name: "eq".into(),
-        result_type: ty(),
-        argument_nodes: [3, 8],
-        operands: [facts; 2],
-        collation: Collation::Binary,
-        output_node: 2,
-        output_role: NativeValueRole::Output,
-    }];
-    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
-    store.borrow_mut().begin_window().unwrap();
-    let row = InputRow {
-        occurrence: 0,
-        input_row: 0,
-    };
-    let left_origin = NativeValueOrigin { node: 3, row };
-    let stale = store
-        .borrow_mut()
-        .insert_clone(&Datum::Int(0), NativeValueRole::CharInput, left_origin)
-        .unwrap();
-    store.borrow_mut().begin_window().unwrap();
-    let large = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Bytes(vec![b'X'; 16384]),
-            NativeValueRole::CharInput,
-            left_origin,
-        )
-        .unwrap();
-    let wrong_role = store
-        .borrow_mut()
-        .insert_clone(&Datum::Int(0), NativeValueRole::Output, left_origin)
-        .unwrap();
-    let wrong_row = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Int(0),
-            NativeValueRole::CharInput,
-            NativeValueOrigin {
-                node: 3,
-                row: InputRow {
-                    occurrence: 1,
-                    input_row: 0,
-                },
+    for (operation, name) in [
+        (SqlBatchHostOperation::CompareNative(ComparisonOp::Eq), "eq"),
+        (SqlBatchHostOperation::NullIfNative, "nullif"),
+    ] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); 2];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            operation,
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: field.clone(),
             },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let facts = crate::ops::OperandFacts {
+            eval_type: Some(NativeEvalType::Int),
+            unsigned: false,
+            constant: false,
+            duration_column: false,
+        };
+        let metadata = [NativeHostMetadata::Comparison {
+            operation,
+            name: name.into(),
+            result_type: ty(),
+            argument_nodes: [3, 8],
+            operands: [facts; 2],
+            collation: Collation::Binary,
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let left_origin = NativeValueOrigin { node: 3, row };
+        let stale = store
+            .borrow_mut()
+            .insert_clone(&Datum::Int(0), NativeValueRole::CharInput, left_origin)
+            .unwrap();
+        store.borrow_mut().begin_window().unwrap();
+        let large = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Bytes(vec![b'X'; 16384]),
+                NativeValueRole::CharInput,
+                left_origin,
+            )
+            .unwrap();
+        let wrong_role = store
+            .borrow_mut()
+            .insert_clone(&Datum::Int(0), NativeValueRole::Output, left_origin)
+            .unwrap();
+        let wrong_row = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Int(0),
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                },
+            )
+            .unwrap();
+        let left = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::UInt(u64::MAX),
+                NativeValueRole::CharInput,
+                left_origin,
+            )
+            .unwrap();
+        let right = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Int(1),
+                NativeValueRole::CharInput,
+                NativeValueOrigin { node: 8, row },
+            )
+            .unwrap();
+        let expected = call(
+            name,
+            ty(),
+            vec![literal(Datum::UInt(u64::MAX), ty()), int(1)],
         )
+        .eval(&crate::NoColumns, tidb_chunk::row::Row::empty())
         .unwrap();
-    let left = store
-        .borrow_mut()
-        .insert_clone(&Datum::Int(0), NativeValueRole::CharInput, left_origin)
-        .unwrap();
-    let right = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Int(1),
-            NativeValueRole::CharInput,
-            NativeValueOrigin { node: 8, row },
-        )
-        .unwrap();
-    let context = NativeCastDiagnostics::default();
-    let mut provider =
-        NativeBatchHosts::new(catalog, &metadata, &context, 512).with_native_values(Some(&store));
-    let mut ctx = EvalContext::default();
-    for token in [stale, wrong_role, wrong_row] {
+        let context = NativeCastDiagnostics::default();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 512)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        for token in [stale, wrong_role, wrong_row] {
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("request")
+            };
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(error, LocalError::BindingContract(_)));
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+        }
+        for bad_right in [true, false] {
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("request")
+            };
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(large.clone())), 1);
+            let HostStep::NeedArg(request) = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("must demand raw RHS before coercion")
+            };
+            assert_eq!(request.index, 1);
+            let values = VectorValue::from_scalar(
+                &ScalarValue::Bytes(Some(if bad_right {
+                    left.clone()
+                } else {
+                    right.clone()
+                })),
+                1,
+            );
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap_err();
+            if bad_right {
+                assert!(matches!(error, LocalError::BindingContract(_)));
+            } else {
+                assert!(matches!(error, LocalError::ResourceLimit(_)));
+            }
+            assert!(provider.take_native_error().is_none());
+            assert!(context.0.borrow().is_empty());
+            provider.cancel(&task);
+        }
         let HostStart::Pending { task, .. } = provider
             .start(
                 &mut ctx,
@@ -6613,150 +6727,397 @@ fn native_comparison_handles_and_borrowed_copy_budget_are_terminal() {
         else {
             panic!("request")
         };
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-        let error = provider
-            .resume(
+        for (index, token) in [left, right].into_iter().enumerate() {
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let step = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap();
+            if index == 1 {
+                let HostStep::Ready(result) = step else {
+                    panic!("comparison result")
+                };
+                let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
+                    panic!("output capability")
+                };
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin { node: 2, row }
+                        )
+                        .unwrap()
+                        .kind(),
+                    expected.kind()
+                );
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin { node: 2, row }
+                        )
+                        .unwrap(),
+                    &expected
+                );
+            }
+        }
+        let other_catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::CompareNative(ComparisonOp::Ge),
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let other_slot = other_catalog.slot(0).unwrap();
+        let mut wrong = NativeBatchHosts::new(other_catalog, &metadata, &context, 512)
+            .with_native_values(Some(&store));
+        let error = wrong
+            .start(
                 &mut ctx,
-                &task,
-                HostArgReply {
-                    index: 0,
-                    field_type: &field,
-                    values: &values,
+                HostInvocation {
+                    slot: other_slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
                 },
             )
             .unwrap_err();
         assert!(matches!(error, LocalError::BindingContract(_)));
-        assert!(provider.take_native_error().is_none());
-        provider.cancel(&task);
+        assert!(wrong.take_native_error().is_none());
     }
-    for bad_right in [true, false] {
-        let HostStart::Pending { task, .. } = provider
-            .start(
-                &mut ctx,
-                HostInvocation {
-                    slot,
-                    row,
-                    arg_types: &args,
-                    return_type: &field,
-                },
-            )
+}
+
+#[test]
+fn native_nullif_keeps_first_identity_literal_comparison_and_eager_right_demand() {
+    use tidb_datatype::BinaryLiteral;
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let text = |s: &str| literal(Datum::new_string(s), string_ty());
+    let bad = || call("cast_json", json.clone(), vec![text("bad JSON")]);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(40)
+        .with_decimal(6);
+    let time_type = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
             .unwrap()
-        else {
-            panic!("request")
-        };
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(large.clone())), 1);
-        let HostStep::NeedArg(request) = provider
-            .resume(
-                &mut ctx,
-                &task,
-                HostArgReply {
-                    index: 0,
-                    field_type: &field,
-                    values: &values,
-                },
-            )
-            .unwrap()
-        else {
-            panic!("must demand raw RHS before coercion")
-        };
-        assert_eq!(request.index, 1);
-        let values = VectorValue::from_scalar(
-            &ScalarValue::Bytes(Some(if bad_right {
-                left.clone()
-            } else {
-                right.clone()
-            })),
-            1,
+            .time;
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let cases = vec![
+        (string_ty(), text("A"), text("a")),
+        (
+            string_ty().with_collation(Collation::Utf8Mb4GeneralCi),
+            text("A"),
+            text("a"),
+        ),
+        (ty(), int(1), int(1)),
+        (ty(), null(), null()),
+        (ty(), null(), bad()),
+        (
+            ty(),
+            literal(Datum::Int(-1), ty().with_unsigned(true)),
+            literal(Datum::UInt(u64::MAX), ty().with_unsigned(true)),
+        ),
+        (
+            string_ty(),
+            literal(
+                Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff; 8])),
+                ty(),
+            ),
+            literal(Datum::UInt(u64::MAX), ty().with_unsigned(true)),
+        ),
+        (
+            ty().with_unsigned(true),
+            literal(Datum::UInt(u64::MAX), ty().with_unsigned(true)),
+            int(0),
+        ),
+        (
+            real_ty(),
+            literal(Datum::Real(f64::from_bits(0x7ff8000000000042)), real_ty()),
+            literal(Datum::Real(f64::NAN), real_ty()),
+        ),
+        (
+            decimal.clone(),
+            literal(
+                Datum::Decimal(Decimal::from_literal("1.2300")),
+                decimal.clone(),
+            ),
+            int(0),
+        ),
+        (
+            time_type.clone(),
+            literal(Datum::Time(time), time_type.clone()),
+            null(),
+        ),
+        (
+            json.clone(),
+            call("cast_json", json.clone(), vec![text("null")]),
+            call("cast_json", json.clone(), vec![text("false")]),
+        ),
+        (
+            json.clone(),
+            call("cast_json", json.clone(), vec![text("[1,0]")]),
+            call("cast_json", json.clone(), vec![text("[1,0]")]),
+        ),
+        (
+            vector.clone(),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 0.0])),
+                vector.clone(),
+            ),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 1.0])),
+                vector.clone(),
+            ),
+        ),
+        (ty(), literal(Datum::MinNotNull, ty()), null()),
+        (string_ty(), text("1tail"), bad()),
+        (ty(), call("cast_signed", ty(), vec![text("1tail")]), bad()),
+        (
+            string_ty(),
+            call(
+                "cast_char",
+                string_ty(),
+                vec![call("coalesce", ty(), vec![null(), int(3)])],
+            ),
+            text("4"),
+        ),
+    ];
+    for (field, left, right) in cases {
+        let root = call(
+            "if",
+            field.clone(),
+            vec![
+                call("cast_signed", ty(), vec![int(1)]),
+                call("nullif", field.clone(), vec![left, right]),
+                bad(),
+            ],
         );
-        let error = provider
-            .resume(
-                &mut ctx,
-                &task,
-                HostArgReply {
-                    index: 1,
-                    field_type: &field,
-                    values: &values,
-                },
-            )
-            .unwrap_err();
-        if bad_right {
-            assert!(matches!(error, LocalError::BindingContract(_)));
-        } else {
-            assert!(matches!(error, LocalError::ResourceLimit(_)));
-        }
-        assert!(provider.take_native_error().is_none());
-        assert!(context.0.borrow().is_empty());
-        provider.cancel(&task);
-    }
-    let HostStart::Pending { task, .. } = provider
-        .start(
-            &mut ctx,
-            HostInvocation {
-                slot,
-                row,
-                arg_types: &args,
-                return_type: &field,
-            },
-        )
-        .unwrap()
-    else {
-        panic!("request")
-    };
-    for (index, token) in [left, right].into_iter().enumerate() {
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-        let step = provider
-            .resume(
-                &mut ctx,
-                &task,
-                HostArgReply {
-                    index,
-                    field_type: &field,
-                    values: &values,
-                },
-            )
-            .unwrap();
-        if index == 1 {
-            let HostStep::Ready(result) = step else {
-                panic!("comparison result")
-            };
-            let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
-                panic!("output capability")
-            };
+        for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for _ in &selected {
+                match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut input = Chunk::new_with_capacity(&[], 2);
+            input.set_num_virtual_rows(2);
+            input.set_sel(Some(selected));
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+            if let Some(error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost NULLIF error: {result:?}")
+                };
+                assert_eq!(actual_error, error, "{root:?}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows());
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0)
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{root:?}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{root:?}");
+            let route = suite.batch_route_snapshot();
             assert_eq!(
-                store
-                    .borrow()
-                    .get(
-                        token,
-                        NativeValueRole::Output,
-                        NativeValueOrigin { node: 2, row }
-                    )
-                    .unwrap(),
-                &Datum::Int(0)
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{root:?}"
             );
         }
     }
-    let other_catalog = HostCatalog::for_sql_batch(vec![(
-        SqlBatchHostOperation::CompareNative(ComparisonOp::Ge),
-        HostSignature {
-            arg_types: args.clone().into_boxed_slice(),
-            return_type: field.clone(),
-        },
-    )])
-    .unwrap();
-    let other_slot = other_catalog.slot(0).unwrap();
-    let mut wrong = NativeBatchHosts::new(other_catalog, &metadata, &context, 512)
-        .with_native_values(Some(&store));
-    let error = wrong
-        .start(
-            &mut ctx,
-            HostInvocation {
-                slot: other_slot,
-                row,
-                arg_types: &args,
-                return_type: &field,
-            },
-        )
-        .unwrap_err();
-    assert!(matches!(error, LocalError::BindingContract(_)));
-    assert!(wrong.take_native_error().is_none());
+}
+
+#[test]
+fn native_nullif_column_values_do_not_adopt_comparison_column_classification() {
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(20)
+        .with_decimal(0);
+    let schema = vec![duration.clone(), decimal.clone()];
+    let rows = vec![
+        vec![
+            Datum::Duration(MySqlDuration::from_nanoseconds(3_600_000_000_000, 6).unwrap()),
+            Datum::Decimal(Decimal::from_literal("9007199254740993")),
+        ],
+        vec![Datum::Null, Datum::Null],
+        vec![
+            Datum::Duration(MySqlDuration::from_nanoseconds(0, 6).unwrap()),
+            Datum::Decimal(Decimal::from_literal("2")),
+        ],
+    ];
+    for (index, field, right) in [
+        (0, duration, "not a time"),
+        (1, decimal, "9007199254740992"),
+    ] {
+        let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+        let root = call(
+            "if",
+            field.clone(),
+            vec![
+                call("cast_signed", ty(), vec![int(1)]),
+                call(
+                    "nullif",
+                    field.clone(),
+                    vec![
+                        typed_column(index, &field),
+                        literal(Datum::new_string(right), string_ty()),
+                    ],
+                ),
+                call(
+                    "cast_json",
+                    json,
+                    vec![literal(Datum::new_string("bad JSON"), string_ty())],
+                ),
+            ],
+        );
+        for selected in [vec![], vec![0, 2, 1, 0], (0..2050).map(|i| i % 3).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            for row in selected {
+                expected.append_datum(0, &root.eval(&reference, input.physical_row(row)).unwrap());
+            }
+            assert!(
+                reference.0.borrow().is_empty(),
+                "NULLIF literal comparison adds no duration parse warning"
+            );
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            suite
+                .run_with_tikv_batch(&context, &mut input, &mut actual, &schema)
+                .unwrap();
+            assert_eq!(actual.num_rows(), expected.num_rows());
+            for row in 0..actual.num_rows() {
+                assert_eq!(
+                    actual.get_row(row).is_null(0),
+                    expected.get_row(row).is_null(0)
+                );
+                assert_eq!(
+                    actual.column(0).get_raw(row).as_ref(),
+                    expected.column(0).get_raw(row).as_ref()
+                );
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        }
+    }
+}
+
+#[test]
+fn native_value_comparisons_keep_context_observation_after_raw_operand_demand() {
+    #[derive(Default)]
+    struct Trace(RefCell<Vec<String>>);
+    impl crate::Columns for Trace {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn div_precision_increment(&self) -> u32 {
+            self.0.borrow_mut().push("div".into());
+            4
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0.borrow_mut().push(format!("{code}:{message}"));
+        }
+    }
+    for name in ["nullif", "nulleq"] {
+        for bad_right in [false, true] {
+            let json =
+                FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+            let right = if bad_right {
+                call(
+                    "cast_json",
+                    json,
+                    vec![literal(Datum::new_string("bad JSON"), string_ty())],
+                )
+            } else {
+                call(
+                    "cast_signed",
+                    ty(),
+                    vec![literal(Datum::new_string("2tail"), string_ty())],
+                )
+            };
+            let field = if name == "nullif" { string_ty() } else { ty() };
+            let root = call(
+                "cast_char",
+                string_ty(),
+                vec![call(
+                    name,
+                    field,
+                    vec![literal(Datum::new_string("1tail"), string_ty()), right],
+                )],
+            );
+            let reference = Trace::default();
+            let context = Trace::default();
+            let expected = root.eval(&reference, tidb_chunk::row::Row::empty());
+            let suite = self::suite(root);
+            let mut input = Chunk::new_with_capacity(&[], 1);
+            input.set_num_virtual_rows(1);
+            let mut actual = output_for(&string_ty());
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+            match expected {
+                Ok(value) => {
+                    result.unwrap();
+                    let mut expected = output_for(&string_ty());
+                    expected.append_datum(0, &value);
+                    assert_eq!(
+                        actual.column(0).get_raw(0).as_ref(),
+                        expected.column(0).get_raw(0).as_ref()
+                    );
+                }
+                Err(expected) => {
+                    let Err(EvaluatorError::Eval(actual)) = result else {
+                        panic!("lost error")
+                    };
+                    assert_eq!(actual, expected);
+                }
+            }
+            assert_eq!(
+                *context.0.borrow(),
+                *reference.0.borrow(),
+                "{name} bad_right={bad_right}"
+            );
+            assert_eq!(
+                context
+                    .0
+                    .borrow()
+                    .iter()
+                    .filter(|event| event.as_str() == "div")
+                    .count(),
+                usize::from(!bad_right)
+            );
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        }
+    }
 }

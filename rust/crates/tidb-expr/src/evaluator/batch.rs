@@ -755,7 +755,9 @@ fn native_comparison_kind(name: &str) -> Option<tidb_query_expr::ComparisonOp> {
     })
 }
 fn native_comparison_operation(name: &str) -> Option<SqlBatchHostOperation> {
-    if name == "nulleq" {
+    if name == "nullif" {
+        Some(SqlBatchHostOperation::NullIfNative)
+    } else if name == "nulleq" {
         Some(SqlBatchHostOperation::NullSafeEqNative)
     } else {
         native_comparison_kind(name).map(SqlBatchHostOperation::CompareNative)
@@ -1442,6 +1444,7 @@ fn preflight<'a>(
                         CallTarget::Host(
                             SqlBatchHostOperation::CompareNative(_)
                                 | SqlBatchHostOperation::NullSafeEqNative
+                                | SqlBatchHostOperation::NullIfNative
                         )
                     ) {
                         budget.field(sql, 1)?;
@@ -1700,6 +1703,7 @@ fn lower(
                                         | SqlBatchHostOperation::IsNotUnknownNative
                                         | SqlBatchHostOperation::CompareNative(_)
                                         | SqlBatchHostOperation::NullSafeEqNative
+                                        | SqlBatchHostOperation::NullIfNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1754,7 +1758,8 @@ fn lower(
                                 }
                             }
                             operation @ (SqlBatchHostOperation::CompareNative(_)
-                            | SqlBatchHostOperation::NullSafeEqNative) => {
+                            | SqlBatchHostOperation::NullSafeEqNative
+                            | SqlBatchHostOperation::NullIfNative) => {
                                 let left = ordinal
                                     .checked_add(1)
                                     .ok_or_else(|| resource("comparison child ordinal overflow"))?;

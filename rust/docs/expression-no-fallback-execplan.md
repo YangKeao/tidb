@@ -48,6 +48,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5f1: shared plain comparison preparation and direct existing core value entries, with immutable metadata facts and finite vector-copy budget. 23,328 comparison cases/new2tests/95batch/full1449same4/core1043same6/Projection18/lint/clippy/fmt pass. Native comparison HostFrame is next. Receipt rust/docs/evidence/no-fallback-n5f1.md.
 - [x] (2026-10-18) N5f2: six native comparison hosts preserve raw operand demand, immutable type/constant/column facts and original typed integer priority. 98focused/full1452same4/core1043same6/90SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f2.md.
 - [x] (2026-10-18) N5f3: native NULL-safe equality shares comparison frames and pure generic preparation, preserving presence, sentinel priority and duration-versus-datetime conversion disposition. 98focused/full1453same4/core1043same6/132SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f3.md.
+- [x] (2026-10-18) N5f4: native NULLIF shares the binary frame, original literal comparison/normalization policy and first-value identity. Context traces preserve the original comparison configuration read. 101focused/full1456same4/core1043same6/192SQL/Projection20/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f4.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -491,3 +492,17 @@ core kernels directly. Datetime conversion NULL and sentinel-before-NULL
 behavior remain unchanged. Existing callers share the extracted preparation;
 their legacy adapter remains a migration dependency. NULLIF, arithmetic,
 effects, source forms, callers and global dispatch removal remain outstanding.
+
+
+N5f4 outcome: native NULLIF uses the same comparison demand/provenance/budget
+protocol but retains its original literal operand policy and fixed collation.
+It skips binary-operator signed-literal normalization, validates the actual
+computed nullable Eq result and calls the original pure branch selector.
+Selected first values come from their original native owner and gain the
+NULLIF node's own output identity after shared return coercion.
+
+The context trace audit restored the original configuration observation in
+the preceding NULL-safe direct boundary and preserves it in NULLIF: both raw
+arguments precede that read and comparison coercion follows it. NULLIF now
+composes with the existing native nullable/conditional/comparison producers;
+arithmetic, other functions, effects, sources/callers and dispatch removal remain.

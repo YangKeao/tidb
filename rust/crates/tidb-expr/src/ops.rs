@@ -707,6 +707,34 @@ pub(crate) fn prepare_native_comparison(
     )
 }
 
+/// Values-only builtins compare without expression declarations or derivation.
+pub(crate) fn prepare_literal_comparison(
+    op: tidb_query_expr::ComparisonOp,
+    left: Datum,
+    right: Datum,
+    ctx: &dyn crate::Columns,
+) -> Result<comparison::PreparedComparison, EvalError> {
+    // eval_binary_in observes this session property before its comparison.
+    let _ = ctx.div_precision_increment();
+    let literal = OperandFacts {
+        eval_type: None,
+        unsigned: false,
+        constant: true,
+        duration_column: false,
+    };
+    comparison::prepare(
+        op,
+        left,
+        right,
+        DERIVATION_FREE_COLLATION,
+        ComparisonOperands {
+            lhs: literal,
+            rhs: literal,
+        },
+        ctx,
+    )
+}
+
 pub(crate) fn prepare_native_null_safe_comparison(
     left: Datum,
     right: Datum,
@@ -714,6 +742,8 @@ pub(crate) fn prepare_native_null_safe_comparison(
     facts: [OperandFacts; 2],
     ctx: &dyn crate::Columns,
 ) -> Result<comparison::PreparedNullSafeComparison, EvalError> {
+    // The original ScalarFunction binary owner observes this before dispatch.
+    let _ = ctx.div_precision_increment();
     comparison::prepare_null_safe(
         left,
         right,
