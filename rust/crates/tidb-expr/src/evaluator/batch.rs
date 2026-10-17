@@ -209,6 +209,47 @@ enum NativeView {
     Typed,
     JsonBytes,
     ValueToken,
+    RootValue,
+}
+impl NativeView {
+    fn value_role(self) -> Option<NativeValueRole> {
+        match self {
+            Self::ValueToken => Some(NativeValueRole::CharInput),
+            Self::RootValue => Some(NativeValueRole::Output),
+            Self::Typed | Self::JsonBytes => None,
+        }
+    }
+}
+
+// Only native leaf roots use the native output ABI. Ordinary representable
+// literals keep their existing broadcast fast path. This inspects borrowed
+// kinds/declarations, never converts a payload before the complete byte gate.
+fn root_source_view(root: &Expression) -> NativeView {
+    match root {
+        Expression::Column(_) => NativeView::RootValue,
+        Expression::Constant(constant) => {
+            let Some(value) = constant.literal_value() else {
+                return NativeView::Typed;
+            };
+            let Some(sql) = root.static_type() else {
+                return NativeView::Typed;
+            };
+            let ordinary = match (sql.eval_type(), value) {
+                (_, Datum::Null) => true,
+                (NativeEvalType::Int, Datum::Int(_)) => true,
+                (NativeEvalType::Int, Datum::UInt(_)) => sql.is_unsigned(),
+                (NativeEvalType::Real, Datum::Real(value)) => !value.is_nan(),
+                (NativeEvalType::String, Datum::String(_) | Datum::Bytes(_)) => true,
+                _ => false,
+            };
+            if ordinary && check_type(sql).is_ok() {
+                NativeView::Typed
+            } else {
+                NativeView::RootValue
+            }
+        }
+        _ => NativeView::Typed,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -227,7 +268,7 @@ enum SourceKind {
 impl SourceKind {
     fn capture(node: &Expression, sql: &FieldType, view: NativeView) -> Result<Self> {
         Ok(match node {
-            Expression::Constant(value) if view == NativeView::ValueToken => Self::NativeConstant {
+            Expression::Constant(value) if view.value_role().is_some() => Self::NativeConstant {
                 value: value
                     .literal_value()
                     .ok_or_else(|| BatchFailure::admission("nonliteral native source"))?
@@ -406,7 +447,7 @@ fn literal_copy_budget(value: &Datum, sql: &FieldType) -> LocalResult<usize> {
 }
 
 fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<ScalarValue> {
-    if view == NativeView::ValueToken {
+    if view.value_role().is_some() {
         return Err(binding("native value literals require a demanded source binding").into());
     }
     if view == NativeView::JsonBytes {
@@ -1032,11 +1073,11 @@ fn preflight<'a>(
     let mut checked = Vec::new();
     budget.array::<(&Expression, usize, NativeView)>(1)?;
     reserve(&mut pending, 1)?;
-    pending.push((root, 1usize, NativeView::Typed));
+    pending.push((root, 1usize, root_source_view(root)));
     let mut scheduled = 1usize;
     while let Some((node, depth, view)) = pending.pop() {
         let (sql, collation) = parts(node)?;
-        if view != NativeView::ValueToken {
+        if view.value_role().is_none() {
             check_type(sql)?;
         } else if !matches!(node, Expression::Constant(_) | Expression::Column(_)) {
             return Err(binding("native value view requires a leaf source").into());
@@ -1057,7 +1098,7 @@ fn preflight<'a>(
                 let literal = value
                     .literal_value()
                     .ok_or_else(|| BatchFailure::admission("parameter/deferred batch source"))?;
-                if view == NativeView::ValueToken {
+                if view.value_role().is_some() {
                     budget.add(
                         native_payload_bytes(literal)?
                             .checked_mul(3)
@@ -1146,7 +1187,7 @@ fn preflight<'a>(
     // source/schema/payload byte gate, including literals later in the graph.
     for item in &checked {
         if let Expression::Constant(value) = item.node {
-            if item.view == NativeView::ValueToken {
+            if item.view.value_role().is_some() {
                 continue;
             }
             source_literal(
@@ -1485,7 +1526,7 @@ fn lower(
     let mut detached = Vec::new();
     reserve(&mut detached, row_schema.len())?;
     detached.extend(row_schema.iter().map(snapshot_field_type));
-    let needs_native_values = nodes.iter().any(|node| node.view == NativeView::ValueToken);
+    let needs_native_values = nodes.iter().any(|node| node.view.value_role().is_some());
     Ok(Arc::new(BatchSource {
         owner: Arc::clone(&suite.program),
         root_identity: root as *const Expression as usize,
@@ -1683,6 +1724,56 @@ impl PreparedBatch {
         } else {
             Ok(())
         }
+    }
+
+    fn write_native_output(
+        &self,
+        values: VectorValue,
+        selection: &[usize],
+        output: &mut Chunk,
+        store: &RefCell<NativeValueStore>,
+    ) -> Result<()> {
+        let VectorValue::Bytes(values) = values else {
+            return Err(binding("native result is not a value handle vector").into());
+        };
+        if values.len() != selection.len() {
+            return Err(binding("native result selection length differs").into());
+        }
+        let bytes = values
+            .retained_heap_bytes()
+            .ok_or_else(|| resource("native result retained size overflow"))?
+            .checked_add(array_bytes::<usize>(self.selection.capacity())?)
+            .ok_or_else(|| resource("native result/selection size overflow"))?;
+        self.accept_retained(bytes)?;
+        let store = store.borrow();
+        let origin = |occurrence: usize, input_row: usize| NativeValueOrigin {
+            node: 0,
+            row: InputRow {
+                occurrence,
+                input_row,
+            },
+        };
+        // Check the entire window before publishing any cell. A wire NULL is
+        // not a native NULL: all native values, including NULL, have handles.
+        for (occurrence, &input_row) in selection.iter().enumerate() {
+            let token = values
+                .get(occurrence)
+                .ok_or_else(|| binding("native output handle is wire NULL"))?;
+            store.get(
+                token,
+                NativeValueRole::Output,
+                origin(occurrence, input_row),
+            )?;
+        }
+        for (occurrence, &input_row) in selection.iter().enumerate() {
+            let value = store.get(
+                values.get(occurrence).expect("validated handle"),
+                NativeValueRole::Output,
+                origin(occurrence, input_row),
+            )?;
+            output.append_datum(self.source.output_index, value);
+        }
+        Ok(())
     }
 
     fn write_output(
@@ -1907,14 +1998,14 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch demanded occurrence/type differs"));
         }
         let node = &self.source.nodes[ordinal];
-        if node.view == NativeView::ValueToken {
+        if node.view.value_role().is_some() {
             let store = self
                 .native_values
                 .ok_or_else(|| binding("native source has no value store"))?;
             let token = match &node.kind {
                 SourceKind::NativeConstant { value } => store.borrow_mut().insert_clone(
                     value,
-                    NativeValueRole::CharInput,
+                    node.view.value_role().expect("checked native view"),
                     NativeValueOrigin { node: ordinal, row },
                 )?,
                 SourceKind::Column { index } => {
@@ -1933,7 +2024,7 @@ impl NativeDatumSource for NativeChunk<'_> {
                         .get_datum(*index, &node.sql);
                     store.borrow_mut().insert_clone(
                         &value,
-                        NativeValueRole::CharInput,
+                        node.view.value_role().expect("checked native view"),
                         NativeValueOrigin { node: ordinal, row },
                     )?
                 }
@@ -1980,7 +2071,7 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch occurrence/type differs"));
         }
         let node = &self.source.nodes[ordinal];
-        if node.view == NativeView::ValueToken {
+        if node.view.value_role().is_some() {
             return Ok(None);
         }
         let SourceKind::Column { index, .. } = &node.kind else {
@@ -2473,7 +2564,18 @@ impl PreparedBatch {
             self.vector_allocations = self
                 .vector_allocations
                 .saturating_add(u64::try_from(vectors).unwrap_or(u64::MAX));
-            self.write_output(values, selection, output, self.source.output_index)?;
+            if self.source.nodes[0].view == NativeView::RootValue {
+                self.write_native_output(
+                    values,
+                    selection,
+                    output,
+                    native_values
+                        .as_ref()
+                        .ok_or_else(|| binding("native output has no store"))?,
+                )?;
+            } else {
+                self.write_output(values, selection, output, self.source.output_index)?;
+            }
             start = end;
         }
         Ok(())

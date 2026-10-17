@@ -2470,55 +2470,63 @@ fn direct_native_columns_preserve_storage_without_wire_conversion() {
     for (field, value) in cases {
         for selection in [None, Some(vec![]), Some((0..2050).map(|i| i % 2).collect())] {
             for enabled in [true, false] {
-                let schema = [field.clone()];
-                let mut input = chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
-                input.set_sel(selection.clone());
-                // Native reference publishes physical rows; compare each selected
-                // occurrence explicitly because its direct-swap path rejects Sel.
-                let mut reference_input = chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
-                let make_suite = || {
-                    EvaluatorSuite::new(
-                        vec![typed_column(0, &field), typed_column(0, &field)],
-                        false,
-                    )
-                };
-                let reference = make_suite();
-                let prepared = make_suite();
-                let output_schema = [field.clone(), field.clone()];
-                let mut expected = Chunk::new_with_capacity(&output_schema, 0);
-                let mut actual = Chunk::new_with_capacity(&output_schema, 0);
-                reference
-                    .run(&Context::new(enabled), &mut reference_input, &mut expected)
-                    .unwrap();
-                prepared
-                    .run_with_tikv_batch(&Context::new(enabled), &mut input, &mut actual, &schema)
-                    .unwrap();
-                let selected = selection.clone().unwrap_or_else(|| vec![0, 1]);
-                assert_eq!(actual.num_rows(), selected.len());
-                for (row, physical) in selected.into_iter().enumerate() {
-                    for col in 0..2 {
-                        assert_eq!(
-                            actual.get_row(row).is_null(col),
-                            expected.get_row(physical).is_null(col)
-                        );
-                        // Raw storage equality covers NaN payloads and signed zero.
-                        assert_eq!(
-                            actual.column(col).get_raw(row).as_ref(),
-                            expected.column(col).get_raw(physical).as_ref()
-                        );
+                for avoid_column_evaluator in [false, true] {
+                    let schema = [field.clone()];
+                    let mut input = chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
+                    input.set_sel(selection.clone());
+                    // Native reference publishes physical rows; compare each selected
+                    // occurrence explicitly because its direct-swap path rejects Sel.
+                    let mut reference_input =
+                        chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
+                    let make_suite = || {
+                        EvaluatorSuite::new(
+                            vec![typed_column(0, &field), typed_column(0, &field)],
+                            avoid_column_evaluator,
+                        )
+                    };
+                    let reference = make_suite();
+                    let prepared = make_suite();
+                    let output_schema = [field.clone(), field.clone()];
+                    let mut expected = Chunk::new_with_capacity(&output_schema, 0);
+                    let mut actual = Chunk::new_with_capacity(&output_schema, 0);
+                    reference
+                        .run(&Context::new(enabled), &mut reference_input, &mut expected)
+                        .unwrap();
+                    prepared
+                        .run_with_tikv_batch(
+                            &Context::new(enabled),
+                            &mut input,
+                            &mut actual,
+                            &schema,
+                        )
+                        .unwrap();
+                    let selected = selection.clone().unwrap_or_else(|| vec![0, 1]);
+                    assert_eq!(actual.num_rows(), selected.len());
+                    for (row, physical) in selected.into_iter().enumerate() {
+                        for col in 0..2 {
+                            assert_eq!(
+                                actual.get_row(row).is_null(col),
+                                expected.get_row(physical).is_null(col)
+                            );
+                            // Raw storage equality covers NaN payloads and signed zero.
+                            assert_eq!(
+                                actual.column(col).get_raw(row).as_ref(),
+                                expected.column(col).get_raw(physical).as_ref()
+                            );
+                        }
                     }
+                    if selection.is_none() && !avoid_column_evaluator {
+                        assert!(actual.columns_share_identity(0, &actual, 1));
+                    } else {
+                        assert_eq!(input.physical_rows(), 2);
+                    }
+                    let route = prepared.batch_route_snapshot();
+                    assert_eq!(
+                        (route.prepared, route.fallback, route.refusals),
+                        (1, 0, 0),
+                        "{field:?}"
+                    );
                 }
-                if selection.is_none() {
-                    assert!(actual.columns_share_identity(0, &actual, 1));
-                } else {
-                    assert_eq!(input.physical_rows(), 2);
-                }
-                let route = prepared.batch_route_snapshot();
-                assert_eq!(
-                    (route.prepared, route.fallback, route.refusals),
-                    (1, 0, 0),
-                    "{field:?}"
-                );
             }
         }
     }
@@ -4249,4 +4257,160 @@ fn rewritten_native_char_casts_compose_across_full_selection_windows() {
             }
         }
     }
+}
+
+#[test]
+fn native_literal_roots_publish_actual_chunk_storage_without_wire_normalization() {
+    let time =
+        tidb_datatype::parse_datetime("2026-10-18 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let cases = [
+        (FieldType::new(FieldTypeCode::Float), Datum::Float32(-0.0)),
+        (real_ty(), Datum::Real(f64::from_bits(0x7ff8000000000042))),
+        (ty(), Datum::UInt(u64::MAX)),
+        (FieldType::new(FieldTypeCode::Year), Datum::Int(0)),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(8),
+            Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0xa5])),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Enum).with_elems(["a", "b"]),
+            Datum::Enum(tidb_datatype::MysqlEnum::new("b", 2), Collation::Binary),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Set).with_elems(["a", "b"]),
+            Datum::Set(tidb_datatype::MysqlSet::new("a,b", 3), Collation::Binary),
+        ),
+        (ty(), Datum::Int(i64::MIN)),
+        (ty().with_unsigned(true), Datum::UInt(u64::MAX)),
+        (string_ty(), Datum::new_string(vec![0xff, b'a'])),
+        (string_ty(), Datum::Bytes(vec![0, 0xff])),
+        (string_ty(), Datum::Raw(vec![0, 0xff])),
+        (
+            string_ty(),
+            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0, 0xa5])),
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(20)
+                .with_decimal(4),
+            Datum::Decimal(Decimal::from_literal("-1.2300")),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            Datum::Json(BinaryJSON::parse("{\"a\":[1,null]}").unwrap()),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            Datum::Time(time),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            Datum::Duration(MySqlDuration::from_nanoseconds(-123456789012, 6).unwrap()),
+        ),
+        (
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![-0.0, 1.25])),
+        ),
+    ];
+    for (field, value) in cases {
+        for value in [value, Datum::Null] {
+            for selection in [None, Some(vec![]), Some((0..2050).map(|i| i % 2).collect())] {
+                for enabled in [true, false] {
+                    let root = literal(value.clone(), field.clone());
+                    let suite = self::suite(root.clone());
+                    let mut input = Chunk::new_with_capacity(&[], 2);
+                    input.set_num_virtual_rows(2);
+                    input.set_sel(selection.clone());
+                    let count = selection.as_ref().map_or(2, Vec::len);
+                    let mut actual = output_for(&field);
+                    let mut expected = output_for(&field);
+                    let native = root
+                        .eval(&Context::new(enabled), tidb_chunk::row::Row::empty())
+                        .unwrap();
+                    for _ in 0..count {
+                        expected.append_datum(0, &native);
+                    }
+                    suite
+                        .run_with_tikv_batch(&Context::new(enabled), &mut input, &mut actual, &[])
+                        .unwrap();
+                    assert_eq!(actual.num_rows(), expected.num_rows());
+                    for row in 0..count {
+                        assert_eq!(
+                            actual.get_row(row).is_null(0),
+                            expected.get_row(row).is_null(0)
+                        );
+                        assert_eq!(
+                            actual.column(0).get_raw(row).as_ref(),
+                            expected.column(0).get_raw(row).as_ref()
+                        );
+                    }
+                    let route = suite.batch_route_snapshot();
+                    assert_eq!(
+                        (route.prepared, route.fallback, route.refusals),
+                        (1, 0, 0),
+                        "{field:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_output_checks_every_handle_before_publishing_any_cell() {
+    let field = FieldType::new(FieldTypeCode::Float);
+    let suite = self::suite(literal(Datum::Float32(1.25), field.clone()));
+    let mut worker = PreparedBatch::compile_calculation(
+        &suite,
+        0,
+        &[],
+        true,
+        93,
+        limits(),
+        ExecutionLimits::default(),
+        1 << 20,
+    )
+    .unwrap();
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let origin = |occurrence| NativeValueOrigin {
+        node: 0,
+        row: InputRow {
+            occurrence,
+            input_row: occurrence,
+        },
+    };
+    let token = |role, row| {
+        store
+            .borrow_mut()
+            .insert_clone(&Datum::Float32(1.25), role, origin(row))
+            .unwrap()
+    };
+    let good = token(NativeValueRole::Output, 0);
+    let wrong_role = token(NativeValueRole::CharInput, 1);
+    let wrong_row = token(NativeValueRole::Output, 0);
+    let mut output = output_for(&field);
+    for bad in [Some(wrong_role), Some(wrong_row), None] {
+        let values = VectorValue::Bytes(ChunkedVecBytes::from(vec![Some(good.clone()), bad]));
+        let error = worker
+            .write_native_output(values, &[0, 1], &mut output, &store)
+            .unwrap_err();
+        assert!(matches!(
+            error.local_error(),
+            Some(LocalError::BindingContract(_))
+        ));
+        assert_eq!(output.num_rows(), 0);
+    }
+    worker.max_materialization_retained_bytes = 0;
+    let values = VectorValue::Bytes(ChunkedVecBytes::from(vec![Some(good)]));
+    let error = worker
+        .write_native_output(values, &[0], &mut output, &store)
+        .unwrap_err();
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(output.num_rows(), 0);
 }

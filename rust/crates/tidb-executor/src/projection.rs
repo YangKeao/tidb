@@ -998,4 +998,55 @@ mod tests {
             projection.close().unwrap();
         }
     }
+    #[test]
+    fn native_literal_results_preserve_storage_in_serial_and_parallel_projection() {
+        let cases = [
+            (FieldType::new(FieldTypeCode::Float), Datum::Float32(-0.0)),
+            (
+                FieldType::new(FieldTypeCode::Double),
+                Datum::Real(f64::from_bits(0x7ff8000000000042)),
+            ),
+            (
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(20)
+                    .with_decimal(4),
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("-1.2300")),
+            ),
+            (
+                FieldType::new(FieldTypeCode::Json),
+                Datum::Json(tidb_datatype::BinaryJSON::parse("{\"a\":[1,null]}").unwrap()),
+            ),
+        ];
+        for (field, value) in cases {
+            for workers in [0, 2] {
+                let context = crate::StmtContext::for_query();
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let root = Expression::Constant(Constant::new(value.clone(), field.clone()));
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                projection.next(&mut output).unwrap();
+                let mut expected = Chunk::new_with_capacity(&[field.clone()], 1);
+                expected.append_datum(0, &value);
+                assert_eq!(output.num_rows(), 1);
+                assert_eq!(
+                    output.column(0).get_raw(0).as_ref(),
+                    expected.column(0).get_raw(0).as_ref()
+                );
+                assert!(context.take_warnings().is_empty());
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

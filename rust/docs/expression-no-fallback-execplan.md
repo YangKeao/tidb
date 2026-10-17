@@ -37,6 +37,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5a2: production native leaf handles and value-only CHAR consumer; all19 actual kinds, hybrid columns, exact diagnostics and real SQL/Projection validated. Receipt rust/docs/evidence/no-fallback-n5a2.md. General computed native values remain N5 work.
 - [x] N5a: lossless invocation-scoped native value handles; validate namespace/generation/role/source/row provenance and bounded value retention before extending CHAR beyond wire carriers. Prototype first, then integrate demanded native leaves and validate all19 kinds/representation edges.
 - [x] (2026-10-18) N5b1: direct native column transport no longer depends on computation wire type admission; raw-byte tests cover six storage cases, NULLs, aliases, selection and vectorization off. 74focused/full1426same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b1.md.
+- [x] (2026-10-18) N5b2: native leaf root output ABI with separate Output role, complete prepublication handle validation and native Chunk publication. 17 output kinds/216 literal scenarios, disabled-direct-column path,76focused/full1428same4/Projection12/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b2.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -319,3 +320,14 @@ Native source/SDK decoding and formatting temporaries remain outside the
 logical observer. This is not a hard allocator or statement memory bound.
 General computed native inputs, native root outputs, remaining function/context
 coverage and other callers still require work; global fallback remains active.
+
+
+N5b2 outcome: rich leaf roots can now publish native values through the same
+frame driver. Output handles use a distinct role and exact root-node/selected
+occurrence provenance. All handles and retained vector/selection bytes are
+checked before a window writes its first result. Publication borrows the owned
+Datum and reuses Chunk::append_datum, matching native layout/normalization,
+without a kernel clone or alternate expression call. Ordinary representable
+Int/UInt/finite Real/String/Bytes literals retain the existing broadcast path.
+Root columns with direct-column optimization disabled also use this ABI.
+Computed native values and full lazy/effect/context coverage remain incomplete.

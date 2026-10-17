@@ -29,6 +29,7 @@ const HANDLE_BYTES: usize = 5 * size_of::<u64>();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NativeValueRole {
     CharInput = 1,
+    Output = 2,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NativeValueOrigin {
@@ -193,7 +194,6 @@ impl NativeValueStore {
         });
         Ok(handle)
     }
-    #[cfg(test)]
     pub(super) fn get(
         &self,
         handle: &[u8],
