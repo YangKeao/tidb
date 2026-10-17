@@ -234,7 +234,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
             NativeView::RootValue
         }
         Expression::ScalarFunction(function)
-            if native_nullable_operation(function).is_some()
+            if native_selection_operation(function).is_some()
                 && nullable_prefers_native(root, limits) =>
         {
             NativeView::RootValue
@@ -333,7 +333,7 @@ fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize)
         },
         Expression::Column(_) => field.eval_type() == NativeEvalType::Real,
         Expression::ScalarFunction(function) => {
-            native_cast_name(function).is_some()
+            if native_cast_name(function).is_some()
                 || (function.func_name.lowercase() == "coalesce"
                     && matches!(
                         field.eval_type(),
@@ -341,10 +341,29 @@ fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize)
                             | NativeEvalType::Timestamp
                             | NativeEvalType::Duration
                     ))
-                || function
-                    .args
-                    .iter()
-                    .any(|child| nullable_needs_native(child, depth - 1, remaining))
+            {
+                return true;
+            }
+            for (index, child) in function.args.iter().enumerate() {
+                if depth == 1 || *remaining == 0 {
+                    return true;
+                }
+                let condition = (function.func_name.lowercase() == "if" && index == 0)
+                    || (function.func_name.lowercase() == "case"
+                        && index % 2 == 0
+                        && index + 1 < function.args.len());
+                if condition
+                    && child
+                        .static_type()
+                        .is_none_or(|field| field.eval_type() != NativeEvalType::Int)
+                {
+                    return true;
+                }
+                if nullable_needs_native(child, depth - 1, remaining) {
+                    return true;
+                }
+            }
+            false
         }
         Expression::CorrelatedColumn(_) => false,
     }
@@ -715,22 +734,24 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     )
     .then_some(target)
 }
-fn native_nullable_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
+fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
     match function.func_name.lowercase() {
         "coalesce" => Some(SqlBatchHostOperation::CoalesceNative),
         "ifnull" => Some(SqlBatchHostOperation::IfNullNative),
+        "if" => Some(SqlBatchHostOperation::IfNative),
+        "case" => Some(SqlBatchHostOperation::CaseNative),
         _ => None,
     }
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_cast_name(function).is_some() || native_nullable_operation(function).is_some()
+    native_cast_name(function).is_some() || native_selection_operation(function).is_some()
 }
 fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
-        if let Some(operation) = native_nullable_operation(function) {
+        if let Some(operation) = native_selection_operation(function) {
             if !operation.accepts_arity(function.args.len())
                 || function.get_static_type().is_none()
                 || function.args.iter().any(|arg| arg.static_type().is_none())
@@ -1351,6 +1372,8 @@ fn preflight<'a>(
                         CallTarget::Host(
                             SqlBatchHostOperation::CoalesceNative
                                 | SqlBatchHostOperation::IfNullNative
+                                | SqlBatchHostOperation::IfNative
+                                | SqlBatchHostOperation::CaseNative
                         )
                     ) {
                         budget.array::<usize>(function.args.len())?;
@@ -1584,6 +1607,8 @@ fn lower(
                                         | SqlBatchHostOperation::CastNative
                                         | SqlBatchHostOperation::CoalesceNative
                                         | SqlBatchHostOperation::IfNullNative
+                                        | SqlBatchHostOperation::IfNative
+                                        | SqlBatchHostOperation::CaseNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1601,7 +1626,9 @@ fn lower(
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
                             SqlBatchHostOperation::CoalesceNative
-                            | SqlBatchHostOperation::IfNullNative => {
+                            | SqlBatchHostOperation::IfNullNative
+                            | SqlBatchHostOperation::IfNative
+                            | SqlBatchHostOperation::CaseNative => {
                                 let mut argument_nodes = Vec::new();
                                 reserve(&mut argument_nodes, *arity)?;
                                 let mut child = ordinal
@@ -1614,7 +1641,7 @@ fn lower(
                                         .ok_or_else(|| binding("nullable child source missing"))?
                                         .subtree_end;
                                 }
-                                NativeHostMetadata::Nullable {
+                                NativeHostMetadata::Selection {
                                     name: sql.func_name.lowercase().into(),
                                     result_type: snapshot_field_type(item.sql),
                                     argument_nodes: argument_nodes.into_boxed_slice(),

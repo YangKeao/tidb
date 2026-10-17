@@ -30,7 +30,7 @@ pub(super) enum NativeHostMetadata {
         charset: Box<str>,
         unsigned: bool,
     },
-    Nullable {
+    Selection {
         name: Box<str>,
         result_type: FieldType,
         argument_nodes: Box<[usize]>,
@@ -63,6 +63,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Conditional {
+        next: usize,
+    },
     Nullable {
         next: usize,
     },
@@ -92,7 +95,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
-            SqlDemand::Nullable { next } => Ok(Some(*next)),
+            SqlDemand::Nullable { next } | SqlDemand::Conditional { next } => Ok(Some(*next)),
             SqlDemand::Concat { demand, .. } => demand.next_argument(),
             SqlDemand::RegexpLike { next, .. } => Ok(*next),
             SqlDemand::CastCharInt { .. }
@@ -102,9 +105,9 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::Nullable { .. } => Err(LocalError::HostContract(
-                "native nullable control does not buffer a prefix".into(),
-            )),
+            SqlDemand::Nullable { .. } | SqlDemand::Conditional { .. } => Err(
+                LocalError::HostContract("native nullable control does not buffer a prefix".into()),
+            ),
             SqlDemand::Concat { demand, .. } => demand.observe(len),
             SqlDemand::CastCharInt { .. }
             | SqlDemand::CastCharNative { .. }
@@ -455,13 +458,8 @@ impl<'a> NativeBatchHosts<'a> {
         let SqlDemand::Nullable { next } = task.demand else {
             return Err(binding("nullable resume has another task kind"));
         };
-        let Some(NativeHostMetadata::Nullable {
-            name,
-            result_type,
-            argument_nodes,
-            output_node,
-            output_role,
-        }) = self.metadata.get(task.slot.index())
+        let Some(NativeHostMetadata::Selection { argument_nodes, .. }) =
+            self.metadata.get(task.slot.index())
         else {
             return Err(binding("nullable selection lost its source metadata"));
         };
@@ -474,10 +472,10 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("nullable selection has no value store"))?;
-        let (is_null, payload) = {
+        let is_null = {
             let store = store.borrow();
             let value = store.get(token, NativeValueRole::CharInput, origin)?;
-            (value.is_null(), native_payload_bytes(value)?)
+            value.is_null()
         };
         if matches!(
             tidb_query_expr::native_if_null_choose_first((!is_null).then_some(())),
@@ -498,14 +496,47 @@ impl<'a> NativeBatchHosts<'a> {
                 mode: ArgMode::Fresh,
             }));
         }
+        self.finish_selection_argument(id, token, next)
+            .map(HostStep::Ready)
+    }
+    fn finish_selection_argument(
+        &mut self,
+        id: &HostTaskId,
+        token: &[u8],
+        index: usize,
+    ) -> LocalResult<VectorValue> {
+        let task = self.task(id)?;
+        let Some(NativeHostMetadata::Selection {
+            name,
+            result_type,
+            argument_nodes,
+            output_node,
+            output_role,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("selected argument lost its descriptor"));
+        };
+        let row = task.row;
+        let node = *argument_nodes
+            .get(index)
+            .ok_or_else(|| binding("selected producer ordinal missing"))?;
+        let origin = NativeValueOrigin { node, row };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("selection has no native store"))?;
+        let payload = native_payload_bytes(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?)?;
         let base = self
             .retained_bytes()?
             .checked_add(
                 payload
                     .checked_mul(2)
-                    .ok_or_else(|| resource("nullable selected payload allowance overflow"))?,
+                    .ok_or_else(|| resource("selected native payload allowance overflow"))?,
             )
-            .ok_or_else(|| resource("nullable selected size overflow"))?;
+            .ok_or_else(|| resource("selected native input size overflow"))?;
         self.check_bytes(base)?;
         let value = store
             .borrow()
@@ -516,6 +547,87 @@ impl<'a> NativeBatchHosts<'a> {
                 Err(error) => return self.native_failure(error),
             };
         self.finish_native_value(id, value, *output_node, *output_role, row, base)
+    }
+    fn resume_conditional(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
+        let task = self.task(id)?;
+        let SqlDemand::Conditional { next } = task.demand else {
+            return Err(binding("conditional resume has another task kind"));
+        };
+        let Some(NativeHostMetadata::Selection {
+            name,
+            argument_nodes,
+            output_node,
+            output_role,
+            ..
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("conditional selection lost its descriptor"));
+        };
+        let arity = task.arity;
+        let condition = (name.as_ref() == "if" && next == 0)
+            || (name.as_ref() == "case" && next % 2 == 0 && next + 1 < arity);
+        if !condition {
+            return self
+                .finish_selection_argument(id, token, next)
+                .map(HostStep::Ready);
+        }
+        let row = task.row;
+        let node = *argument_nodes
+            .get(next)
+            .ok_or_else(|| binding("conditional producer ordinal missing"))?;
+        let origin = NativeValueOrigin { node, row };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("conditional has no native store"))?;
+        let payload = native_payload_bytes(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?)?;
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("native predicate allowance overflow"))?,
+            )
+            .ok_or_else(|| resource("native predicate size overflow"))?;
+        self.check_bytes(base)?;
+        let truth = crate::truthy_of(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?);
+        let truth = match truth {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        let selected = tidb_query_expr::native_if_choose_branch(truth)
+            == tidb_query_expr::NativeIfBranch::Then;
+        let requested = if name.as_ref() == "if" {
+            Some(if selected { 1 } else { 2 })
+        } else if selected {
+            Some(next + 1)
+        } else {
+            (next + 2 < arity).then_some(next + 2)
+        };
+        if let Some(index) = requested {
+            let SqlDemand::Conditional { next: cursor } = &mut self.slots[id.slot]
+                .task
+                .as_mut()
+                .expect("validated task")
+                .demand
+            else {
+                unreachable!()
+            };
+            *cursor = index;
+            return Ok(HostStep::NeedArg(HostArgRequest {
+                index,
+                mode: ArgMode::Fresh,
+            }));
+        }
+        // CASE without ELSE owns this NULL, not the final predicate's identity.
+        self.finish_native_value(id, Datum::Null, *output_node, *output_role, row, base)
             .map(HostStep::Ready)
     }
     fn finish_native_cast(
@@ -816,9 +928,35 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            operation @ (SqlBatchHostOperation::IfNative | SqlBatchHostOperation::CaseNative) => {
+                let Some(NativeHostMetadata::Selection {
+                    name,
+                    argument_nodes,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(LocalError::HostContract(
+                        "conditional has no descriptor".into(),
+                    ));
+                };
+                let expected = if operation == SqlBatchHostOperation::IfNative {
+                    "if"
+                } else {
+                    "case"
+                };
+                if self.native_values.is_none()
+                    || name.as_ref() != expected
+                    || argument_nodes.len() != invocation.arg_types.len()
+                {
+                    return Err(LocalError::HostContract(
+                        "conditional descriptor differs".into(),
+                    ));
+                }
+                SqlDemand::Conditional { next: 0 }
+            }
             operation @ (SqlBatchHostOperation::CoalesceNative
             | SqlBatchHostOperation::IfNullNative) => {
-                let Some(NativeHostMetadata::Nullable {
+                let Some(NativeHostMetadata::Selection {
                     name,
                     argument_nodes,
                     ..
@@ -976,6 +1114,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Conditional { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native predicate/branch cannot be wire NULL"));
+            };
+            return self.resume_conditional(id, token);
         }
         if matches!(task.demand, SqlDemand::Nullable { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -1441,7 +1585,7 @@ mod tests {
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::Nullable {
+        let metadata = [NativeHostMetadata::Selection {
             name: "ifnull".into(),
             result_type: native_bytes_type(),
             argument_nodes: vec![3, 8].into_boxed_slice(),

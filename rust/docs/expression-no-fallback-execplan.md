@@ -42,6 +42,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5c2: JSON CAST joins native computed islands with pre-argument type admission and shared literal/nonliteral value conversion. 82focused/full1434same4/156inputcases/24SQL/Projection14/lint/fmt pass; poisoned vector-NULL input proves zero argument demand. Receipt rust/docs/evidence/no-fallback-n5c2.md.
 - [x] (2026-10-18) N5c3: correct native-value producer capability gaps to admission rather than terminal binding errors; RED valid CAST(ABS/PLUS/IF) SQL regression,83focused/full1435same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c3.md.
 - [x] (2026-10-18) N5d1: native COALESCE/IFNULL share the existing staged driver and pure nullable selector, preserve actual NULL/value kind/FSP and mint own producer handles. 87focused/full1439same4/core1043same6/30SQL/Projection15/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d1.md.
+- [x] (2026-10-18) N5d2: native IF/CASE use the same staged driver, original pure truth conversion/branch selector and checked native result publication. 90focused/full1442same4/core1043same6/30SQL/Projection16/lint/clippy/fmt pass; CAST(IF) migration gap retired. Receipt rust/docs/evidence/no-fallback-n5d2.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -403,3 +404,18 @@ nullable root, retaining those existing typed fast paths. Missing native
 producers still use the explicit admission migration state, never a terminal
 protocol error. General native IF/CASE/logical/nullif and other producers remain
 outstanding; this checkpoint does not remove global fallback.
+
+
+N5d2 outcome: native IF and flattened CASE request only the original predicate
+and selected branch. Truth conversion uses the same plain native_truthy surface
+as ScalarFunction's original truthy_of, followed by native_if_choose_branch.
+It does not substitute WHERE's warning policy or the presence of a handle.
+CASE with no selected branch owns a new NULL result. The common selection
+argument/result helpers retain provenance, budgets, native value kinds and
+original return conversion. Source classification also recognizes non-Int
+predicate domains while retaining complete-tree and bounded inspection checks.
+
+The prior CAST(IF(...)) capability regression case now requires preparation
+without fallback; ABS/PLUS producer cases remain explicit migration gaps.
+Native logical AND/OR, NULLIF/equality and further producer/caller coverage
+remain outstanding before the alternate evaluator can be removed.

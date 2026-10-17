@@ -4923,7 +4923,7 @@ fn rewritten_json_cast_islands_preserve_documents_errors_and_nested_warnings() {
 #[test]
 fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connected() {
     let schema = [ty()];
-    for root in [
+    for (case, root) in [
         call("cast_signed", ty(), vec![abs(column(0))]),
         call(
             "cast_json",
@@ -4940,7 +4940,10 @@ fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connect
             ty(),
             vec![call("if", ty(), vec![column(0), int(2), int(3)])],
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let field = root.static_type().unwrap().clone();
         let suite = self::suite(root);
         let rows = vec![vec![Datum::Int(-3)], vec![Datum::Int(2)], vec![Datum::Null]];
@@ -4959,8 +4962,14 @@ fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connect
             .unwrap();
         assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
         let route = suite.batch_route_snapshot();
-        assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
-        assert_eq!(route.refusal, Some(BatchRefusal::Admission));
+        if case == 3 {
+            // IF now has a native producer; the other recipes remain gaps.
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+            assert_eq!(route.refusal, None);
+        } else {
+            assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+            assert_eq!(route.refusal, Some(BatchRefusal::Admission));
+        }
     }
 }
 
@@ -5273,4 +5282,389 @@ fn native_nullable_node_policy_precedes_argument_declaration_capability_scan() {
         error.local_error(),
         Some(LocalError::ResourceLimit(_))
     ));
+}
+
+#[test]
+fn native_if_case_controls_preserve_truth_demand_and_selected_value_kind() {
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let bad_signed = || {
+        call(
+            "cast_signed",
+            ty(),
+            vec![literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                vector.clone(),
+            )],
+        )
+    };
+    let bad_json = || {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![literal(Datum::Null, vector.clone())],
+        )
+    };
+    let json_value = |text: &str| {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![literal(Datum::new_string(text), string_ty())],
+        )
+    };
+    let signed = || {
+        call(
+            "cast_signed",
+            ty(),
+            vec![literal(Datum::new_string("12.5tail"), string_ty())],
+        )
+    };
+    let condition = || call("cast_signed", ty(), vec![int(1)]);
+    let unsigned = ty().with_unsigned(true);
+    let cases = [
+        call("if", ty(), vec![condition(), signed(), bad_signed()]),
+        call(
+            "if",
+            json.clone(),
+            vec![null(), bad_json(), json_value("{\"a\":1}")],
+        ),
+        call(
+            "case",
+            json.clone(),
+            vec![
+                int(0),
+                bad_json(),
+                condition(),
+                json_value("{\"a\":1}"),
+                bad_json(),
+            ],
+        ),
+        call(
+            "case",
+            json.clone(),
+            vec![int(0), bad_json(), null(), bad_json()],
+        ),
+        call(
+            "if",
+            json.clone(),
+            vec![json_value("null"), json_value("{\"a\":1}"), bad_json()],
+        ),
+        call(
+            "if",
+            ty(),
+            vec![
+                literal(Datum::new_string("1abc"), string_ty()),
+                int(7),
+                int(8),
+            ],
+        ),
+        call("if", ty(), vec![json_value("false"), int(7), int(8)]),
+        call(
+            "if",
+            ty(),
+            vec![
+                literal(Datum::Real(f64::from_bits(0x7ff8000000000042)), real_ty()),
+                signed(),
+                bad_signed(),
+            ],
+        ),
+        call(
+            "case",
+            ty(),
+            vec![
+                literal(Datum::new_string("0"), string_ty()),
+                bad_signed(),
+                literal(Datum::new_string("2"), string_ty()),
+                signed(),
+            ],
+        ),
+        call(
+            "case",
+            ty(),
+            vec![literal(Datum::new_string("0"), string_ty()), int(7)],
+        ),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call(
+                "if",
+                unsigned.clone(),
+                vec![
+                    condition(),
+                    literal(Datum::Int(-1), unsigned.clone()),
+                    literal(Datum::UInt(u64::MAX), unsigned),
+                ],
+            )],
+        ),
+        call(
+            "coalesce",
+            json.clone(),
+            vec![
+                call("case", json.clone(), vec![int(0), bad_json()]),
+                call(
+                    "if",
+                    json.clone(),
+                    vec![condition(), json_value("{\"a\":1}"), bad_json()],
+                ),
+            ],
+        ),
+        call("if", ty(), vec![int(0), signed(), bad_signed()]),
+        call(
+            "case",
+            json.clone(),
+            vec![int(0), json_value("{\"a\":1}"), bad_json()],
+        ),
+    ];
+    for root in cases {
+        let field = root.static_type().unwrap().clone();
+        for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for _ in &selected {
+                match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut input = Chunk::new_with_capacity(&[], 2);
+            input.set_num_virtual_rows(2);
+            input.set_sel(Some(selected));
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost conditional error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error);
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows());
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0)
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref()
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{root:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rewritten_native_if_case_controls_keep_column_branches_and_json_errors() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            match path.last()?.as_str() {
+                "c" => Some((0, ty(), 1)),
+                "v" => Some((1, string_ty(), 2)),
+                "w" => Some((2, string_ty(), 3)),
+                _ => None,
+            }
+        }
+    }
+    let schema = [ty(), string_ty(), string_ty()];
+    let rows = vec![
+        vec![
+            Datum::Int(1),
+            Datum::new_string("{\"a\":1}"),
+            Datum::new_string("bad JSON"),
+        ],
+        vec![
+            Datum::Int(0),
+            Datum::new_string("bad JSON"),
+            Datum::new_string("12"),
+        ],
+        vec![
+            Datum::Null,
+            Datum::new_string("bad JSON"),
+            Datum::new_string("null"),
+        ],
+        vec![
+            Datum::Int(1),
+            Datum::new_string("bad JSON"),
+            Datum::new_string("12"),
+        ],
+        vec![
+            Datum::Int(0),
+            Datum::new_string("{\"a\":1}"),
+            Datum::new_string("bad JSON"),
+        ],
+    ];
+    for sql in [
+        "if(c, cast(v as json), cast(w as json))",
+        "case when c then cast(v as json) else cast(w as json) end",
+        "case when c then cast(v as json) end",
+        "cast(if(c, cast(v as json), cast(w as json)) as char)",
+        "concat(cast(case when c then cast(v as json) else cast(w as json) end as char), '!')",
+        "coalesce(case when c then cast(v as json) end, cast(w as json))",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [
+            vec![],
+            vec![0, 1, 2, 0],
+            vec![3, 0],
+            vec![4, 0],
+            (0..2050).map(|i| i % 3).collect(),
+        ] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for row in selected {
+                match root.eval(&reference, input.physical_row(row)) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost conditional SQL error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error, "{sql}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{sql}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_predicate_resource_and_provenance_failures_are_terminal() {
+    use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, LocalHostServices};
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 3];
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::IfNative,
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let metadata = [NativeHostMetadata::Selection {
+        name: "if".into(),
+        result_type: ty(),
+        argument_nodes: vec![3, 4, 8].into_boxed_slice(),
+        output_node: 2,
+        output_role: NativeValueRole::Output,
+    }];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 0,
+    };
+    let origin = NativeValueOrigin { node: 3, row };
+    let large = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Bytes(vec![b'1'; 16384]),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    let wrong = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(1), NativeValueRole::Output, origin)
+        .unwrap();
+    let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
+        .with_native_values(Some(&store));
+    let mut ctx = EvalContext::default();
+    for (token, resource_failure) in [(large, true), (wrong, false)] {
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("request")
+        };
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let error = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap_err();
+        if resource_failure {
+            assert!(matches!(error, LocalError::ResourceLimit(_)));
+        } else {
+            assert!(matches!(error, LocalError::BindingContract(_)));
+        }
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+    }
 }
