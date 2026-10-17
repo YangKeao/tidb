@@ -2448,6 +2448,83 @@ fn complete_projection_keeps_multiple_outputs_and_selected_columns_in_shared_exe
 }
 
 #[test]
+fn direct_native_columns_preserve_storage_without_wire_conversion() {
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    let cases = [
+        (FieldType::new(FieldTypeCode::Float), Datum::Float32(-0.0)),
+        (real_ty(), Datum::Real(f64::from_bits(0x7ff8000000000042))),
+        (FieldType::new(FieldTypeCode::Year), Datum::Int(0)),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(8),
+            Datum::Bit(BinaryLiteral::from(vec![0xa5])),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Enum).with_elems(["a", "b"]),
+            Datum::Enum(MysqlEnum::new("b", 2), Collation::Binary),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Set).with_elems(["a", "b"]),
+            Datum::Set(MysqlSet::new("a,b", 3), Collation::Binary),
+        ),
+    ];
+    for (field, value) in cases {
+        for selection in [None, Some(vec![]), Some((0..2050).map(|i| i % 2).collect())] {
+            for enabled in [true, false] {
+                let schema = [field.clone()];
+                let mut input = chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
+                input.set_sel(selection.clone());
+                // Native reference publishes physical rows; compare each selected
+                // occurrence explicitly because its direct-swap path rejects Sel.
+                let mut reference_input = chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
+                let make_suite = || {
+                    EvaluatorSuite::new(
+                        vec![typed_column(0, &field), typed_column(0, &field)],
+                        false,
+                    )
+                };
+                let reference = make_suite();
+                let prepared = make_suite();
+                let output_schema = [field.clone(), field.clone()];
+                let mut expected = Chunk::new_with_capacity(&output_schema, 0);
+                let mut actual = Chunk::new_with_capacity(&output_schema, 0);
+                reference
+                    .run(&Context::new(enabled), &mut reference_input, &mut expected)
+                    .unwrap();
+                prepared
+                    .run_with_tikv_batch(&Context::new(enabled), &mut input, &mut actual, &schema)
+                    .unwrap();
+                let selected = selection.clone().unwrap_or_else(|| vec![0, 1]);
+                assert_eq!(actual.num_rows(), selected.len());
+                for (row, physical) in selected.into_iter().enumerate() {
+                    for col in 0..2 {
+                        assert_eq!(
+                            actual.get_row(row).is_null(col),
+                            expected.get_row(physical).is_null(col)
+                        );
+                        // Raw storage equality covers NaN payloads and signed zero.
+                        assert_eq!(
+                            actual.column(col).get_raw(row).as_ref(),
+                            expected.column(col).get_raw(physical).as_ref()
+                        );
+                    }
+                }
+                if selection.is_none() {
+                    assert!(actual.columns_share_identity(0, &actual, 1));
+                } else {
+                    assert_eq!(input.physical_rows(), 2);
+                }
+                let route = prepared.batch_route_snapshot();
+                assert_eq!(
+                    (route.prepared, route.fallback, route.refusals),
+                    (1, 0, 0),
+                    "{field:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn projection_late_error_does_not_move_direct_column_owners_or_retry() {
     let suite = EvaluatorSuite::new(vec![column(0), plus(int(i64::MAX), int(1))], false);
     let mut input = chunk(&[ty()], &[vec![Datum::Int(7)]]);

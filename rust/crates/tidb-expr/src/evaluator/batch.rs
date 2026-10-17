@@ -2538,10 +2538,13 @@ impl PreparedBatchSuite {
             budget.field(field, 1)?;
         }
         for &index in suite.program.column_mapping.keys() {
-            let field = row_schema
+            // Direct outputs transfer native Chunk storage. They never enter
+            // the closed computation wire carriers, so that carrier admission
+            // policy does not apply. Bounds, metadata and invocation layout
+            // validation still precede every ownership transfer.
+            row_schema
                 .get(index)
                 .ok_or_else(|| binding("projection column outside row schema"))?;
-            check_type(field)?;
         }
         let mut workers = Vec::new();
         reserve(&mut workers, count)?;
