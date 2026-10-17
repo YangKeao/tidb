@@ -30,14 +30,19 @@ pub(super) const HANDLE_BYTES: usize = 5 * size_of::<u64>();
 pub(super) enum NativeValueRole {
     CharInput = 1,
     Output = 2,
+    DecimalFast = 3,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NativeValueOrigin {
     pub node: usize,
     pub row: InputRow,
 }
+enum StoredValue {
+    Sql(Datum),
+    DecimalFast(tidb_query_expr::NativeDecimalFastOutcome),
+}
 struct Entry {
-    value: Datum,
+    value: StoredValue,
     role: NativeValueRole,
     origin: NativeValueOrigin,
     charge: usize,
@@ -142,10 +147,47 @@ impl NativeValueStore {
         role: NativeValueRole,
         origin: NativeValueOrigin,
     ) -> LocalResult<Vec<u8>> {
+        if self.generation == 0 || role == NativeValueRole::DecimalFast {
+            return Err(invalid_handle());
+        }
+        self.insert_with(role, origin, payload_charge(value)?, || {
+            StoredValue::Sql(value.clone())
+        })
+    }
+    /// Fast representation refusal is a typed, non-SQL outcome. It cannot
+    /// enter a SQL kernel or output consumer through the ordinary value API.
+    pub(super) fn insert_decimal_fast(
+        &mut self,
+        value: tidb_query_expr::NativeDecimalFastOutcome,
+        origin: NativeValueOrigin,
+    ) -> LocalResult<Vec<u8>> {
+        self.insert_with(NativeValueRole::DecimalFast, origin, 0, || {
+            StoredValue::DecimalFast(value)
+        })
+    }
+    pub(super) fn decimal_fast(
+        &self,
+        handle: &[u8],
+        origin: NativeValueOrigin,
+    ) -> LocalResult<&tidb_query_expr::NativeDecimalFastOutcome> {
+        match &self
+            .entry(handle, NativeValueRole::DecimalFast, origin)?
+            .value
+        {
+            StoredValue::DecimalFast(value) => Ok(value),
+            StoredValue::Sql(_) => Err(invalid_handle()),
+        }
+    }
+    fn insert_with(
+        &mut self,
+        role: NativeValueRole,
+        origin: NativeValueOrigin,
+        charge: usize,
+        make_value: impl FnOnce() -> StoredValue,
+    ) -> LocalResult<Vec<u8>> {
         if self.generation == 0 {
             return Err(invalid_handle());
         }
-        let charge = payload_charge(value)?;
         let growth = usize::from(self.entries.len() == self.entries.capacity());
         self.check(
             self.logical_bytes()?
@@ -181,7 +223,7 @@ impl NativeValueStore {
                 .and_then(|bytes| bytes.checked_add(handle.capacity()))
                 .ok_or_else(|| resource("native value handle capacity overflow"))?,
         )?;
-        let owned = value.clone();
+        let owned = make_value();
         self.payload_charge = self
             .payload_charge
             .checked_add(charge)
@@ -200,7 +242,10 @@ impl NativeValueStore {
         role: NativeValueRole,
         origin: NativeValueOrigin,
     ) -> LocalResult<&Datum> {
-        Ok(&self.entry(handle, role, origin)?.value)
+        match &self.entry(handle, role, origin)?.value {
+            StoredValue::Sql(value) => Ok(value),
+            StoredValue::DecimalFast(_) => Err(invalid_handle()),
+        }
     }
     fn entry(
         &self,
@@ -249,7 +294,10 @@ impl NativeValueStore {
                 .checked_add(entry.charge)
                 .ok_or_else(|| resource("native value kernel copy size overflow"))?,
         )?;
-        Ok(entry.value.clone())
+        match &entry.value {
+            StoredValue::Sql(value) => Ok(value.clone()),
+            StoredValue::DecimalFast(_) => Err(invalid_handle()),
+        }
     }
 }
 
@@ -265,6 +313,85 @@ mod tests {
                 input_row: 7,
             },
         }
+    }
+    #[test]
+    fn decimal_fast_outcomes_are_distinct_from_sql_values_and_keep_provenance() {
+        use tidb_query_expr::{NativeDecimalFastOutcome as Outcome, NativeDecimalFastValue};
+        let mut store = NativeValueStore::new(1 << 20).unwrap();
+        store.begin_window().unwrap();
+        let outcomes = [
+            Outcome::Unsupported,
+            Outcome::Value(None),
+            Outcome::Value(Some(NativeDecimalFastValue {
+                coefficient: -125,
+                storage_scale: 2,
+                scale: 2,
+            })),
+        ];
+        for expected in outcomes {
+            let token = store
+                .insert_decimal_fast(expected.clone(), origin())
+                .unwrap();
+            assert_eq!(store.decimal_fast(&token, origin()).unwrap(), &expected);
+            assert!(store
+                .get(&token, NativeValueRole::DecimalFast, origin())
+                .is_err());
+            assert!(store
+                .clone_for_kernel(&token, NativeValueRole::DecimalFast, origin())
+                .is_err());
+            for role in [NativeValueRole::CharInput, NativeValueRole::Output] {
+                assert!(store.get(&token, role, origin()).is_err());
+                let mut forged = token.clone();
+                forged[32..40].copy_from_slice(&(role as u64).to_le_bytes());
+                assert!(store.get(&forged, role, origin()).is_err());
+            }
+            let mut wrong = origin();
+            wrong.row.occurrence += 1;
+            assert!(store.decimal_fast(&token, wrong).is_err());
+            let mut foreign = NativeValueStore::new(1 << 20).unwrap();
+            foreign.begin_window().unwrap();
+            assert!(foreign.decimal_fast(&token, origin()).is_err());
+            store.begin_window().unwrap();
+            assert!(store.decimal_fast(&token, origin()).is_err());
+        }
+        assert!(store
+            .insert_clone(&Datum::Null, NativeValueRole::DecimalFast, origin())
+            .is_err());
+        let sql = store
+            .insert_clone(&Datum::Null, NativeValueRole::Output, origin())
+            .unwrap();
+        assert!(store.decimal_fast(&sql, origin()).is_err());
+        assert_eq!(
+            store.get(&sql, NativeValueRole::Output, origin()).unwrap(),
+            &Datum::Null
+        );
+    }
+    #[test]
+    fn decimal_fast_outcome_insertion_checks_budget_and_generation_before_ownership() {
+        use tidb_query_expr::NativeDecimalFastOutcome as Outcome;
+        let mut store = NativeValueStore::new(1 << 20).unwrap();
+        assert!(store
+            .insert_decimal_fast(Outcome::Unsupported, origin())
+            .is_err());
+        store.begin_window().unwrap();
+        store.max_logical_bytes = size_of::<Entry>() + HANDLE_BYTES - 1;
+        assert!(matches!(
+            store.insert_decimal_fast(Outcome::Unsupported, origin()),
+            Err(LocalError::ResourceLimit(_))
+        ));
+        assert!(store.entries.is_empty());
+        store.max_logical_bytes += 1;
+        let token = store
+            .insert_decimal_fast(Outcome::Value(None), origin())
+            .unwrap();
+        assert_eq!(
+            store.decimal_fast(&token, origin()).unwrap(),
+            &Outcome::Value(None)
+        );
+        assert!(store
+            .insert_decimal_fast(Outcome::Unsupported, origin())
+            .is_err());
+        assert_eq!(store.entries.len(), 1);
     }
     #[test]
     fn store_preserves_all_nineteen_native_kinds_and_raw_representations() {

@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [ ] N6f root integration: per-edge Bulk/Row source views and immutable paired programs are preserved outside this checkpoint in `evidence/no-fallback/n6f-source-wip-before-store.patch` in the agent workspace. Exact native trace comparisons exposed Decimal-fast priority before the global vector flag. Blanket empty-input flag suppression is incorrect. Complete the typed Decimal-fast phase before publishing the root integration.
+- [x] N6f0 preparation: native value storage has a separate, typed Decimal-fast outcome domain and purpose-bound capability. Unsupported, SQL NULL and an actual fast coefficient remain distinct. Ordinary SQL insertion, borrowing, kernel cloning and output roles cannot manufacture/consume a fast outcome. The existing generation/provenance and pre-insertion resource checks apply. No production root coverage changes in this step. Five store tests/complete frontend1469same4/95ignored/Projection22/lint/pinnedfmt/diff pass. Receipt rust/docs/evidence/no-fallback-n6f0.md.
+
 
 - [x] (2026-10-17) Recover paired baseline: TiDB bf4723283aadba5fbde116a7572c2aac18a887ba,
   TiKV d32cebb3ebc353748cb225fe254d6893e62c8bdc; existing unrelated untracked
@@ -737,3 +740,25 @@ must remain in the common driver; missing bulk coverage cannot silently become
 row execution. Metadata/source expansion, other functions/effects, dynamic
 sources, multi-output coverage and global migration-dispatch retirement remain
 active. No frontend root fallback is claimed closed by N6e alone.
+
+### N6f Decimal priority discovery and next implementation
+
+Native `run_with_consumer` calls `vec_eval_decimal_arithmetic_in` before
+`enable_vectorized_expression`, including for empty input and a disabled flag.
+The fast arithmetic completes all left inputs, all right inputs, then checked
+coefficient operations. Unsupported is a typed outcome; native then reads the
+flag and follows the ordinary bulk or row rules. SQL and bridge/resource errors
+are terminal. A successful fast stage skips the flag and generic return
+coercion. Constants are converted before broadcasting, even for empty input.
+
+The new storage domain prepares that contract without putting a marker in SQL
+NULL or user bytes. Next, compile the fast stage into the same SDK frame driver,
+using plain coefficient kernels already exported by the datatype crate. Its
+value provider must own immutable metadata and values, never Expressions or an
+old ready-arguments program. Only a typed Unsupported outcome may select the
+subsequent canonical bulk/row stage; errors must never select another route.
+The original native phase, not a preparation refusal, defines this transition.
+Retained node/metadata budgets must include every prepared phase. Fast integer
+column casts and empty constant conversion must be covered before root
+promotion is accepted. Context traces in the uncommitted integration test are
+intentionally exact and must not be relaxed.
