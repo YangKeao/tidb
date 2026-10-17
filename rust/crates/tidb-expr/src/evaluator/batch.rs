@@ -234,6 +234,14 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
             NativeView::RootValue
         }
         Expression::ScalarFunction(function)
+            if native_math_operation(function).is_some()
+                && native_value_tree_complete(root, limits.max_depth, &mut {
+                    limits.max_nodes
+                }) =>
+        {
+            NativeView::RootValue
+        }
+        Expression::ScalarFunction(function)
             if (native_selection_operation(function).is_some()
                 || native_comparison_operation(function.func_name.lowercase()).is_some())
                 && nullable_prefers_native(root, limits) =>
@@ -465,6 +473,7 @@ struct CheckedNode<'a> {
     view: NativeView,
     subtree_end: usize,
     folds_to_constant: bool,
+    math_render_bound: Option<usize>,
 }
 struct Budget {
     used: usize,
@@ -742,6 +751,9 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     )
     .then_some(target)
 }
+fn native_math_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
+    (function.func_name.lowercase() == "abs").then_some(SqlBatchHostOperation::AbsNative)
+}
 fn native_comparison_kind(name: &str) -> Option<tidb_query_expr::ComparisonOp> {
     use tidb_query_expr::ComparisonOp;
     Some(match name {
@@ -792,6 +804,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
+        || native_math_operation(function).is_some()
 }
 fn resolve_call_in_view(
     function: &ScalarFunction,
@@ -800,6 +813,7 @@ fn resolve_call_in_view(
     if view.value_role().is_some() {
         if let Some(operation) = native_selection_operation(function)
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
+            .or_else(|| native_math_operation(function))
         {
             if !operation.accepts_arity(function.args.len())
                 || function.get_static_type().is_none()
@@ -1449,6 +1463,12 @@ fn preflight<'a>(
                     ) {
                         budget.field(sql, 1)?;
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::AbsNative)
+                    ) {
+                        budget.field(sql, 1)?;
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -1478,7 +1498,68 @@ fn preflight<'a>(
             view,
             subtree_end: 0,
             folds_to_constant: false,
+            math_render_bound: None,
         });
+    }
+    for index in (0..checked.len()).rev() {
+        let mut end = index
+            .checked_add(1)
+            .ok_or_else(|| resource("source subtree ordinal overflow"))?;
+        let mut math_children = Some(0usize);
+        let mut folds_to_constant = matches!(checked[index].node, Expression::Constant(_));
+        if let Expression::ScalarFunction(function) = checked[index].node {
+            folds_to_constant = !crate::constant_fold::is_unfoldable_call(
+                function.func_name.lowercase(),
+                function.args.len(),
+            );
+            for _ in &function.args {
+                math_children = match (
+                    math_children,
+                    checked
+                        .get(end)
+                        .ok_or_else(|| binding("math diagnostic source missing"))?
+                        .math_render_bound,
+                ) {
+                    (Some(total), Some(bytes)) => Some(
+                        total
+                            .checked_add(bytes)
+                            .ok_or_else(|| resource("math diagnostic byte size overflow"))?,
+                    ),
+                    _ => None,
+                };
+                folds_to_constant &= checked
+                    .get(end)
+                    .ok_or_else(|| binding("constant metadata source missing"))?
+                    .folds_to_constant;
+                end = checked
+                    .get(end)
+                    .ok_or_else(|| binding("source subtree is incomplete"))?
+                    .subtree_end;
+            }
+        }
+        if end <= index || end > checked.len() {
+            return Err(binding("source subtree join differs").into());
+        }
+        checked[index].subtree_end = end;
+        checked[index].folds_to_constant = folds_to_constant;
+        checked[index].math_render_bound =
+            crate::scalar_function::math_diagnostic_node_bound(checked[index].node, math_children)
+                .map_err(resource)?;
+    }
+    // Charge every owned diagnostic copy group before any temporary literal
+    // conversion, source capture, formatting or immutable metadata snapshot.
+    for item in &checked {
+        if item.view.value_role().is_some()
+            && matches!(item.node, Expression::ScalarFunction(function) if function.func_name.lowercase()=="abs")
+        {
+            if let Some(bytes) = item.math_render_bound {
+                budget.add(
+                    bytes
+                        .checked_mul(4)
+                        .ok_or_else(|| resource("math diagnostic copy allowance overflow"))?,
+                )?;
+            }
+        }
     }
     // Even a temporary representability conversion must wait for the complete
     // source/schema/payload byte gate, including literals later in the graph.
@@ -1501,33 +1582,6 @@ fn preflight<'a>(
                 ));
             }
         }
-    }
-    for index in (0..checked.len()).rev() {
-        let mut end = index
-            .checked_add(1)
-            .ok_or_else(|| resource("source subtree ordinal overflow"))?;
-        let mut folds_to_constant = matches!(checked[index].node, Expression::Constant(_));
-        if let Expression::ScalarFunction(function) = checked[index].node {
-            folds_to_constant = !crate::constant_fold::is_unfoldable_call(
-                function.func_name.lowercase(),
-                function.args.len(),
-            );
-            for _ in &function.args {
-                folds_to_constant &= checked
-                    .get(end)
-                    .ok_or_else(|| binding("constant metadata source missing"))?
-                    .folds_to_constant;
-                end = checked
-                    .get(end)
-                    .ok_or_else(|| binding("source subtree is incomplete"))?
-                    .subtree_end;
-            }
-        }
-        if end <= index || end > checked.len() {
-            return Err(binding("source subtree join differs").into());
-        }
-        checked[index].subtree_end = end;
-        checked[index].folds_to_constant = folds_to_constant;
     }
     Ok(checked)
 }
@@ -1704,6 +1758,7 @@ fn lower(
                                         | SqlBatchHostOperation::CompareNative(_)
                                         | SqlBatchHostOperation::NullSafeEqNative
                                         | SqlBatchHostOperation::NullIfNative
+                                        | SqlBatchHostOperation::AbsNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1755,6 +1810,35 @@ fn lower(
                                     output_role: item.view.value_role().ok_or_else(|| {
                                         binding("nullable control lacks native result role")
                                     })?,
+                                }
+                            }
+                            SqlBatchHostOperation::AbsNative => {
+                                let expression = if item.math_render_bound.is_some() {
+                                    crate::scalar_function::static_math_overflow_expression(sql)
+                                } else {
+                                    None
+                                };
+                                if expression.as_ref().is_some_and(|text| {
+                                    item.math_render_bound
+                                        .is_none_or(|bound| text.len() > bound)
+                                }) {
+                                    return Err(binding(
+                                        "math diagnostic exceeds its admitted bound",
+                                    )
+                                    .into());
+                                }
+                                NativeHostMetadata::Math {
+                                    name: sql.func_name.lowercase().into(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    argument_node: ordinal
+                                        .checked_add(1)
+                                        .ok_or_else(|| resource("math child ordinal overflow"))?,
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("math result role missing"))?,
+                                    overflow_expression: expression.map(String::into_boxed_str),
                                 }
                             }
                             operation @ (SqlBatchHostOperation::CompareNative(_)

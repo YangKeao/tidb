@@ -4958,8 +4958,8 @@ fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connect
             .unwrap();
         assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
         let route = suite.batch_route_snapshot();
-        if case == 3 {
-            // IF now has a native producer; the other recipes remain gaps.
+        if case != 2 {
+            // ABS and IF have native producers; PLUS remains a migration gap.
             assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
             assert_eq!(route.refusal, None);
         } else {
@@ -6418,6 +6418,13 @@ fn rewritten_native_comparisons_preserve_column_constant_domains_and_composition
         ],
     ];
     for sql in [
+        "abs(a)",
+        "abs(cast(a as signed))",
+        "cast(abs(u) as char)",
+        "abs(d)",
+        "abs(f)",
+        "abs(coalesce(cast(a as signed), cast('-9' as signed)))",
+        "abs(if(u > 0, cast(a as signed), cast(b as signed)))",
         "cast((a = 1) as signed)",
         "nullif(a, b)",
         "cast(nullif(a, b) as char)",
@@ -7120,4 +7127,247 @@ fn native_value_comparisons_keep_context_observation_after_raw_operand_demand() 
             assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
         }
     }
+}
+
+#[test]
+fn native_abs_preserves_actual_kinds_warnings_and_source_overflow_diagnostics() {
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(60)
+        .with_decimal(6);
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let values = vec![
+        (Datum::Null, vector.clone(), real_ty()),
+        (Datum::Int(-7), ty(), ty()),
+        (Datum::Int(i64::MIN), ty(), ty()),
+        (
+            Datum::Int(i64::MIN),
+            ty().with_unsigned(true),
+            ty().with_unsigned(true),
+        ),
+        (
+            Datum::UInt(u64::MAX),
+            ty().with_unsigned(true),
+            ty().with_unsigned(true),
+        ),
+        (
+            Datum::UInt(1u64 << 63),
+            ty().with_unsigned(true),
+            ty().with_unsigned(true),
+        ),
+        (Datum::Real(-0.0), real_ty(), real_ty()),
+        (
+            Datum::Real(f64::from_bits(0xfff8000000000042)),
+            real_ty(),
+            real_ty(),
+        ),
+        (Datum::Real(f64::NEG_INFINITY), real_ty(), real_ty()),
+        (
+            Datum::Float32(-0.10000000149011612),
+            FieldType::new(FieldTypeCode::Float),
+            real_ty(),
+        ),
+        (
+            Datum::Decimal(Decimal::from_literal("-1.2300")),
+            decimal.clone(),
+            decimal.clone(),
+        ),
+        (
+            Datum::Decimal(Decimal::from_literal(
+                "-123456789012345678901234567890123456789012345678901234567890.001",
+            )),
+            decimal.clone(),
+            decimal,
+        ),
+        (Datum::new_string("-12.5tail"), string_ty(), real_ty()),
+        (Datum::Bytes(b"-4tail".to_vec()), string_ty(), real_ty()),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff; 8])),
+            string_ty(),
+            real_ty(),
+        ),
+        (
+            Datum::Enum(MysqlEnum::new("b", 2), Collation::GbkBin),
+            string_ty(),
+            real_ty(),
+        ),
+        (
+            Datum::Set(MysqlSet::new("a,b", 3), Collation::GbkBin),
+            string_ty(),
+            real_ty(),
+        ),
+        (
+            Datum::Duration(MySqlDuration::from_nanoseconds(-123456789000, 6).unwrap()),
+            duration,
+            real_ty(),
+        ),
+        (
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+            vector,
+            real_ty(),
+        ),
+        (Datum::MinNotNull, ty(), real_ty()),
+    ];
+    let mut roots = values
+        .into_iter()
+        .map(|(value, input, ret)| call("abs", ret, vec![literal(value, input)]))
+        .collect::<Vec<_>>();
+    roots.push(call(
+        "abs",
+        ty(),
+        vec![call("if", ty(), vec![int(1), int(i64::MIN), int(3)])],
+    ));
+    roots.push(call(
+        "abs",
+        ty(),
+        vec![call(
+            "if",
+            ty(),
+            vec![
+                call("eq", ty(), vec![int(1), int(1)]),
+                int(i64::MIN),
+                int(3),
+            ],
+        )],
+    ));
+    roots.push(call(
+        "cast_char",
+        string_ty(),
+        vec![call(
+            "abs",
+            ty(),
+            vec![call("coalesce", ty(), vec![null(), int(-9)])],
+        )],
+    ));
+    for root in roots {
+        let field = root.static_type().unwrap().clone();
+        for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for _ in &selected {
+                match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut input = Chunk::new_with_capacity(&[], 2);
+            input.set_num_virtual_rows(2);
+            input.set_sel(Some(selected));
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+            if let Some(error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost ABS error: {result:?}")
+                };
+                assert_eq!(actual_error, error, "{root:?}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows());
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0)
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{root:?}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{root:?}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{root:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn math_diagnostic_budget_precedes_formatting_and_skips_unrenderable_trees() {
+    let huge = literal(
+        Datum::Decimal(Decimal::from_raw_parts(false, b"1".to_vec(), 200_000, 0)),
+        FieldType::new(FieldTypeCode::NewDecimal),
+    );
+    let branch = call(
+        "if",
+        ty(),
+        vec![
+            call("cast_signed", ty(), vec![int(1)]),
+            int(i64::MIN),
+            huge.clone(),
+        ],
+    );
+    let mut source_limits = limits();
+    source_limits.max_metadata_bytes = 32 * 1024;
+    let compile = |root| {
+        PreparedBatch::compile_calculation(
+            &self::suite(root),
+            0,
+            &[],
+            true,
+            191,
+            source_limits,
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+    };
+    let before = crate::scalar_function::static_math_formats_for_test();
+    compile(branch.clone()).unwrap();
+    assert_eq!(
+        crate::scalar_function::static_math_formats_for_test(),
+        before
+    );
+    let error = match compile(call("abs", ty(), vec![branch])) {
+        Err(error) => error,
+        Ok(_) => panic!("oversized diagnostic was admitted"),
+    };
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(
+        crate::scalar_function::static_math_formats_for_test(),
+        before
+    );
+    // A later nonnumeric literal makes the original diagnostic unavailable.
+    // Do not format an earlier enormous decimal just to discover that fact.
+    let unsupported = call(
+        "coalesce",
+        ty(),
+        vec![huge, literal(Datum::new_string("text"), string_ty())],
+    );
+    let root = call(
+        "abs",
+        ty(),
+        vec![call("if", ty(), vec![int(1), int(i64::MIN), unsupported])],
+    );
+    let worker = compile(root).unwrap();
+    assert_eq!(
+        crate::scalar_function::static_math_formats_for_test(),
+        before
+    );
+    assert!(worker.source.host_metadata.iter().any(|meta| matches!(
+        meta,
+        NativeHostMetadata::Math {
+            overflow_expression: None,
+            ..
+        }
+    )));
+    let worker = compile(abs(int(i64::MIN))).unwrap();
+    assert_eq!(
+        crate::scalar_function::static_math_formats_for_test(),
+        before + 1
+    );
+    assert!(worker.source.host_metadata.iter().any(|meta|matches!(meta,NativeHostMetadata::Math{overflow_expression:Some(text),..} if text.as_ref()=="abs(-9223372036854775808)")));
 }

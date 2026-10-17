@@ -592,18 +592,95 @@ fn decimal_arithmetic_overflow_error(
 /// These signatures report their function name and source-shaped arguments,
 /// rather than the datum-only `FloatOverflow` carrier returned by the shared
 /// math implementation.
-fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
-    fn render(expression: &Expression, ctx: &dyn Columns) -> Option<String> {
+fn math_diagnostic_literal(value: &Datum) -> Option<String> {
+    match value {
+        Datum::Int(value) => Some(value.to_string()),
+        Datum::UInt(value) => Some(value.to_string()),
+        Datum::Float32(value) | Datum::Real(value) => {
+            Some(tidb_datatype::format_float_g_shortest(*value))
+        }
+        Datum::Decimal(value) => Some(value.to_string()),
+        Datum::Null => Some("NULL".to_owned()),
+        _ => None,
+    }
+}
+
+/// Borrowed conservative text allowance. This observes storage metadata only;
+/// it never formats a value or evaluates a constant.
+pub(crate) fn math_diagnostic_node_bound(
+    node: &Expression,
+    child_bytes: Option<usize>,
+) -> Result<Option<usize>, &'static str> {
+    let overflow = "math diagnostic byte size overflow";
+    Ok(match node {
+        Expression::Constant(constant) => match constant.literal_value() {
+            Some(Datum::Int(_) | Datum::UInt(_)) => Some(20),
+            Some(Datum::Float32(_) | Datum::Real(_)) => Some(128),
+            Some(Datum::Decimal(value)) => Some(
+                value
+                    .coefficient_bytes()
+                    .len()
+                    .checked_mul(3)
+                    .and_then(|bytes| bytes.checked_add(value.scale() as usize))
+                    .and_then(|bytes| bytes.checked_add(4))
+                    .ok_or(overflow)?,
+            ),
+            Some(Datum::Null) => Some(4),
+            _ => None,
+        },
+        Expression::Column(column) => {
+            (!column.orig_name.is_empty()).then_some(column.orig_name.len())
+        }
+        Expression::CorrelatedColumn(column) => {
+            (!column.column.orig_name.is_empty()).then_some(column.column.orig_name.len())
+        }
+        Expression::ScalarFunction(function) => {
+            let Some(children) = child_bytes else {
+                return Ok(None);
+            };
+            if let Some(op) = binary_op_for_name(function.func_name.lowercase()) {
+                let Some(op) = native_arithmetic_operator(op) else {
+                    return Ok(None);
+                };
+                if function.args.len() != 2 {
+                    return Ok(None);
+                }
+                Some(
+                    children
+                        .checked_add(native_arithmetic_symbol(op).len())
+                        .and_then(|bytes| bytes.checked_add(4))
+                        .ok_or(overflow)?,
+                )
+            } else {
+                Some(
+                    children
+                        .checked_add(function.func_name.lowercase().len())
+                        .and_then(|bytes| bytes.checked_add(2))
+                        .and_then(|bytes| {
+                            function
+                                .args
+                                .len()
+                                .saturating_sub(1)
+                                .checked_mul(2)
+                                .and_then(|separators| bytes.checked_add(separators))
+                        })
+                        .ok_or(overflow)?,
+                )
+            }
+        }
+    })
+}
+
+fn render_math_overflow_expression(
+    function: &ScalarFunction,
+    literal: &impl Fn(&crate::constant::Constant) -> Option<String>,
+) -> Option<String> {
+    fn render(
+        expression: &Expression,
+        literal: &impl Fn(&crate::constant::Constant) -> Option<String>,
+    ) -> Option<String> {
         match expression {
-            Expression::Constant(constant) => match constant.eval_in(ctx).ok()? {
-                Datum::Int(value) => Some(value.to_string()),
-                Datum::UInt(value) => Some(value.to_string()),
-                Datum::Float32(value) => Some(tidb_datatype::format_float_g_shortest(value)),
-                Datum::Real(value) => Some(tidb_datatype::format_float_g_shortest(value)),
-                Datum::Decimal(value) => Some(value.to_string()),
-                Datum::Null => Some("NULL".to_owned()),
-                _ => None,
-            },
+            Expression::Constant(constant) => literal(constant),
             Expression::Column(column) if !column.orig_name.is_empty() => {
                 Some(column.orig_name.clone())
             }
@@ -617,15 +694,15 @@ fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Opt
                         return None;
                     };
                     return Some(native_render_binary_expression(
-                        &render(left, ctx)?,
+                        &render(left, literal)?,
                         op,
-                        &render(right, ctx)?,
+                        &render(right, literal)?,
                     ));
                 }
                 let args = function
                     .args
                     .iter()
-                    .map(|expression| render(expression, ctx))
+                    .map(|expression| render(expression, literal))
                     .collect::<Option<Vec<_>>>()?;
                 Some(native_render_function_expression(
                     function.func_name.lowercase(),
@@ -635,16 +712,44 @@ fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Opt
             _ => None,
         }
     }
-
     let args = function
         .args
         .iter()
-        .map(|expression| render(expression, ctx))
+        .map(|expression| render(expression, literal))
         .collect::<Option<Vec<_>>>()?;
     Some(native_render_function_expression(
         function.func_name.lowercase(),
         &args,
     ))
+}
+
+fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
+    render_math_overflow_expression(function, &|constant| {
+        constant
+            .eval_in(ctx)
+            .ok()
+            .as_ref()
+            .and_then(math_diagnostic_literal)
+    })
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static STATIC_MATH_FORMATS: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
+}
+#[cfg(test)]
+pub(crate) fn static_math_formats_for_test() -> usize {
+    STATIC_MATH_FORMATS.with(std::cell::Cell::get)
+}
+
+/// Compiler-only capture after complete source depth/node/byte admission.
+/// Dynamic constants are not evaluated; their source form needs its own recipe.
+pub(crate) fn static_math_overflow_expression(function: &ScalarFunction) -> Option<String> {
+    #[cfg(test)]
+    STATIC_MATH_FORMATS.with(|count| count.set(count.get() + 1));
+    render_math_overflow_expression(function, &|constant| {
+        constant.literal_value().and_then(math_diagnostic_literal)
+    })
 }
 
 /// Converts the datum-only overflow carriers from math builtins into Go's

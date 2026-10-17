@@ -49,6 +49,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5f2: six native comparison hosts preserve raw operand demand, immutable type/constant/column facts and original typed integer priority. 98focused/full1452same4/core1043same6/90SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f2.md.
 - [x] (2026-10-18) N5f3: native NULL-safe equality shares comparison frames and pure generic preparation, preserving presence, sentinel priority and duration-versus-datetime conversion disposition. 98focused/full1453same4/core1043same6/132SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f3.md.
 - [x] (2026-10-18) N5f4: native NULLIF shares the binary frame, original literal comparison/normalization policy and first-value identity. Context traces preserve the original comparison configuration read. 101focused/full1456same4/core1043same6/192SQL/Projection20/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f4.md.
+- [x] (2026-10-18) N5g1: native ABS shares pure signed/unsigned/IEEE/Decimal primitives, actual-value dispatch and preformatted source diagnostics after a complete byte gate. 103focused/full1458same4/core1044same6/234SQL/Projection21/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5g1.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -506,3 +507,22 @@ the preceding NULL-safe direct boundary and preserves it in NULLIF: both raw
 arguments precede that read and comparison coercion follows it. NULLIF now
 composes with the existing native nullable/conditional/comparison producers;
 arithmetic, other functions, effects, sources/callers and dispatch removal remain.
+
+
+N5g1 outcome: ABS now demands native values through the shared unary frame,
+selects computation by actual Datum kind and publishes its own coerced result.
+Pure primitives also serve the original registered RPN wrappers. Source-shaped
+overflow diagnostics are borrowed, bounded and charged before formatting or
+literal conversion; an unrenderable tree skips formatting entirely. The host
+owns immutable diagnostic text, with no expression callback or evaluated-args
+interpreter. Existing typed ABS trees retain their migration coverage when a
+child producer is not yet native.
+
+Next arithmetic producers must preserve their own operand-conversion and
+short-circuit policy. In particular, integer PLUS/MINUS/MUL convert the left
+operand and stop on NULL before demanding the right; the comparison frame's
+unconditional raw right demand cannot be reused blindly. Numeric argument
+conversion, source-shaped overflow rendering and configuration reads must be
+extracted as plain policies before connecting their shared value kernels.
+Remaining functions, effects, sources/callers and global dispatch still require
+migration; the no-fallback goal remains active.

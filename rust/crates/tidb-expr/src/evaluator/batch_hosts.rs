@@ -47,6 +47,14 @@ pub(super) enum NativeHostMetadata {
         output_node: usize,
         output_role: NativeValueRole,
     },
+    Math {
+        name: Box<str>,
+        result_type: FieldType,
+        argument_node: usize,
+        output_node: usize,
+        output_role: NativeValueRole,
+        overflow_expression: Option<Box<str>>,
+    },
     ValueCast {
         cast_type: tidb_ast::CastType,
         name: Box<str>,
@@ -73,6 +81,7 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Math,
     Comparison {
         left_token: Option<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -122,7 +131,8 @@ impl NativeTask {
             SqlDemand::CastCharInt { .. }
             | SqlDemand::CastCharNative { .. }
             | SqlDemand::ValueCast
-            | SqlDemand::Truth => Ok(Some(0)),
+            | SqlDemand::Truth
+            | SqlDemand::Math => Ok(Some(0)),
         }
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
@@ -131,7 +141,8 @@ impl NativeTask {
             | SqlDemand::Conditional { .. }
             | SqlDemand::Logical { .. }
             | SqlDemand::Truth
-            | SqlDemand::Comparison { .. } => Err(LocalError::HostContract(
+            | SqlDemand::Comparison { .. }
+            | SqlDemand::Math => Err(LocalError::HostContract(
                 "native nullable control does not buffer a prefix".into(),
             )),
             SqlDemand::Concat { demand, .. } => demand.observe(len),
@@ -574,6 +585,114 @@ impl<'a> NativeBatchHosts<'a> {
             };
         self.finish_native_value(id, value, *output_node, *output_role, row, base)
     }
+    fn finish_math(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
+        let task = self.task(id)?;
+        let Some(NativeHostMetadata::Math {
+            name,
+            result_type,
+            argument_node,
+            output_node,
+            output_role,
+            overflow_expression,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("math descriptor missing"));
+        };
+        let row = task.row;
+        let origin = NativeValueOrigin {
+            node: *argument_node,
+            row,
+        };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("math native value store missing"))?;
+        let payload = native_payload_bytes(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?)?;
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("math copy allowance overflow"))?,
+            )
+            .ok_or_else(|| resource("math value size overflow"))?;
+        self.check_bytes(base)?;
+        let value = store
+            .borrow()
+            .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
+        let available = self
+            .max_retained_bytes
+            .checked_sub(base)
+            .ok_or_else(|| resource("math value allowance exhausted"))?;
+        use tidb_query_expr::impl_math::{
+            native_abs_decimal_value, native_abs_int_value, native_abs_real_value,
+            native_abs_uint_value,
+        };
+        let value =
+            match value {
+                Datum::Null => native_abs_int_value(None)
+                    .expect("NULL cannot overflow")
+                    .map_or(Datum::Null, Datum::Int),
+                Datum::Int(value) => match native_abs_int_value(Some(value)) {
+                    Ok(value) => value.map_or(Datum::Null, Datum::Int),
+                    Err(_) => {
+                        let error =
+                            if let Some(expression) = overflow_expression {
+                                self.check_bytes(
+                                    base.checked_add(expression.len().checked_mul(2).ok_or_else(
+                                        || resource("math diagnostic copy overflow"),
+                                    )?)
+                                    .ok_or_else(|| resource("math diagnostic size overflow"))?,
+                                )?;
+                                EvalError::DataOutOfRange {
+                                    value: "BIGINT",
+                                    expression: expression.to_string(),
+                                }
+                            } else {
+                                EvalError::IntOverflow
+                            };
+                        return self.native_failure(error);
+                    }
+                },
+                Datum::UInt(value) => Datum::UInt(native_abs_uint_value(value)),
+                Datum::Real(value) => {
+                    native_abs_real_value(Some(value)).map_or(Datum::Null, Datum::Real)
+                }
+                Datum::Decimal(value) => {
+                    let shared = match crate::tikv::prepare_math_decimal(&value) {
+                        Ok(value) => value,
+                        Err(error) => return self.native_failure(error),
+                    };
+                    let budget = u64::try_from(available)
+                        .map_err(|_| resource("math kernel allowance overflow"))?
+                        as i64;
+                    let computed = native_abs_decimal_value(&shared, &budget)
+                        .map_err(LocalError::Evaluation)?;
+                    let value = match crate::tikv::restore_math_decimal(&computed, available) {
+                        Ok(value) => value,
+                        Err(error) => return self.native_failure(error),
+                    };
+                    Datum::Decimal(value)
+                }
+                value => {
+                    let ready = match crate::math_fn::numeric_arg(&value, self.context) {
+                        Ok(value) => value,
+                        Err(error) => return self.native_failure(error),
+                    };
+                    native_abs_real_value(ready).map_or(Datum::Null, Datum::Real)
+                }
+            };
+        let value =
+            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            };
+        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+    }
+
     fn resume_comparison(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
         let task = self.task(id)?;
         let SqlDemand::Comparison { left_token } = task.demand else {
@@ -1310,6 +1429,20 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            SqlBatchHostOperation::AbsNative => {
+                let Some(NativeHostMetadata::Math { name, .. }) =
+                    self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("math source descriptor missing"));
+                };
+                if self.native_values.is_none()
+                    || name.as_ref() != "abs"
+                    || invocation.arg_types.len() != 1
+                {
+                    return Err(binding("math descriptor differs"));
+                }
+                SqlDemand::Math
+            }
             operation @ (SqlBatchHostOperation::CompareNative(_)
             | SqlBatchHostOperation::NullSafeEqNative
             | SqlBatchHostOperation::NullIfNative) => {
@@ -1577,6 +1710,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Math) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("math argument cannot be wire NULL"));
+            };
+            return self.finish_math(id, token).map(HostStep::Ready);
         }
         if matches!(task.demand, SqlDemand::Comparison { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

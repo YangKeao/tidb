@@ -1991,4 +1991,138 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn native_abs_preserves_values_overflow_and_warnings_in_projection() {
+        use tidb_datatype::Decimal;
+        let integer = FieldType::new(FieldTypeCode::LongLong)
+            .with_flen(20)
+            .with_decimal(0);
+        let unsigned = integer.clone().with_unsigned(true);
+        let real = FieldType::new(FieldTypeCode::Double);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(60)
+            .with_decimal(6);
+        let string = FieldType::new(FieldTypeCode::VarString);
+        let call = |name: &str, field: FieldType, args: Vec<Expression>| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let value = |datum, field| Expression::Constant(Constant::new(datum, field));
+        let mut cases = vec![
+            call(
+                "abs",
+                integer.clone(),
+                vec![value(Datum::Int(-7), integer.clone())],
+            ),
+            call(
+                "abs",
+                integer.clone(),
+                vec![value(Datum::Int(i64::MIN), integer.clone())],
+            ),
+            call(
+                "abs",
+                unsigned.clone(),
+                vec![value(Datum::UInt(u64::MAX), unsigned)],
+            ),
+            call(
+                "abs",
+                real.clone(),
+                vec![value(
+                    Datum::Real(f64::from_bits(0xfff8000000000042)),
+                    real.clone(),
+                )],
+            ),
+            call(
+                "abs",
+                real.clone(),
+                vec![value(Datum::Real(-0.0), real.clone())],
+            ),
+            call(
+                "abs",
+                real.clone(),
+                vec![value(Datum::new_string("-1.25tail"), string)],
+            ),
+            call(
+                "abs",
+                decimal.clone(),
+                vec![value(
+                    Datum::Decimal(Decimal::from_literal(
+                        "-1234567890123456789012345678901234567890.001",
+                    )),
+                    decimal,
+                )],
+            ),
+        ];
+        for condition in [
+            value(Datum::Int(1), integer.clone()),
+            call(
+                "eq",
+                integer.clone(),
+                vec![
+                    value(Datum::Int(1), integer.clone()),
+                    value(Datum::Int(1), integer.clone()),
+                ],
+            ),
+        ] {
+            cases.push(call(
+                "abs",
+                integer.clone(),
+                vec![call(
+                    "if",
+                    integer.clone(),
+                    vec![
+                        condition,
+                        value(Datum::Int(i64::MIN), integer.clone()),
+                        value(Datum::Int(0), integer.clone()),
+                    ],
+                )],
+            ));
+        }
+        for root in cases {
+            let field = root.static_type().unwrap().clone();
+            let reference = crate::StmtContext::for_query();
+            let expected = root.eval(&reference, tidb_chunk::row::Row::empty());
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context = crate::StmtContext::for_query();
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root.clone()],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                let actual = projection.next(&mut output);
+                match &expected {
+                    Ok(value) => {
+                        actual.unwrap();
+                        let mut expected = Chunk::new_with_capacity(&[field.clone()], 1);
+                        expected.append_datum(0, value);
+                        assert_eq!(output.num_rows(), 1);
+                        assert_eq!(output.get_row(0).is_null(0), expected.get_row(0).is_null(0));
+                        assert_eq!(
+                            output.column(0).get_raw(0).as_ref(),
+                            expected.column(0).get_raw(0).as_ref()
+                        );
+                    }
+                    Err(expected_error) => {
+                        let Err(ExecError::Eval(actual_error)) = actual else {
+                            panic!("lost logical error: {actual:?}");
+                        };
+                        assert_eq!(&actual_error, expected_error);
+                        assert_eq!(output.num_rows(), 0);
+                    }
+                }
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

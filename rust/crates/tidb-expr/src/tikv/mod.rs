@@ -488,6 +488,14 @@ pub(crate) fn prepare_math_decimal(
         .map_err(math_decimal_bridge_error)
 }
 
+/// Restores a shared math value without imposing a new SQL precision policy.
+pub(crate) fn restore_math_decimal(
+    value: &tidb_query_datatype::codec::mysql::Decimal,
+    maximum: usize,
+) -> Result<tidb_datatype::Decimal, crate::EvalError> {
+    tidb_datatype::Decimal::try_from_shared_math(value, maximum).map_err(math_decimal_bridge_error)
+}
+
 // Used only by the input/output decimal representation bridges. The backend's
 // narrow wrapper owns the actual NativeDecimalError, not its rendered message.
 fn math_decimal_bridge_error(
