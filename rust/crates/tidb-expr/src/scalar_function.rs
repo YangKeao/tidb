@@ -3415,35 +3415,55 @@ fn eval_numeric_row(
         Expression::Constant(constant) => constant.eval_typed_as_on_row(ctx, row, target)?,
         Expression::CorrelatedColumn(column) => column.eval_typed(ctx, target)?,
         _ => {
-            let value = expression.eval(ctx, row)?;
-            if target == EvalType::Int
-                && !value.is_null()
-                && expression.static_type().is_some_and(FieldType::is_hybrid)
-            {
-                if let Datum::Bit(value) = value {
-                    let warnings = crate::constant::ConversionWarnings(ctx);
-                    let zone = ctx.time_zone();
-                    let context = tidb_datatype::ConversionContext::new(
-                        ctx.type_flags(),
-                        tidb_datatype::ConversionLocation::from_time_zone(&zone),
-                        &warnings,
-                    );
-                    let (integer, error) = value.to_int_with_context(&context);
-                    if let Some(error) = error {
-                        return Err(EvalError::Conversion(error));
-                    }
-                    Datum::Int(integer as i64)
-                } else {
-                    convert_numeric_datum(
-                        value,
-                        &FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
-                        ctx,
-                    )?
-                }
-            } else {
-                value
-            }
+            return normalize_numeric_row_value(
+                expression.eval(ctx, row)?,
+                expression.static_type(),
+                target,
+                ctx,
+            )
         }
+    };
+    Ok(match (target, value) {
+        (EvalType::Int, Datum::UInt(value)) => Datum::Int(value as i64),
+        (EvalType::Real, Datum::Float32(value)) => Datum::Real(value),
+        (_, value) => value,
+    })
+}
+
+/// Typed source normalization after a nonconstant owner obtains its value.
+/// Native frame hosts use this same boundary without evaluating that owner.
+pub(crate) fn normalize_numeric_row_value(
+    value: Datum,
+    source: Option<&FieldType>,
+    target: EvalType,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let value = if target == EvalType::Int
+        && !value.is_null()
+        && source.is_some_and(FieldType::is_hybrid)
+    {
+        if let Datum::Bit(value) = value {
+            let warnings = crate::constant::ConversionWarnings(ctx);
+            let zone = ctx.time_zone();
+            let context = tidb_datatype::ConversionContext::new(
+                ctx.type_flags(),
+                tidb_datatype::ConversionLocation::from_time_zone(&zone),
+                &warnings,
+            );
+            let (integer, error) = value.to_int_with_context(&context);
+            if let Some(error) = error {
+                return Err(EvalError::Conversion(error));
+            }
+            Datum::Int(integer as i64)
+        } else {
+            convert_numeric_datum(
+                value,
+                &FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+                ctx,
+            )?
+        }
+    } else {
+        value
     };
     Ok(match (target, value) {
         (EvalType::Int, Datum::UInt(value)) => Datum::Int(value as i64),

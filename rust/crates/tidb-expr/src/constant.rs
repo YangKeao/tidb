@@ -163,7 +163,6 @@ impl Constant {
         row: tidb_chunk::row::Row<'_>,
         target: tidb_datatype::EvalType,
     ) -> Result<Datum, EvalError> {
-        use tidb_datatype::EvalType;
         let field = self.get_type(ctx)?;
         let value = if let Some(marker) = self.param_marker {
             let order = usize::try_from(marker.order)
@@ -174,103 +173,7 @@ impl Constant {
         } else {
             self.value.clone()
         };
-        if field.code() == FieldTypeCode::Null || value.is_null() {
-            return Ok(Datum::Null);
-        }
-        let warnings = ConversionWarnings(ctx);
-        let zone = ctx.time_zone();
-        let context = tidb_datatype::ConversionContext::new(
-            ctx.type_flags(),
-            tidb_datatype::ConversionLocation::from_time_zone(&zone),
-            &warnings,
-        );
-        let convert = |value: &Datum, code| -> Result<Datum, EvalError> {
-            let converted = value
-                .convert_to_in_context(&FieldType::new(code), &context, &zone)
-                .map_err(|_| {
-                    EvalError::Unsupported("typed constant conversion cannot be represented")
-                })?;
-            if let Some(error) = converted.error {
-                return Err(EvalError::Conversion(error));
-            }
-            Ok(converted.value)
-        };
-        match target {
-            EvalType::Int => match value {
-                Datum::Bit(value) | Datum::BinaryLiteral(value) => {
-                    let (value, error) = value.to_int_with_context(&context);
-                    if let Some(error) = error {
-                        return Err(EvalError::Conversion(error));
-                    }
-                    Ok(Datum::Int(value as i64))
-                }
-                value if field.is_hybrid() || matches!(value, Datum::String(_)) => {
-                    convert(&value, FieldTypeCode::LongLong)
-                }
-                Datum::Int(value) => Ok(Datum::Int(value)),
-                Datum::UInt(value) => Ok(Datum::Int(value as i64)),
-                _ => Err(EvalError::Unsupported(
-                    "constant is not in its integer domain",
-                )),
-            },
-            EvalType::Real => match value {
-                Datum::BinaryLiteral(value) => {
-                    let (value, error) = value.to_int_with_context(&context);
-                    if let Some(error) = error {
-                        return Err(EvalError::Conversion(error));
-                    }
-                    Ok(Datum::Real(value as f64))
-                }
-                value if field.is_hybrid() || matches!(value, Datum::String(_)) => {
-                    convert(&value, FieldTypeCode::Double)
-                }
-                Datum::Real(value) | Datum::Float32(value) => Ok(Datum::Real(value)),
-                _ => Err(EvalError::Unsupported("constant is not in its real domain")),
-            },
-            EvalType::String => Ok(Datum::String(tidb_datatype::StringDatum::new(
-                value.sql_bytes().map_err(|_| {
-                    EvalError::Unsupported("constant cannot be converted to string")
-                })?,
-                field
-                    .runtime_collator_with_mode(true)
-                    .new_collation()
-                    .unwrap_or(tidb_datatype::Collation::Binary),
-            ))),
-            EvalType::Decimal => {
-                let (value, error) = value.to_decimal_with_context(&context).map_err(|_| {
-                    EvalError::Unsupported("constant cannot be converted to decimal")
-                })?;
-                if let Some(error) = error {
-                    return Err(EvalError::Conversion(error));
-                }
-                Ok(Datum::Decimal(
-                    if i64::from(value.precision_and_frac().1) < field.decimal() {
-                        // Go adjusts the fixed MyDecimal buffer in place. Adding
-                        // scale can itself truncate an 81-digit value; this error
-                        // is returned directly after any conversion warning.
-                        let mut decimal = value.to_my_decimal().map_err(constant_decimal_error)?;
-                        if let Some(error) = decimal.round_in_place(
-                            field.decimal() as i32,
-                            tidb_datatype::RoundMode::HalfUp,
-                        ) {
-                            return Err(constant_decimal_error(error));
-                        }
-                        tidb_datatype::Decimal::from_my_decimal(&decimal)
-                    } else {
-                        value
-                    },
-                ))
-            }
-            EvalType::Datetime | EvalType::Timestamp if matches!(value, Datum::Time(_)) => {
-                Ok(value)
-            }
-            EvalType::Duration if matches!(value, Datum::Duration(_)) => Ok(value),
-            EvalType::Json if matches!(value, Datum::Json(_)) => Ok(value),
-            EvalType::VectorFloat32 if matches!(value, Datum::VectorFloat32(_)) => Ok(value),
-            _ => Err(EvalError::Unsupported(
-                "constant is not in its declared evaluation domain",
-            )),
-        }
+        typed_constant_value(&field, ctx, target, value)
     }
 
     /// Go `IsCorrelated`: a constant is never correlated.
@@ -445,6 +348,111 @@ impl Constant {
             && optional_expression_equals(&self.deferred_expr, &other.deferred_expr)
             && self.param_marker == other.param_marker
             && datum_equals(&self.value, &other.value)
+    }
+}
+
+/// The typed constant conversion after its owner has fetched type and value.
+/// This plain value boundary neither owns nor evaluates an expression.
+pub(crate) fn typed_constant_value(
+    field: &FieldType,
+    ctx: &dyn crate::Columns,
+    target: tidb_datatype::EvalType,
+    value: Datum,
+) -> Result<Datum, EvalError> {
+    use tidb_datatype::EvalType;
+    if field.code() == FieldTypeCode::Null || value.is_null() {
+        return Ok(Datum::Null);
+    }
+    let warnings = ConversionWarnings(ctx);
+    let zone = ctx.time_zone();
+    let context = tidb_datatype::ConversionContext::new(
+        ctx.type_flags(),
+        tidb_datatype::ConversionLocation::from_time_zone(&zone),
+        &warnings,
+    );
+    let convert = |value: &Datum, code| -> Result<Datum, EvalError> {
+        let converted = value
+            .convert_to_in_context(&FieldType::new(code), &context, &zone)
+            .map_err(|_| {
+                EvalError::Unsupported("typed constant conversion cannot be represented")
+            })?;
+        if let Some(error) = converted.error {
+            return Err(EvalError::Conversion(error));
+        }
+        Ok(converted.value)
+    };
+    match target {
+        EvalType::Int => match value {
+            Datum::Bit(value) | Datum::BinaryLiteral(value) => {
+                let (value, error) = value.to_int_with_context(&context);
+                if let Some(error) = error {
+                    return Err(EvalError::Conversion(error));
+                }
+                Ok(Datum::Int(value as i64))
+            }
+            value if field.is_hybrid() || matches!(value, Datum::String(_)) => {
+                convert(&value, FieldTypeCode::LongLong)
+            }
+            Datum::Int(value) => Ok(Datum::Int(value)),
+            Datum::UInt(value) => Ok(Datum::Int(value as i64)),
+            _ => Err(EvalError::Unsupported(
+                "constant is not in its integer domain",
+            )),
+        },
+        EvalType::Real => match value {
+            Datum::BinaryLiteral(value) => {
+                let (value, error) = value.to_int_with_context(&context);
+                if let Some(error) = error {
+                    return Err(EvalError::Conversion(error));
+                }
+                Ok(Datum::Real(value as f64))
+            }
+            value if field.is_hybrid() || matches!(value, Datum::String(_)) => {
+                convert(&value, FieldTypeCode::Double)
+            }
+            Datum::Real(value) | Datum::Float32(value) => Ok(Datum::Real(value)),
+            _ => Err(EvalError::Unsupported("constant is not in its real domain")),
+        },
+        EvalType::String => Ok(Datum::String(tidb_datatype::StringDatum::new(
+            value
+                .sql_bytes()
+                .map_err(|_| EvalError::Unsupported("constant cannot be converted to string"))?,
+            field
+                .runtime_collator_with_mode(true)
+                .new_collation()
+                .unwrap_or(tidb_datatype::Collation::Binary),
+        ))),
+        EvalType::Decimal => {
+            let (value, error) = value
+                .to_decimal_with_context(&context)
+                .map_err(|_| EvalError::Unsupported("constant cannot be converted to decimal"))?;
+            if let Some(error) = error {
+                return Err(EvalError::Conversion(error));
+            }
+            Ok(Datum::Decimal(
+                if i64::from(value.precision_and_frac().1) < field.decimal() {
+                    // Go adjusts the fixed MyDecimal buffer in place. Adding
+                    // scale can itself truncate an 81-digit value; this error
+                    // is returned directly after any conversion warning.
+                    let mut decimal = value.to_my_decimal().map_err(constant_decimal_error)?;
+                    if let Some(error) = decimal
+                        .round_in_place(field.decimal() as i32, tidb_datatype::RoundMode::HalfUp)
+                    {
+                        return Err(constant_decimal_error(error));
+                    }
+                    tidb_datatype::Decimal::from_my_decimal(&decimal)
+                } else {
+                    value
+                },
+            ))
+        }
+        EvalType::Datetime | EvalType::Timestamp if matches!(value, Datum::Time(_)) => Ok(value),
+        EvalType::Duration if matches!(value, Datum::Duration(_)) => Ok(value),
+        EvalType::Json if matches!(value, Datum::Json(_)) => Ok(value),
+        EvalType::VectorFloat32 if matches!(value, Datum::VectorFloat32(_)) => Ok(value),
+        _ => Err(EvalError::Unsupported(
+            "constant is not in its declared evaluation domain",
+        )),
     }
 }
 

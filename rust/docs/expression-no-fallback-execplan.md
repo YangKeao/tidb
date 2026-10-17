@@ -39,6 +39,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5b1: direct native column transport no longer depends on computation wire type admission; raw-byte tests cover six storage cases, NULLs, aliases, selection and vectorization off. 74focused/full1426same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b1.md.
 - [x] (2026-10-18) N5b2: native leaf root output ABI with separate Output role, complete prepublication handle validation and native Chunk publication. 17 output kinds/216 literal scenarios, disabled-direct-column path,76focused/full1428same4/Projection12/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b2.md.
 - [x] (2026-10-18) N5c1: native computed CAST islands through one HostFrame, plain shared result coercion and direct real→unsigned primitive (no nested evaluated-args program). 79focused/full1431same4/core1043same6/24SQL/Projection13/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c1.md.
+- [x] (2026-10-18) N5c2: JSON CAST joins native computed islands with pre-argument type admission and shared literal/nonliteral value conversion. 82focused/full1434same4/156inputcases/24SQL/Projection14/lint/fmt pass; poisoned vector-NULL input proves zero argument demand. Receipt rust/docs/evidence/no-fallback-n5c2.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -355,3 +356,15 @@ the warning-producing kernel. The earlier CHAR-specific buffered warning policy
 is retained. JSON CAST still needs its distinct typed argument admission and
 conversion order; general typed parents/controls and other functions remain
 outside these native islands. N4b/N5/N6 remain incomplete.
+
+
+N5c2 outcome: JSON CAST validates its original source type at host start before
+requesting the value, including a NULL vector source. After demand its metadata
+selects the same literal typed conversion or nonconstant hybrid/carrier
+normalization as the native caller, followed by the existing prepared JSON
+conversion with original source and target flags. Constant and numeric-row
+owners now delegate to these extracted plain value helpers; their type/value
+fetch order and correlated/parameter/deferred behavior are retained. The host
+owns only a literal-kind bit and immutable types, never those expression nodes.
+This completes JSON inside the current CAST islands, not general parent/control
+or source/caller coverage. The global alternate evaluator remains.

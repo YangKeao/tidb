@@ -4677,3 +4677,245 @@ fn rewritten_native_cast_islands_keep_column_rows_and_exact_diagnostics() {
         }
     }
 }
+
+#[test]
+fn native_json_cast_preserves_typed_literal_and_column_inputs() {
+    let cases = [
+        (ty(), Datum::Int(-1)),
+        (ty().with_unsigned(true), Datum::UInt(u64::MAX)),
+        (real_ty(), Datum::Real(f64::NAN)),
+        (FieldType::new(FieldTypeCode::Float), Datum::Float32(1.25)),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(20)
+                .with_decimal(4),
+            Datum::Decimal(Decimal::from_literal("-1.2300")),
+        ),
+        (string_ty(), Datum::new_string("{\"a\":1}")),
+        (string_ty(), Datum::new_string("bad JSON")),
+        (
+            FieldType::new(FieldTypeCode::VarString).with_collation(Collation::Binary),
+            Datum::Bytes(vec![0xff, 0]),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Enum).with_elems(["a", "b"]),
+            Datum::Enum(tidb_datatype::MysqlEnum::new("b", 2), Collation::Binary),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(8),
+            Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0xa5])),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            Datum::Json(BinaryJSON::parse("[1,null]").unwrap()),
+        ),
+        (
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+        ),
+        (FieldType::new(FieldTypeCode::VectorFloat32), Datum::Null),
+    ];
+    for (source, value) in cases {
+        for literal_input in [false, true] {
+            for parse_document in [false, true] {
+                let target = FieldType::new(FieldTypeCode::Json).with_flags(if parse_document {
+                    FieldTypeFlags::PARSE_TO_JSON
+                } else {
+                    0
+                });
+                let argument = if literal_input {
+                    literal(value.clone(), source.clone())
+                } else {
+                    typed_column(0, &source)
+                };
+                let root = call("cast_json", target.clone(), vec![argument]);
+                let schema = [source.clone()];
+                for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+                    let reference = NativeCastDiagnostics::default();
+                    let context = NativeCastDiagnostics::default();
+                    let mut input = chunk(&schema, &[vec![value.clone()], vec![Datum::Null]]);
+                    input.set_sel(Some(selected.clone()));
+                    let mut expected = output_for(&target);
+                    let mut expected_error = None;
+                    for row in selected {
+                        match root.eval(&reference, input.physical_row(row)) {
+                            Ok(value) => expected.append_datum(0, &value),
+                            Err(error) => {
+                                expected_error = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    let suite = self::suite(root.clone());
+                    let mut actual = output_for(&target);
+                    let result =
+                        suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+                    if let Some(expected_error) = expected_error {
+                        let Err(EvaluatorError::Eval(actual_error)) = result else {
+                            panic!("lost native JSON error: {result:?}");
+                        };
+                        assert_eq!(actual_error, expected_error);
+                    } else {
+                        result.unwrap();
+                        assert_eq!(actual.num_rows(), expected.num_rows());
+                        for row in 0..actual.num_rows() {
+                            assert_eq!(
+                                actual.get_row(row).is_null(0),
+                                expected.get_row(row).is_null(0)
+                            );
+                            assert_eq!(
+                                actual.column(0).get_raw(row).as_ref(),
+                                expected.column(0).get_raw(row).as_ref()
+                            );
+                        }
+                    }
+                    assert_eq!(*context.0.borrow(), *reference.0.borrow());
+                    let route = suite.batch_route_snapshot();
+                    assert_eq!(
+                        (route.prepared, route.fallback, route.refusals),
+                        (1, 0, 0),
+                        "literal={literal_input} document={parse_document} {source:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_json_cast_rejects_vector_source_before_demanding_even_a_null_argument() {
+    let source = FieldType::new(FieldTypeCode::VectorFloat32);
+    let target = FieldType::new(FieldTypeCode::Json);
+    let root = call("cast_json", target.clone(), vec![typed_column(0, &source)]);
+    let suite = self::suite(root.clone());
+    let schema = [source];
+    let rows = vec![vec![Datum::Null]];
+    let input = chunk(&schema, &rows);
+    let expected = root
+        .eval(&crate::NoColumns, input.physical_row(0))
+        .unwrap_err();
+    let mut worker = PreparedBatch::compile_calculation(
+        &suite,
+        0,
+        &schema,
+        true,
+        93,
+        limits(),
+        ExecutionLimits::default(),
+        1 << 20,
+    )
+    .unwrap();
+    let mut source = Raw::new(&worker, rows);
+    source.poison = Some(0);
+    let mut output = output_for(&target);
+    worker
+        .validate_invocation(&suite, &input, &output, &schema)
+        .unwrap();
+    let error = worker
+        .execute_chunk(
+            &crate::NoColumns,
+            &mut EvalContext::default(),
+            &input,
+            &mut output,
+            Some(&mut source),
+        )
+        .unwrap_err();
+    assert_eq!(error.into_evaluator_error(), EvaluatorError::Eval(expected));
+    assert!(source.reads.is_empty());
+    assert_eq!(output.num_rows(), 0);
+}
+
+#[test]
+fn rewritten_json_cast_islands_preserve_documents_errors_and_nested_warnings() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            (path.last()?.as_str() == "v").then(|| (0, string_ty(), 1))
+        }
+    }
+    let schema = [string_ty()];
+    let rows = vec![
+        vec![Datum::new_string("{\"a\":1}")],
+        vec![Datum::Null],
+        vec![Datum::new_string("12")],
+        vec![Datum::new_string("bad JSON")],
+    ];
+    for sql in [
+        "cast(v as json)",
+        "cast(cast(v as json) as char)",
+        "concat(cast(cast(v as json) as char), '!')",
+        "regexp_like(cast(cast(v as json) as char), 'a|1')",
+        "cast(cast(v as signed) as json)",
+        "cast(cast(v as json) as json)",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [
+            vec![],
+            vec![2, 0, 1, 0],
+            vec![3, 0],
+            (0..2050).map(|i| i % 3).collect(),
+        ] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for row in selected {
+                match root.eval(&reference, input.physical_row(row)) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost JSON error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error, "{sql}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{sql}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
+    }
+}

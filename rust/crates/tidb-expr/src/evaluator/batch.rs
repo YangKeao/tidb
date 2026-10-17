@@ -599,8 +599,8 @@ fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     Ok(())
 }
 // The native CAST island is closed over existing plain value kernels. JSON
-// has a separate typed argument conversion policy and is intentionally not
-// selected here until that policy has its own value-only boundary.
+// additionally retains its typed source conversion and pre-argument admission
+// in the descriptor-driven host, rather than using an untyped cast shortcut.
 fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     let target = function.func_name.lowercase().strip_prefix("cast_")?;
     matches!(
@@ -618,6 +618,7 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
             | "double"
             | "float"
             | "vector"
+            | "json"
     )
     .then_some(target)
 }
@@ -1454,6 +1455,7 @@ fn lower(
                                 source_type: snapshot_field_type(
                                     sql.args[0].static_type().expect("checked source"),
                                 ),
+                                input_is_literal: matches!(sql.args[0], Expression::Constant(_)),
                                 result_type: snapshot_field_type(item.sql),
                                 argument_node: ordinal.checked_add(1).ok_or_else(|| {
                                     resource("native cast argument ordinal overflow")

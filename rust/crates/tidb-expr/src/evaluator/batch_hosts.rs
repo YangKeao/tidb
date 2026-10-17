@@ -34,6 +34,7 @@ pub(super) enum NativeHostMetadata {
         cast_type: tidb_ast::CastType,
         name: Box<str>,
         source_type: FieldType,
+        input_is_literal: bool,
         result_type: FieldType,
         argument_node: usize,
         output_node: usize,
@@ -319,6 +320,7 @@ impl<'a> NativeBatchHosts<'a> {
             cast_type,
             name,
             source_type,
+            input_is_literal,
             result_type,
             argument_node,
             output_node,
@@ -355,15 +357,33 @@ impl<'a> NativeBatchHosts<'a> {
         // The actual statement context owns diagnostics, just as for the
         // native kernel. A later resource failure is terminal, never replayed.
         // No warning buffer or expression callback is retained by this host.
-        let result = if value.is_null() {
+        let result = if matches!(cast_type, tidb_ast::CastType::Json) {
+            let target = source_type.eval_type();
+            let value = if *input_is_literal {
+                crate::constant::typed_constant_value(source_type, self.context, target, value)
+            } else {
+                crate::scalar_function::normalize_numeric_row_value(
+                    value,
+                    Some(source_type),
+                    target,
+                    self.context,
+                )
+            };
+            value.and_then(|value| {
+                crate::builtin_ext::json::cast_json_prepared(
+                    &value,
+                    Some(source_type),
+                    Some(result_type),
+                )
+            })
+        } else if value.is_null() {
             Ok(Datum::Null)
         } else {
-            crate::cast::eval_cast(cast_type, value, Some(source_type), self.context).and_then(
-                |value| {
-                    crate::scalar_function::coerce_function_result(name, Some(result_type), value)
-                },
-            )
-        };
+            crate::cast::eval_cast(cast_type, value, Some(source_type), self.context)
+        }
+        .and_then(|value| {
+            crate::scalar_function::coerce_function_result(name, Some(result_type), value)
+        });
         let result = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
@@ -710,6 +730,18 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     return Err(LocalError::HostContract(
                         "native CAST lacks value/metadata capability".into(),
                     ));
+                }
+                if let Some(NativeHostMetadata::ValueCast {
+                    cast_type: tidb_ast::CastType::Json,
+                    source_type,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                {
+                    if let Err(error) =
+                        crate::builtin_ext::json::validate_json_cast_source(Some(source_type))
+                    {
+                        return self.native_failure(error);
+                    }
                 }
                 SqlDemand::ValueCast
             }
@@ -1193,6 +1225,7 @@ mod tests {
                     cast_type: tidb_ast::CastType::Signed,
                     name: "cast_signed".into(),
                     source_type: native_bytes_type(),
+                    input_is_literal: false,
                     result_type: FieldType::new(FieldTypeCode::LongLong),
                     argument_node: 3,
                     output_node: 2,
