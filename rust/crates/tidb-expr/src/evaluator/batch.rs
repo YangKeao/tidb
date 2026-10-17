@@ -348,7 +348,10 @@ fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize)
                 if depth == 1 || *remaining == 0 {
                     return true;
                 }
-                let condition = (function.func_name.lowercase() == "if" && index == 0)
+                let condition = matches!(
+                    function.func_name.lowercase(),
+                    "and" | "logicand" | "or" | "logicor"
+                ) || (function.func_name.lowercase() == "if" && index == 0)
                     || (function.func_name.lowercase() == "case"
                         && index % 2 == 0
                         && index + 1 < function.args.len());
@@ -740,6 +743,9 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
         "ifnull" => Some(SqlBatchHostOperation::IfNullNative),
         "if" => Some(SqlBatchHostOperation::IfNative),
         "case" => Some(SqlBatchHostOperation::CaseNative),
+        "and" | "logicand" => Some(SqlBatchHostOperation::AndNative),
+        "or" | "logicor" => Some(SqlBatchHostOperation::OrNative),
+        "istrue_with_null" => Some(SqlBatchHostOperation::IsTrueWithNullNative),
         _ => None,
     }
 }
@@ -1374,6 +1380,9 @@ fn preflight<'a>(
                                 | SqlBatchHostOperation::IfNullNative
                                 | SqlBatchHostOperation::IfNative
                                 | SqlBatchHostOperation::CaseNative
+                                | SqlBatchHostOperation::AndNative
+                                | SqlBatchHostOperation::OrNative
+                                | SqlBatchHostOperation::IsTrueWithNullNative
                         )
                     ) {
                         budget.array::<usize>(function.args.len())?;
@@ -1609,6 +1618,9 @@ fn lower(
                                         | SqlBatchHostOperation::IfNullNative
                                         | SqlBatchHostOperation::IfNative
                                         | SqlBatchHostOperation::CaseNative
+                                        | SqlBatchHostOperation::AndNative
+                                        | SqlBatchHostOperation::OrNative
+                                        | SqlBatchHostOperation::IsTrueWithNullNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1628,7 +1640,10 @@ fn lower(
                             SqlBatchHostOperation::CoalesceNative
                             | SqlBatchHostOperation::IfNullNative
                             | SqlBatchHostOperation::IfNative
-                            | SqlBatchHostOperation::CaseNative => {
+                            | SqlBatchHostOperation::CaseNative
+                            | SqlBatchHostOperation::AndNative
+                            | SqlBatchHostOperation::OrNative
+                            | SqlBatchHostOperation::IsTrueWithNullNative => {
                                 let mut argument_nodes = Vec::new();
                                 reserve(&mut argument_nodes, *arity)?;
                                 let mut child = ordinal

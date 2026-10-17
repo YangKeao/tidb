@@ -63,6 +63,11 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Truth,
+    Logical {
+        next: usize,
+        left: Option<bool>,
+    },
     Conditional {
         next: usize,
     },
@@ -95,19 +100,25 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
-            SqlDemand::Nullable { next } | SqlDemand::Conditional { next } => Ok(Some(*next)),
+            SqlDemand::Nullable { next }
+            | SqlDemand::Conditional { next }
+            | SqlDemand::Logical { next, .. } => Ok(Some(*next)),
             SqlDemand::Concat { demand, .. } => demand.next_argument(),
             SqlDemand::RegexpLike { next, .. } => Ok(*next),
             SqlDemand::CastCharInt { .. }
             | SqlDemand::CastCharNative { .. }
-            | SqlDemand::ValueCast => Ok(Some(0)),
+            | SqlDemand::ValueCast
+            | SqlDemand::Truth => Ok(Some(0)),
         }
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::Nullable { .. } | SqlDemand::Conditional { .. } => Err(
-                LocalError::HostContract("native nullable control does not buffer a prefix".into()),
-            ),
+            SqlDemand::Nullable { .. }
+            | SqlDemand::Conditional { .. }
+            | SqlDemand::Logical { .. }
+            | SqlDemand::Truth => Err(LocalError::HostContract(
+                "native nullable control does not buffer a prefix".into(),
+            )),
             SqlDemand::Concat { demand, .. } => demand.observe(len),
             SqlDemand::CastCharInt { .. }
             | SqlDemand::CastCharNative { .. }
@@ -548,6 +559,160 @@ impl<'a> NativeBatchHosts<'a> {
             };
         self.finish_native_value(id, value, *output_node, *output_role, row, base)
     }
+    fn finish_truth(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
+        let task = self.task(id)?;
+        let Some(NativeHostMetadata::Selection {
+            name,
+            result_type,
+            argument_nodes,
+            output_node,
+            output_role,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("native truth conversion lost its descriptor"));
+        };
+        let row = task.row;
+        let node = *argument_nodes
+            .first()
+            .ok_or_else(|| binding("native truth producer missing"))?;
+        let origin = NativeValueOrigin { node, row };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("native truth conversion has no value store"))?;
+        let payload = native_payload_bytes(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?)?;
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("native truth allowance overflow"))?,
+            )
+            .ok_or_else(|| resource("native truth size overflow"))?;
+        self.check_bytes(base)?;
+        // This wrapper's original truth conversion has no truncation warning;
+        // the rewriter's preceding CAST owns any such diagnostic.
+        let truth = crate::truthy_of(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?);
+        let truth = match truth {
+            Ok(value) => value.map(i64::from),
+            Err(error) => return self.native_failure(error),
+        };
+        let result = tidb_query_expr::impl_op::int_is_true::<tidb_query_expr::impl_op::KeepNullOn>(
+            truth.as_ref(),
+        )
+        .map_err(LocalError::Evaluation)?;
+        let result = result.map_or(Datum::Null, Datum::Int);
+        let result =
+            match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            };
+        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+    }
+    fn resume_logical(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
+        let task = self.task(id)?;
+        let SqlDemand::Logical { next, left } = task.demand else {
+            return Err(binding("logical resume has another task kind"));
+        };
+        let Some(NativeHostMetadata::Selection {
+            name,
+            result_type,
+            argument_nodes,
+            output_node,
+            output_role,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("logical operation lost its descriptor"));
+        };
+        let function = if matches!(name.as_ref(), "or" | "logicor") {
+            crate::LogicalFunction::Or
+        } else {
+            crate::LogicalFunction::And
+        };
+        let row = task.row;
+        let node = *argument_nodes
+            .get(next)
+            .ok_or_else(|| binding("logical argument source missing"))?;
+        let origin = NativeValueOrigin { node, row };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("logical operation has no value store"))?;
+        let payload = native_payload_bytes(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?)?;
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("logical input allowance overflow"))?,
+            )
+            .ok_or_else(|| resource("logical input size overflow"))?;
+        self.check_bytes(base)?;
+        // The conversion may publish a statement warning or error. The store
+        // borrow is released before entering that actual context boundary.
+        let value = store
+            .borrow()
+            .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
+        let truth = match crate::scalar_function::logic_truthy(&value, self.context) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        if next == 0 && crate::scalar_function::logical_needs_right(function, truth) {
+            let SqlDemand::Logical { next, left } = &mut self.slots[id.slot]
+                .task
+                .as_mut()
+                .expect("validated task")
+                .demand
+            else {
+                unreachable!()
+            };
+            *next = 1;
+            *left = truth;
+            return Ok(HostStep::NeedArg(HostArgRequest {
+                index: 1,
+                mode: ArgMode::Fresh,
+            }));
+        }
+        let (left, right) = if next == 0 {
+            // Only a validated absorbing left reaches this branch. This is an
+            // irrelevant kernel representative, not a demanded right value.
+            (truth, Some(false))
+        } else {
+            (left, truth)
+        };
+        let left = left.map(i64::from);
+        let right = right.map(i64::from);
+        let result = match function {
+            crate::LogicalFunction::And => {
+                tidb_query_expr::impl_op::logical_and(left.as_ref(), right.as_ref())
+            }
+            crate::LogicalFunction::Or => {
+                tidb_query_expr::impl_op::logical_or(left.as_ref(), right.as_ref())
+            }
+            crate::LogicalFunction::Xor => {
+                return Err(binding("XOR is outside this logical source contract"))
+            }
+        }
+        .map_err(LocalError::Evaluation)?;
+        let result = result.map_or(Datum::Null, Datum::Int);
+        let result =
+            match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            };
+        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+            .map(HostStep::Ready)
+    }
     fn resume_conditional(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
         let task = self.task(id)?;
         let SqlDemand::Conditional { next } = task.demand else {
@@ -928,6 +1093,57 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            SqlBatchHostOperation::IsTrueWithNullNative => {
+                let Some(NativeHostMetadata::Selection {
+                    name,
+                    argument_nodes,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(LocalError::HostContract(
+                        "truth wrapper has no descriptor".into(),
+                    ));
+                };
+                if self.native_values.is_none()
+                    || name.as_ref() != "istrue_with_null"
+                    || argument_nodes.len() != 1
+                    || invocation.arg_types.len() != 1
+                {
+                    return Err(LocalError::HostContract(
+                        "truth wrapper descriptor differs".into(),
+                    ));
+                }
+                SqlDemand::Truth
+            }
+            operation @ (SqlBatchHostOperation::AndNative | SqlBatchHostOperation::OrNative) => {
+                let Some(NativeHostMetadata::Selection {
+                    name,
+                    argument_nodes,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(LocalError::HostContract(
+                        "logical operation has no descriptor".into(),
+                    ));
+                };
+                let expected = match operation {
+                    SqlBatchHostOperation::AndNative => matches!(name.as_ref(), "and" | "logicand"),
+                    _ => matches!(name.as_ref(), "or" | "logicor"),
+                };
+                if self.native_values.is_none()
+                    || !expected
+                    || argument_nodes.len() != 2
+                    || invocation.arg_types.len() != 2
+                {
+                    return Err(LocalError::HostContract(
+                        "logical descriptor differs".into(),
+                    ));
+                }
+                SqlDemand::Logical {
+                    next: 0,
+                    left: None,
+                }
+            }
             operation @ (SqlBatchHostOperation::IfNative | SqlBatchHostOperation::CaseNative) => {
                 let Some(NativeHostMetadata::Selection {
                     name,
@@ -1114,6 +1330,18 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Truth) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native truth argument cannot be wire NULL"));
+            };
+            return self.finish_truth(id, token).map(HostStep::Ready);
+        }
+        if matches!(task.demand, SqlDemand::Logical { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native logical argument cannot be wire NULL"));
+            };
+            return self.resume_logical(id, token);
         }
         if matches!(task.demand, SqlDemand::Conditional { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

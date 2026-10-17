@@ -5668,3 +5668,297 @@ fn native_predicate_resource_and_provenance_failures_are_terminal() {
         provider.cancel(&task);
     }
 }
+
+#[test]
+fn native_logical_controls_keep_three_valued_demand_and_string_warnings() {
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let text = |text: &str| literal(Datum::new_string(text), string_ty());
+    let cast = |text: &str| {
+        call(
+            "cast_signed",
+            ty(),
+            vec![literal(Datum::new_string(text), string_ty())],
+        )
+    };
+    let bad = || {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![literal(
+                Datum::Null,
+                FieldType::new(FieldTypeCode::VectorFloat32),
+            )],
+        )
+    };
+    let json_null = || call("cast_json", json.clone(), vec![text("null")]);
+    let null_cast = || call("cast_signed", ty(), vec![null()]);
+    let cases = [
+        call("and", ty(), vec![cast("0abc"), bad()]),
+        call("or", ty(), vec![cast("1abc"), bad()]),
+        call("and", ty(), vec![null_cast(), int(0)]),
+        call("and", ty(), vec![null_cast(), int(1)]),
+        call("or", ty(), vec![null_cast(), int(1)]),
+        call("or", ty(), vec![null_cast(), int(0)]),
+        call("and", ty(), vec![text("1abc"), bad()]),
+        call("or", ty(), vec![text("0abc"), bad()]),
+        call("and", ty(), vec![text("1abc"), text("2tail")]),
+        call("or", ty(), vec![text("0abc"), text("0tail")]),
+        call(
+            "and",
+            ty(),
+            vec![literal(Datum::Real(f64::NAN), real_ty()), cast("1")],
+        ),
+        call("or", ty(), vec![json_null(), bad()]),
+        call("and", ty(), vec![null(), bad()]),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call("and", ty(), vec![cast("0abc"), bad()])],
+        ),
+        call(
+            "if",
+            json.clone(),
+            vec![
+                call("or", ty(), vec![text("1abc"), bad()]),
+                json_null(),
+                bad(),
+            ],
+        ),
+        call("and", ty(), vec![null_cast(), null_cast()]),
+        call("or", ty(), vec![null_cast(), null_cast()]),
+    ];
+    for root in cases {
+        let field = root.static_type().unwrap().clone();
+        for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for _ in &selected {
+                match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut input = Chunk::new_with_capacity(&[], 2);
+            input.set_num_virtual_rows(2);
+            input.set_sel(Some(selected));
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost logical error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error);
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows());
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0)
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref()
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{root:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rewritten_native_logical_controls_preserve_warning_prefix_and_nullable_columns() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            let index = match path.last()?.as_str() {
+                "l" => 0,
+                "r" => 1,
+                _ => return None,
+            };
+            Some((index, string_ty(), index as i64 + 1))
+        }
+    }
+    let schema = [string_ty(), string_ty()];
+    let rows = vec![
+        vec![Datum::new_string("0abc"), Datum::new_string("bad JSON")],
+        vec![Datum::new_string("1abc"), Datum::new_string("bad JSON")],
+        vec![Datum::Null, Datum::new_string("0")],
+        vec![Datum::Null, Datum::new_string("1")],
+        vec![Datum::Null, Datum::Null],
+        vec![Datum::new_string("0abc"), Datum::new_string("2tail")],
+    ];
+    for sql in [
+        "cast(l as signed) and cast(r as signed)",
+        "l and cast(r as json)",
+        "l or cast(r as json)",
+        "cast((l and cast(r as json)) as char)",
+        "if(l or cast(r as json), cast('1' as json), cast('0' as json))",
+        "coalesce(l and cast(r as json), cast('9' as signed))",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2, 3, 4],
+            vec![5, 2],
+            (0..2050).map(|i| [2, 3, 4][i % 3]).collect(),
+        ] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for row in selected {
+                match root.eval(&reference, input.physical_row(row)) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost logical SQL error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error, "{sql}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{sql}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_logical_input_policy_and_role_rejection_do_not_run_the_value_kernel() {
+    use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, LocalHostServices};
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 2];
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::AndNative,
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let metadata = [NativeHostMetadata::Selection {
+        name: "and".into(),
+        result_type: ty(),
+        argument_nodes: vec![3, 8].into_boxed_slice(),
+        output_node: 2,
+        output_role: NativeValueRole::Output,
+    }];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 0,
+    };
+    let origin = NativeValueOrigin { node: 3, row };
+    let large = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Bytes(vec![b'1'; 16384]),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    let wrong = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(1), NativeValueRole::Output, origin)
+        .unwrap();
+    let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
+        .with_native_values(Some(&store));
+    let mut ctx = EvalContext::default();
+    for (token, resource_failure) in [(large, true), (wrong, false)] {
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("request")
+        };
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let error = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap_err();
+        if resource_failure {
+            assert!(matches!(error, LocalError::ResourceLimit(_)));
+        } else {
+            assert!(matches!(error, LocalError::BindingContract(_)));
+        }
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+    }
+}

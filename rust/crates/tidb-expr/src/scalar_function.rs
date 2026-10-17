@@ -89,7 +89,7 @@ fn advisory_lock_name(value: Datum) -> Result<String, EvalError> {
 /// go `ToBool`'s string path parses the leading float and warns
 /// `Truncated incorrect DOUBLE value` when the text is not fully numeric;
 /// the logical operators' truthiness is that float != 0.
-fn logic_truthy(value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalError> {
+pub(crate) fn logic_truthy(value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalError> {
     if matches!(value, Datum::Null) {
         return Ok(None);
     }
@@ -99,6 +99,15 @@ fn logic_truthy(value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalEr
         }
         _ => crate::truthy_of(value),
     }
+}
+
+/// Shared demand rule after the caller's logical truth conversion.
+/// Genuine SQL NULL requires the right operand; only absorbing values skip it.
+pub(crate) fn logical_needs_right(function: crate::LogicalFunction, left: Option<bool>) -> bool {
+    !matches!(
+        (function, left),
+        (crate::LogicalFunction::And, Some(false)) | (crate::LogicalFunction::Or, Some(true))
+    )
 }
 
 pub(crate) fn binary_op_for_name(name: &str) -> Option<BinaryOp> {
@@ -1620,10 +1629,7 @@ impl ScalarFunction {
                     } else {
                         crate::LogicalFunction::Or
                     };
-                    if matches!(
-                        (op, lhs),
-                        (BinaryOp::LogicAnd, Some(false)) | (BinaryOp::LogicOr, Some(true))
-                    ) {
+                    if !logical_needs_right(function, lhs) {
                         return crate::eval_logical_ready_in(
                             function,
                             crate::LogicalArgs::UndemandedRight { left: lhs },

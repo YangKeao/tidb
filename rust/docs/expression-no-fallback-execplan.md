@@ -43,6 +43,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5c3: correct native-value producer capability gaps to admission rather than terminal binding errors; RED valid CAST(ABS/PLUS/IF) SQL regression,83focused/full1435same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c3.md.
 - [x] (2026-10-18) N5d1: native COALESCE/IFNULL share the existing staged driver and pure nullable selector, preserve actual NULL/value kind/FSP and mint own producer handles. 87focused/full1439same4/core1043same6/30SQL/Projection15/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d1.md.
 - [x] (2026-10-18) N5d2: native IF/CASE use the same staged driver, original pure truth conversion/branch selector and checked native result publication. 90focused/full1442same4/core1043same6/30SQL/Projection16/lint/clippy/fmt pass; CAST(IF) migration gap retired. Receipt rust/docs/evidence/no-fallback-n5d2.md.
+- [x] (2026-10-18) N5d3: native AND/OR and rewriter IsTrueWithNull share checked frames and direct RPN value kernels, preserving nullable demand and warning prefixes. 93focused/full1445same4/core1043same6/36SQL/Projection17/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d3.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -419,3 +420,18 @@ The prior CAST(IF(...)) capability regression case now requires preparation
 without fallback; ABS/PLUS producer cases remain explicit migration gaps.
 Native logical AND/OR, NULLIF/equality and further producer/caller coverage
 remain outstanding before the alternate evaluator can be removed.
+
+
+N5d3 outcome: AND/OR use the shared scalar demand rule and actual context's
+plain logical conversion before requesting the next argument. Only absorbing
+false AND / true OR skip the right operand; SQL NULL still demands it. Direct
+RPN logical kernels finalize nullable values without an evaluated-args program.
+Borrowed payload gates precede copies and store borrows end before warning
+callbacks. Each result owns the logical producer's identity.
+
+Real parser/rewriter tests exposed its istrue_with_null(CAST(...)) wrapper. A
+closed native truth host now calls the original warning-free truth conversion
+and direct int_is_true<KeepNullOn> kernel. The preceding CAST retains diagnostic
+ownership, avoiding duplicate warnings. Native NULLIF/comparison, arithmetic
+producers, effects, source forms and other callers remain outstanding; global
+fallback has not been removed.
