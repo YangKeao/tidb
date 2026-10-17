@@ -16,7 +16,7 @@
 //! the SDK's single frame driver; this provider owns only demanded values.
 use super::*;
 
-pub(super) fn values_bytes(values: &Vec<Datum>) -> LocalResult<usize> {
+fn values_bytes(values: &Vec<Datum>) -> LocalResult<usize> {
     values
         .iter()
         .try_fold(array_bytes::<Datum>(values.capacity())?, |bytes, value| {
@@ -61,7 +61,6 @@ impl NativeBatchHosts<'_> {
             || &signature.return_type != invocation.return_type
             || invocation.arg_types.len() != 2
             || invocation.physical_rows.is_empty()
-            || invocation.physical_rows.len() > BATCH_MAX_SIZE
             || invocation
                 .occurrence_start
                 .checked_add(invocation.physical_rows.len() - 1)
@@ -112,6 +111,7 @@ impl NativeBatchHosts<'_> {
                 next: 0,
                 rows,
                 left: Vec::new(),
+                left_bytes: 0,
             },
         )
     }
@@ -168,6 +168,9 @@ impl NativeBatchHosts<'_> {
         values
             .try_reserve_exact(count)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+        // Capacity is fixed for this source phase; carry the payload charge
+        // incrementally rather than rescanning every prefix before each row.
+        let mut retained_values = array_bytes::<Datum>(values.capacity())?;
         for position in 0..count {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(position) else {
                 return Err(binding("window arithmetic wire NULL is not a native value"));
@@ -192,7 +195,7 @@ impl NativeBatchHosts<'_> {
                 raw_payload
             };
             self.check_bytes(
-                base.checked_add(values_bytes(&values)?)
+                base.checked_add(retained_values)
                     .and_then(|bytes| bytes.checked_add(payload.checked_mul(2)?))
                     .ok_or_else(|| resource("window source clone allowance overflow"))?,
             )?;
@@ -221,7 +224,7 @@ impl NativeBatchHosts<'_> {
                 }
                 .ok_or_else(|| resource("window typed conversion bound overflow"))?;
                 self.check_bytes(
-                    base.checked_add(values_bytes(&values)?)
+                    base.checked_add(retained_values)
                         .and_then(|bytes| bytes.checked_add(conversion))
                         .ok_or_else(|| resource("window typed conversion allowance overflow"))?,
                 )?;
@@ -266,15 +269,22 @@ impl NativeBatchHosts<'_> {
                 value
             };
             self.check_bytes(
-                base.checked_add(values_bytes(&values)?)
+                base.checked_add(retained_values)
                     .and_then(|bytes| {
                         bytes.checked_add(native_payload_bytes(&value).ok()?.checked_mul(2)?)
                     })
                     .ok_or_else(|| resource("window normalized source allowance overflow"))?,
             )?;
+            retained_values = retained_values
+                .checked_add(
+                    native_payload_bytes(&value)?
+                        .checked_mul(2)
+                        .ok_or_else(|| resource("window normalized payload overflow"))?,
+                )
+                .ok_or_else(|| resource("window normalized ledger overflow"))?;
             values.push(value);
             self.check_bytes(
-                base.checked_add(values_bytes(&values)?)
+                base.checked_add(retained_values)
                     .ok_or_else(|| resource("window normalized source bytes overflow"))?,
             )?;
         }
@@ -282,10 +292,13 @@ impl NativeBatchHosts<'_> {
         let diagnostic = subjects[index].as_ref().map_or(0, |text| text.len());
         for position in 0..count {
             let current = base
-                .checked_add(values_bytes(&values)?)
+                .checked_add(retained_values)
                 .and_then(|bytes| bytes.checked_add(diagnostic.checked_mul(2)?))
                 .ok_or_else(|| resource("window cast allowance overflow"))?;
             self.check_bytes(current)?;
+            let old_payload = native_payload_bytes(&values[position])?
+                .checked_mul(2)
+                .ok_or_else(|| resource("window old cast payload overflow"))?;
             let value = std::mem::replace(&mut values[position], Datum::Null);
             let value = crate::scalar_function::native_numeric_batch_cast(
                 field,
@@ -300,13 +313,28 @@ impl NativeBatchHosts<'_> {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
+            retained_values = retained_values
+                .checked_sub(old_payload)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        native_payload_bytes(&values[position])
+                            .ok()?
+                            .checked_mul(2)?,
+                    )
+                })
+                .ok_or_else(|| resource("window cast ledger overflow"))?;
             self.check_bytes(
-                base.checked_add(values_bytes(&values)?)
+                base.checked_add(retained_values)
                     .ok_or_else(|| resource("window cast retained bytes overflow"))?,
             )?;
         }
         if index == 0 {
-            let SqlDemand::WindowArithmetic { next, left, .. } = &mut self.slots[id.slot]
+            let SqlDemand::WindowArithmetic {
+                next,
+                left,
+                left_bytes,
+                ..
+            } = &mut self.slots[id.slot]
                 .task
                 .as_mut()
                 .expect("validated window task")
@@ -315,6 +343,9 @@ impl NativeBatchHosts<'_> {
                 unreachable!()
             };
             *left = values;
+            // Keep this conservative charge until the task completes; nested
+            // row callbacks must not rescan an ancestor's complete vector.
+            *left_bytes = retained_values;
             *next = 1;
             return Ok(HostStep::NeedArg(HostArgRequest {
                 index: 1,

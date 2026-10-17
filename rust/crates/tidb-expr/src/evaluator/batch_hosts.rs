@@ -122,6 +122,7 @@ enum SqlDemand {
         next: usize,
         rows: Vec<usize>,
         left: Vec<Datum>,
+        left_bytes: usize,
     },
     Arithmetic {
         next: usize,
@@ -222,10 +223,13 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
-        if let SqlDemand::WindowArithmetic { rows, left, .. } = &self.demand {
+        if let SqlDemand::WindowArithmetic {
+            rows, left_bytes, ..
+        } = &self.demand
+        {
             return bytes
                 .checked_add(array_bytes::<usize>(rows.capacity())?)
-                .and_then(|bytes| bytes.checked_add(arithmetic_window::values_bytes(left).ok()?))
+                .and_then(|bytes| bytes.checked_add(*left_bytes))
                 .ok_or_else(|| resource("window arithmetic retained bytes overflow"));
         }
         if let SqlDemand::Arithmetic {

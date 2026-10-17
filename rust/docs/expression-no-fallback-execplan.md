@@ -683,3 +683,57 @@ a right failure in the first tile would preempt a left failure in a later tile.
 Audit actual SDK kernel width assumptions before choosing a checked wide-frame
 profile or phase-internal tiling. This checkpoint still closes no frontend
 root fallback; remaining family/caller/source/multi-output migration is active.
+
+
+N6e outcome: explicit SDK window roots now record a
+whole-selection contract and enter a separate checked profile in the SAME
+canonical driver. Complete layout/resource checks remain; ordinary roots keep
+1024 and row roots keep one. Typed-control descendants still constrain width
+to one and are unfinished coverage, not permission to tile a window root.
+The actual prepared root is rechecked at entry, preventing caller relabeling.
+
+Discovery: Generated RPN vectors indexed a fixed1024 identity array even
+though LogicalRows already has a dynamic-length Identical representation.
+Checked wide vectors now use that representation; legacy vectors retain their
+previous slice behavior. Generated kernel wrappers use usize iteration and
+VectorArg logical-row indexing rather than a fixed-width lane array. The audit
+covers all BATCH_MAX_SIZE/IDENTICAL_LOGICAL_ROWS references in the expression
+crate and the generated evaluator access path; legacy row/decoded entry caps
+remain intact.
+
+The provider source/cast ledger now updates payload totals incrementally and
+caches suspended-left bytes; RowHostScope similarly caches completed child
+storage. This prevents repeated prefix/ancestor scans as a selection grows.
+New2050-occurrence tests cover late-left versus early-right failure order,
+original error identity, generated kernels, scalar broadcasting, nested row
+scope identity, limits and ordinary-root guard preservation. Native arithmetic
+also compares complete2050-row phases and results to the original batch owner.
+Initial native tests pass; final SDK/frontend regressions are running.
+
+Future source/caller promotion must also resolve actual row/bulk evaluation
+BEFORE effects when vectorization is disabled. The current caller's forced
+window_size=1 changes demand semantics if blindly applied to a bulk program;
+ignoring that flag would also be incorrect. Both domains must use canonical
+programs, preserving original eligibility and short-circuit rules, without a
+legacy evaluator callback or fallback. This remains implementation work along
+with general control wrapping, bulk ABS/CAST source phases and other families.
+
+
+N6e validation: all ten SDK window protocol tests pass, including the2050-row
+late-left versus early-right error, generated kernel/scalar broadcast and
+2050-row Window -> Row -> Window identity cases. Core1054 pass with the exact
+inherited six failures and one ignored. The native window tests cover102
+primary invocations (100 native-reference comparisons plus two injected input
+failures) and156 provider resource refusals, including four2050-row cases.
+Full frontend1467 pass with the exact inherited four failures and95 ignored;
+all108 batch checks pass in that run. Projection22, required lint, scoped SDK
+clippy, pinned formatting and diff checks pass. Paired SDK7ac5b37 and
+evidence/no-fallback-n6e.md record the checkpoint.
+
+Source lowering/caller selection is still unfinished. Next implement actual
+arithmetic root and edge lowering with correct pre-effect row/bulk domain
+selection, then bulk ABS/CAST phases and general control wrapping. Both domains
+must remain in the common driver; missing bulk coverage cannot silently become
+row execution. Metadata/source expansion, other functions/effects, dynamic
+sources, multi-output coverage and global migration-dispatch retirement remain
+active. No frontend root fallback is claimed closed by N6e alone.

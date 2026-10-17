@@ -478,3 +478,77 @@ fn native_window_arithmetic_matches_actual_bulk_values_context_and_argument_phas
         Some((1, 1)),
     );
 }
+
+#[test]
+fn native_window_arithmetic_keeps_whole_2050_occurrence_phases_and_results() {
+    let integer = FieldType::new(FieldTypeCode::LongLong)
+        .with_flen(20)
+        .with_decimal(0);
+    let real = FieldType::new(FieldTypeCode::Double)
+        .with_flen(-1)
+        .with_decimal(-1);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(40)
+        .with_decimal(4);
+    let string = FieldType::new(FieldTypeCode::VarString)
+        .with_flen(-1)
+        .with_decimal(-1);
+    let selection: Vec<_> = (0..2050).map(|position| [2, 0, 2][position % 3]).collect();
+    execute_case(
+        "plus",
+        [integer.clone(), integer.clone()],
+        integer.clone(),
+        [
+            vec![Datum::Null, Datum::Int(-7), Datum::Int(11)],
+            vec![Datum::Int(3), Datum::Int(2), Datum::Int(0)],
+        ],
+        [false; 2],
+        &selection,
+        false,
+        None,
+    );
+    execute_case(
+        "minus",
+        [real.clone(), real.clone()],
+        real,
+        [
+            vec![Datum::Null, Datum::Real(-1.25), Datum::Real(7.5)],
+            vec![Datum::Real(3.0), Datum::Real(0.5), Datum::Real(0.0)],
+        ],
+        [false; 2],
+        &selection,
+        false,
+        None,
+    );
+    execute_case(
+        "mul",
+        [string, decimal.clone()],
+        decimal,
+        [
+            vec![
+                Datum::new_string("12.5"),
+                Datum::Null,
+                Datum::new_string("3x"),
+            ],
+            vec![
+                Datum::Decimal(Decimal::from_int(3)),
+                Datum::Decimal(Decimal::from_int(2)),
+                Datum::Decimal(Decimal::from_int(0)),
+            ],
+        ],
+        [false; 2],
+        &selection,
+        false,
+        None,
+    );
+    execute_case(
+        "plus",
+        [integer.clone(), integer.clone()],
+        integer,
+        [vec![Datum::Int(i64::MAX); 3], vec![Datum::Int(1); 3]],
+        [false; 2],
+        &selection,
+        false,
+        Some((1, 0)),
+    );
+}
