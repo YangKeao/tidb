@@ -506,6 +506,21 @@ fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
         .get_static_type()
         .ok_or_else(|| BatchFailure::admission("batch call has no return type"))?
         .eval_type();
+    if name == "strcmp" {
+        let function_ref = FunctionRef::Local(tidb_query_expr::LocalFunctionId::StrcmpNative);
+        let exact = ret == NativeEvalType::Int
+            && function.args.len() == 2
+            && function.args.iter().all(|arg| {
+                arg.static_type()
+                    .is_some_and(|field| field.eval_type() == NativeEvalType::String)
+            })
+            && tidb_query_expr::local::batch_signature(function_ref).is_some();
+        return exact.then_some((function_ref, 2)).ok_or_else(|| {
+            BatchFailure::admission(
+                "STRCMP batch inputs require ready strings and native policy support",
+            )
+        });
+    }
     if name == "any_value" && function.args.len() == 1 {
         let argument = function.args[0]
             .static_type()
@@ -679,10 +694,17 @@ fn preflight<'a>(
                 check_batch_call(function)?;
                 budget.add(function.func_name.original().len())?;
                 budget.add(function.func_name.lowercase().len())?;
-                budget.array::<OrdinaryCallSite>(1)?;
+                budget.array::<OrdinaryCallSite>(2)?; // initial and lowered source ordinals
                 let arity = function.args.len();
+                let policy_nodes = usize::from(native_batch_policy(function).is_some());
+                if policy_nodes != 0 {
+                    budget.array::<NodeRecord>(1)?;
+                    budget.array::<BuildNode>(1)?;
+                    budget.array::<LocalExpr>(1)?;
+                    budget.field(&native_policy_type(), 3)?;
+                }
                 scheduled = scheduled
-                    .checked_add(arity)
+                    .checked_add(arity.saturating_add(policy_nodes))
                     .filter(|nodes| *nodes <= limits.tree.max_nodes)
                     .ok_or_else(|| resource("batch source node policy exceeded"))?;
                 let child_depth = depth
@@ -737,11 +759,61 @@ fn suite_shape(suite: &EvaluatorSuite) -> Result<&Expression> {
 enum BuildKind {
     Literal(ScalarValue),
     Input(usize),
-    Call { function: FunctionRef, arity: usize },
+    Call {
+        function: FunctionRef,
+        arity: usize,
+        policy: Option<i64>,
+    },
 }
 struct BuildNode {
     field: tipb::FieldType,
     kind: BuildKind,
+}
+
+fn native_policy_type() -> FieldType {
+    FieldType::new(FieldTypeCode::LongLong)
+        .with_flen(20)
+        .with_decimal(0)
+}
+
+fn native_batch_policy(function: &ScalarFunction) -> Option<i64> {
+    (function.func_name.lowercase() == "strcmp")
+        .then(|| function.derived_collation().native_policy().tag())
+}
+
+// Policy constants add graph nodes but no SQL call/effect. Recompute graph
+// ordinals while retaining each original call's immutable source identity.
+fn lowered_call_sites(
+    root: &LocalExpr,
+    original: Vec<OrdinaryCallSite>,
+    limits: CompileLimits,
+) -> Result<Vec<OrdinaryCallSite>> {
+    let mut sites = Vec::new();
+    reserve(&mut sites, original.len())?;
+    let mut original = original.into_iter();
+    let mut pending = Vec::new();
+    reserve(&mut pending, 1)?;
+    pending.push(root);
+    let mut ordinal = 0usize;
+    while let Some(node) = pending.pop() {
+        if ordinal >= limits.max_nodes {
+            return Err(resource("lowered batch source node policy exceeded").into());
+        }
+        if let LocalExpr::Call { args, .. } = node {
+            let source = original
+                .next()
+                .ok_or_else(|| binding("lowered call has no SQL source"))?
+                .source();
+            sites.push(OrdinaryCallSite::sql_native_batch(ordinal, source));
+            reserve(&mut pending, args.len())?;
+            pending.extend(args.iter().rev());
+        }
+        ordinal += 1;
+    }
+    if original.next().is_some() {
+        return Err(binding("lowered graph lost a SQL call").into());
+    }
+    Ok(sites)
 }
 
 fn lower(
@@ -789,6 +861,10 @@ fn lower(
                 BuildKind::Call {
                     function: *function,
                     arity: *arity,
+                    policy: match item.node {
+                        Expression::ScalarFunction(sql) => native_batch_policy(sql),
+                        _ => None,
+                    },
                 }
             }
         };
@@ -814,15 +890,29 @@ fn lower(
                 slot,
                 field_type: node.field,
             },
-            BuildKind::Call { function, arity } => {
+            BuildKind::Call {
+                function,
+                arity,
+                policy,
+            } => {
                 let mut args = Vec::new();
-                reserve(&mut args, arity)?;
+                reserve(
+                    &mut args,
+                    arity.saturating_add(usize::from(policy.is_some())),
+                )?;
                 for _ in 0..arity {
                     args.push(
                         stack
                             .pop()
                             .ok_or_else(|| BatchFailure::admission("missing batch call child"))?,
                     );
+                }
+                if let Some(policy) = policy {
+                    args.push(LocalExpr::Constant {
+                        value: ScalarValue::Int(Some(policy)),
+                        field_type: projected(&native_policy_type(), new_collation)?,
+                        literal_kind: LiteralKind::Typed,
+                    });
                 }
                 LocalExpr::Call {
                     function,
@@ -840,6 +930,7 @@ fn lower(
     let expr = stack
         .pop()
         .ok_or_else(|| BatchFailure::admission("missing batch root"))?;
+    let sites = lowered_call_sites(&expr, sites, limits.tree)?;
     let facts = BatchFacts::sql_native_batch(&expr, &schema, sites, limits.tree)?;
     let mut detached = Vec::new();
     reserve(&mut detached, row_schema.len())?;
@@ -1813,7 +1904,7 @@ impl PreparedBatchSuite {
                 max_materialization_retained_bytes / count.max(1),
             )?;
             remaining_nodes = remaining_nodes
-                .checked_sub(worker.source.nodes.len())
+                .checked_sub(worker.source.facts.node_count())
                 .ok_or_else(|| resource("projection source node policy exceeded"))?;
             workers.push(worker);
         }

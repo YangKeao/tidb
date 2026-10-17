@@ -25,7 +25,8 @@ previous user contract; demand and side-effect ordering do not.
 - [x] Read both AGENTS.md files, root PLANS.md, and existing implementation.
 - [x] (2026-10-17) N1: Terminal preparation errors are cached and propagated; regression fails before fix, batch35 pass, full1387 pass/same4 known failures/95ignored, lint and scoped fmt pass.
 - [x] (2026-10-17) N2: multi-output/leaf/direct-column scheduling, selected raw-column alias-safe copy, suite metadata/node caps. Batch40/Chunk275/pinned-nightly Projection9 pass; full1392 retains same4 inherited failures; lint/fmt pass.
-- [ ] N3: Admit shared STRCMP, CONCAT and JSON_TYPE with exact native SQL contracts.
+- [x] (2026-10-17) N3a: STRCMP uses its existing native collation kernel in composed shared graphs; batch41/full1393 retain same4 failures, TiKV1033 retains same6, actual rewritten SQL25 scenarios all prepared without fallback/refusal; scoped project clippy/lint/fmt pass.
+- [ ] N3b: Admit CONCAT and JSON_TYPE with exact native SQL contracts.
 - [ ] N4: Execute lazy control flow with demanded rows in the shared engine.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
@@ -72,8 +73,7 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 ## Outcomes & Retrospective
 
 
-N1 regression reproduced the bug before implementation: the oversized metadata gate returned successful generic evaluation instead of a resource error. Cached typed errors now pass batch35 and full1387 with exactly the same4 inherited failures. The first candidate exposed the existing JSON-to-String catalog conversion gap; explicit carrier admission fixed its classification without swallowing InvalidSpec. TiKV is unchanged. N2 now also passes batch40, Chunk275 and the pinned-nightly production Projection caller tests9. Multiple pure outputs, literals, direct selected columns and vector-off one-row execution no longer trigger an alternate evaluator. Ordinary unsupported-function/context routing is still present; next is N3/N4, and the goal remains incomplete. None of the remaining fallback workloads has been
-claimed fixed. Each self-contained code milestone must have targeted regression
+N1 regression reproduced the bug before implementation: the oversized metadata gate returned successful generic evaluation instead of a resource error. Cached typed errors now pass batch35 and full1387 with exactly the same4 inherited failures. The first candidate exposed the existing JSON-to-String catalog conversion gap; explicit carrier admission fixed its classification without swallowing InvalidSpec. TiKV is unchanged. N2 now also passes batch40, Chunk275 and the pinned-nightly production Projection caller tests9. Multiple pure outputs, literals, direct selected columns and vector-off one-row execution no longer trigger an alternate evaluator. Ordinary unsupported-function/context routing is still present; next is N3/N4, and the goal remains incomplete. STRCMP is now prepared in all25 benchmark size/selection combinations, with matching native checksums. The other five workload families still require migration. Native-only STRCMP is outside the old131-wire-signature denominator; do not inflate that count. Each self-contained code milestone must have targeted regression
 coverage, required lint, and a Signed-off-by commit; temporary migration routing
 must be reported explicitly until removed. Do not use the earlier performance
 pass's cost boundary as authorization to stop this new goal.
@@ -169,3 +169,5 @@ cache an EvaluatorError (which is Clone) to avoid recomputing or losing a termin
 preparation failure. A future shared execution extension must continue owning
 resource accounting and must not expose arbitrary Rust callbacks as an unchecked
 escape into the old interpreter.
+
+N3a discovery: a native collation literal adds a lowered graph node without adding a SQL call. Reindex lowered preorder ordinals while preserving original SQL source IDs; nested sibling calls test both identities. STRCMP is explicitly admitted only with a known constant policy. Existing opaque ready-value and row contracts remain closed.

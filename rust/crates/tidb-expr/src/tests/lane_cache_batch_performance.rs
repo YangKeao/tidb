@@ -368,6 +368,7 @@ fn tikv_batch_workload(name: &str) -> bool {
                 | "integer_multiply"
                 | "abs"
                 | "char_length"
+                | "strcmp"
                 | "lower"
                 | "upper"
                 | "substring"

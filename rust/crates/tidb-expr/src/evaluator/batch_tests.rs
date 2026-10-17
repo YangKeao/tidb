@@ -2513,3 +2513,87 @@ fn complete_projection_source_budget_is_shared_across_outputs() {
         Some(LocalError::ResourceLimit(_))
     ));
 }
+
+#[test]
+fn native_strcmp_batch_keeps_sql_collation_and_nested_call_identities() {
+    for (collation, first, padded) in [
+        (Collation::Binary, -1, 1),
+        (Collation::Utf8Mb4Bin, -1, 0),
+        (Collation::Utf8Mb4GeneralCi, 0, 0),
+        (Collation::Utf8Mb4UnicodeCi, 0, 0),
+    ] {
+        let string = string_ty().with_collation(collation);
+        let result = ty().with_collation(collation);
+        let make = |bytes: &[u8]| Datum::String(StringDatum::new(bytes.to_vec(), collation));
+        let rows = vec![
+            vec![make(b"A"), make(b"a")],
+            vec![Datum::Null, make(b"b")],
+            vec![make(b"b"), make(b"a")],
+            vec![make(b"b "), make(b"b")],
+        ];
+        let cmp = call(
+            "strcmp",
+            result.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        );
+        let nested = plus(cmp.clone(), cmp.clone());
+        let schema = [string.clone(), string];
+        let expected = [Some(first), None, Some(1), Some(padded)];
+        let ctx = Context::new(true);
+        // Keep literal SQL expectations and compare the existing scalar adapter,
+        // a second producer of the same shared native kernel.
+        let input = chunk(&schema, &rows);
+        for (index, value) in expected.iter().enumerate() {
+            assert_eq!(
+                cmp.eval(&ctx, input.get_row(index)).unwrap(),
+                value.map_or(Datum::Null, Datum::Int)
+            );
+        }
+        for selection in [
+            Some(vec![]),
+            None,
+            Some((0..2050).map(|i| (2050 - i) % 4).collect()),
+        ] {
+            let suite = EvaluatorSuite::new(vec![cmp.clone(), nested.clone()], false);
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(selection.clone());
+            let mut output = Chunk::new_with_capacity(&[result.clone(), ty()], 0);
+            suite
+                .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+                .unwrap();
+            let selected = selection.unwrap_or_else(|| (0..4).collect());
+            assert_eq!(output.num_rows(), selected.len());
+            for (row, physical) in selected.into_iter().enumerate() {
+                assert_eq!(
+                    output.get_row(row).get_datum(0, &result),
+                    expected[physical].map_or(Datum::Null, Datum::Int)
+                );
+                assert_eq!(
+                    output.get_row(row).get_datum(1, &ty()),
+                    expected[physical].map_or(Datum::Null, |value| Datum::Int(value * 2))
+                );
+            }
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+            let lane = suite.batch_lane.borrow();
+            let super::super::BatchLane::Prepared(plan) = &*lane else {
+                panic!("STRCMP was not prepared")
+            };
+            let sites = plan.workers[1].source.facts.call_sites();
+            assert_eq!(
+                sites
+                    .iter()
+                    .map(OrdinaryCallSite::ordinal)
+                    .collect::<Vec<_>>(),
+                vec![0, 1, 5]
+            );
+            assert_eq!(
+                sites
+                    .iter()
+                    .map(|site| site.source().node())
+                    .collect::<Vec<_>>(),
+                vec![0, 1, 4]
+            );
+        }
+    }
+}
