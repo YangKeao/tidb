@@ -2301,3 +2301,43 @@ fn pure_niladic_pi_uses_explicit_rows_without_admitting_stateful_calls() {
         })
     ));
 }
+
+#[test]
+fn preparation_resource_failure_is_cached_without_entering_another_evaluator() {
+    let suite = suite(plus(column(0), int(1)));
+    let oversized = ty().with_elems(["x".repeat(1 << 20)]);
+    let ctx = Context::new(true);
+    let mut input = chunk(&[ty()], &[vec![Datum::Int(7)]]);
+    let mut out = output();
+    let mut first_error = None;
+    for _ in 0..2 {
+        let error = suite
+            .run_with_tikv_batch(&ctx, &mut input, &mut out, &[oversized.clone()])
+            .expect_err("a resource gate must not retry through the generic evaluator");
+        let EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(failure)) = &error else {
+            panic!("lost structured preparation failure: {error:?}");
+        };
+        assert_eq!(
+            failure.class(),
+            crate::ExpressionRuntimeFailureClass::ResourceLimit
+        );
+        assert_eq!(
+            failure.phase(),
+            Some(crate::ExpressionRuntimeFailurePhase::Prepare)
+        );
+        if let Some(first) = &first_error {
+            assert_eq!(first, &error, "the same failure ownership must be retained");
+        }
+        first_error = Some(error);
+        assert_eq!(ctx.calls.get(), 0, "no value/eligibility phase may run");
+        assert_eq!(input.num_rows(), 1);
+        assert_eq!(input.get_row(0).get_datum(0, &ty()), Datum::Int(7));
+        assert_eq!(out.num_rows(), 0);
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (0, 0, 1));
+        assert_eq!(
+            route.refusal,
+            Some(crate::evaluator::BatchRefusal::Resource)
+        );
+    }
+}

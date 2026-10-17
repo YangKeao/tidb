@@ -113,6 +113,14 @@ impl BatchFailure {
     }
 
     pub(super) fn into_evaluator_error(self) -> EvaluatorError {
+        self.into_error_at(crate::ExpressionRuntimeFailurePhase::Invoke)
+    }
+
+    pub(super) fn into_prepare_error(self) -> EvaluatorError {
+        self.into_error_at(crate::ExpressionRuntimeFailurePhase::Prepare)
+    }
+
+    fn into_error_at(self, phase: crate::ExpressionRuntimeFailurePhase) -> EvaluatorError {
         let local = match self.kind {
             FailureKind::Native(error) => return error,
             FailureKind::Local(error) => error,
@@ -121,7 +129,7 @@ impl BatchFailure {
         };
         EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
             local,
-            Some(crate::ExpressionRuntimeFailurePhase::Invoke),
+            Some(phase),
         ))
         .into()
     }
@@ -546,12 +554,38 @@ fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
         .ok_or_else(|| BatchFailure::admission("missing exact batch catalog fact"))?;
     let signature = tipb::ScalarFuncSig::from_i32(row.sig as i32)
         .ok_or_else(|| BatchFailure::admission("unknown batch catalog signature"))?;
-    if tidb_query_expr::local::batch_signature(FunctionRef::TiPb(signature)).is_none() {
+    let (arguments, result) = tidb_query_expr::local::batch_signature(FunctionRef::TiPb(signature))
+        .ok_or_else(|| {
+            BatchFailure::admission("catalog signature is outside the eager batch closure")
+        })?;
+    // Catalog selectors may permit frontend coercion (for example JSON to
+    // String for IS NULL). This source path has no coercion node, so reject
+    // that capability gap before handing an invalid spec to the compiler.
+    if arguments.len() != function.args.len()
+        || result != batch_eval_type(ret)
+        || arguments.iter().zip(&function.args).any(|(expected, arg)| {
+            arg.static_type()
+                .is_none_or(|field| batch_eval_type(field.eval_type()) != *expected)
+        })
+    {
         return Err(BatchFailure::admission(
-            "catalog signature is outside the eager batch closure",
+            "catalog batch call requires frontend argument conversion",
         ));
     }
     Ok((FunctionRef::TiPb(signature), function.args.len()))
+}
+
+fn batch_eval_type(native: NativeEvalType) -> TikvEvalType {
+    match native {
+        NativeEvalType::Int => TikvEvalType::Int,
+        NativeEvalType::Real => TikvEvalType::Real,
+        NativeEvalType::Decimal => TikvEvalType::Decimal,
+        NativeEvalType::String => TikvEvalType::Bytes,
+        NativeEvalType::Datetime | NativeEvalType::Timestamp => TikvEvalType::DateTime,
+        NativeEvalType::Duration => TikvEvalType::Duration,
+        NativeEvalType::Json => TikvEvalType::Json,
+        NativeEvalType::VectorFloat32 => TikvEvalType::VectorFloat32,
+    }
 }
 
 /// Resolves one SQL call through the same exact catalog fact and TiKV
@@ -964,16 +998,7 @@ impl PreparedBatch {
         output: &mut Chunk,
         output_index: usize,
     ) -> Result<()> {
-        let expected = match self.source.nodes[0].sql.eval_type() {
-            NativeEvalType::Int => TikvEvalType::Int,
-            NativeEvalType::Real => TikvEvalType::Real,
-            NativeEvalType::Decimal => TikvEvalType::Decimal,
-            NativeEvalType::String => TikvEvalType::Bytes,
-            NativeEvalType::Datetime | NativeEvalType::Timestamp => TikvEvalType::DateTime,
-            NativeEvalType::Duration => TikvEvalType::Duration,
-            NativeEvalType::Json => TikvEvalType::Json,
-            NativeEvalType::VectorFloat32 => TikvEvalType::VectorFloat32,
-        };
+        let expected = batch_eval_type(self.source.nodes[0].sql.eval_type());
         if values.eval_type() != expected || values.len() != selection.len() {
             return Err(binding("batch result shape differs from computed boundary").into());
         }

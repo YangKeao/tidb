@@ -401,17 +401,23 @@ impl EvaluatorProgram {
 
 /// Per-suite TiKV eager-batch state. `Unsupported` is decided once before any
 /// values or warnings are observed; a prepared worker is affine to this suite.
+/// Resource/contract failures retain one terminal error rather than selecting
+/// another evaluator or repeating preparation on subsequent calls.
 enum BatchLane {
     Uninitialized,
     Unsupported(BatchRefusal),
+    Failed {
+        reason: BatchRefusal,
+        error: EvaluatorError,
+    },
     Prepared(PreparedBatch),
 }
 
 /// Bounded reason why a suite could not prepare the closed batch path.
 ///
 /// This is route telemetry, not an alternate error mapping. Preparation still
-/// falls back before evaluating values or warnings, and execution failures on a
-/// prepared route still propagate to the caller.
+/// distinguishes temporary capability gaps from terminal preparation errors.
+/// Execution failures on a prepared route propagate without replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatchRefusal {
     /// The expression is outside the closed eager-batch semantic class.
@@ -435,7 +441,7 @@ pub struct BatchRouteSnapshot {
     pub prepared: u64,
     /// Calls that executed the canonical native fallback route.
     pub fallback: u64,
-    /// Failed preparation attempts. A suite attempts preparation at most once.
+    /// Failed preparation attempts, including terminal errors. At most one per suite.
     pub refusals: u64,
     /// Stable bounded category for the preparation refusal, when any.
     pub refusal: Option<BatchRefusal>,
@@ -574,7 +580,7 @@ impl EvaluatorSuite {
     #[must_use]
     pub fn batch_route_snapshot(&self) -> BatchRouteSnapshot {
         let refusal = match &*self.batch_lane.borrow() {
-            BatchLane::Unsupported(reason) => Some(*reason),
+            BatchLane::Unsupported(reason) | BatchLane::Failed { reason, .. } => Some(*reason),
             BatchLane::Uninitialized | BatchLane::Prepared(_) => None,
         };
         BatchRouteSnapshot {
@@ -591,7 +597,7 @@ impl EvaluatorSuite {
     pub fn batch_scratch_snapshot(&self) -> Option<BatchScratchSnapshot> {
         match &*self.batch_lane.borrow() {
             BatchLane::Prepared(worker) => Some(worker.scratch_snapshot()),
-            BatchLane::Uninitialized | BatchLane::Unsupported(_) => None,
+            BatchLane::Uninitialized | BatchLane::Unsupported(_) | BatchLane::Failed { .. } => None,
         }
     }
 
@@ -668,9 +674,24 @@ impl EvaluatorSuite {
                 Err(error) => {
                     self.batch_route_refusals
                         .set(self.batch_route_refusals.get().saturating_add(1));
-                    BatchLane::Unsupported(error.refusal())
+                    let reason = error.refusal();
+                    if reason == BatchRefusal::Admission {
+                        // Temporary capability gap, retired as the unified
+                        // executor covers the remaining expression classes.
+                        BatchLane::Unsupported(reason)
+                    } else {
+                        // A resource or contract failure is not evidence that
+                        // another evaluator may safely execute this program.
+                        BatchLane::Failed {
+                            reason,
+                            error: error.into_prepare_error(),
+                        }
+                    }
                 }
             };
+        }
+        if let BatchLane::Failed { error, .. } = &*lane {
+            return Err(error.clone());
         }
         let BatchLane::Prepared(worker) = &mut *lane else {
             self.batch_route_fallback
