@@ -53,33 +53,14 @@ pub(crate) fn eval_cast(
     source: Option<&tidb_datatype::FieldType>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    use tidb_query_expr::{
-        NativeCastAdmission, NativeCastAdmissionSource, NativeCastAdmissionTarget,
-    };
+    use tidb_query_expr::NativeCastAdmissionTarget;
 
-    let admission_source = if v.is_range_sentinel() {
-        NativeCastAdmissionSource::RangeSentinel
-    } else if matches!(v, Datum::VectorFloat32(_)) {
-        NativeCastAdmissionSource::Vector
-    } else {
-        NativeCastAdmissionSource::Other
-    };
     let target = match cast_type {
         CastType::Char { .. } | CastType::Binary { .. } => NativeCastAdmissionTarget::String,
         CastType::Vector { .. } => NativeCastAdmissionTarget::Vector,
         _ => NativeCastAdmissionTarget::Other,
     };
-    match tidb_query_expr::native_cast_admission(admission_source, target) {
-        NativeCastAdmission::Allow => {}
-        NativeCastAdmission::RejectRangeSentinel => {
-            return Err(EvalError::Unsupported("range sentinel cast operand"));
-        }
-        NativeCastAdmission::RejectVectorTarget => {
-            return Err(EvalError::Unsupported(
-                "a vector can only be cast to string or vector",
-            ));
-        }
-    }
+    validate_cast_value_admission(&v, target)?;
     match cast_type {
         CastType::Signed => crate::tikv::eval_cast_signed_in(ctx, &v).map(Datum::Int),
         CastType::Unsigned => crate::tikv::eval_cast_unsigned_in(ctx, &v).map(Datum::UInt),
@@ -107,6 +88,30 @@ pub(crate) fn eval_cast(
         CastType::Vector { dimensions } => crate::tikv::eval_cast_vector(&v, source, *dimensions),
         CastType::Time { fsp } => cast_to_duration(&v, source, ctx, i64::from(fsp.unwrap_or(0))),
         CastType::Json => crate::builtin_ext::cast_as_json(&v),
+    }
+}
+
+/// Value-only admission shared by row casts and the staged native caller.
+pub(crate) fn validate_cast_value_admission(
+    v: &Datum,
+    target: tidb_query_expr::NativeCastAdmissionTarget,
+) -> Result<(), EvalError> {
+    use tidb_query_expr::{NativeCastAdmission, NativeCastAdmissionSource};
+    let source = if v.is_range_sentinel() {
+        NativeCastAdmissionSource::RangeSentinel
+    } else if matches!(v, Datum::VectorFloat32(_)) {
+        NativeCastAdmissionSource::Vector
+    } else {
+        NativeCastAdmissionSource::Other
+    };
+    match tidb_query_expr::native_cast_admission(source, target) {
+        NativeCastAdmission::Allow => Ok(()),
+        NativeCastAdmission::RejectRangeSentinel => {
+            Err(EvalError::Unsupported("range sentinel cast operand"))
+        }
+        NativeCastAdmission::RejectVectorTarget => Err(EvalError::Unsupported(
+            "a vector can only be cast to string or vector",
+        )),
     }
 }
 

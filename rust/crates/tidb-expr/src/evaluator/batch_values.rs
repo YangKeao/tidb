@@ -108,6 +108,21 @@ impl NativeValueStore {
             Ok(())
         }
     }
+    /// Reject plainly oversized encoded input before asking the external SDK
+    /// to materialize a Datum. Decoding expansion/transients are still SDK
+    /// policy; insertion separately checks the actual native payload.
+    pub(super) fn precheck_import(&self, encoded_bytes: usize) -> LocalResult<()> {
+        self.check(
+            self.logical_bytes()?
+                .checked_add(
+                    encoded_bytes
+                        .checked_mul(2)
+                        .ok_or_else(|| resource("native import allowance overflow"))?,
+                )
+                .and_then(|bytes| bytes.checked_add(size_of::<Entry>() + HANDLE_BYTES))
+                .ok_or_else(|| resource("native import size overflow"))?,
+        )
+    }
     /// Only call after every previous frame/task and output consumer finishes.
     pub(super) fn begin_window(&mut self) -> LocalResult<()> {
         self.check(self.logical_bytes()?)?;
@@ -178,6 +193,7 @@ impl NativeValueStore {
         });
         Ok(handle)
     }
+    #[cfg(test)]
     pub(super) fn get(
         &self,
         handle: &[u8],

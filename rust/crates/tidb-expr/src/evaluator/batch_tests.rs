@@ -383,6 +383,7 @@ fn signed_int_family_reuses_the_same_batch_substrate() {
                 ..
             }
             | SourceKind::Constant { .. }
+            | SourceKind::NativeConstant { .. }
             | SourceKind::Column { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -3804,6 +3805,360 @@ fn rewritten_integer_to_char_sql_runs_in_the_shared_projection() {
                         &mut batch_input,
                         &mut actual,
                         std::slice::from_ref(&source),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    values_for(&actual, &target),
+                    values_for(&expected, &target),
+                    "{sql}"
+                );
+                let route = suite.batch_route_snapshot();
+                assert_eq!(route.fallback, 0, "{sql}");
+                assert_eq!(route.refusals, 0, "{sql}");
+            }
+        }
+    }
+}
+
+#[test]
+fn integer_char_cast_preserves_actual_literal_kind_when_flags_disagree() {
+    let mut field = ty();
+    field.add_flags(FieldTypeFlags::UNSIGNED);
+    let bad = || literal(Datum::Int(-1), field.clone());
+    for argument in [
+        bad(),
+        call("any_value", field.clone(), vec![bad()]),
+        call(
+            "round",
+            field.clone(),
+            vec![call("any_value", field.clone(), vec![bad()])],
+        ),
+        call(
+            "bitxor",
+            field.clone(),
+            vec![bad(), literal(Datum::UInt(0), field.clone())],
+        ),
+    ] {
+        let root = call("cast_char", string_ty(), vec![argument]);
+        let mut input = chunk(&[], &[vec![]]);
+        let expected = root
+            .clone()
+            .eval(&crate::NoColumns, input.get_row(0))
+            .unwrap();
+        let suite = self::suite(root);
+        let mut actual = output_for(&string_ty());
+        suite
+            .run_with_tikv_batch(&crate::NoColumns, &mut input, &mut actual, &[])
+            .unwrap();
+        assert_eq!(values_for(&actual, &string_ty()), vec![expected]);
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+    }
+}
+
+#[test]
+fn native_char_value_inputs_preserve_all_nineteen_kinds_and_exact_sql_errors() {
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let fixtures = [
+        Datum::Null,
+        Datum::MinNotNull,
+        Datum::MaxValue,
+        Datum::Int(i64::MIN),
+        Datum::UInt(u64::MAX),
+        Datum::Decimal(
+            Decimal::from_raw_parts(true, b"0123400".to_vec(), 2, 4).with_declared_shape(7, 2),
+        ),
+        Datum::Real(f64::from_bits(0x7ff8000000000042)),
+        Datum::Float32(1.0000000000000002),
+        Datum::new_string(vec![0xff, 0]),
+        Datum::Bytes(vec![0xff, 0]),
+        Datum::BinaryLiteral(BinaryLiteral::from(vec![0, b'A'])),
+        Datum::Duration(MySqlDuration::from_nanoseconds(-123456789012, 4).unwrap()),
+        Datum::Enum(MysqlEnum::new("b", 2), Collation::GbkBin),
+        Datum::Bit(BinaryLiteral::from(vec![0, b'A'])),
+        Datum::Set(MysqlSet::new("a,b", 3), Collation::GbkBin),
+        Datum::Time(time),
+        Datum::Json(BinaryJSON::parse("{\"a\":[1,true]}").unwrap()),
+        Datum::Raw(vec![0xff, 0]),
+        Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, -0.0])),
+    ];
+    for value in fixtures {
+        for collation in [Collation::Utf8Mb4Bin, Collation::Binary] {
+            let target = string_ty().with_flen(-1).with_collation(collation);
+            // Use an independently declared source: actual Datum kind must not
+            // be reinterpreted by the transport as its static SQL EvalType.
+            let root = call(
+                "cast_char",
+                target.clone(),
+                vec![literal(value.clone(), string_ty())],
+            );
+            let mut input = chunk(&[], &[vec![]]);
+            let reference = CastWarnings::default();
+            let expected = root.clone().eval(&reference, input.get_row(0));
+            let suite = self::suite(root);
+            let context = CastWarnings::default();
+            let mut actual = output_for(&target);
+            match expected {
+                Ok(value) => {
+                    suite
+                        .run_with_tikv_batch(&context, &mut input, &mut actual, &[])
+                        .unwrap();
+                    let mut published = output_for(&target);
+                    published.append_datum(0, &value);
+                    assert_eq!(
+                        values_for(&actual, &target),
+                        values_for(&published, &target)
+                    );
+                }
+                Err(expected) => {
+                    let EvaluatorError::Eval(actual) = suite
+                        .run_with_tikv_batch(&context, &mut input, &mut actual, &[])
+                        .unwrap_err()
+                    else {
+                        panic!("native CHAR error must retain its type");
+                    };
+                    assert_eq!(actual, expected);
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        }
+    }
+}
+
+#[test]
+fn native_char_value_column_inputs_keep_nonfinite_float32_decimal_json_and_time() {
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let cases = [
+        (
+            real_ty(),
+            vec![
+                Datum::Real(f64::NAN),
+                Datum::Real(-0.0),
+                Datum::Real(f64::INFINITY),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Float),
+            vec![Datum::Float32(1.0000000000000002), Datum::Float32(f64::NAN)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(20)
+                .with_decimal(4),
+            vec![
+                Datum::Decimal(Decimal::from_literal("1.2300")),
+                Datum::Decimal(Decimal::from_literal("-0.0010")),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Json(BinaryJSON::parse("{\"x\":1}").unwrap()),
+                Datum::Json(BinaryJSON::parse("null").unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![Datum::Time(time)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Int(0), Datum::Int(2026)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Enum).with_elems(["a", "b"]),
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("b", 2),
+                Collation::Binary,
+            )],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Set).with_elems(["a", "b"]),
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("a,b", 3),
+                Collation::Binary,
+            )],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(8),
+            vec![Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![b'A']))],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![Datum::Duration(
+                MySqlDuration::from_nanoseconds(-123456789012, 6).unwrap(),
+            )],
+        ),
+    ];
+    for (field, mut inputs) in cases {
+        inputs.push(Datum::Null);
+        let rows: Vec<_> = inputs.into_iter().map(|value| vec![value]).collect();
+        let target = string_ty().with_flen(-1);
+        let root = call("cast_char", target.clone(), vec![typed_column(0, &field)]);
+        let suite = self::suite(root);
+        for selection in [
+            vec![],
+            vec![0, rows.len() - 1, 0],
+            (0..2050).map(|i| i % rows.len()).collect(),
+        ] {
+            let mut native_input = chunk(std::slice::from_ref(&field), &rows);
+            let mut batch_input = chunk(std::slice::from_ref(&field), &rows);
+            native_input.set_sel(Some(selection.clone()));
+            batch_input.set_sel(Some(selection));
+            let reference = CastWarnings::default();
+            let context = CastWarnings::default();
+            let mut expected = output_for(&target);
+            let mut actual = output_for(&target);
+            suite
+                .run(&reference, &mut native_input, &mut expected)
+                .unwrap();
+            suite
+                .run_with_tikv_batch(
+                    &context,
+                    &mut batch_input,
+                    &mut actual,
+                    std::slice::from_ref(&field),
+                )
+                .unwrap();
+            assert_eq!(values_for(&actual, &target), values_for(&expected, &target));
+            assert_eq!(*context.0.borrow(), *reference.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!(route.fallback, 0);
+            assert_eq!(route.refusals, 0);
+        }
+    }
+}
+
+#[test]
+fn native_char_binary_decode_preserves_complete_warning_contents_and_order() {
+    let source = string_ty().with_collation(Collation::Binary);
+    for width in [-1, 0, 1] {
+        let target = string_ty()
+            .with_flen(width)
+            .with_collation(Collation::GbkBin);
+        let root = call(
+            "cast_char",
+            target.clone(),
+            vec![literal(
+                Datum::Bytes(vec![0xff, 0x81, 0x30]),
+                source.clone(),
+            )],
+        );
+        let mut input = chunk(&[], &[vec![]]);
+        let reference = CastWarnings::default();
+        let value = root.clone().eval(&reference, input.get_row(0)).unwrap();
+        let mut expected = output_for(&target);
+        expected.append_datum(0, &value);
+        let suite = self::suite(root);
+        let context = CastWarnings::default();
+        let mut actual = output_for(&target);
+        suite
+            .run_with_tikv_batch(&context, &mut input, &mut actual, &[])
+            .unwrap();
+        assert_eq!(values_for(&actual, &target), values_for(&expected, &target));
+        assert_eq!(*context.0.borrow(), *reference.0.borrow());
+        assert!(context.0.borrow().iter().any(|(code, _)| *code == 3854));
+        assert_eq!(suite.batch_route_snapshot().fallback, 0);
+    }
+}
+
+#[test]
+fn native_char_unselected_invalid_utf8_is_never_read_or_formatted() {
+    let root = call(
+        "if",
+        string_ty(),
+        vec![
+            int(0),
+            call(
+                "cast_char",
+                string_ty(),
+                vec![literal(Datum::Raw(vec![0xff]), string_ty())],
+            ),
+            text(Some(b"safe")),
+        ],
+    );
+    let suite = self::suite(root);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut actual = output_for(&string_ty());
+    let context = CastWarnings::default();
+    suite
+        .run_with_tikv_batch(&context, &mut input, &mut actual, &[])
+        .unwrap();
+    assert_eq!(actual.get_row(0).get_string(0), "safe");
+    assert!(context.0.borrow().is_empty());
+    let route = suite.batch_route_snapshot();
+    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+}
+
+#[test]
+fn rewritten_native_char_casts_compose_across_full_selection_windows() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver(FieldType);
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            (path.last()?.as_str() == "v").then(|| (0, self.0.clone(), 1))
+        }
+    }
+    for (field, value) in [
+        (real_ty(), Datum::Real(f64::NAN)),
+        (
+            FieldType::new(FieldTypeCode::Float),
+            Datum::Float32(1.0000000000000002),
+        ),
+        (FieldType::new(FieldTypeCode::Year), Datum::Int(0)),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            Datum::Json(BinaryJSON::parse("{\"x\":1}").unwrap()),
+        ),
+    ] {
+        let resolver = Resolver(field.clone());
+        for sql in [
+            "cast(v as char)",
+            "concat(cast(v as char), '!')",
+            "regexp_like(cast(v as char), '^N')",
+        ] {
+            let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+                panic!("query")
+            };
+            let QueryStmt::Select(select) = query.into_inner() else {
+                panic!("select")
+            };
+            let SelectField::Expr { expr, .. } = &select.fields[0] else {
+                panic!("expression")
+            };
+            let root = rewrite_expr_resolved(expr, &resolver).unwrap();
+            let target = root.static_type().unwrap().clone();
+            let suite = self::suite(root);
+            let rows = vec![vec![value.clone()], vec![Datum::Null]];
+            for selection in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+                let mut native = chunk(std::slice::from_ref(&field), &rows);
+                let mut batch = chunk(std::slice::from_ref(&field), &rows);
+                native.set_sel(Some(selection.clone()));
+                batch.set_sel(Some(selection));
+                let mut expected = output_for(&target);
+                let mut actual = output_for(&target);
+                suite
+                    .run(&crate::NoColumns, &mut native, &mut expected)
+                    .unwrap();
+                suite
+                    .run_with_tikv_batch(
+                        &crate::NoColumns,
+                        &mut batch,
+                        &mut actual,
+                        std::slice::from_ref(&field),
                     )
                     .unwrap();
                 assert_eq!(

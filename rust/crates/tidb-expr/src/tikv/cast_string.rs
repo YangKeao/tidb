@@ -28,11 +28,12 @@ fn input(value: &Datum) -> Input<'_> {
     }
 }
 
-fn evaluate(
+fn evaluate_with_warning(
     ctx: &dyn Columns,
     value: &Datum,
     source: Option<&FieldType>,
     target: Target<'_>,
+    append_warning: impl FnMut(u16, &str),
 ) -> Result<Datum, EvalError> {
     let source = source.map(|field| tidb_query_expr::NativeCastStringSource {
         code: field.code().as_shared_string_type(),
@@ -48,7 +49,7 @@ fn evaluate(
         // The original handler owns any repeated limit/policy reads. Do not
         // substitute a cached limit or a precomputed warning here.
         |name| ctx.handle_allowed_packet_overflowed(name),
-        |code, message| ctx.append_warning(code, message),
+        append_warning,
     )
     .map_err(|error| match error {
         tidb_query_expr::NativeCastStringError::Child(error) => error,
@@ -61,6 +62,36 @@ fn evaluate(
         tidb_query_expr::NativeCastStringResult::Text(value) => Datum::new_string(value),
         tidb_query_expr::NativeCastStringResult::Bytes(value) => Datum::new_bytes(value),
     })
+}
+
+fn evaluate(
+    ctx: &dyn Columns,
+    value: &Datum,
+    source: Option<&FieldType>,
+    target: Target<'_>,
+) -> Result<Datum, EvalError> {
+    evaluate_with_warning(ctx, value, source, target, |code, message| {
+        ctx.append_warning(code, message)
+    })
+}
+
+/// Same native value kernel; the staged caller may retain exact warnings until
+/// its result/resource checks finish. No expression or alternate evaluator.
+pub(crate) fn eval_cast_char_reported_in(
+    ctx: &dyn Columns,
+    value: &Datum,
+    source: Option<&FieldType>,
+    len: Option<u32>,
+    charset: Option<&str>,
+    append_warning: impl FnMut(u16, &str),
+) -> Result<Datum, EvalError> {
+    evaluate_with_warning(
+        ctx,
+        value,
+        source,
+        Target::Char { len, charset },
+        append_warning,
+    )
 }
 
 pub(crate) fn eval_cast_char_in(

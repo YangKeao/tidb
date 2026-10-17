@@ -75,7 +75,7 @@ pub(crate) use cast_integer::{
 mod cast_real_unsigned;
 pub(crate) use cast_real_unsigned::eval_cast_real_unsigned_in;
 mod cast_string;
-pub(crate) use cast_string::{eval_cast_binary_in, eval_cast_char_in};
+pub(crate) use cast_string::{eval_cast_binary_in, eval_cast_char_in, eval_cast_char_reported_in};
 mod cast_vector;
 pub(crate) use cast_vector::eval_cast_vector;
 mod cast_time;

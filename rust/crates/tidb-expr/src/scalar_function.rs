@@ -3825,15 +3825,16 @@ fn batch_supported(expression: &Expression, target: EvalType) -> bool {
                 };
                 return carrier_matches(signature.output_type(), target)
                     && signature.arity() == function.args.len()
-                    && function.args.iter().enumerate().all(|(index, arg)| {
-                        let Some(carrier) = signature.argument_type(index) else {
-                            return false;
-                        };
-                        let Some(expected) = arg.static_type().map(FieldType::eval_type) else {
-                            return false;
-                        };
-                        carrier_matches(carrier, expected) && batch_supported(arg, expected)
-                    });
+                    && (signature.uses_native_value_inputs()
+                        || function.args.iter().enumerate().all(|(index, arg)| {
+                            let Some(carrier) = signature.argument_type(index) else {
+                                return false;
+                            };
+                            let Some(expected) = arg.static_type().map(FieldType::eval_type) else {
+                                return false;
+                            };
+                            carrier_matches(carrier, expected) && batch_supported(arg, expected)
+                        }));
             }
             let name = function.func_name.lowercase();
             if matches!(name, "char_length" | "character_length") {

@@ -938,4 +938,64 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn native_value_char_cast_keeps_stmt_warnings_in_serial_and_parallel_projection() {
+        let source = FieldType::new(FieldTypeCode::VarString)
+            .with_collation(tidb_datatype::Collation::Binary);
+        let target = FieldType::new(FieldTypeCode::VarString)
+            .with_flen(0)
+            .with_collation(tidb_datatype::Collation::GbkBin);
+        let root = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("cast_char"),
+            target.clone(),
+            vec![Expression::Constant(Constant::new(
+                Datum::Bytes(vec![b'a', 0xff, 0x81, 0x30]),
+                source,
+            ))],
+        ));
+        let reference = crate::StmtContext::for_query();
+        let expected = root
+            .clone()
+            .eval(&reference, tidb_chunk::row::Row::empty())
+            .unwrap();
+        let expected_warnings = reference.take_warnings();
+        assert_eq!(
+            expected_warnings
+                .iter()
+                .map(|warning| warning.1)
+                .collect::<Vec<_>>(),
+            vec![3854, 1406]
+        );
+        for workers in [0, 2] {
+            let context = crate::StmtContext::for_query();
+            let dual = TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+            let mut projection = ProjectionExec::new(
+                ExecutorMeta::new(
+                    Schema::new(vec![Column::new(1, target.clone())]),
+                    1,
+                    1,
+                    1024,
+                ),
+                vec![root.clone()],
+                Box::new(dual),
+                context.clone(),
+            )
+            .with_workers(workers);
+            projection.open().unwrap();
+            let mut output = projection.new_chunk();
+            projection.next(&mut output).unwrap();
+            assert_eq!(output.num_rows(), 1);
+            assert_eq!(
+                output.get_row(0).get_string(0).as_bytes(),
+                expected.sql_string().unwrap().as_bytes()
+            );
+            assert_eq!(context.take_warnings(), expected_warnings);
+            if workers == 0 {
+                let route = projection.evaluator_suite.batch_route_snapshot();
+                assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+            }
+            projection.close().unwrap();
+        }
+    }
 }

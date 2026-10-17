@@ -57,10 +57,11 @@ use tidb_query_expr::types::BATCH_MAX_SIZE;
 
 #[path = "batch_hosts.rs"]
 mod hosts;
-#[cfg(test)]
 #[path = "batch_values.rs"]
 mod native_values;
 use hosts::{NativeBatchHosts, NativeHostMetadata};
+use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
+use std::cell::RefCell;
 use tidb_query_expr::local::LocalHostServices;
 
 use crate::expr_collation::CollationInfo;
@@ -203,6 +204,13 @@ fn reserve<T>(values: &mut Vec<T>, count: usize) -> LocalResult<()> {
         .map_err(|_| resource("batch caller reservation failed"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeView {
+    Typed,
+    JsonBytes,
+    ValueToken,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum CallTarget {
     Kernel(FunctionRef),
@@ -211,20 +219,27 @@ enum CallTarget {
 
 #[derive(Debug)]
 enum SourceKind {
+    NativeConstant { value: Datum },
     Constant { value: ScalarValue },
     Column { index: usize },
     Call { target: CallTarget, arity: usize },
 }
 impl SourceKind {
-    fn capture(node: &Expression, sql: &FieldType, raw_json_bytes: bool) -> Result<Self> {
+    fn capture(node: &Expression, sql: &FieldType, view: NativeView) -> Result<Self> {
         Ok(match node {
+            Expression::Constant(value) if view == NativeView::ValueToken => Self::NativeConstant {
+                value: value
+                    .literal_value()
+                    .ok_or_else(|| BatchFailure::admission("nonliteral native source"))?
+                    .clone(),
+            },
             Expression::Constant(value) => Self::Constant {
                 value: source_literal(
                     value
                         .literal_value()
                         .ok_or_else(|| BatchFailure::admission("nonliteral batch source"))?,
                     sql,
-                    raw_json_bytes,
+                    view,
                 )?,
             },
             Expression::Column(column) => Self::Column {
@@ -245,7 +260,7 @@ impl SourceKind {
 struct NodeRecord {
     sql: FieldType,
     kind: SourceKind,
-    raw_json_bytes: bool,
+    view: NativeView,
 }
 
 struct BatchSource {
@@ -267,6 +282,7 @@ struct BatchSource {
     facts: BatchFacts,
     hosts: Option<HostCatalog>,
     host_metadata: Box<[NativeHostMetadata]>,
+    needs_native_values: bool,
     limits: BatchSourceLimits,
 }
 impl std::fmt::Debug for BatchSource {
@@ -281,7 +297,7 @@ impl std::fmt::Debug for BatchSource {
 struct CheckedNode<'a> {
     node: &'a Expression,
     sql: &'a FieldType,
-    raw_json_bytes: bool,
+    view: NativeView,
 }
 struct Budget {
     used: usize,
@@ -361,7 +377,7 @@ fn check_type(sql: &FieldType) -> Result<()> {
     }
     Ok(())
 }
-fn native_json_bytes_type() -> FieldType {
+fn native_bytes_type() -> FieldType {
     FieldType::new(FieldTypeCode::Blob).with_collation(tidb_datatype::Collation::Binary)
 }
 // Borrowed logical payload policy, before any conversion/clone. Charge the
@@ -389,8 +405,11 @@ fn literal_copy_budget(value: &Datum, sql: &FieldType) -> LocalResult<usize> {
         .ok_or_else(|| resource("native literal copy size overflow"))
 }
 
-fn source_literal(value: &Datum, sql: &FieldType, raw_json_bytes: bool) -> Result<ScalarValue> {
-    if raw_json_bytes {
+fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<ScalarValue> {
+    if view == NativeView::ValueToken {
+        return Err(binding("native value literals require a demanded source binding").into());
+    }
+    if view == NativeView::JsonBytes {
         return match (sql.eval_type(), value) {
             (NativeEvalType::Json, Datum::Null) => Ok(ScalarValue::Bytes(None)),
             (NativeEvalType::Json, Datum::Json(value)) => {
@@ -403,12 +422,26 @@ fn source_literal(value: &Datum, sql: &FieldType, raw_json_bytes: bool) -> Resul
     }
     strict_literal(value, sql)
 }
-fn raw_json_argument(function: &ScalarFunction) -> bool {
-    function.func_name.lowercase() == "json_type"
+fn argument_view(function: &ScalarFunction) -> NativeView {
+    if matches!(
+        resolve_call(function),
+        Ok((
+            CallTarget::Host(SqlBatchHostOperation::CastCharNative { .. }),
+            1
+        ))
+    ) {
+        return NativeView::ValueToken;
+    }
+    if function.func_name.lowercase() == "json_type"
         && function.args.len() == 1
         && function.args[0]
             .static_type()
             .is_some_and(|field| field.eval_type() == NativeEvalType::Json)
+    {
+        NativeView::JsonBytes
+    } else {
+        NativeView::Typed
+    }
 }
 fn strict_literal(value: &Datum, sql: &FieldType) -> Result<ScalarValue> {
     match (sql.eval_type(), value) {
@@ -519,11 +552,28 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
     let operation = match function.func_name.lowercase() {
         "concat" => Some(SqlBatchHostOperation::Concat),
         "concat_ws" => Some(SqlBatchHostOperation::ConcatWs),
-        "cast_char" => Some(SqlBatchHostOperation::CastCharInt {
-            len: function
+        "cast_char" => {
+            let len = function
                 .get_static_type()
-                .and_then(|field| u32::try_from(field.flen()).ok()),
-        }),
+                .and_then(|field| u32::try_from(field.flen()).ok());
+            if function
+                .args
+                .first()
+                .and_then(Expression::static_type)
+                .is_some_and(|field| {
+                    field.eval_type() == NativeEvalType::Int && check_type(field).is_ok()
+                        && function.args.first().is_some_and(|arg| match arg {
+                            Expression::Constant(value) => matches!(value.literal_value(), Some(Datum::Null | Datum::Int(_)))
+                                || matches!(value.literal_value(), Some(Datum::UInt(_)) if field.is_unsigned()),
+                            _ => true,
+                        })
+                })
+            {
+                Some(SqlBatchHostOperation::CastCharInt { len })
+            } else {
+                Some(SqlBatchHostOperation::CastCharNative { len })
+            }
+        }
         "regexp_like" => Some(SqlBatchHostOperation::RegexpLike {
             case_insensitive: tidb_datatype::is_ci_collation(function.derived_collation().name()),
         }),
@@ -544,8 +594,12 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
             })
             && function.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
-                    batch_eval_type(field.eval_type()) == operation.argument_type()
-                        && (!field.is_unsigned() || field.eval_type() == NativeEvalType::Int)
+                    if matches!(operation, SqlBatchHostOperation::CastCharNative { .. }) {
+                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some())
+                    } else {
+                        batch_eval_type(field.eval_type()) == operation.argument_type()
+                            && (!field.is_unsigned() || field.eval_type() == NativeEvalType::Int)
+                    }
                 })
             });
         return exact
@@ -558,6 +612,61 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
     }
     batch_fact(function).map(|(function, arity)| (CallTarget::Kernel(function), arity))
 }
+// Follows the registry's identity policy without evaluating the expression.
+// Complete preflight bounds this path before snapshots/metadata are built.
+fn native_int_is_unsigned(mut node: &Expression, limits: CompileLimits) -> Result<bool> {
+    use tidb_query_expr::local::{batch_int_kind, BatchIntKind};
+    for _ in 0..limits.max_depth {
+        match node {
+            Expression::Constant(value) => {
+                return match value.literal_value() {
+                    Some(Datum::Int(_)) => Ok(false),
+                    Some(Datum::UInt(_)) => Ok(true),
+                    Some(Datum::Null) => Ok(false),
+                    _ => Err(BatchFailure::admission(
+                        "integer result kind needs native value transport",
+                    )),
+                }
+            }
+            Expression::Column(column) => {
+                return column
+                    .get_static_type()
+                    .map(FieldType::is_unsigned)
+                    .ok_or_else(|| BatchFailure::admission("integer source has no declaration"))
+            }
+            Expression::ScalarFunction(function) => match resolve_call(function)?.0 {
+                CallTarget::Kernel(function_ref) => match batch_int_kind(function_ref) {
+                    Some(BatchIntKind::Signed) => return Ok(false),
+                    Some(BatchIntKind::Unsigned) => return Ok(true),
+                    Some(BatchIntKind::FirstArgument) => {
+                        node = function
+                            .args
+                            .first()
+                            .ok_or_else(|| binding("integer identity lost its argument"))?;
+                    }
+                    None => {
+                        return Err(BatchFailure::admission(
+                            "integer result kind has no registry policy",
+                        ))
+                    }
+                },
+                CallTarget::Host(operation) if operation.output_type() == TikvEvalType::Int => {
+                    return Ok(false)
+                }
+                _ => {
+                    return Err(BatchFailure::admission(
+                        "integer result kind has no native policy",
+                    ))
+                }
+            },
+            Expression::CorrelatedColumn(_) => {
+                return Err(BatchFailure::admission("correlated integer kind"))
+            }
+        }
+    }
+    Err(resource("integer kind metadata depth policy exceeded").into())
+}
+
 fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
     let name = match function.func_name.lowercase() {
         "character_length" => "char_length",
@@ -921,16 +1030,20 @@ fn preflight<'a>(
     }
     let mut pending = Vec::new();
     let mut checked = Vec::new();
-    budget.array::<(&Expression, usize, bool)>(1)?;
+    budget.array::<(&Expression, usize, NativeView)>(1)?;
     reserve(&mut pending, 1)?;
-    pending.push((root, 1usize, false));
+    pending.push((root, 1usize, NativeView::Typed));
     let mut scheduled = 1usize;
-    while let Some((node, depth, raw_json_bytes)) = pending.pop() {
+    while let Some((node, depth, view)) = pending.pop() {
         let (sql, collation) = parts(node)?;
-        check_type(sql)?;
+        if view != NativeView::ValueToken {
+            check_type(sql)?;
+        } else if !matches!(node, Expression::Constant(_) | Expression::Column(_)) {
+            return Err(binding("native value view requires a leaf source").into());
+        }
         budget.field(sql, 3)?; // native source, projected declaration, C snapshot
-        if raw_json_bytes {
-            budget.field(&native_json_bytes_type(), 3)?;
+        if view != NativeView::Typed {
+            budget.field(&native_bytes_type(), 3)?;
         }
         budget.array::<CheckedNode<'_>>(1)?;
         budget.array::<NodeRecord>(1)?;
@@ -944,7 +1057,17 @@ fn preflight<'a>(
                 let literal = value
                     .literal_value()
                     .ok_or_else(|| BatchFailure::admission("parameter/deferred batch source"))?;
-                budget.add(literal_copy_budget(literal, sql)?)?;
+                if view == NativeView::ValueToken {
+                    budget.add(
+                        native_payload_bytes(literal)?
+                            .checked_mul(3)
+                            .ok_or_else(|| resource("native literal source copy size overflow"))?,
+                    )?;
+                    budget.array::<usize>(1)?;
+                    budget.field(&native_bytes_type(), 2)?;
+                } else {
+                    budget.add(literal_copy_budget(literal, sql)?)?;
+                }
             }
             Expression::Column(column) => {
                 if column.virtual_expr.is_some() || column.correlated_col_unique_id != 0 {
@@ -969,6 +1092,17 @@ fn preflight<'a>(
                     budget.array::<NativeHostMetadata>(1)?;
                     if function.func_name.lowercase() == "cast_char" {
                         budget.add(sql.charset_name().len())?;
+                        if matches!(
+                            resolve_call(function)?.0,
+                            CallTarget::Host(SqlBatchHostOperation::CastCharNative { .. })
+                        ) {
+                            budget.field(
+                                function.args[0]
+                                    .static_type()
+                                    .expect("checked native argument type"),
+                                1,
+                            )?;
+                        }
                     }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
@@ -997,29 +1131,28 @@ fn preflight<'a>(
                     .checked_add(1)
                     .filter(|depth| *depth <= limits.tree.max_depth)
                     .ok_or_else(|| resource("batch source depth policy exceeded"))?;
-                budget.array::<(&Expression, usize, bool)>(arity)?;
+                budget.array::<(&Expression, usize, NativeView)>(arity)?;
                 reserve(&mut pending, arity)?;
                 for child in function.args.iter().rev() {
-                    pending.push((child, child_depth, raw_json_argument(function)));
+                    pending.push((child, child_depth, argument_view(function)));
                 }
             }
             Expression::CorrelatedColumn(_) => unreachable!(),
         }
         reserve(&mut checked, 1)?;
-        checked.push(CheckedNode {
-            node,
-            sql,
-            raw_json_bytes,
-        });
+        checked.push(CheckedNode { node, sql, view });
     }
     // Even a temporary representability conversion must wait for the complete
     // source/schema/payload byte gate, including literals later in the graph.
     for item in &checked {
         if let Expression::Constant(value) = item.node {
+            if item.view == NativeView::ValueToken {
+                continue;
+            }
             source_literal(
                 value.literal_value().expect("checked literal"),
                 item.sql,
-                item.raw_json_bytes,
+                item.view,
             )?;
         }
         if let Expression::Column(column) = item.node {
@@ -1143,15 +1276,15 @@ fn lower(
     reserve(&mut nodes, checked.len())?;
     reserve(&mut build, checked.len())?;
     for (ordinal, item) in checked.into_iter().enumerate() {
-        let field = if item.raw_json_bytes {
-            projected(&native_json_bytes_type(), new_collation)?
+        let field = if item.view != NativeView::Typed {
+            projected(&native_bytes_type(), new_collation)?
         } else {
             projected(item.sql, new_collation)?
         };
-        let kind = SourceKind::capture(item.node, item.sql, item.raw_json_bytes)?;
+        let kind = SourceKind::capture(item.node, item.sql, item.view)?;
         let construction = match &kind {
             SourceKind::Constant { value, .. } => BuildKind::Literal(value.clone()),
-            SourceKind::Column { .. } => {
+            SourceKind::Column { .. } | SourceKind::NativeConstant { .. } => {
                 let slot = bindings.len();
                 reserve(&mut bindings, 1)?;
                 reserve(&mut schema, 1)?;
@@ -1183,12 +1316,19 @@ fn lower(
                         let mut arguments = Vec::new();
                         reserve(&mut arguments, *arity)?;
                         for argument in &sql.args {
-                            arguments.push(projected(
-                                argument
-                                    .static_type()
-                                    .ok_or_else(|| binding("host argument lost its type"))?,
-                                new_collation,
-                            )?);
+                            arguments.push(
+                                if matches!(operation, SqlBatchHostOperation::CastCharNative { .. })
+                                {
+                                    projected(&native_bytes_type(), new_collation)?
+                                } else {
+                                    projected(
+                                        argument.static_type().ok_or_else(|| {
+                                            binding("host argument lost its type")
+                                        })?,
+                                        new_collation,
+                                    )?
+                                },
+                            );
                         }
                         let slot = host_entries.len();
                         reserve(&mut host_entries, 1)?;
@@ -1197,11 +1337,32 @@ fn lower(
                             SqlBatchHostOperation::RegexpLike { .. } => {
                                 NativeHostMetadata::Regexp(sql.batch_regexp_like_invocation())
                             }
+                            SqlBatchHostOperation::CastCharNative { .. } => {
+                                let field =
+                                    sql.get_static_type().expect("checked native cast result");
+                                NativeHostMetadata::CharNative {
+                                    charset: if field.is_binary_string() {
+                                        "BINARY"
+                                    } else {
+                                        field.charset_name()
+                                    }
+                                    .into(),
+                                    source_type: snapshot_field_type(
+                                        sql.args[0]
+                                            .static_type()
+                                            .expect("checked native argument type"),
+                                    ),
+                                    argument_node: ordinal.checked_add(1).ok_or_else(|| {
+                                        resource("native argument source ordinal overflow")
+                                    })?,
+                                }
+                            }
                             SqlBatchHostOperation::CastCharInt { .. } => {
                                 let field = sql
                                     .get_static_type()
                                     .expect("checked character cast result");
                                 NativeHostMetadata::CharCast {
+                                    unsigned: native_int_is_unsigned(&sql.args[0], limits.tree)?,
                                     charset: if field.is_binary_string() {
                                         "BINARY"
                                     } else {
@@ -1234,7 +1395,7 @@ fn lower(
         nodes.push(NodeRecord {
             sql: snapshot_field_type(item.sql),
             kind,
-            raw_json_bytes: item.raw_json_bytes,
+            view: item.view,
         });
     }
     let hosts = if host_entries.is_empty() {
@@ -1324,6 +1485,7 @@ fn lower(
     let mut detached = Vec::new();
     reserve(&mut detached, row_schema.len())?;
     detached.extend(row_schema.iter().map(snapshot_field_type));
+    let needs_native_values = nodes.iter().any(|node| node.view == NativeView::ValueToken);
     Ok(Arc::new(BatchSource {
         owner: Arc::clone(&suite.program),
         root_identity: root as *const Expression as usize,
@@ -1338,6 +1500,7 @@ fn lower(
         facts,
         hosts,
         host_metadata: host_metadata.into_boxed_slice(),
+        needs_native_values,
         limits,
     }))
 }
@@ -1717,6 +1880,7 @@ trait NativeDatumSource {
 }
 struct NativeChunk<'a> {
     source: &'a BatchSource,
+    native_values: Option<&'a RefCell<NativeValueStore>>,
     input: &'a Chunk,
     selection: &'a [usize],
 }
@@ -1743,6 +1907,40 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch demanded occurrence/type differs"));
         }
         let node = &self.source.nodes[ordinal];
+        if node.view == NativeView::ValueToken {
+            let store = self
+                .native_values
+                .ok_or_else(|| binding("native source has no value store"))?;
+            let token = match &node.kind {
+                SourceKind::NativeConstant { value } => store.borrow_mut().insert_clone(
+                    value,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: ordinal, row },
+                )?,
+                SourceKind::Column { index } => {
+                    let column = self.input.column(*index);
+                    let cells = column.raw_cells();
+                    store
+                        .borrow()
+                        .precheck_import(if cells.is_null(row.input_row) {
+                            0
+                        } else {
+                            cells.get(row.input_row).len()
+                        })?;
+                    let value = self
+                        .input
+                        .physical_row(row.input_row)
+                        .get_datum(*index, &node.sql);
+                    store.borrow_mut().insert_clone(
+                        &value,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: ordinal, row },
+                    )?
+                }
+                _ => return Err(binding("native value binding has no native source")),
+            };
+            return Ok(Datum::Bytes(token));
+        }
         let SourceKind::Column { index, .. } = &node.kind else {
             return Err(binding("batch slot has no native column"));
         };
@@ -1751,7 +1949,7 @@ impl NativeDatumSource for NativeChunk<'_> {
             .input
             .physical_row(row.input_row)
             .get_datum(*index, &node.sql);
-        if node.raw_json_bytes {
+        if node.view == NativeView::JsonBytes {
             return match value {
                 Datum::Null => Ok(Datum::Null),
                 Datum::Json(value) => Ok(Datum::Bytes(value.encoded())),
@@ -1782,11 +1980,14 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch occurrence/type differs"));
         }
         let node = &self.source.nodes[ordinal];
+        if node.view == NativeView::ValueToken {
+            return Ok(None);
+        }
         let SourceKind::Column { index, .. } = &node.kind else {
             return Err(binding("batch slot has no native column"));
         };
         let column = self.input.column(*index);
-        if node.raw_json_bytes {
+        if node.view == NativeView::JsonBytes {
             let cells = column.raw_cells();
             let payload = physical_rows
                 .iter()
@@ -2202,6 +2403,13 @@ impl PreparedBatch {
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
         let source = Arc::clone(&self.source);
+        let native_values = if source.needs_native_values {
+            Some(RefCell::new(NativeValueStore::new(
+                self.max_materialization_retained_bytes,
+            )?))
+        } else {
+            None
+        };
         let mut hosts = source.hosts.clone().map(|catalog| {
             NativeBatchHosts::new(
                 catalog,
@@ -2209,6 +2417,7 @@ impl PreparedBatch {
                 native_ctx,
                 self.max_materialization_retained_bytes,
             )
+            .with_native_values(native_values.as_ref())
         });
         // TiKV deliberately bounds one driver invocation. A TiDB Chunk may be
         // wider than that boundary, so keep one canonical prepared route and
@@ -2222,8 +2431,12 @@ impl PreparedBatch {
                 .len()
                 .min(start.saturating_add(self.window_size));
             let selection = &self.selection[start..end];
+            if let Some(store) = &native_values {
+                store.borrow_mut().begin_window()?;
+            }
             let mut native = NativeChunk {
                 source: &source,
+                native_values: native_values.as_ref(),
                 input,
                 selection,
             };

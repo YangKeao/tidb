@@ -34,7 +34,8 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N4b1: native integer cast_char through the same HostFrame/shared string-cast primitive, exact unsigned bits/length/charset/warning contents and source-only metadata. Front63/full1415same4, core1042same6,24 actual rewritten SQL executions without fallback/refusal; lint/scoped clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n4b1.md.
 - [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
 - [x] (2026-10-17) N5a1: TEST-ONLY native value store prototype; all19 exact representations, namespace/generation/role/source/row validation, logical resource gates. Three tests/full1418same4/lint/fmt pass. No new production SQL coverage. Receipt rust/docs/evidence/no-fallback-n5a1-prototype.md.
-- [ ] N5a: lossless invocation-scoped native value handles; validate namespace/generation/role/source/row provenance and bounded value retention before extending CHAR beyond wire carriers. Prototype first, then integrate demanded native leaves and validate all19 kinds/representation edges.
+- [x] (2026-10-18) N5a2: production native leaf handles and value-only CHAR consumer; all19 actual kinds, hybrid columns, exact diagnostics and real SQL/Projection validated. Receipt rust/docs/evidence/no-fallback-n5a2.md. General computed native values remain N5 work.
+- [x] N5a: lossless invocation-scoped native value handles; validate namespace/generation/role/source/row provenance and bounded value retention before extending CHAR beyond wire carriers. Prototype first, then integrate demanded native leaves and validate all19 kinds/representation edges.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -298,3 +299,22 @@ N5a1 outcome: test-only ownership/handle protocol is runnable and verified for
 all19 native storage kinds and adversarial provenance/lifecycle cases. Keep the
 prototype behind cfg(test) until actual native input bindings and the closed
 consumer are integrated. This checkpoint adds no production SQL coverage.
+
+
+N5a2 outcome: native leaf inputs now retain actual Datum representations in an
+invocation-local store. Original schema and source provenance remain checked;
+private handles pass through the existing frame driver to a closed CHAR host.
+It calls the existing value-only native cast primitive, captures exact warnings
+under a logical budget, and publishes them after result/resource checks. No
+Expression evaluation callback or alternate local program is introduced.
+
+The N4b1 assumption that integer declaration flags identify the actual native
+value kind was wrong: an Int(-1) declared UNSIGNED rendered UInt64::MAX. A RED
+comparison reproduced this and the existing core result-kind registry now
+propagates actual signedness through supported wrappers. This correction is
+included here, along with UInt literals that cannot use the signed wire lane.
+
+Native source/SDK decoding and formatting temporaries remain outside the
+logical observer. This is not a hard allocator or statement memory bound.
+General computed native inputs, native root outputs, remaining function/context
+coverage and other callers still require work; global fallback remains active.

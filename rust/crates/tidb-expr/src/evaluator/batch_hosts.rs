@@ -26,7 +26,15 @@ use tidb_query_expr::local::{
 pub(super) enum NativeHostMetadata {
     Plain,
     Regexp(tidb_query_expr::NativeRegexpInvocation),
-    CharCast { charset: Box<str> },
+    CharCast {
+        charset: Box<str>,
+        unsigned: bool,
+    },
+    CharNative {
+        charset: Box<str>,
+        source_type: FieldType,
+        argument_node: usize,
+    },
 }
 impl NativeHostMetadata {
     fn regexp(&self) -> Option<&tidb_query_expr::NativeRegexpInvocation> {
@@ -38,6 +46,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    CastCharNative {
+        len: Option<u32>,
+    },
     CastCharInt {
         len: Option<u32>,
     },
@@ -52,6 +63,7 @@ enum SqlDemand {
 }
 struct NativeTask {
     slot: HostSlot,
+    row: InputRow,
     arity: usize,
     demand: SqlDemand,
     values: Vec<Option<Vec<u8>>>,
@@ -61,15 +73,15 @@ impl NativeTask {
         match &self.demand {
             SqlDemand::Concat { demand, .. } => demand.next_argument(),
             SqlDemand::RegexpLike { next, .. } => Ok(*next),
-            SqlDemand::CastCharInt { .. } => Ok(Some(0)),
+            SqlDemand::CastCharInt { .. } | SqlDemand::CastCharNative { .. } => Ok(Some(0)),
         }
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Concat { demand, .. } => demand.observe(len),
-            SqlDemand::CastCharInt { .. } => Err(LocalError::HostContract(
-                "character cast cannot buffer a prefix".into(),
-            )),
+            SqlDemand::CastCharInt { .. } | SqlDemand::CastCharNative { .. } => Err(
+                LocalError::HostContract("character cast cannot buffer a prefix".into()),
+            ),
             SqlDemand::RegexpLike { next, .. } => {
                 *next = if len.is_some() && self.values.len() < self.arity {
                     Some(self.values.len())
@@ -91,6 +103,69 @@ impl NativeTask {
         )
     }
 }
+struct CapturedWarnings {
+    rows: Vec<(u16, String)>,
+    base_bytes: usize,
+    max_bytes: usize,
+    failure: Option<LocalError>,
+}
+impl CapturedWarnings {
+    fn retained_bytes(&self) -> LocalResult<usize> {
+        self.rows.iter().try_fold(
+            array_bytes::<(u16, String)>(self.rows.capacity())?,
+            |bytes, (_, message)| {
+                bytes
+                    .checked_add(message.capacity())
+                    .ok_or_else(|| resource("native warning retained size overflow"))
+            },
+        )
+    }
+    fn check(&self, extra: usize) -> LocalResult<()> {
+        let bytes = self
+            .base_bytes
+            .checked_add(self.retained_bytes()?)
+            .and_then(|bytes| bytes.checked_add(extra))
+            .ok_or_else(|| resource("native warning capture size overflow"))?;
+        if bytes > self.max_bytes {
+            Err(resource("native warning capture policy exceeded"))
+        } else {
+            Ok(())
+        }
+    }
+    fn capture(&mut self, code: u16, message: &str) {
+        if self.failure.is_some() {
+            return;
+        }
+        if let Err(error) = self.try_capture(code, message) {
+            self.failure = Some(error);
+        }
+    }
+    fn try_capture(&mut self, code: u16, message: &str) -> LocalResult<()> {
+        let growth = if self.rows.len() == self.rows.capacity() {
+            size_of::<(u16, String)>()
+        } else {
+            0
+        };
+        self.check(
+            growth
+                .checked_add(message.len())
+                .ok_or_else(|| resource("native warning growth overflow"))?,
+        )?;
+        self.rows
+            .try_reserve_exact(1)
+            .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+        self.check(message.len())?;
+        let mut owned = String::new();
+        owned
+            .try_reserve_exact(message.len())
+            .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+        owned.push_str(message);
+        self.check(owned.capacity())?;
+        self.rows.push((code, owned));
+        Ok(())
+    }
+}
+
 struct TaskSlot {
     generation: u64,
     task: Option<NativeTask>,
@@ -100,6 +175,7 @@ pub(super) struct NativeBatchHosts<'a> {
     catalog: HostCatalog,
     context: &'a dyn Columns,
     metadata: &'a [NativeHostMetadata],
+    native_values: Option<&'a RefCell<NativeValueStore>>,
     slots: Vec<TaskSlot>,
     generation: u64,
     max_retained_bytes: usize,
@@ -115,12 +191,20 @@ impl<'a> NativeBatchHosts<'a> {
         Self {
             catalog,
             metadata,
+            native_values: None,
             context,
             slots: Vec::new(),
             generation: 0,
             max_retained_bytes,
             native_error: None,
         }
+    }
+    pub(super) fn with_native_values(
+        mut self,
+        values: Option<&'a RefCell<NativeValueStore>>,
+    ) -> Self {
+        self.native_values = values;
+        self
     }
     pub(super) fn take_native_error(&mut self) -> Option<EvalError> {
         self.native_error.take()
@@ -215,11 +299,109 @@ impl<'a> NativeBatchHosts<'a> {
         )?;
         Ok(VectorValue::Bytes(output))
     }
+    fn finish_native_cast(
+        &mut self,
+        id: &HostTaskId,
+        token: &[u8],
+        len: Option<u32>,
+    ) -> LocalResult<VectorValue> {
+        let task = self.task(id)?;
+        let Some(NativeHostMetadata::CharNative {
+            charset,
+            source_type,
+            argument_node,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("native character cast lost its source metadata"));
+        };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("native character cast has no value store"))?;
+        let value = store.borrow().clone_for_kernel(
+            token,
+            NativeValueRole::CharInput,
+            NativeValueOrigin {
+                node: *argument_node,
+                row: task.row,
+            },
+        )?;
+        let input_charge = native_payload_bytes(&value)?
+            .checked_mul(2)
+            .ok_or_else(|| resource("native cast input allowance overflow"))?;
+        let base_bytes = self
+            .retained_bytes()?
+            .checked_add(input_charge)
+            .ok_or_else(|| resource("native cast live input size overflow"))?;
+        self.check_bytes(base_bytes)?;
+        let mut warnings = CapturedWarnings {
+            rows: Vec::new(),
+            base_bytes,
+            max_bytes: self.max_retained_bytes,
+            failure: None,
+        };
+        let result = if value.is_null() {
+            Ok(Datum::Null)
+        } else {
+            crate::cast::validate_cast_value_admission(
+                &value,
+                tidb_query_expr::NativeCastAdmissionTarget::String,
+            )
+            .and_then(|()| {
+                crate::tikv::eval_cast_char_reported_in(
+                    self.context,
+                    &value,
+                    Some(source_type),
+                    len,
+                    Some(charset),
+                    |code, message| warnings.capture(code, message),
+                )
+            })
+        };
+        if let Some(error) = warnings.failure.take() {
+            return Err(error);
+        }
+        let result = match result {
+            Ok(value) => value,
+            Err(error) => {
+                for (code, message) in &warnings.rows {
+                    self.context.append_warning(*code, message);
+                }
+                return self.native_failure(error);
+            }
+        };
+        let bytes = match result {
+            Datum::Null => None,
+            Datum::String(value) => Some(value.into_bytes()),
+            Datum::Bytes(value) => Some(value),
+            _ => return Err(binding("native CHAR kernel returned an unexpected kind")),
+        };
+        let length = bytes.as_ref().map_or(0, Vec::len);
+        let capacity = bytes.as_ref().map_or(0, Vec::capacity);
+        warnings.check(
+            capacity
+                .checked_add(length)
+                .and_then(|bytes| bytes.checked_add(size_of::<usize>().saturating_mul(4)))
+                .ok_or_else(|| resource("native CHAR output overlap overflow"))?,
+        )?;
+        let mut output = ChunkedVecBytes::try_with_capacities(1, length)
+            .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+        output.push_ref(bytes.as_deref());
+        warnings.check(
+            output
+                .retained_heap_bytes()
+                .and_then(|size| size.checked_add(capacity))
+                .ok_or_else(|| resource("native CHAR result size overflow"))?,
+        )?;
+        for (code, message) in &warnings.rows {
+            self.context.append_warning(*code, message);
+        }
+        self.slots[id.slot].task = None;
+        Ok(VectorValue::Bytes(output))
+    }
     fn finish_int_cast(
         &mut self,
         id: &HostTaskId,
         scalar: ScalarValueRef<'_>,
-        unsigned: bool,
         len: Option<u32>,
     ) -> LocalResult<VectorValue> {
         use tidb_query_datatype::codec::native_sql_string::{
@@ -237,7 +419,9 @@ impl<'a> NativeBatchHosts<'a> {
                 .checked_add(256)
                 .ok_or_else(|| resource("integer character cast retained size overflow"))?,
         )?;
-        let Some(NativeHostMetadata::CharCast { charset }) = self.metadata.get(slot.index()) else {
+        let Some(NativeHostMetadata::CharCast { charset, unsigned }) =
+            self.metadata.get(slot.index())
+        else {
             return Err(LocalError::HostContract(
                 "character cast has no target metadata".into(),
             ));
@@ -246,7 +430,7 @@ impl<'a> NativeBatchHosts<'a> {
             unreachable!("checked Int")
         };
         let value = if let Some(value) = value {
-            let (input, display) = if unsigned {
+            let (input, display) = if *unsigned {
                 (
                     NativeCastStringInput::UInt(*value as u64),
                     NativeSqlStringInput::UInt(*value as u64),
@@ -410,6 +594,19 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            SqlBatchHostOperation::CastCharNative { len } => {
+                if self.native_values.is_none()
+                    || !matches!(
+                        self.metadata.get(invocation.slot.index()),
+                        Some(NativeHostMetadata::CharNative { .. })
+                    )
+                {
+                    return Err(LocalError::HostContract(
+                        "native character cast lacks value/metadata capability".into(),
+                    ));
+                }
+                SqlDemand::CastCharNative { len }
+            }
             SqlBatchHostOperation::CastCharInt { len } => {
                 if !matches!(
                     self.metadata.get(invocation.slot.index()),
@@ -463,6 +660,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         };
         let task = NativeTask {
             slot: invocation.slot,
+            row: invocation.row,
             arity: invocation.arg_types.len(),
             demand,
             values: Vec::new(),
@@ -505,14 +703,17 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 "SQL host reply differs from its demanded argument".into(),
             ));
         }
+        if let SqlDemand::CastCharNative { len } = &task.demand {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native value handle cannot be wire NULL"));
+            };
+            return self
+                .finish_native_cast(id, token, *len)
+                .map(HostStep::Ready);
+        }
         if let SqlDemand::CastCharInt { len } = &task.demand {
             return self
-                .finish_int_cast(
-                    id,
-                    reply.values.get_scalar_ref(0),
-                    reply.field_type.get_flag() & (1 << 5) != 0,
-                    *len,
-                )
+                .finish_int_cast(id, reply.values.get_scalar_ref(0), *len)
                 .map(HostStep::Ready);
         }
         let ScalarValueRef::Bytes(bytes) = reply.values.get_scalar_ref(0) else {
@@ -689,6 +890,7 @@ mod tests {
         let slot = catalog.slot(0).unwrap();
         let metadata = [NativeHostMetadata::CharCast {
             charset: "utf8mb4".into(),
+            unsigned: false,
         }];
         let context = Warnings(std::cell::Cell::new(0));
         let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 256);
@@ -727,5 +929,118 @@ mod tests {
         assert!(provider.take_native_error().is_none());
         provider.cancel(&task);
         assert!(provider.task(&task).is_err());
+    }
+
+    #[test]
+    fn native_value_cast_warning_budget_and_forged_provenance_are_terminal() {
+        struct Warnings(std::cell::Cell<usize>);
+        impl Columns for Warnings {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let argument: tipb::FieldType = tidb_query_datatype::FieldTypeTp::Blob.into();
+        let output: tipb::FieldType = tidb_query_datatype::FieldTypeTp::VarString.into();
+        let args = [argument.clone()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::CastCharNative { len: Some(1) },
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: output.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::CharNative {
+            charset: "gbk".into(),
+            source_type: string_ty_for_test(),
+            argument_node: 3,
+        }];
+        let values = RefCell::new(NativeValueStore::new(1024 * 1024).unwrap());
+        values.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let token = values
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Bytes(vec![0xff; 100]),
+                NativeValueRole::CharInput,
+                NativeValueOrigin { node: 3, row },
+            )
+            .unwrap();
+        let wrong = values
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Int(1),
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                },
+            )
+            .unwrap();
+        let context = Warnings(std::cell::Cell::new(0));
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 512)
+            .with_native_values(Some(&values));
+        let mut ctx = EvalContext::default();
+        let invocation = || HostInvocation {
+            slot,
+            row,
+            arg_types: &args,
+            return_type: &output,
+        };
+        let HostStart::Pending { task, .. } = provider.start(&mut ctx, invocation()).unwrap()
+        else {
+            panic!("request")
+        };
+        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let failure = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &argument,
+                    values: &input,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(failure, LocalError::ResourceLimit(reason) if reason == "native warning capture policy exceeded")
+        );
+        assert_eq!(context.0.get(), 0);
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+        let HostStart::Pending { task, .. } = provider.start(&mut ctx, invocation()).unwrap()
+        else {
+            panic!("request")
+        };
+        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong)), 1);
+        assert!(matches!(
+            provider.resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &argument,
+                    values: &input
+                }
+            ),
+            Err(LocalError::BindingContract(_))
+        ));
+        assert_eq!(context.0.get(), 0);
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+    }
+    fn string_ty_for_test() -> FieldType {
+        FieldType::new(FieldTypeCode::VarString).with_collation(tidb_datatype::Collation::Binary)
     }
 }
