@@ -23,7 +23,24 @@ use tidb_query_expr::local::{
     HostCatalogKey, HostInvocation, HostSlot, HostStart, HostStep, HostTaskId, LocalHostServices,
 };
 
+pub(super) enum NativeHostMetadata {
+    Plain,
+    Regexp(tidb_query_expr::NativeRegexpInvocation),
+    CharCast { charset: Box<str> },
+}
+impl NativeHostMetadata {
+    fn regexp(&self) -> Option<&tidb_query_expr::NativeRegexpInvocation> {
+        match self {
+            Self::Regexp(invocation) => Some(invocation),
+            _ => None,
+        }
+    }
+}
+
 enum SqlDemand {
+    CastCharInt {
+        len: Option<u32>,
+    },
     Concat {
         kind: ConcatKind,
         demand: ConcatDemand,
@@ -44,11 +61,15 @@ impl NativeTask {
         match &self.demand {
             SqlDemand::Concat { demand, .. } => demand.next_argument(),
             SqlDemand::RegexpLike { next, .. } => Ok(*next),
+            SqlDemand::CastCharInt { .. } => Ok(Some(0)),
         }
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Concat { demand, .. } => demand.observe(len),
+            SqlDemand::CastCharInt { .. } => Err(LocalError::HostContract(
+                "character cast cannot buffer a prefix".into(),
+            )),
             SqlDemand::RegexpLike { next, .. } => {
                 *next = if len.is_some() && self.values.len() < self.arity {
                     Some(self.values.len())
@@ -78,7 +99,7 @@ struct TaskSlot {
 pub(super) struct NativeBatchHosts<'a> {
     catalog: HostCatalog,
     context: &'a dyn Columns,
-    regexp_invocations: &'a [Option<tidb_query_expr::NativeRegexpInvocation>],
+    metadata: &'a [NativeHostMetadata],
     slots: Vec<TaskSlot>,
     generation: u64,
     max_retained_bytes: usize,
@@ -87,13 +108,13 @@ pub(super) struct NativeBatchHosts<'a> {
 impl<'a> NativeBatchHosts<'a> {
     pub(super) fn new(
         catalog: HostCatalog,
-        regexp_invocations: &'a [Option<tidb_query_expr::NativeRegexpInvocation>],
+        metadata: &'a [NativeHostMetadata],
         context: &'a dyn Columns,
         max_retained_bytes: usize,
     ) -> Self {
         Self {
             catalog,
-            regexp_invocations,
+            metadata,
             context,
             slots: Vec::new(),
             generation: 0,
@@ -194,6 +215,91 @@ impl<'a> NativeBatchHosts<'a> {
         )?;
         Ok(VectorValue::Bytes(output))
     }
+    fn finish_int_cast(
+        &mut self,
+        id: &HostTaskId,
+        scalar: ScalarValueRef<'_>,
+        unsigned: bool,
+        len: Option<u32>,
+    ) -> LocalResult<VectorValue> {
+        use tidb_query_datatype::codec::native_sql_string::{
+            native_sql_string, NativeSqlStringInput,
+        };
+        use tidb_query_expr::{
+            NativeCastStringError, NativeCastStringInput, NativeCastStringResult,
+            NativeCastStringTarget,
+        };
+        let slot = self.task(id)?.slot;
+        // Integer display is at most 20 bytes. Bound both temporary strings,
+        // the output byte vector and its offsets before emitting any warning.
+        self.check_bytes(
+            self.retained_bytes()?
+                .checked_add(256)
+                .ok_or_else(|| resource("integer character cast retained size overflow"))?,
+        )?;
+        let Some(NativeHostMetadata::CharCast { charset }) = self.metadata.get(slot.index()) else {
+            return Err(LocalError::HostContract(
+                "character cast has no target metadata".into(),
+            ));
+        };
+        let ScalarValueRef::Int(value) = scalar else {
+            unreachable!("checked Int")
+        };
+        let value = if let Some(value) = value {
+            let (input, display) = if unsigned {
+                (
+                    NativeCastStringInput::UInt(*value as u64),
+                    NativeSqlStringInput::UInt(*value as u64),
+                )
+            } else {
+                (
+                    NativeCastStringInput::Int(*value),
+                    NativeSqlStringInput::Int(*value),
+                )
+            };
+            let result = tidb_query_expr::native_cast_string(
+                input,
+                NativeCastStringTarget::Char {
+                    len,
+                    charset: Some(charset),
+                },
+                None,
+                || self.context.connection_charset_info().0,
+                || native_sql_string(display),
+                || self.context.max_allowed_packet(),
+                |name| self.context.handle_allowed_packet_overflowed(name),
+                |code, message| self.context.append_warning(code, message),
+            );
+            match result {
+                Ok(NativeCastStringResult::Text(value)) => Some(value.into_bytes()),
+                Ok(NativeCastStringResult::Bytes(value)) => Some(value),
+                Ok(NativeCastStringResult::Null) => None,
+                Err(NativeCastStringError::Child(error)) => return self.native_failure(error),
+                Err(NativeCastStringError::InvalidUtf8StringCoercion) => {
+                    return self
+                        .native_failure(EvalError::Unsupported("invalid UTF-8 string coercion"))
+                }
+            }
+        } else {
+            None
+        };
+        let mut output =
+            ChunkedVecBytes::try_with_capacities(1, value.as_ref().map_or(0, Vec::len))
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+        output.push_ref(value.as_deref());
+        self.check_bytes(
+            self.retained_bytes()?
+                .checked_add(
+                    output
+                        .retained_heap_bytes()
+                        .ok_or_else(|| resource("character cast output size overflow"))?,
+                )
+                .and_then(|size| size.checked_add(value.as_ref().map_or(0, Vec::capacity)))
+                .ok_or_else(|| resource("integer character cast result size overflow"))?,
+        )?;
+        self.slots[id.slot].task = None;
+        Ok(VectorValue::Bytes(output))
+    }
     fn native_failure<T>(&mut self, error: EvalError) -> LocalResult<T> {
         self.native_error = Some(error);
         Err(LocalError::HostContract(
@@ -243,9 +349,9 @@ impl<'a> NativeBatchHosts<'a> {
                 .expect("checked UTF-8");
             let flags = std::str::from_utf8(&prepared_flags).expect("checked UTF-8 flags");
             let invocation = self
-                .regexp_invocations
+                .metadata
                 .get(task.slot.index())
-                .and_then(Option::as_ref)
+                .and_then(NativeHostMetadata::regexp)
                 .ok_or_else(|| {
                     LocalError::HostContract("regexp slot has no native cache handles".into())
                 })?;
@@ -304,11 +410,22 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            SqlBatchHostOperation::CastCharInt { len } => {
+                if !matches!(
+                    self.metadata.get(invocation.slot.index()),
+                    Some(NativeHostMetadata::CharCast { .. })
+                ) {
+                    return Err(LocalError::HostContract(
+                        "character cast has no target metadata".into(),
+                    ));
+                }
+                SqlDemand::CastCharInt { len }
+            }
             SqlBatchHostOperation::RegexpLike { case_insensitive } => {
                 if self
-                    .regexp_invocations
+                    .metadata
                     .get(invocation.slot.index())
-                    .and_then(Option::as_ref)
+                    .and_then(NativeHostMetadata::regexp)
                     .is_none()
                 {
                     return Err(LocalError::HostContract(
@@ -378,11 +495,25 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 .get(reply.index)
                 != Some(reply.field_type)
             || reply.values.len() != 1
-            || reply.values.eval_type() != TikvEvalType::Bytes
+            || reply.values.eval_type()
+                != match &task.demand {
+                    SqlDemand::CastCharInt { .. } => TikvEvalType::Int,
+                    _ => TikvEvalType::Bytes,
+                }
         {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if let SqlDemand::CastCharInt { len } = &task.demand {
+            return self
+                .finish_int_cast(
+                    id,
+                    reply.values.get_scalar_ref(0),
+                    reply.field_type.get_flag() & (1 << 5) != 0,
+                    *len,
+                )
+                .map(HostStep::Ready);
         }
         let ScalarValueRef::Bytes(bytes) = reply.values.get_scalar_ref(0) else {
             unreachable!("checked Bytes")
@@ -531,5 +662,70 @@ mod tests {
         provider.cancel(&second);
         assert!(provider.retained_bytes().unwrap() <= 512);
         assert!(provider.take_native_error().is_none());
+    }
+
+    #[test]
+    fn integer_char_cast_resource_denial_precedes_native_warning() {
+        struct Warnings(std::cell::Cell<usize>);
+        impl Columns for Warnings {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn append_warning(&self, _: u16, _: &str) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let argument: tipb::FieldType = tidb_query_datatype::FieldTypeTp::LongLong.into();
+        let output: tipb::FieldType = tidb_query_datatype::FieldTypeTp::VarString.into();
+        let args = [argument.clone()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::CastCharInt { len: Some(1) },
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: output.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::CharCast {
+            charset: "utf8mb4".into(),
+        }];
+        let context = Warnings(std::cell::Cell::new(0));
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 256);
+        let mut ctx = EvalContext::default();
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row: InputRow {
+                        occurrence: 0,
+                        input_row: 0,
+                    },
+                    arg_types: &args,
+                    return_type: &output,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("expected argument request")
+        };
+        let value = VectorValue::from_scalar(&ScalarValue::Int(Some(12345)), 1);
+        assert!(matches!(
+            provider.resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &argument,
+                    values: &value,
+                }
+            ),
+            Err(LocalError::ResourceLimit(_))
+        ));
+        assert_eq!(context.0.get(), 0);
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+        assert!(provider.task(&task).is_err());
     }
 }

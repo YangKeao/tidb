@@ -31,6 +31,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N3c: CONCAT/CONCAT_WS use a closed SQL host catalog and the existing shared HostFrame. One shared demanded-prefix policy and join algorithm; exact native packet observations/warnings/errors, generation-safe cleanup and bounded opaque heaps. Front52/full1404same4, core1039same6, production Projection10 including serial/parallel packet policy, concat25 SQL routes pass; lint/scoped clippy/fmt pass.
 - [x] (2026-10-17) N3d: REGEXP_LIKE uses the same HostFrame and original native context/cache handles, plain shared LIKE primitive and exact typed error mapping. Front57/full1409same4, core1041same6, SQL25 scenarios prepared/no fallback/refusal; lint/scoped clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n3d.md.
 - [x] (2026-10-17) N4a: shared frame controls IF/IFNULL/COALESCE/CASE and AND/OR, exact native carriers, signed Int NULLIF, compiled singleton window. Batch43/core profile59/Projection9 pass; full1395 and1035 retain exactly the inherited4/6 failures. Both25-scenario SQL cohorts pass with no fallback/refusal; lint/scoped project clippy/fmt pass.
+- [x] (2026-10-17) N4b1: native integer cast_char through the same HostFrame/shared string-cast primitive, exact unsigned bits/length/charset/warning contents and source-only metadata. Front63/full1415same4, core1042same6,24 actual rewritten SQL executions without fallback/refusal; lint/scoped clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n4b1.md.
 - [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
@@ -264,3 +265,11 @@ four heap-bearing literal families. Borrowed logical payload charging now
 precedes every temporary conversion and detached copy in this preflight.
 Decimal source bytes are deliberately conservative, not physical heap numbers.
 This closes a resource-policy gap; it does not expand SQL type/function coverage.
+
+
+N4b1 outcome: the initial native integer CHAR cast no longer routes to another
+expression evaluator, including explicit parser/rewriter cast nodes nested in
+CONCAT/REGEXP. Metadata snapshots carry only original value-kernel parameters.
+Do not generalize this to all string coercions: raw native Float32/NaN, hybrid
+and other storage kinds need lossless argument transport before wider admission.
+Continue broader native value/context coverage before retiring global routing.

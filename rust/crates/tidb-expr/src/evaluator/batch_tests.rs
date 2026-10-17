@@ -3432,7 +3432,10 @@ fn regexp_host_shares_original_cache_handles_but_rebinds_context_at_demand() {
         vec![text(Some(b"x")), text(Some(b"x"))],
     ));
     let mut worker = prepare(&suite, &[]);
-    let invocation = worker.source.regexp_invocations[0].as_ref().unwrap();
+    let invocation = match &worker.source.host_metadata[0] {
+        NativeHostMetadata::Regexp(invocation) => invocation,
+        _ => panic!("expected regexp metadata"),
+    };
     // A deliberately seeded cached failure makes handle identity observable:
     // the same context must see it, a new context must resolve the real literal.
     assert!(invocation
@@ -3622,4 +3625,196 @@ fn complete_literal_budget_precedes_even_earlier_temporary_conversions() {
             .refusal(),
         BatchRefusal::Admission
     );
+}
+
+#[derive(Default)]
+struct CastWarnings(std::cell::RefCell<Vec<(u16, String)>>);
+impl Columns for CastWarnings {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.0.borrow_mut().push((code, message.to_owned()));
+    }
+    fn connection_charset_info(&self) -> (&str, &str) {
+        panic!("explicit target must not read connection charset")
+    }
+    fn max_allowed_packet(&self) -> u64 {
+        panic!("integer CHAR must not read packet limit")
+    }
+}
+
+#[test]
+fn native_integer_char_cast_preserves_unsigned_bits_nulls_and_warning_contents() {
+    for unsigned in [false, true] {
+        let mut source = ty();
+        if unsigned {
+            source.add_flags(FieldTypeFlags::UNSIGNED);
+        }
+        let rows = if unsigned {
+            vec![
+                vec![Datum::UInt(u64::MAX)],
+                vec![Datum::UInt(0)],
+                vec![Datum::Null],
+            ]
+        } else {
+            vec![
+                vec![Datum::Int(i64::MIN)],
+                vec![Datum::Int(0)],
+                vec![Datum::Null],
+            ]
+        };
+        for width in [-1, 0, 1, 20, 100] {
+            for collation in [Collation::Utf8Mb4Bin, Collation::Binary, Collation::GbkBin] {
+                let target = string_ty().with_flen(width).with_collation(collation);
+                let root = call("cast_char", target.clone(), vec![typed_column(0, &source)]);
+                let suite = self::suite(root);
+                let mut native_input = chunk(std::slice::from_ref(&source), &rows);
+                native_input.set_sel(Some(vec![2, 0, 1, 0]));
+                let mut batch_input = chunk(std::slice::from_ref(&source), &rows);
+                batch_input.set_sel(Some(vec![2, 0, 1, 0]));
+                let mut expected = output_for(&target);
+                let mut actual = output_for(&target);
+                let native = CastWarnings::default();
+                let context = CastWarnings::default();
+                suite
+                    .run(&native, &mut native_input, &mut expected)
+                    .unwrap();
+                suite
+                    .run_with_tikv_batch(
+                        &context,
+                        &mut batch_input,
+                        &mut actual,
+                        std::slice::from_ref(&source),
+                    )
+                    .unwrap();
+                assert_eq!(values_for(&actual, &target), values_for(&expected, &target));
+                assert_eq!(*context.0.borrow(), *native.0.borrow());
+                let route = suite.batch_route_snapshot();
+                assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+            }
+        }
+    }
+}
+
+#[test]
+fn integer_char_cast_composes_with_existing_host_tasks_and_short_circuit() {
+    for root in [
+        call(
+            "concat",
+            string_ty(),
+            vec![
+                call("cast_char", string_ty(), vec![column(0)]),
+                text(Some(b"!")),
+            ],
+        ),
+        call(
+            "if",
+            string_ty(),
+            vec![
+                int(0),
+                bad_document_string(),
+                call("cast_char", string_ty(), vec![column(0)]),
+            ],
+        ),
+    ] {
+        let target = string_ty();
+        let suite = self::suite(root);
+        let rows = vec![
+            vec![Datum::Int(-123)],
+            vec![Datum::Null],
+            vec![Datum::Int(4)],
+        ];
+        let schema = [ty()];
+        let mut reference_input = chunk(&schema, &rows);
+        let mut batch_input = chunk(&schema, &rows);
+        let mut expected = output_for(&target);
+        let mut actual = output_for(&target);
+        suite
+            .run(&crate::NoColumns, &mut reference_input, &mut expected)
+            .unwrap();
+        suite
+            .run_with_tikv_batch(&crate::NoColumns, &mut batch_input, &mut actual, &schema)
+            .unwrap();
+        assert_eq!(values_for(&actual, &target), values_for(&expected, &target));
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+    }
+}
+
+#[test]
+fn rewritten_integer_to_char_sql_runs_in_the_shared_projection() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver(FieldType);
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            (path.last()?.as_str() == "i").then(|| (0, self.0.clone(), 1))
+        }
+    }
+    for unsigned in [false, true] {
+        let mut source = ty();
+        if unsigned {
+            source.add_flags(FieldTypeFlags::UNSIGNED);
+        }
+        let resolver = Resolver(source.clone());
+        for sql in [
+            "cast(i as char)",
+            "cast(i as char(1))",
+            "concat(cast(i as char), '!')",
+            "regexp_like(cast(i as char), '^1')",
+        ] {
+            let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+                panic!("query")
+            };
+            let QueryStmt::Select(select) = query.into_inner() else {
+                panic!("select")
+            };
+            let SelectField::Expr { expr, .. } = &select.fields[0] else {
+                panic!("expression")
+            };
+            let root = rewrite_expr_resolved(expr, &resolver).unwrap();
+            let target = root.static_type().unwrap().clone();
+            let suite = self::suite(root);
+            let rows = vec![
+                vec![if unsigned {
+                    Datum::UInt(u64::MAX)
+                } else {
+                    Datum::Int(i64::MIN)
+                }],
+                vec![Datum::Null],
+                vec![Datum::Int(1)],
+            ];
+            for selected in [vec![], vec![0, 1, 2, 0], (0..2050).map(|i| i % 3).collect()] {
+                let mut native_input = chunk(std::slice::from_ref(&source), &rows);
+                let mut batch_input = chunk(std::slice::from_ref(&source), &rows);
+                native_input.set_sel(Some(selected.clone()));
+                batch_input.set_sel(Some(selected));
+                let mut expected = output_for(&target);
+                let mut actual = output_for(&target);
+                suite
+                    .run(&crate::NoColumns, &mut native_input, &mut expected)
+                    .unwrap();
+                suite
+                    .run_with_tikv_batch(
+                        &crate::NoColumns,
+                        &mut batch_input,
+                        &mut actual,
+                        std::slice::from_ref(&source),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    values_for(&actual, &target),
+                    values_for(&expected, &target),
+                    "{sql}"
+                );
+                let route = suite.batch_route_snapshot();
+                assert_eq!(route.fallback, 0, "{sql}");
+                assert_eq!(route.refusals, 0, "{sql}");
+            }
+        }
+    }
 }

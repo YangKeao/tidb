@@ -57,7 +57,7 @@ use tidb_query_expr::types::BATCH_MAX_SIZE;
 
 #[path = "batch_hosts.rs"]
 mod hosts;
-use hosts::NativeBatchHosts;
+use hosts::{NativeBatchHosts, NativeHostMetadata};
 use tidb_query_expr::local::LocalHostServices;
 
 use crate::expr_collation::CollationInfo;
@@ -263,7 +263,7 @@ struct BatchSource {
     schema: Box<[tipb::FieldType]>,
     facts: BatchFacts,
     hosts: Option<HostCatalog>,
-    regexp_invocations: Box<[Option<tidb_query_expr::NativeRegexpInvocation>]>,
+    host_metadata: Box<[NativeHostMetadata]>,
     limits: BatchSourceLimits,
 }
 impl std::fmt::Debug for BatchSource {
@@ -516,6 +516,11 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
     let operation = match function.func_name.lowercase() {
         "concat" => Some(SqlBatchHostOperation::Concat),
         "concat_ws" => Some(SqlBatchHostOperation::ConcatWs),
+        "cast_char" => Some(SqlBatchHostOperation::CastCharInt {
+            len: function
+                .get_static_type()
+                .and_then(|field| u32::try_from(field.flen()).ok()),
+        }),
         "regexp_like" => Some(SqlBatchHostOperation::RegexpLike {
             case_insensitive: tidb_datatype::is_ci_collation(function.derived_collation().name()),
         }),
@@ -536,7 +541,8 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
             })
             && function.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
-                    field.eval_type() == NativeEvalType::String && !field.is_unsigned()
+                    batch_eval_type(field.eval_type()) == operation.argument_type()
+                        && (!field.is_unsigned() || field.eval_type() == NativeEvalType::Int)
                 })
             });
         return exact
@@ -957,7 +963,10 @@ fn preflight<'a>(
                 budget.array::<OrdinaryCallSite>(2)?; // initial and lowered source ordinals
                 if matches!(resolve_call(function)?.0, CallTarget::Host(_)) {
                     budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
-                    budget.array::<Option<tidb_query_expr::NativeRegexpInvocation>>(1)?;
+                    budget.array::<NativeHostMetadata>(1)?;
+                    if function.func_name.lowercase() == "cast_char" {
+                        budget.add(sql.charset_name().len())?;
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -1122,7 +1131,7 @@ fn lower(
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
     let checked = preflight(root, row_schema, limits)?;
     let mut host_entries = Vec::new();
-    let mut regexp_invocations = Vec::new();
+    let mut host_metadata = Vec::new();
     let mut nodes = Vec::new();
     let mut bindings = Vec::new();
     let mut schema = Vec::new();
@@ -1180,12 +1189,25 @@ fn lower(
                         }
                         let slot = host_entries.len();
                         reserve(&mut host_entries, 1)?;
-                        reserve(&mut regexp_invocations, 1)?;
-                        regexp_invocations.push(match operation {
+                        reserve(&mut host_metadata, 1)?;
+                        host_metadata.push(match operation {
                             SqlBatchHostOperation::RegexpLike { .. } => {
-                                Some(sql.batch_regexp_like_invocation())
+                                NativeHostMetadata::Regexp(sql.batch_regexp_like_invocation())
                             }
-                            _ => None,
+                            SqlBatchHostOperation::CastCharInt { .. } => {
+                                let field = sql
+                                    .get_static_type()
+                                    .expect("checked character cast result");
+                                NativeHostMetadata::CharCast {
+                                    charset: if field.is_binary_string() {
+                                        "BINARY"
+                                    } else {
+                                        field.charset_name()
+                                    }
+                                    .into(),
+                                }
+                            }
+                            _ => NativeHostMetadata::Plain,
                         });
                         host_entries.push((
                             operation,
@@ -1312,7 +1334,7 @@ fn lower(
         schema: schema.into_boxed_slice(),
         facts,
         hosts,
-        regexp_invocations: regexp_invocations.into_boxed_slice(),
+        host_metadata: host_metadata.into_boxed_slice(),
         limits,
     }))
 }
@@ -2180,7 +2202,7 @@ impl PreparedBatch {
         let mut hosts = source.hosts.clone().map(|catalog| {
             NativeBatchHosts::new(
                 catalog,
-                &source.regexp_invocations,
+                &source.host_metadata,
                 native_ctx,
                 self.max_materialization_retained_bytes,
             )
