@@ -23,7 +23,7 @@ the original result coercion and is minted under the parent's own identity.
 Real SQL initially exposed an uncovered rewriter wrapper around non-Int
 logical arguments: istrue_with_null(CAST(...)). Its closed native host now uses
 plain truthy_of and the direct RPN int_is_true<KeepNullOn> kernel, preserving
-SQL NULL and leaving truncation warnings to the preceding CAST. Both new core
+SQL NULL and leaving truncation warnings to the preceding CAST. All three core
 operation descriptors use the existing native capability profile and the same
 metadata/arity/budget/ordinal checks as the other value hosts.
 

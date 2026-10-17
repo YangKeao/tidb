@@ -1997,7 +1997,7 @@ fn is_null_batch_returns_nonnull_booleans_for_all_admitted_carriers() {
             FieldType::new(FieldTypeCode::VectorFloat32),
             Datum::VectorFloat32(VectorFloat32::must_create(vec![0.0])),
         ),
-        // JSON's existing catalog inserts CastJsonAsString, outside this batch closure.
+        // Native IS NULL now consumes JSON directly, without a text conversion.
         (
             FieldType::new(FieldTypeCode::Json),
             Datum::Json(BinaryJSON::parse("null").unwrap()),
@@ -2035,16 +2035,12 @@ fn is_null_batch_returns_nonnull_booleans_for_all_admitted_carriers() {
                 field.eval_type()
             );
             let route = suite.batch_route_snapshot();
-            if field.eval_type() == NativeEvalType::Json {
-                assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
-            } else {
-                assert_eq!(
-                    (route.prepared, route.fallback, route.refusals),
-                    (1, 0, 0),
-                    "{:?}: {route:?}",
-                    field.eval_type()
-                );
-            }
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{:?}: {route:?}",
+                field.eval_type()
+            );
         }
     }
 }
@@ -5592,80 +5588,105 @@ fn rewritten_native_if_case_controls_keep_column_branches_and_json_errors() {
 #[test]
 fn native_predicate_resource_and_provenance_failures_are_terminal() {
     use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, LocalHostServices};
-    let field = projected(&native_bytes_type(), true).unwrap();
-    let args = vec![field.clone(); 3];
-    let catalog = HostCatalog::for_sql_batch(vec![(
-        SqlBatchHostOperation::IfNative,
-        HostSignature {
-            arg_types: args.clone().into_boxed_slice(),
-            return_type: field.clone(),
-        },
-    )])
-    .unwrap();
-    let slot = catalog.slot(0).unwrap();
-    let metadata = [NativeHostMetadata::Selection {
-        name: "if".into(),
-        result_type: ty(),
-        argument_nodes: vec![3, 4, 8].into_boxed_slice(),
-        output_node: 2,
-        output_role: NativeValueRole::Output,
-    }];
-    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
-    store.borrow_mut().begin_window().unwrap();
-    let row = InputRow {
-        occurrence: 0,
-        input_row: 0,
-    };
-    let origin = NativeValueOrigin { node: 3, row };
-    let large = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Bytes(vec![b'1'; 16384]),
-            NativeValueRole::CharInput,
-            origin,
-        )
+    for (operation, name, nodes) in [
+        (SqlBatchHostOperation::IfNative, "if", vec![3, 4, 8]),
+        (SqlBatchHostOperation::UnaryNotNative, "not", vec![3]),
+        (SqlBatchHostOperation::IsNullNative, "isnull", vec![3]),
+        (SqlBatchHostOperation::IsTrueNative, "istrue", vec![3]),
+        (
+            SqlBatchHostOperation::IsTrueWithNullNative,
+            "istrue_with_null",
+            vec![3],
+        ),
+        (SqlBatchHostOperation::IsFalseNative, "isfalse", vec![3]),
+        (SqlBatchHostOperation::IsNotTrueNative, "isnottrue", vec![3]),
+        (
+            SqlBatchHostOperation::IsNotFalseNative,
+            "isnotfalse",
+            vec![3],
+        ),
+        (SqlBatchHostOperation::IsUnknownNative, "isunknown", vec![3]),
+        (
+            SqlBatchHostOperation::IsNotUnknownNative,
+            "isnotunknown",
+            vec![3],
+        ),
+    ] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); nodes.len()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            operation,
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: field.clone(),
+            },
+        )])
         .unwrap();
-    let wrong = store
-        .borrow_mut()
-        .insert_clone(&Datum::Int(1), NativeValueRole::Output, origin)
-        .unwrap();
-    let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
-        .with_native_values(Some(&store));
-    let mut ctx = EvalContext::default();
-    for (token, resource_failure) in [(large, true), (wrong, false)] {
-        let HostStart::Pending { task, .. } = provider
-            .start(
-                &mut ctx,
-                HostInvocation {
-                    slot,
-                    row,
-                    arg_types: &args,
-                    return_type: &field,
-                },
-            )
-            .unwrap()
-        else {
-            panic!("request")
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::Selection {
+            name: name.into(),
+            result_type: ty(),
+            argument_nodes: nodes.into_boxed_slice(),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
         };
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-        let error = provider
-            .resume(
-                &mut ctx,
-                &task,
-                HostArgReply {
-                    index: 0,
-                    field_type: &field,
-                    values: &values,
-                },
+        let origin = NativeValueOrigin { node: 3, row };
+        let large = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Bytes(vec![b'1'; 16384]),
+                NativeValueRole::CharInput,
+                origin,
             )
-            .unwrap_err();
-        if resource_failure {
-            assert!(matches!(error, LocalError::ResourceLimit(_)));
-        } else {
-            assert!(matches!(error, LocalError::BindingContract(_)));
+            .unwrap();
+        let wrong = store
+            .borrow_mut()
+            .insert_clone(&Datum::Int(1), NativeValueRole::Output, origin)
+            .unwrap();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        for (token, resource_failure) in [(large, true), (wrong, false)] {
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("request")
+            };
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap_err();
+            if resource_failure {
+                assert!(matches!(error, LocalError::ResourceLimit(_)));
+            } else {
+                assert!(matches!(error, LocalError::BindingContract(_)));
+            }
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
         }
-        assert!(provider.take_native_error().is_none());
-        provider.cancel(&task);
     }
 }
 
@@ -5960,5 +5981,228 @@ fn native_logical_input_policy_and_role_rejection_do_not_run_the_value_kernel() 
         }
         assert!(provider.take_native_error().is_none());
         provider.cancel(&task);
+    }
+}
+
+#[test]
+fn native_boolean_predicates_keep_null_truth_and_validation_in_native_parents() {
+    let json = FieldType::new(FieldTypeCode::Json);
+    let mut cases = vec![
+        (Datum::Null, ty()),
+        (Datum::Int(0), ty()),
+        (
+            Datum::UInt(u64::MAX),
+            ty().with_flags(FieldTypeFlags::UNSIGNED),
+        ),
+        (Datum::new_string("0tail"), string_ty()),
+        (Datum::Bytes(b"1tail".to_vec()), string_ty()),
+        (Datum::Real(f64::NAN), FieldType::new(FieldTypeCode::Double)),
+        (
+            Datum::Json(BinaryJSON::parse("null").unwrap()),
+            json.clone(),
+        ),
+        (Datum::Json(BinaryJSON::parse("false").unwrap()), json),
+        (Datum::MinNotNull, ty()),
+        (Datum::MaxValue, ty()),
+    ];
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    for value in [
+        Datum::Decimal(Decimal::from_literal("-0.0010")),
+        Datum::Float32(-0.0),
+        Datum::BinaryLiteral(BinaryLiteral::from(vec![0, b'A'])),
+        Datum::Duration(MySqlDuration::from_nanoseconds(-123456789012, 4).unwrap()),
+        Datum::Enum(MysqlEnum::new("b", 2), Collation::GbkBin),
+        Datum::Bit(BinaryLiteral::from(vec![0, b'A'])),
+        Datum::Set(MysqlSet::new("a,b", 3), Collation::GbkBin),
+        Datum::Time(time),
+        Datum::Raw(vec![0xff, 0]),
+        Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, -0.0])),
+    ] {
+        cases.push((value, string_ty()));
+    }
+    for name in [
+        "not",
+        "isnull",
+        "istrue",
+        "istrue_with_null",
+        "isnottrue",
+        "isfalse",
+        "isnotfalse",
+        "isunknown",
+        "isnotunknown",
+    ] {
+        for (value, field) in &cases {
+            let child = call(
+                name,
+                ty(),
+                vec![Expression::Constant(Constant::new(
+                    value.clone(),
+                    field.clone(),
+                ))],
+            );
+            let root = call("cast_signed", ty(), vec![child]);
+            for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+                let reference = NativeCastDiagnostics::default();
+                let context = NativeCastDiagnostics::default();
+                let mut expected = output_for(&ty());
+                let mut expected_error = None;
+                for _ in &selected {
+                    match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                        Ok(value) => expected.append_datum(0, &value),
+                        Err(error) => {
+                            expected_error = Some(error);
+                            break;
+                        }
+                    }
+                }
+                let suite = self::suite(root.clone());
+                let mut input = Chunk::new_with_capacity(&[], 2);
+                input.set_num_virtual_rows(2);
+                input.set_sel(Some(selected));
+                let mut actual = output_for(&ty());
+                let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+                if let Some(expected_error) = expected_error {
+                    let Err(EvaluatorError::Eval(actual_error)) = result else {
+                        panic!("lost boolean error {name}: {result:?}");
+                    };
+                    assert_eq!(actual_error, expected_error, "{name} {value:?}");
+                } else {
+                    result.unwrap();
+                    assert_eq!(actual.num_rows(), expected.num_rows());
+                    for row in 0..actual.num_rows() {
+                        assert_eq!(
+                            actual.get_row(row).is_null(0),
+                            expected.get_row(row).is_null(0)
+                        );
+                        assert_eq!(
+                            actual.column(0).get_raw(row).as_ref(),
+                            expected.column(0).get_raw(row).as_ref(),
+                            "{name} {value:?}"
+                        );
+                    }
+                }
+                assert_eq!(*context.0.borrow(), *reference.0.borrow());
+                let route = suite.batch_route_snapshot();
+                assert_eq!(
+                    (route.prepared, route.fallback, route.refusals),
+                    (1, 0, 0),
+                    "{name} {value:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn rewritten_native_boolean_predicates_preserve_diagnostics_and_composition() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            let index = match path.last()?.as_str() {
+                "l" => 0,
+                "r" => 1,
+                _ => return None,
+            };
+            Some((index, string_ty(), index as i64 + 1))
+        }
+    }
+    let schema = [string_ty(), string_ty()];
+    let rows = vec![
+        vec![Datum::new_string("0abc"), Datum::new_string("bad JSON")],
+        vec![Datum::new_string("1abc"), Datum::new_string("bad JSON")],
+        vec![Datum::Null, Datum::new_string("0")],
+        vec![Datum::Null, Datum::new_string("1")],
+        vec![Datum::Null, Datum::Null],
+        vec![Datum::new_string("0abc"), Datum::new_string("2tail")],
+    ];
+    for sql in [
+        "cast((not l) as signed)",
+        "cast((l is null) as signed)",
+        "cast((l is true) as signed)",
+        "cast((l is false) as signed)",
+        "cast((l is not true) as signed)",
+        "cast((l is not false) as signed)",
+        "cast((l is unknown) as signed)",
+        "cast((l is not unknown) as signed)",
+        "if(not l, cast('1' as json), cast('0' as json))",
+        "cast((cast(r as json) is true) as char)",
+        "coalesce(cast((not l) as signed), cast('9' as signed))",
+        "cast((not (l or cast(r as json))) as signed)",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2, 3, 4],
+            vec![5, 2],
+            (0..2050).map(|i| [2, 3, 4][i % 3]).collect(),
+        ] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for row in selected {
+                match root.eval(&reference, input.physical_row(row)) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost logical SQL error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error, "{sql}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{sql}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
     }
 }

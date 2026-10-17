@@ -44,6 +44,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5d1: native COALESCE/IFNULL share the existing staged driver and pure nullable selector, preserve actual NULL/value kind/FSP and mint own producer handles. 87focused/full1439same4/core1043same6/30SQL/Projection15/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d1.md.
 - [x] (2026-10-18) N5d2: native IF/CASE use the same staged driver, original pure truth conversion/branch selector and checked native result publication. 90focused/full1442same4/core1043same6/30SQL/Projection16/lint/clippy/fmt pass; CAST(IF) migration gap retired. Receipt rust/docs/evidence/no-fallback-n5d2.md.
 - [x] (2026-10-18) N5d3: native AND/OR and rewriter IsTrueWithNull share checked frames and direct RPN value kernels, preserving nullable demand and warning prefixes. 93focused/full1445same4/core1043same6/36SQL/Projection17/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d3.md.
+- [x] (2026-10-18) N5e1: native NOT/IS NULL/TRUE/FALSE and UNKNOWN predicates compose through checked native values and direct existing kernels. 95focused/full1447same4/core1043same6/72SQL/Projection18/lint/clippy/fmt pass; JSON IS NULL migration gap retired. Receipt rust/docs/evidence/no-fallback-n5e1.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -435,3 +436,17 @@ and direct int_is_true<KeepNullOn> kernel. The preceding CAST retains diagnostic
 ownership, avoiding duplicate warnings. Native NULLIF/comparison, arithmetic
 producers, effects, source forms and other callers remain outstanding; global
 fallback has not been removed.
+
+
+N5e1 outcome: unary boolean predicates share the existing Truth frame with
+IsTrueWithNull. Exact operation/name joins and argument provenance precede
+conversion; each result is published with its own producer. Raw IS NULL skips
+truth validation, UNKNOWN aliases retain it, and NOT keeps its distinct
+range-sentinel diagnostic. Pure native_truthy and direct existing RPN value
+kernels preserve their original NULL/error/warning policies. Negated predicates
+compose the same positive and unary NOT kernels as their existing programs.
+
+The old JSON IS NULL fallback assertion is retired: this route now prepares
+and returns identical values without an intermediate JSON-to-text conversion.
+This extends native producer closure but does not complete comparison, NULLIF,
+arithmetic, effectful operations, source forms or caller integration.

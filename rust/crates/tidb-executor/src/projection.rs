@@ -1646,4 +1646,89 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn native_boolean_predicates_preserve_values_and_validation_in_projection() {
+        let integer = FieldType::new(FieldTypeCode::LongLong)
+            .with_flen(20)
+            .with_decimal(0);
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_flen(128)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let call = |name: &str, field: FieldType, args: Vec<Expression>| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let mut cases = Vec::new();
+        for name in [
+            "not",
+            "isnull",
+            "istrue",
+            "istrue_with_null",
+            "isnottrue",
+            "isfalse",
+            "isnotfalse",
+            "isunknown",
+            "isnotunknown",
+        ] {
+            for (value, field) in [
+                (Datum::Null, integer.clone()),
+                (Datum::new_string("0tail"), string.clone()),
+                (Datum::new_string("1tail"), string.clone()),
+                (Datum::MinNotNull, integer.clone()),
+            ] {
+                let child = call(
+                    name,
+                    integer.clone(),
+                    vec![Expression::Constant(Constant::new(value, field))],
+                );
+                cases.push(call("cast_signed", integer.clone(), vec![child]));
+            }
+        }
+        for root in cases {
+            let field = root.static_type().unwrap().clone();
+            let reference = crate::StmtContext::for_query();
+            let expected = root.eval(&reference, tidb_chunk::row::Row::empty());
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context = crate::StmtContext::for_query();
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root.clone()],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                let actual = projection.next(&mut output);
+                match &expected {
+                    Ok(value) => {
+                        actual.unwrap();
+                        let mut expected = Chunk::new_with_capacity(&[field.clone()], 1);
+                        expected.append_datum(0, value);
+                        assert_eq!(output.num_rows(), 1);
+                        assert_eq!(output.get_row(0).is_null(0), expected.get_row(0).is_null(0));
+                        assert_eq!(
+                            output.column(0).get_raw(0).as_ref(),
+                            expected.column(0).get_raw(0).as_ref()
+                        );
+                    }
+                    Err(expected_error) => {
+                        let Err(ExecError::Eval(actual_error)) = actual else {
+                            panic!("lost logical error: {actual:?}");
+                        };
+                        assert_eq!(&actual_error, expected_error);
+                        assert_eq!(output.num_rows(), 0);
+                    }
+                }
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

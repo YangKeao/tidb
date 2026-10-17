@@ -351,7 +351,9 @@ fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize)
                 let condition = matches!(
                     function.func_name.lowercase(),
                     "and" | "logicand" | "or" | "logicor"
-                ) || (function.func_name.lowercase() == "if" && index == 0)
+                ) || native_boolean_operation(function.func_name.lowercase())
+                    .is_some()
+                    || (function.func_name.lowercase() == "if" && index == 0)
                     || (function.func_name.lowercase() == "case"
                         && index % 2 == 0
                         && index + 1 < function.args.len());
@@ -737,6 +739,20 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     )
     .then_some(target)
 }
+fn native_boolean_operation(name: &str) -> Option<SqlBatchHostOperation> {
+    match name {
+        "not" => Some(SqlBatchHostOperation::UnaryNotNative),
+        "isnull" => Some(SqlBatchHostOperation::IsNullNative),
+        "istrue" => Some(SqlBatchHostOperation::IsTrueNative),
+        "isfalse" => Some(SqlBatchHostOperation::IsFalseNative),
+        "isnottrue" => Some(SqlBatchHostOperation::IsNotTrueNative),
+        "isnotfalse" => Some(SqlBatchHostOperation::IsNotFalseNative),
+        "isunknown" => Some(SqlBatchHostOperation::IsUnknownNative),
+        "isnotunknown" => Some(SqlBatchHostOperation::IsNotUnknownNative),
+        "istrue_with_null" => Some(SqlBatchHostOperation::IsTrueWithNullNative),
+        _ => None,
+    }
+}
 fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
     match function.func_name.lowercase() {
         "coalesce" => Some(SqlBatchHostOperation::CoalesceNative),
@@ -745,8 +761,7 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
         "case" => Some(SqlBatchHostOperation::CaseNative),
         "and" | "logicand" => Some(SqlBatchHostOperation::AndNative),
         "or" | "logicor" => Some(SqlBatchHostOperation::OrNative),
-        "istrue_with_null" => Some(SqlBatchHostOperation::IsTrueWithNullNative),
-        _ => None,
+        name => native_boolean_operation(name),
     }
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
@@ -1383,6 +1398,14 @@ fn preflight<'a>(
                                 | SqlBatchHostOperation::AndNative
                                 | SqlBatchHostOperation::OrNative
                                 | SqlBatchHostOperation::IsTrueWithNullNative
+                                | SqlBatchHostOperation::UnaryNotNative
+                                | SqlBatchHostOperation::IsNullNative
+                                | SqlBatchHostOperation::IsTrueNative
+                                | SqlBatchHostOperation::IsFalseNative
+                                | SqlBatchHostOperation::IsNotTrueNative
+                                | SqlBatchHostOperation::IsNotFalseNative
+                                | SqlBatchHostOperation::IsUnknownNative
+                                | SqlBatchHostOperation::IsNotUnknownNative
                         )
                     ) {
                         budget.array::<usize>(function.args.len())?;
@@ -1621,6 +1644,14 @@ fn lower(
                                         | SqlBatchHostOperation::AndNative
                                         | SqlBatchHostOperation::OrNative
                                         | SqlBatchHostOperation::IsTrueWithNullNative
+                                        | SqlBatchHostOperation::UnaryNotNative
+                                        | SqlBatchHostOperation::IsNullNative
+                                        | SqlBatchHostOperation::IsTrueNative
+                                        | SqlBatchHostOperation::IsFalseNative
+                                        | SqlBatchHostOperation::IsNotTrueNative
+                                        | SqlBatchHostOperation::IsNotFalseNative
+                                        | SqlBatchHostOperation::IsUnknownNative
+                                        | SqlBatchHostOperation::IsNotUnknownNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1643,7 +1674,15 @@ fn lower(
                             | SqlBatchHostOperation::CaseNative
                             | SqlBatchHostOperation::AndNative
                             | SqlBatchHostOperation::OrNative
-                            | SqlBatchHostOperation::IsTrueWithNullNative => {
+                            | SqlBatchHostOperation::IsTrueWithNullNative
+                            | SqlBatchHostOperation::UnaryNotNative
+                            | SqlBatchHostOperation::IsNullNative
+                            | SqlBatchHostOperation::IsTrueNative
+                            | SqlBatchHostOperation::IsFalseNative
+                            | SqlBatchHostOperation::IsNotTrueNative
+                            | SqlBatchHostOperation::IsNotFalseNative
+                            | SqlBatchHostOperation::IsUnknownNative
+                            | SqlBatchHostOperation::IsNotUnknownNative => {
                                 let mut argument_nodes = Vec::new();
                                 reserve(&mut argument_nodes, *arity)?;
                                 let mut child = ordinal

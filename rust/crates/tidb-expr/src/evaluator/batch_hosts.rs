@@ -593,20 +593,42 @@ impl<'a> NativeBatchHosts<'a> {
             )
             .ok_or_else(|| resource("native truth size overflow"))?;
         self.check_bytes(base)?;
-        // This wrapper's original truth conversion has no truncation warning;
-        // the rewriter's preceding CAST owns any such diagnostic.
-        let truth = crate::truthy_of(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?);
+        // IS NULL observes raw nullness; UNKNOWN aliases preserve the scalar
+        // caller's truth validation. NOT has its own range-sentinel diagnostic.
+        // These plain conversions do not emit truncation warnings.
+        let truth = {
+            let store = store.borrow();
+            let value = store.get(token, NativeValueRole::CharInput, origin)?;
+            if name.as_ref() == "isnull" {
+                Ok((!value.is_null()).then_some(false))
+            } else if name.as_ref() == "not" && value.is_range_sentinel() {
+                Err(EvalError::Unsupported("range sentinel expression operand"))
+            } else {
+                crate::truthy_of(value)
+            }
+        };
         let truth = match truth {
             Ok(value) => value.map(i64::from),
             Err(error) => return self.native_failure(error),
         };
-        let result = tidb_query_expr::impl_op::int_is_true::<tidb_query_expr::impl_op::KeepNullOn>(
-            truth.as_ref(),
-        )
+        use tidb_query_expr::impl_op::{
+            int_is_false, int_is_true, is_null, unary_not_int, KeepNullOff, KeepNullOn,
+        };
+        let result = match name.as_ref() {
+            "not" => unary_not_int(truth.as_ref()),
+            "isnull" | "isunknown" => is_null::<i64>(truth.as_ref()),
+            "istrue" => int_is_true::<KeepNullOff>(truth.as_ref()),
+            "istrue_with_null" => int_is_true::<KeepNullOn>(truth.as_ref()),
+            "isfalse" => int_is_false::<KeepNullOff>(truth.as_ref()),
+            "isnottrue" => int_is_true::<KeepNullOff>(truth.as_ref())
+                .and_then(|result| unary_not_int(result.as_ref())),
+            "isnotfalse" => int_is_false::<KeepNullOff>(truth.as_ref())
+                .and_then(|result| unary_not_int(result.as_ref())),
+            "isnotunknown" => {
+                is_null::<i64>(truth.as_ref()).and_then(|result| unary_not_int(result.as_ref()))
+            }
+            _ => return Err(binding("unknown native boolean predicate")),
+        }
         .map_err(LocalError::Evaluation)?;
         let result = result.map_or(Datum::Null, Datum::Int);
         let result =
@@ -1093,7 +1115,15 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
-            SqlBatchHostOperation::IsTrueWithNullNative => {
+            operation @ (SqlBatchHostOperation::IsTrueWithNullNative
+            | SqlBatchHostOperation::UnaryNotNative
+            | SqlBatchHostOperation::IsNullNative
+            | SqlBatchHostOperation::IsTrueNative
+            | SqlBatchHostOperation::IsFalseNative
+            | SqlBatchHostOperation::IsNotTrueNative
+            | SqlBatchHostOperation::IsNotFalseNative
+            | SqlBatchHostOperation::IsUnknownNative
+            | SqlBatchHostOperation::IsNotUnknownNative) => {
                 let Some(NativeHostMetadata::Selection {
                     name,
                     argument_nodes,
@@ -1105,7 +1135,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     ));
                 };
                 if self.native_values.is_none()
-                    || name.as_ref() != "istrue_with_null"
+                    || native_boolean_operation(name) != Some(operation)
                     || argument_nodes.len() != 1
                     || invocation.arg_types.len() != 1
                 {
