@@ -1133,9 +1133,13 @@ fn preflight<'a>(
         } else if !matches!(node, Expression::Constant(_) | Expression::Column(_))
             && !matches!(node, Expression::ScalarFunction(function) if native_cast_name(function).is_some())
         {
-            return Err(
-                binding("native value view requires a leaf or a closed CAST source").into(),
-            );
+            // The source is valid SQL but this producer does not yet have a
+            // native-value recipe. It is a migration capability gap, not a
+            // forged binding or a failed execution. Keep actual provenance and
+            // resource errors terminal at their separate checked boundaries.
+            return Err(BatchFailure::admission(
+                "native value producer is outside the current source closure",
+            ));
         }
         budget.field(sql, 3)?; // native source, projected declaration, C snapshot
         if view != NativeView::Typed {

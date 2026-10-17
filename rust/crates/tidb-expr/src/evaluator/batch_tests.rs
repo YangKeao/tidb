@@ -4919,3 +4919,47 @@ fn rewritten_json_cast_islands_preserve_documents_errors_and_nested_warnings() {
         }
     }
 }
+
+#[test]
+fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connected() {
+    let schema = [ty()];
+    for root in [
+        call("cast_signed", ty(), vec![abs(column(0))]),
+        call(
+            "cast_json",
+            FieldType::new(FieldTypeCode::Json),
+            vec![abs(column(0))],
+        ),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call("cast_signed", ty(), vec![plus(column(0), int(1))])],
+        ),
+        call(
+            "cast_signed",
+            ty(),
+            vec![call("if", ty(), vec![column(0), int(2), int(3)])],
+        ),
+    ] {
+        let field = root.static_type().unwrap().clone();
+        let suite = self::suite(root);
+        let rows = vec![vec![Datum::Int(-3)], vec![Datum::Int(2)], vec![Datum::Null]];
+        let mut native = chunk(&schema, &rows);
+        let mut actual_input = chunk(&schema, &rows);
+        let selected = vec![1, 0, 2, 0];
+        native.set_sel(Some(selected.clone()));
+        actual_input.set_sel(Some(selected));
+        let mut expected = output_for(&field);
+        let mut actual = output_for(&field);
+        suite
+            .run(&crate::NoColumns, &mut native, &mut expected)
+            .unwrap();
+        suite
+            .run_with_tikv_batch(&crate::NoColumns, &mut actual_input, &mut actual, &schema)
+            .unwrap();
+        assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+        assert_eq!(route.refusal, Some(BatchRefusal::Admission));
+    }
+}

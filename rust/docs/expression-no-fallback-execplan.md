@@ -40,6 +40,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5b2: native leaf root output ABI with separate Output role, complete prepublication handle validation and native Chunk publication. 17 output kinds/216 literal scenarios, disabled-direct-column path,76focused/full1428same4/Projection12/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b2.md.
 - [x] (2026-10-18) N5c1: native computed CAST islands through one HostFrame, plain shared result coercion and direct real→unsigned primitive (no nested evaluated-args program). 79focused/full1431same4/core1043same6/24SQL/Projection13/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c1.md.
 - [x] (2026-10-18) N5c2: JSON CAST joins native computed islands with pre-argument type admission and shared literal/nonliteral value conversion. 82focused/full1434same4/156inputcases/24SQL/Projection14/lint/fmt pass; poisoned vector-NULL input proves zero argument demand. Receipt rust/docs/evidence/no-fallback-n5c2.md.
+- [x] (2026-10-18) N5c3: correct native-value producer capability gaps to admission rather than terminal binding errors; RED valid CAST(ABS/PLUS/IF) SQL regression,83focused/full1435same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c3.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -368,3 +369,14 @@ fetch order and correlated/parameter/deferred behavior are retained. The host
 owns only a literal-kind bit and immutable types, never those expression nodes.
 This completes JSON inside the current CAST islands, not general parent/control
 or source/caller coverage. The global alternate evaluator remains.
+
+
+N5c3 correction: widening native argument recursion made a formerly unreachable
+source-view guard reachable for valid SQL such as CAST(ABS(column) AS SIGNED).
+That guard still reported a binding violation, causing a terminal prepare error
+instead of preserving SQL that this migration has not yet connected. Unknown
+native-value producers now report an admission capability gap. Actual binding,
+resource and native execution failures retain their terminal behavior. The
+compatibility regression test documents this temporary state and must be
+updated as those producers acquire unified recipes; it is not a requirement
+to keep fallback in the completed architecture.
