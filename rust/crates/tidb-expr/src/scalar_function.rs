@@ -1542,6 +1542,24 @@ impl ScalarFunction {
         )
     }
 
+    /// Immutable value-kernel handles only; capturing them does not resolve a
+    /// pattern or observe the context. The shared driver demands arguments.
+    pub(crate) fn batch_regexp_like_invocation(&self) -> tidb_query_expr::NativeRegexpInvocation {
+        let cache_pattern = self
+            .args
+            .get(1)
+            .is_some_and(|arg| arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT);
+        let cache_flags =
+            self.args.len() < 3 || self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
+        tidb_query_expr::NativeRegexpInvocation::new(
+            &self.regexp_cache,
+            &self.regexp_replace_instruction_cache,
+            0,
+            cache_pattern && cache_flags,
+            false,
+        )
+    }
+
     fn eval_regexp_like(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         if !matches!(self.args.len(), 2 | 3) {
             return Err(EvalError::WrongParameterCount("regexp_like"));

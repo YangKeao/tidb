@@ -3283,3 +3283,252 @@ fn concat_host_resource_denial_precedes_packet_observations_and_has_no_retry() {
     assert!(context.events.borrow().is_empty());
     assert_eq!(output.num_rows(), 0);
 }
+
+#[test]
+fn regexp_host_preserves_null_and_utf8_demand_and_exact_native_errors() {
+    for args in [
+        vec![text(None), bad_document_string()],
+        vec![text(Some(b"x")), text(None), bad_document_string()],
+        vec![text(Some(b"x")), text(Some(b"(")), text(None)],
+        vec![text(Some(b"x")), text(Some(b"("))],
+        vec![text(Some(b"x")), text(Some(b""))],
+        vec![text(Some(b"x")), text(Some(b"x")), text(Some(b"z"))],
+        vec![text(Some(b"\xff")), bad_document_string()],
+        vec![text(Some(b"x")), text(Some(b"\xff")), bad_document_string()],
+        vec![text(Some(b"x")), text(Some(b"(")), text(Some(b"\xff"))],
+    ] {
+        let root = call("regexp_like", ty(), args);
+        let mut input = chunk(&[], &[vec![]]);
+        let expected = root.clone().eval(&crate::NoColumns, input.get_row(0));
+        let suite = self::suite(root);
+        let mut output = self::output();
+        match expected {
+            Ok(value) => {
+                suite
+                    .run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+                    .unwrap();
+                assert_eq!(values(&output), vec![value]);
+            }
+            Err(expected) => {
+                let EvaluatorError::Eval(actual) = suite
+                    .run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+                    .unwrap_err()
+                else {
+                    panic!("expected exact native error");
+                };
+                assert_eq!(actual, expected);
+                assert_eq!(output.num_rows(), 0);
+            }
+        }
+        let route = suite.batch_route_snapshot();
+        assert_eq!(route.fallback, 0);
+        assert_eq!(route.refusals, 0);
+    }
+}
+
+#[test]
+fn regexp_host_dynamic_patterns_flags_and_nested_calls_match_native_selection() {
+    let field = string_ty();
+    let schema = [field.clone(), field.clone(), field];
+    let datum = |s: &str| Datum::new_string(s.as_bytes().to_vec());
+    let rows = vec![
+        vec![datum("AbC"), datum("^abc$"), datum("i")],
+        vec![datum("AbC"), datum("^abc$"), datum("ic")],
+        vec![Datum::Null, datum("("), datum("z")],
+        vec![datum("aa\nbb"), datum("^bb$"), datum("m")],
+    ];
+    for selection in [
+        vec![],
+        vec![3, 0, 2, 1, 0],
+        (0..2050).map(|i| i % 4).collect(),
+    ] {
+        for nested in [false, true] {
+            let text = if nested {
+                call(
+                    "concat",
+                    string_ty(),
+                    vec![string_column(0), text(Some(b""))],
+                )
+            } else {
+                string_column(0)
+            };
+            let root = call(
+                "regexp_like",
+                ty(),
+                vec![text, string_column(1), string_column(2)],
+            );
+            let suite = self::suite(root);
+            let mut native = chunk(&schema, &rows);
+            let mut batch = chunk(&schema, &rows);
+            native.set_sel(Some(selection.clone()));
+            batch.set_sel(Some(selection.clone()));
+            let mut expected = output();
+            let mut actual = output();
+            suite
+                .run(&crate::NoColumns, &mut native, &mut expected)
+                .unwrap();
+            suite
+                .run_with_tikv_batch(&crate::NoColumns, &mut batch, &mut actual, &schema)
+                .unwrap();
+            assert_eq!(values(&actual), values(&expected));
+            let route = suite.batch_route_snapshot();
+            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+        }
+    }
+}
+
+#[test]
+fn regexp_host_collation_defaults_and_explicit_flag_precedence_match_native() {
+    for collation in [
+        Collation::Utf8Mb4Bin,
+        Collation::Utf8Mb4GeneralCi,
+        Collation::Binary,
+    ] {
+        for flags in [None, Some("i"), Some("c"), Some("ic"), Some("ci")] {
+            let field = string_ty().with_collation(collation);
+            let mut args = vec![
+                literal(Datum::new_string(b"ABC".to_vec()), field.clone()),
+                literal(Datum::new_string(b"abc".to_vec()), field),
+            ];
+            if let Some(flags) = flags {
+                args.push(text(Some(flags.as_bytes())));
+            }
+            let root = call("regexp_like", ty().with_collation(collation), args);
+            let mut input = chunk(&[], &[vec![]]);
+            let expected = root
+                .clone()
+                .eval(&crate::NoColumns, input.get_row(0))
+                .unwrap();
+            let suite = self::suite(root);
+            let mut actual = output();
+            suite
+                .run_with_tikv_batch(&crate::NoColumns, &mut input, &mut actual, &[])
+                .unwrap();
+            assert_eq!(values(&actual), vec![expected]);
+            assert_eq!(suite.batch_route_snapshot().fallback, 0);
+        }
+    }
+}
+
+#[derive(Default)]
+struct RegexpContext {
+    id: Cell<u64>,
+    reads: Cell<usize>,
+}
+impl Columns for RegexpContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn context_id(&self) -> u64 {
+        self.reads.set(self.reads.get() + 1);
+        self.id.get()
+    }
+}
+#[test]
+fn regexp_host_shares_original_cache_handles_but_rebinds_context_at_demand() {
+    let suite = self::suite(call(
+        "regexp_like",
+        ty(),
+        vec![text(Some(b"x")), text(Some(b"x"))],
+    ));
+    let mut worker = prepare(&suite, &[]);
+    let invocation = worker.source.regexp_invocations[0].as_ref().unwrap();
+    // A deliberately seeded cached failure makes handle identity observable:
+    // the same context must see it, a new context must resolve the real literal.
+    assert!(invocation
+        .with_context_id(7)
+        .prepare_like("(", "")
+        .execute("x")
+        .is_err());
+    let context = RegexpContext::default();
+    context.id.set(7);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = self::output();
+    let mut ctx = EvalContext::default();
+    let error = suite
+        .run_batch(
+            &context,
+            &mut ctx,
+            &mut worker,
+            &mut input,
+            &mut output,
+            &[],
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.kind,
+        FailureKind::Native(EvaluatorError::Eval(EvalError::Unsupported(
+            "invalid regular expression pattern"
+        )))
+    ));
+    assert_eq!(context.reads.get(), 1);
+    assert_eq!(output.num_rows(), 0);
+    for id in [8, 7] {
+        context.id.set(id);
+        output.reset();
+        suite
+            .run_batch(
+                &context,
+                &mut ctx,
+                &mut worker,
+                &mut input,
+                &mut output,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(values(&output), vec![Datum::Int(1)]);
+    }
+    assert_eq!(context.reads.get(), 3);
+    let suite = self::suite(call(
+        "regexp_like",
+        ty(),
+        vec![text(None), bad_document_string()],
+    ));
+    let mut output = self::output();
+    suite
+        .run_with_tikv_batch(&context, &mut input, &mut output, &[])
+        .unwrap();
+    assert_eq!(values(&output), vec![Datum::Null]);
+    assert_eq!(context.reads.get(), 3);
+}
+
+#[test]
+fn regexp_host_task_denial_does_not_read_context_or_retry() {
+    let suite = self::suite(call(
+        "regexp_like",
+        ty(),
+        vec![text(Some(b"x")), text(Some(b"("))],
+    ));
+    let mut worker = PreparedBatch::compile(
+        &suite,
+        &[],
+        true,
+        1,
+        limits(),
+        ExecutionLimits {
+            max_active_tasks: 0,
+            ..ExecutionLimits::default()
+        },
+        65536,
+    )
+    .unwrap();
+    let context = RegexpContext::default();
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = self::output();
+    let error = suite
+        .run_batch(
+            &context,
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut input,
+            &mut output,
+            &[],
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(context.reads.get(), 0);
+    assert_eq!(output.num_rows(), 0);
+}

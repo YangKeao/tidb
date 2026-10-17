@@ -28,7 +28,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N3a: STRCMP uses its existing native collation kernel in composed shared graphs; batch41/full1393 retain same4 failures, TiKV1033 retains same6, actual rewritten SQL25 scenarios all prepared without fallback/refusal; scoped project clippy/lint/fmt pass.
 - [x] (2026-10-17) N3b: JSON_TYPE SQL kernels, explicit native failure kinds and raw native JSON leaf view. Frontbatch47/full1399same4, coreprofile60/full1036same6 pass;25 SQL routes pass without fallback/refusal; lint/scoped project clippy/fmt pass.
 - [x] (2026-10-17) N3c: CONCAT/CONCAT_WS use a closed SQL host catalog and the existing shared HostFrame. One shared demanded-prefix policy and join algorithm; exact native packet observations/warnings/errors, generation-safe cleanup and bounded opaque heaps. Front52/full1404same4, core1039same6, production Projection10 including serial/parallel packet policy, concat25 SQL routes pass; lint/scoped clippy/fmt pass.
-- [ ] N3d: REGEXP_LIKE native policy and demanded arguments.
+- [x] (2026-10-17) N3d: REGEXP_LIKE uses the same HostFrame and original native context/cache handles, plain shared LIKE primitive and exact typed error mapping. Front57/full1409same4, core1041same6, SQL25 scenarios prepared/no fallback/refusal; lint/scoped clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n3d.md.
 - [x] (2026-10-17) N4a: shared frame controls IF/IFNULL/COALESCE/CASE and AND/OR, exact native carriers, signed Int NULLIF, compiled singleton window. Batch43/core profile59/Projection9 pass; full1395 and1035 retain exactly the inherited4/6 failures. Both25-scenario SQL cohorts pass with no fallback/refusal; lint/scoped project clippy/fmt pass.
 - [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
@@ -234,3 +234,25 @@ static input/call nodes across successful windows; it does not observe allocator
 calls. Dynamic controls may skip nodes and hosts own additional caches/buffers.
 The field is now documented as an estimate and the probe labels it
 estimated_carrier_nodes. Historical reports/binaries remain unchanged.
+
+
+N3d completed implementation: REGEXP_LIKE is a closed SQL
+host operation with exact two/three Bytes arguments and signed LongLong result.
+Its task requests arguments in the same frame driver, checking each demanded
+UTF-8 value before requesting the next; NULL does not inspect the context or
+pattern cache. The source captures only original native invocation handles and
+constant-argument cache policy. After all demanded non-NULL arguments the host
+binds the actual native context ID and uses PreparedNativeRegexpLike, the same
+plain value primitive now used by the original native RPN kernel. Collation's
+initial i flag precedes explicit match_type, preserving rightmost precedence.
+Native errors retain typed causes and the frontend's existing error mapping.
+The known cache-byte observer excludes opaque regex engine/TLS/allocator cost,
+just as the previous native implementation; this is not full memory accounting.
+
+
+N3d outcome: all six original benchmark fallback families are now prepared for
+those exact SQL shapes. This does not retire the global alternate evaluator.
+Next audit the source-literal preclone byte gate (String/JSON/vector/Decimal),
+then extend native coercions and argument/result transport beyond ready wire
+carriers while retaining one driver. Complete N4b/N5 before deleting migration
+routing; replacing supported SQL by an unsupported error is not completion.

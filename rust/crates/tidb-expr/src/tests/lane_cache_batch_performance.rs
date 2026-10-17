@@ -373,6 +373,7 @@ fn tikv_batch_workload(name: &str) -> bool {
                 | "coalesce_nullif"
                 | "json_type"
                 | "concat"
+                | "regexp_like"
                 | "lower"
                 | "upper"
                 | "substring"

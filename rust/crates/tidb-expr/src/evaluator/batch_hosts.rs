@@ -23,14 +23,42 @@ use tidb_query_expr::local::{
     HostCatalogKey, HostInvocation, HostSlot, HostStart, HostStep, HostTaskId, LocalHostServices,
 };
 
-struct ConcatTask {
+enum SqlDemand {
+    Concat {
+        kind: ConcatKind,
+        demand: ConcatDemand,
+    },
+    RegexpLike {
+        case_insensitive: bool,
+        next: Option<usize>,
+    },
+}
+struct NativeTask {
     slot: HostSlot,
-    kind: ConcatKind,
     arity: usize,
-    demand: ConcatDemand,
+    demand: SqlDemand,
     values: Vec<Option<Vec<u8>>>,
 }
-impl ConcatTask {
+impl NativeTask {
+    fn next_argument(&self) -> LocalResult<Option<usize>> {
+        match &self.demand {
+            SqlDemand::Concat { demand, .. } => demand.next_argument(),
+            SqlDemand::RegexpLike { next, .. } => Ok(*next),
+        }
+    }
+    fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
+        match &mut self.demand {
+            SqlDemand::Concat { demand, .. } => demand.observe(len),
+            SqlDemand::RegexpLike { next, .. } => {
+                *next = if len.is_some() && self.values.len() < self.arity {
+                    Some(self.values.len())
+                } else {
+                    None
+                };
+                Ok(ConcatDemandAction::Continue)
+            }
+        }
+    }
     fn retained_bytes(&self) -> LocalResult<usize> {
         self.values.iter().flatten().try_fold(
             array_bytes::<Option<Vec<u8>>>(self.values.capacity())?,
@@ -44,12 +72,13 @@ impl ConcatTask {
 }
 struct TaskSlot {
     generation: u64,
-    task: Option<ConcatTask>,
+    task: Option<NativeTask>,
 }
 
 pub(super) struct NativeBatchHosts<'a> {
     catalog: HostCatalog,
     context: &'a dyn Columns,
+    regexp_invocations: &'a [Option<tidb_query_expr::NativeRegexpInvocation>],
     slots: Vec<TaskSlot>,
     generation: u64,
     max_retained_bytes: usize,
@@ -58,11 +87,13 @@ pub(super) struct NativeBatchHosts<'a> {
 impl<'a> NativeBatchHosts<'a> {
     pub(super) fn new(
         catalog: HostCatalog,
+        regexp_invocations: &'a [Option<tidb_query_expr::NativeRegexpInvocation>],
         context: &'a dyn Columns,
         max_retained_bytes: usize,
     ) -> Self {
         Self {
             catalog,
+            regexp_invocations,
             context,
             slots: Vec::new(),
             generation: 0,
@@ -93,7 +124,7 @@ impl<'a> NativeBatchHosts<'a> {
             Ok(())
         }
     }
-    fn task(&self, id: &HostTaskId) -> LocalResult<&ConcatTask> {
+    fn task(&self, id: &HostTaskId) -> LocalResult<&NativeTask> {
         self.slots
             .get(id.slot)
             .filter(|slot| slot.generation == id.generation && id.generation != 0)
@@ -106,7 +137,22 @@ impl<'a> NativeBatchHosts<'a> {
             .task
             .take()
             .expect("validated live task");
-        let terminal = task.demand.finish_terminal()?;
+        if let SqlDemand::RegexpLike {
+            case_insensitive,
+            next,
+        } = &task.demand
+        {
+            if next.is_some() {
+                return Err(LocalError::HostContract(
+                    "regexp task is not terminal".into(),
+                ));
+            }
+            return self.finish_regexp(&task, *case_insensitive);
+        }
+        let SqlDemand::Concat { kind, demand } = &task.demand else {
+            unreachable!()
+        };
+        let terminal = demand.finish_terminal()?;
         let other = self.retained_bytes()?;
         // Bound the overlap while the encoder consumes the owned prefix.
         let task_bytes = task.retained_bytes()?;
@@ -116,7 +162,7 @@ impl<'a> NativeBatchHosts<'a> {
             .and_then(|bytes| bytes.checked_sub(task_bytes))
             .ok_or_else(|| resource("SQL host encoding overlap exceeds retained cap"))?;
         let prepared = tidb_query_expr::local::prepare_concat_args(
-            task.kind,
+            *kind,
             task.arity,
             task.values,
             terminal,
@@ -148,6 +194,89 @@ impl<'a> NativeBatchHosts<'a> {
         )?;
         Ok(VectorValue::Bytes(output))
     }
+    fn native_failure<T>(&mut self, error: EvalError) -> LocalResult<T> {
+        self.native_error = Some(error);
+        Err(LocalError::HostContract(
+            "native SQL context operation failed".into(),
+        ))
+    }
+    fn finish_regexp(
+        &mut self,
+        task: &NativeTask,
+        case_insensitive: bool,
+    ) -> LocalResult<VectorValue> {
+        let other = self.retained_bytes()?;
+        let result = if task.values.iter().any(Option::is_none) {
+            None
+        } else {
+            if task.values.len() != task.arity {
+                return Err(LocalError::HostContract(
+                    "regexp argument prefix is incomplete".into(),
+                ));
+            }
+            let flags = task.values.get(2).and_then(Option::as_deref).unwrap_or(b"");
+            let flags_len = flags
+                .len()
+                .checked_add(usize::from(case_insensitive))
+                .ok_or_else(|| resource("regexp flags size overflow"))?;
+            let prefix_bytes = other
+                .checked_add(task.retained_bytes()?)
+                .and_then(|size| size.checked_add(flags_len))
+                .ok_or_else(|| resource("regexp prefix retained size overflow"))?;
+            self.check_bytes(prefix_bytes)?;
+            let mut prepared_flags = Vec::new();
+            prepared_flags
+                .try_reserve_exact(flags_len)
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+            if case_insensitive {
+                prepared_flags.push(b'i');
+            }
+            prepared_flags.extend_from_slice(flags);
+            let prefix_bytes = prefix_bytes
+                .checked_add(prepared_flags.capacity().saturating_sub(flags_len))
+                .ok_or_else(|| resource("regexp flags capacity overflow"))?;
+            self.check_bytes(prefix_bytes)?;
+            // Every demanded argument has already passed its original UTF-8 gate.
+            let text = std::str::from_utf8(task.values[0].as_deref().expect("nonnull text"))
+                .expect("checked UTF-8");
+            let pattern = std::str::from_utf8(task.values[1].as_deref().expect("nonnull pattern"))
+                .expect("checked UTF-8");
+            let flags = std::str::from_utf8(&prepared_flags).expect("checked UTF-8 flags");
+            let invocation = self
+                .regexp_invocations
+                .get(task.slot.index())
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    LocalError::HostContract("regexp slot has no native cache handles".into())
+                })?;
+            // Context lookup and compilation occur only after all non-NULL arguments.
+            let prepared = invocation
+                .with_context_id(self.context.context_id())
+                .prepare_like(pattern, flags);
+            self.check_bytes(
+                prefix_bytes
+                    .checked_add(
+                        prepared
+                            .known_cache_bytes()
+                            .ok_or_else(|| resource("regexp cache retained size overflow"))?,
+                    )
+                    .ok_or_else(|| resource("regexp retained size overflow"))?,
+            )?;
+            match prepared.execute(text) {
+                Ok(value) => Some(i64::from(value)),
+                Err(error) => {
+                    return self.native_failure(crate::regexp::native_regexp_error(&error))
+                }
+            }
+        };
+        self.check_bytes(
+            other
+                .checked_add(task.retained_bytes()?)
+                .and_then(|size| size.checked_add(std::mem::size_of::<Option<i64>>()))
+                .ok_or_else(|| resource("regexp output size overflow"))?,
+        )?;
+        Ok(VectorValue::from_scalar(&ScalarValue::Int(result), 1))
+    }
 }
 impl LocalHostServices for NativeBatchHosts<'_> {
     fn catalog_key(&self) -> &HostCatalogKey {
@@ -166,9 +295,31 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 "SQL host invocation differs from its catalog signature".into(),
             ));
         }
-        let kind = match self.catalog.sql_batch_operation(invocation.slot)? {
-            SqlBatchHostOperation::Concat => ConcatKind::Concat,
-            SqlBatchHostOperation::ConcatWs => ConcatKind::ConcatWs,
+        let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::Concat => SqlDemand::Concat {
+                kind: ConcatKind::Concat,
+                demand: ConcatDemand::new(ConcatKind::Concat, invocation.arg_types.len())?,
+            },
+            SqlBatchHostOperation::ConcatWs => SqlDemand::Concat {
+                kind: ConcatKind::ConcatWs,
+                demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
+            },
+            SqlBatchHostOperation::RegexpLike { case_insensitive } => {
+                if self
+                    .regexp_invocations
+                    .get(invocation.slot.index())
+                    .and_then(Option::as_ref)
+                    .is_none()
+                {
+                    return Err(LocalError::HostContract(
+                        "regexp slot has no native cache handles".into(),
+                    ));
+                }
+                SqlDemand::RegexpLike {
+                    case_insensitive,
+                    next: Some(0),
+                }
+            }
         };
         let generation = self
             .generation
@@ -193,11 +344,10 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 self.slots.len() - 1
             }
         };
-        let task = ConcatTask {
+        let task = NativeTask {
             slot: invocation.slot,
-            kind,
             arity: invocation.arg_types.len(),
-            demand: ConcatDemand::new(kind, invocation.arg_types.len())?,
+            demand,
             values: Vec::new(),
         };
         self.slots[slot] = TaskSlot {
@@ -220,7 +370,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         reply: HostArgReply<'_>,
     ) -> LocalResult<HostStep> {
         let task = self.task(id)?;
-        if task.demand.next_argument()? != Some(reply.index)
+        if task.next_argument()? != Some(reply.index)
             || self
                 .catalog
                 .signature(task.slot)?
@@ -237,6 +387,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         let ScalarValueRef::Bytes(bytes) = reply.values.get_scalar_ref(0) else {
             unreachable!("checked Bytes")
         };
+        if matches!(&task.demand, SqlDemand::RegexpLike { .. })
+            && bytes.is_some_and(|bytes| std::str::from_utf8(bytes).is_err())
+        {
+            return self
+                .native_failure(EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"));
+        }
         let len = bytes.map_or(0, <[u8]>::len);
         let old_capacity = task.values.capacity();
         let target = if task.values.len() == old_capacity {
@@ -271,7 +427,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
             }
             task.values.push(owned);
-            task.demand.observe(bytes.map(<[u8]>::len))?
+            task.observe(bytes.map(<[u8]>::len))?
         };
         self.check_bytes(self.retained_bytes()?)?;
         if action == ConcatDemandAction::ReadPacketLimit {
@@ -280,8 +436,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 .task
                 .as_mut()
                 .expect("validated live task");
-            if task.demand.accept_packet_limit(limit)? {
-                let name = match task.kind {
+            let SqlDemand::Concat { kind, demand } = &mut task.demand else {
+                unreachable!()
+            };
+            if demand.accept_packet_limit(limit)? {
+                let name = match kind {
                     ConcatKind::Concat => "concat",
                     ConcatKind::ConcatWs => "concat_ws",
                 };
@@ -295,7 +454,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 }
             }
         }
-        match self.task(id)?.demand.next_argument()? {
+        match self.task(id)?.next_argument()? {
             Some(index) => Ok(HostStep::NeedArg(HostArgRequest {
                 index,
                 mode: ArgMode::Fresh,
@@ -328,7 +487,7 @@ mod tests {
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let mut provider = NativeBatchHosts::new(catalog, &crate::NoColumns, 512);
+        let mut provider = NativeBatchHosts::new(catalog, &[], &crate::NoColumns, 512);
         let mut ctx = EvalContext::default();
         let invocation = || HostInvocation {
             slot,

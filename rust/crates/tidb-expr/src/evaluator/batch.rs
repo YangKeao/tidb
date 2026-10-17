@@ -263,6 +263,7 @@ struct BatchSource {
     schema: Box<[tipb::FieldType]>,
     facts: BatchFacts,
     hosts: Option<HostCatalog>,
+    regexp_invocations: Box<[Option<tidb_query_expr::NativeRegexpInvocation>]>,
     limits: BatchSourceLimits,
 }
 impl std::fmt::Debug for BatchSource {
@@ -490,13 +491,23 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
     let operation = match function.func_name.lowercase() {
         "concat" => Some(SqlBatchHostOperation::Concat),
         "concat_ws" => Some(SqlBatchHostOperation::ConcatWs),
+        "regexp_like" => Some(SqlBatchHostOperation::RegexpLike {
+            case_insensitive: tidb_datatype::is_ci_collation(function.derived_collation().name()),
+        }),
         _ => None,
     };
     if let Some(operation) = operation {
         let arity = function.args.len();
         let exact = operation.accepts_arity(arity)
             && function.get_static_type().is_some_and(|field| {
-                field.eval_type() == NativeEvalType::String && !field.is_unsigned()
+                field.eval_type()
+                    == match operation {
+                        SqlBatchHostOperation::RegexpLike { .. } => NativeEvalType::Int,
+                        _ => NativeEvalType::String,
+                    }
+                    && !field.is_unsigned()
+                    && (!matches!(operation, SqlBatchHostOperation::RegexpLike { .. })
+                        || field.code() == FieldTypeCode::LongLong)
             })
             && function.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
@@ -507,7 +518,7 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
             .then_some((CallTarget::Host(operation), arity))
             .ok_or_else(|| {
                 BatchFailure::admission(
-                    "CONCAT host requires exact ready String argument/result declarations",
+                    "SQL host requires exact ready argument/result declarations",
                 )
             });
     }
@@ -936,6 +947,7 @@ fn preflight<'a>(
                 budget.array::<OrdinaryCallSite>(2)?; // initial and lowered source ordinals
                 if matches!(resolve_call(function)?.0, CallTarget::Host(_)) {
                     budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
+                    budget.array::<Option<tidb_query_expr::NativeRegexpInvocation>>(1)?;
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -1091,6 +1103,7 @@ fn lower(
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
     let checked = preflight(root, row_schema, limits)?;
     let mut host_entries = Vec::new();
+    let mut regexp_invocations = Vec::new();
     let mut nodes = Vec::new();
     let mut bindings = Vec::new();
     let mut schema = Vec::new();
@@ -1148,6 +1161,13 @@ fn lower(
                         }
                         let slot = host_entries.len();
                         reserve(&mut host_entries, 1)?;
+                        reserve(&mut regexp_invocations, 1)?;
+                        regexp_invocations.push(match operation {
+                            SqlBatchHostOperation::RegexpLike { .. } => {
+                                Some(sql.batch_regexp_like_invocation())
+                            }
+                            _ => None,
+                        });
                         host_entries.push((
                             operation,
                             HostSignature {
@@ -1273,6 +1293,7 @@ fn lower(
         schema: schema.into_boxed_slice(),
         facts,
         hosts,
+        regexp_invocations: regexp_invocations.into_boxed_slice(),
         limits,
     }))
 }
@@ -2138,7 +2159,12 @@ impl PreparedBatch {
     ) -> Result<()> {
         let source = Arc::clone(&self.source);
         let mut hosts = source.hosts.clone().map(|catalog| {
-            NativeBatchHosts::new(catalog, native_ctx, self.max_materialization_retained_bytes)
+            NativeBatchHosts::new(
+                catalog,
+                &source.regexp_invocations,
+                native_ctx,
+                self.max_materialization_retained_bytes,
+            )
         });
         // TiKV deliberately bounds one driver invocation. A TiDB Chunk may be
         // wider than that boundary, so keep one canonical prepared route and
