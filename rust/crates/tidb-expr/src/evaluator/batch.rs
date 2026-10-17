@@ -221,7 +221,7 @@ impl NativeView {
     }
 }
 
-// Only native leaf roots use the native output ABI. Ordinary representable
+// Native value roots use the checked output ABI. Ordinary representable
 // literals keep their existing broadcast fast path. This inspects borrowed
 // kinds/declarations, never converts a payload before the complete byte gate.
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
@@ -234,7 +234,8 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
             NativeView::RootValue
         }
         Expression::ScalarFunction(function)
-            if native_selection_operation(function).is_some()
+            if (native_selection_operation(function).is_some()
+                || native_comparison_kind(function.func_name.lowercase()).is_some())
                 && nullable_prefers_native(root, limits) =>
         {
             NativeView::RootValue
@@ -353,6 +354,7 @@ fn nullable_needs_native(node: &Expression, depth: usize, remaining: &mut usize)
                     "and" | "logicand" | "or" | "logicor"
                 ) || native_boolean_operation(function.func_name.lowercase())
                     .is_some()
+                    || native_comparison_kind(function.func_name.lowercase()).is_some()
                     || (function.func_name.lowercase() == "if" && index == 0)
                     || (function.func_name.lowercase() == "case"
                         && index % 2 == 0
@@ -462,6 +464,7 @@ struct CheckedNode<'a> {
     sql: &'a FieldType,
     view: NativeView,
     subtree_end: usize,
+    folds_to_constant: bool,
 }
 struct Budget {
     used: usize,
@@ -739,6 +742,18 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     )
     .then_some(target)
 }
+fn native_comparison_kind(name: &str) -> Option<tidb_query_expr::ComparisonOp> {
+    use tidb_query_expr::ComparisonOp;
+    Some(match name {
+        "eq" => ComparisonOp::Eq,
+        "ne" => ComparisonOp::Ne,
+        "lt" => ComparisonOp::Lt,
+        "le" => ComparisonOp::Le,
+        "gt" => ComparisonOp::Gt,
+        "ge" => ComparisonOp::Ge,
+        _ => return None,
+    })
+}
 fn native_boolean_operation(name: &str) -> Option<SqlBatchHostOperation> {
     match name {
         "not" => Some(SqlBatchHostOperation::UnaryNotNative),
@@ -765,14 +780,19 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
     }
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_cast_name(function).is_some() || native_selection_operation(function).is_some()
+    native_cast_name(function).is_some()
+        || native_selection_operation(function).is_some()
+        || native_comparison_kind(function.func_name.lowercase()).is_some()
 }
 fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
-        if let Some(operation) = native_selection_operation(function) {
+        if let Some(operation) = native_selection_operation(function).or_else(|| {
+            native_comparison_kind(function.func_name.lowercase())
+                .map(SqlBatchHostOperation::CompareNative)
+        }) {
             if !operation.accepts_arity(function.args.len())
                 || function.get_static_type().is_none()
                 || function.args.iter().any(|arg| arg.static_type().is_none())
@@ -1411,6 +1431,12 @@ fn preflight<'a>(
                         budget.array::<usize>(function.args.len())?;
                         budget.field(sql, 1)?;
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::CompareNative(_))
+                    ) {
+                        budget.field(sql, 1)?;
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -1439,6 +1465,7 @@ fn preflight<'a>(
             sql,
             view,
             subtree_end: 0,
+            folds_to_constant: false,
         });
     }
     // Even a temporary representability conversion must wait for the complete
@@ -1467,8 +1494,17 @@ fn preflight<'a>(
         let mut end = index
             .checked_add(1)
             .ok_or_else(|| resource("source subtree ordinal overflow"))?;
+        let mut folds_to_constant = matches!(checked[index].node, Expression::Constant(_));
         if let Expression::ScalarFunction(function) = checked[index].node {
+            folds_to_constant = !crate::constant_fold::is_unfoldable_call(
+                function.func_name.lowercase(),
+                function.args.len(),
+            );
             for _ in &function.args {
+                folds_to_constant &= checked
+                    .get(end)
+                    .ok_or_else(|| binding("constant metadata source missing"))?
+                    .folds_to_constant;
                 end = checked
                     .get(end)
                     .ok_or_else(|| binding("source subtree is incomplete"))?
@@ -1479,6 +1515,7 @@ fn preflight<'a>(
             return Err(binding("source subtree join differs").into());
         }
         checked[index].subtree_end = end;
+        checked[index].folds_to_constant = folds_to_constant;
     }
     Ok(checked)
 }
@@ -1652,6 +1689,7 @@ fn lower(
                                         | SqlBatchHostOperation::IsNotFalseNative
                                         | SqlBatchHostOperation::IsUnknownNative
                                         | SqlBatchHostOperation::IsNotUnknownNative
+                                        | SqlBatchHostOperation::CompareNative(_)
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1703,6 +1741,44 @@ fn lower(
                                     output_role: item.view.value_role().ok_or_else(|| {
                                         binding("nullable control lacks native result role")
                                     })?,
+                                }
+                            }
+                            SqlBatchHostOperation::CompareNative(operation) => {
+                                let left = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("comparison child ordinal overflow"))?;
+                                let right = checked
+                                    .get(left)
+                                    .ok_or_else(|| binding("comparison left source missing"))?
+                                    .subtree_end;
+                                let facts =
+                                    |index: usize| -> LocalResult<crate::ops::OperandFacts> {
+                                        let child = checked
+                                            .get(index)
+                                            .ok_or_else(|| binding("comparison source missing"))?;
+                                        Ok(crate::ops::OperandFacts {
+                                            eval_type: Some(child.sql.eval_type()),
+                                            unsigned: child.sql.is_unsigned(),
+                                            constant: child.folds_to_constant,
+                                            duration_column: matches!(
+                                                child.node,
+                                                Expression::Column(_)
+                                            ) && child.sql.code()
+                                                == FieldTypeCode::Duration,
+                                        })
+                                    };
+                                NativeHostMetadata::Comparison {
+                                    operation,
+                                    name: sql.func_name.lowercase().into(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    argument_nodes: [left, right],
+                                    operands: [facts(left)?, facts(right)?],
+                                    collation: sql.derived_collation(),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("comparison result role missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::CastNative => NativeHostMetadata::ValueCast {

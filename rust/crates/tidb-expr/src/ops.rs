@@ -672,6 +672,41 @@ fn comparison_operation(op: BinaryOp) -> Option<tidb_query_expr::ComparisonOp> {
     })
 }
 
+pub(crate) fn prepare_native_comparison(
+    op: tidb_query_expr::ComparisonOp,
+    left: Datum,
+    right: Datum,
+    collation: tidb_datatype::Collation,
+    facts: [OperandFacts; 2],
+    ctx: &dyn crate::Columns,
+) -> Result<comparison::PreparedComparison, EvalError> {
+    // The original scalar owner tries its typed integer policy first. It
+    // gives real NULL priority and retains integer-specific coercion errors.
+    if facts
+        .iter()
+        .all(|fact| fact.eval_type == Some(tidb_datatype::EvalType::Int))
+    {
+        match prepare_typed_integer_values(&left, &right, facts.map(|fact| !fact.unsigned))? {
+            TypedIntegerValues::Null => return Ok(comparison::PreparedComparison::Null),
+            TypedIntegerValues::Pair(left, right) => {
+                return Ok(comparison::prepare_int(op, left, right))
+            }
+            TypedIntegerValues::Outside => {}
+        }
+    }
+    comparison::prepare(
+        op,
+        left,
+        right,
+        collation,
+        ComparisonOperands {
+            lhs: facts[0],
+            rhs: facts[1],
+        },
+        ctx,
+    )
+}
+
 fn comparison_into_evaluated(
     value: comparison::PreparedComparison,
 ) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
@@ -1196,8 +1231,8 @@ pub(crate) fn eval_binary_full(
 /// [`integer_binary`] with its overflow rules and NO_UNSIGNED_SUBTRACTION.
 ///
 /// `Ok(None)` means the runtime values are outside what an ETInt signature
-/// can produce (a sentinel or an exotic integral kind); the caller falls back
-/// to the ordinary ladder, which answers those shapes today.
+/// can represent as an integer. Coercion errors propagate; the current scalar
+/// caller retains its ordinary ladder when the typed policy declines.
 pub(crate) fn integer_binary_typed(
     op: BinaryOp,
     l: Datum,
@@ -1223,24 +1258,17 @@ pub(crate) fn integer_binary_typed(
     // (`0x1234`, `b'11'`) carries its signedness in its own `FieldType`, so
     // the same conversion the generic entry applies runs here first.
     let (l, r) = crate::binary_literal::cast_signed_literal_operands(op, l, r, signed_operands);
-    if l == Datum::Null || r == Datum::Null {
-        if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
-            return eval_binary_arithmetic_null_in(ctx).map(Some);
+    match prepare_typed_integer_values(&l, &r, signed_operands)? {
+        TypedIntegerValues::Null => {
+            if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
+                eval_binary_arithmetic_null_in(ctx).map(Some)
+            } else {
+                eval_comparison_null_in(op, ctx).map(Some)
+            }
         }
-        return eval_comparison_null_in(op, ctx).map(Some);
+        TypedIntegerValues::Pair(left, right) => integer_binary(op, left, right, ctx).map(Some),
+        TypedIntegerValues::Outside => Ok(None),
     }
-    let reinterpret = |value: Datum, operand_signed: bool| match value {
-        Datum::Int(bits) if !operand_signed => Datum::UInt(bits as u64),
-        other => other,
-    };
-    let l = reinterpret(l, signed_operands[0]);
-    let r = reinterpret(r, signed_operands[1]);
-    let (a, b) = match (integer_of(&l), integer_of(&r)) {
-        (Ok(Some(a)), Ok(Some(b))) => (a, b),
-        (Err(error), _) | (_, Err(error)) => return Err(error),
-        _ => return Ok(None),
-    };
-    integer_binary(op, a, b, ctx).map(Some)
 }
 
 /// Evaluates a context-free binary operation with TiDB's default

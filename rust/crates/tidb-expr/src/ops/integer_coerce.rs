@@ -40,6 +40,36 @@ pub(super) fn unsigned_operand_flag(value: Datum, unsigned: bool) -> Datum {
     }
 }
 
+/// Pure typed integer input policy, shared by the original typed caller and
+/// compiled comparisons. Genuine NULL precedes integer coercion here.
+pub(super) enum TypedIntegerValues {
+    Null,
+    Pair(Integer, Integer),
+    Outside,
+}
+pub(super) fn prepare_typed_integer_values(
+    left: &Datum,
+    right: &Datum,
+    signed: [bool; 2],
+) -> Result<TypedIntegerValues, EvalError> {
+    if left.is_null() || right.is_null() {
+        return Ok(TypedIntegerValues::Null);
+    }
+    let integer = |value: &Datum, signed: bool| {
+        if let Datum::Int(bits) = value {
+            if !signed {
+                return Ok(Some(Integer::Unsigned(*bits as u64)));
+            }
+        }
+        integer_of(value)
+    };
+    match (integer(left, signed[0]), integer(right, signed[1])) {
+        (Ok(Some(left)), Ok(Some(right))) => Ok(TypedIntegerValues::Pair(left, right)),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        _ => Ok(TypedIntegerValues::Outside),
+    }
+}
+
 /// Select the signedness/constness recipe without inspecting overflow or
 /// computing a negated value. Constant recipes provide their own checked Int
 /// view of the computed Decimal; column recipes report the actual typed cause.

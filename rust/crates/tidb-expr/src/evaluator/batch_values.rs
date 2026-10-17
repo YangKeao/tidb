@@ -24,7 +24,7 @@ use super::*;
 
 static NEXT_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 const MAGIC: u64 = 0x31564d5544414e; // private native-Datum value ABI version 1
-const HANDLE_BYTES: usize = 5 * size_of::<u64>();
+pub(super) const HANDLE_BYTES: usize = 5 * size_of::<u64>();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NativeValueRole {

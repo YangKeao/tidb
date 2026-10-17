@@ -1731,4 +1731,99 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn native_comparisons_preserve_raw_demand_and_diagnostics_in_projection() {
+        let integer = FieldType::new(FieldTypeCode::LongLong)
+            .with_flen(20)
+            .with_decimal(0);
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_flen(128)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let json = FieldType::new(FieldTypeCode::Json)
+            .with_flags(tidb_datatype::FieldTypeFlags::PARSE_TO_JSON);
+        let call = |name: &str, field: FieldType, args: Vec<Expression>| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let value = |datum, field| Expression::Constant(Constant::new(datum, field));
+        let text = |s: &str| value(Datum::new_string(s), string.clone());
+        let bad = || call("cast_json", json.clone(), vec![text("bad JSON")]);
+        let pairs = [
+            (
+                value(Datum::Int(-1), integer.clone().with_unsigned(true)),
+                value(Datum::Int(-1), integer.clone()),
+            ),
+            (
+                value(Datum::Real(f64::NAN), FieldType::new(FieldTypeCode::Double)),
+                value(Datum::Int(1), integer.clone()),
+            ),
+            (value(Datum::Null, integer.clone()), bad()),
+            (text("1tail"), bad()),
+            (
+                call("cast_signed", integer.clone(), vec![text("1tail")]),
+                bad(),
+            ),
+            (text("1tail"), value(Datum::Int(0), integer.clone())),
+        ];
+        let mut cases = Vec::new();
+        for name in ["eq", "ne", "lt", "le", "gt", "ge"] {
+            for (left, right) in &pairs {
+                cases.push(call(
+                    "cast_signed",
+                    integer.clone(),
+                    vec![call(
+                        name,
+                        integer.clone(),
+                        vec![left.clone(), right.clone()],
+                    )],
+                ));
+            }
+        }
+        for root in cases {
+            let field = root.static_type().unwrap().clone();
+            let reference = crate::StmtContext::for_query();
+            let expected = root.eval(&reference, tidb_chunk::row::Row::empty());
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context = crate::StmtContext::for_query();
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root.clone()],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                let actual = projection.next(&mut output);
+                match &expected {
+                    Ok(value) => {
+                        actual.unwrap();
+                        let mut expected = Chunk::new_with_capacity(&[field.clone()], 1);
+                        expected.append_datum(0, value);
+                        assert_eq!(output.num_rows(), 1);
+                        assert_eq!(output.get_row(0).is_null(0), expected.get_row(0).is_null(0));
+                        assert_eq!(
+                            output.column(0).get_raw(0).as_ref(),
+                            expected.column(0).get_raw(0).as_ref()
+                        );
+                    }
+                    Err(expected_error) => {
+                        let Err(ExecError::Eval(actual_error)) = actual else {
+                            panic!("lost logical error: {actual:?}");
+                        };
+                        assert_eq!(&actual_error, expected_error);
+                        assert_eq!(output.num_rows(), 0);
+                    }
+                }
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

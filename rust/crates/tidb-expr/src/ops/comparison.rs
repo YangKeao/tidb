@@ -20,7 +20,7 @@ use tidb_query_datatype::codec::mysql::Decimal as SharedDecimal;
 use tidb_query_expr::local::{LocalError, LocalResult};
 use tidb_query_expr::{impl_compare, ComparisonOp};
 
-pub(super) enum PreparedComparison {
+pub(crate) enum PreparedComparison {
     Null,
     Integer(ComparisonOp, Integer, Integer),
     Decimal(ComparisonOp, SharedDecimal, SharedDecimal),
@@ -57,7 +57,7 @@ pub(super) fn prepare_decimal(
 impl PreparedComparison {
     /// Execute the same pure value helper as the registered RPN kernel, with
     /// no argument program, callback or expression owner at this boundary.
-    pub(super) fn compute(self, available: usize) -> LocalResult<Option<i64>> {
+    pub(crate) fn compute(self, available: usize) -> LocalResult<Option<i64>> {
         if available == usize::MAX {
             return Err(LocalError::ResourceLimit(
                 "comparison requires a finite value allowance".into(),

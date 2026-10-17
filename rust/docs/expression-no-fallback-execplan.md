@@ -46,6 +46,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5d3: native AND/OR and rewriter IsTrueWithNull share checked frames and direct RPN value kernels, preserving nullable demand and warning prefixes. 93focused/full1445same4/core1043same6/36SQL/Projection17/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5d3.md.
 - [x] (2026-10-18) N5e1: native NOT/IS NULL/TRUE/FALSE and UNKNOWN predicates compose through checked native values and direct existing kernels. 95focused/full1447same4/core1043same6/72SQL/Projection18/lint/clippy/fmt pass; JSON IS NULL migration gap retired. Receipt rust/docs/evidence/no-fallback-n5e1.md.
 - [x] (2026-10-18) N5f1: shared plain comparison preparation and direct existing core value entries, with immutable metadata facts and finite vector-copy budget. 23,328 comparison cases/new2tests/95batch/full1449same4/core1043same6/Projection18/lint/clippy/fmt pass. Native comparison HostFrame is next. Receipt rust/docs/evidence/no-fallback-n5f1.md.
+- [x] (2026-10-18) N5f2: six native comparison hosts preserve raw operand demand, immutable type/constant/column facts and original typed integer priority. 98focused/full1452same4/core1043same6/90SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f2.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -465,3 +466,18 @@ existing argument program; this checkpoint deliberately records that remaining
 work. N5f2 must connect the checked native comparison frame and preserve both
 raw operand demands before any comparison coercion. It must then retire those
 legacy callers as source/caller coverage expands; global fallback remains.
+
+
+N5f2 outcome: fixed native comparisons now stage both original raw operands
+through the shared HostFrame, retain only a checked fixed-size left capability,
+gate both borrowed payloads before copies, and release store borrows before
+context conversion. Pure typed integer input preparation is shared with the
+original caller; its NULL priority and integer-specific errors remain distinct
+from generic comparison preparation. Direct kernels finalize the result under
+the original result coercion and own producer identity.
+
+Constant classification is computed in the existing reverse source pass using
+the original unfoldable-call predicate. It preserves duration-column/constant
+and Decimal-column/text distinctions without an expression owner in the host.
+Null-safe equality, NULLIF, arithmetic producers, effects, additional source
+forms/callers and migration dispatch removal remain outstanding.

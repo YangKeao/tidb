@@ -37,6 +37,16 @@ pub(super) enum NativeHostMetadata {
         output_node: usize,
         output_role: NativeValueRole,
     },
+    Comparison {
+        operation: tidb_query_expr::ComparisonOp,
+        name: Box<str>,
+        result_type: FieldType,
+        argument_nodes: [usize; 2],
+        operands: [crate::ops::OperandFacts; 2],
+        collation: tidb_datatype::Collation,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     ValueCast {
         cast_type: tidb_ast::CastType,
         name: Box<str>,
@@ -63,6 +73,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Comparison {
+        left_token: Option<[u8; native_values::HANDLE_BYTES]>,
+    },
     Truth,
     Logical {
         next: usize,
@@ -100,6 +113,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Comparison { left_token } => Ok(Some(usize::from(left_token.is_some()))),
             SqlDemand::Nullable { next }
             | SqlDemand::Conditional { next }
             | SqlDemand::Logical { next, .. } => Ok(Some(*next)),
@@ -116,7 +130,8 @@ impl NativeTask {
             SqlDemand::Nullable { .. }
             | SqlDemand::Conditional { .. }
             | SqlDemand::Logical { .. }
-            | SqlDemand::Truth => Err(LocalError::HostContract(
+            | SqlDemand::Truth
+            | SqlDemand::Comparison { .. } => Err(LocalError::HostContract(
                 "native nullable control does not buffer a prefix".into(),
             )),
             SqlDemand::Concat { demand, .. } => demand.observe(len),
@@ -559,6 +574,127 @@ impl<'a> NativeBatchHosts<'a> {
             };
         self.finish_native_value(id, value, *output_node, *output_role, row, base)
     }
+    fn resume_comparison(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
+        let task = self.task(id)?;
+        let SqlDemand::Comparison { left_token } = task.demand else {
+            return Err(binding("comparison resume has another task kind"));
+        };
+        let Some(NativeHostMetadata::Comparison {
+            operation,
+            name,
+            result_type,
+            argument_nodes,
+            operands,
+            collation,
+            output_node,
+            output_role,
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("comparison descriptor missing"));
+        };
+        let row = task.row;
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("comparison native value store missing"))?;
+        if left_token.is_none() {
+            // Validate/copy only the capability. Original comparisons demand
+            // both raw operands before any value coercion, including NULL.
+            store.borrow().get(
+                token,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: argument_nodes[0],
+                    row,
+                },
+            )?;
+            let left: [u8; native_values::HANDLE_BYTES] = token
+                .try_into()
+                .map_err(|_| binding("comparison token width differs"))?;
+            let SqlDemand::Comparison { left_token } = &mut self.slots[id.slot]
+                .task
+                .as_mut()
+                .expect("validated comparison task")
+                .demand
+            else {
+                unreachable!()
+            };
+            *left_token = Some(left);
+            return Ok(HostStep::NeedArg(HostArgRequest {
+                index: 1,
+                mode: ArgMode::Fresh,
+            }));
+        }
+        let left_token = left_token.expect("left was demanded");
+        let left_origin = NativeValueOrigin {
+            node: argument_nodes[0],
+            row,
+        };
+        let right_origin = NativeValueOrigin {
+            node: argument_nodes[1],
+            row,
+        };
+        let payload = {
+            let store = store.borrow();
+            native_payload_bytes(store.get(
+                &left_token,
+                NativeValueRole::CharInput,
+                left_origin,
+            )?)?
+            .checked_add(native_payload_bytes(store.get(
+                token,
+                NativeValueRole::CharInput,
+                right_origin,
+            )?)?)
+            .ok_or_else(|| resource("comparison payload overflow"))?
+        };
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("comparison copy allowance overflow"))?,
+            )
+            .ok_or_else(|| resource("comparison host size overflow"))?;
+        self.check_bytes(base)?;
+        let (left, right) = {
+            let store = store.borrow();
+            (
+                store.clone_for_kernel(&left_token, NativeValueRole::CharInput, left_origin)?,
+                store.clone_for_kernel(token, NativeValueRole::CharInput, right_origin)?,
+            )
+        };
+        // The plain conversion may publish diagnostics through the real context;
+        // neither source handle nor store borrow crosses that boundary.
+        let binary = crate::scalar_function::binary_op_for_name(name)
+            .ok_or_else(|| binding("comparison operator name missing"))?;
+        let signed = operands.map(|operand| !operand.unsigned);
+        let (left, right) =
+            crate::binary_literal::cast_signed_literal_operands(binary, left, right, signed);
+        let prepared = match crate::ops::prepare_native_comparison(
+            *operation,
+            left,
+            right,
+            *collation,
+            *operands,
+            self.context,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        let available = self
+            .max_retained_bytes
+            .checked_sub(base)
+            .ok_or_else(|| resource("comparison value allowance exhausted"))?;
+        let result = prepared.compute(available)?.map_or(Datum::Null, Datum::Int);
+        let result =
+            match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            };
+        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+            .map(HostStep::Ready)
+    }
+
     fn finish_truth(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
         let task = self.task(id)?;
         let Some(NativeHostMetadata::Selection {
@@ -1115,6 +1251,26 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            SqlBatchHostOperation::CompareNative(operation) => {
+                let Some(NativeHostMetadata::Comparison {
+                    operation: descriptor_operation,
+                    name,
+                    operands,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("comparison source descriptor missing"));
+                };
+                if self.native_values.is_none()
+                    || *descriptor_operation != operation
+                    || native_comparison_kind(name) != Some(operation)
+                    || operands.iter().any(|operand| operand.eval_type.is_none())
+                    || invocation.arg_types.len() != 2
+                {
+                    return Err(binding("comparison descriptor differs"));
+                }
+                SqlDemand::Comparison { left_token: None }
+            }
             operation @ (SqlBatchHostOperation::IsTrueWithNullNative
             | SqlBatchHostOperation::UnaryNotNative
             | SqlBatchHostOperation::IsNullNative
@@ -1360,6 +1516,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Comparison { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native comparison argument cannot be wire NULL"));
+            };
+            return self.resume_comparison(id, token);
         }
         if matches!(task.demand, SqlDemand::Truth) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

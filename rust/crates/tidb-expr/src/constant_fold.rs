@@ -449,7 +449,7 @@ pub fn is_unfoldable(name: &str) -> bool {
 /// argument reader must remain runtime-bound because its result comes from
 /// the previous statement. Keep that arity distinction at the fold gate while
 /// leaving [`is_unfoldable`] as the source-name table used by other callers.
-fn is_unfoldable_call(name: &str, arg_count: usize) -> bool {
+pub(crate) fn is_unfoldable_call(name: &str, arg_count: usize) -> bool {
     if name == "last_insert_id" {
         return arg_count == 0;
     }

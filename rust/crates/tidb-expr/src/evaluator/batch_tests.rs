@@ -6206,3 +6206,547 @@ fn rewritten_native_boolean_predicates_preserve_diagnostics_and_composition() {
         }
     }
 }
+
+#[test]
+fn native_comparison_producers_preserve_values_diagnostics_and_raw_operand_demand() {
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let text = |s: &str| literal(Datum::new_string(s), string_ty());
+    let cast = |s: &str| call("cast_signed", ty(), vec![text(s)]);
+    let json_value = |s: &str| call("cast_json", json.clone(), vec![text(s)]);
+    let unsigned = || literal(Datum::Int(-1), ty().with_unsigned(true));
+    let decimal = |s: &str| {
+        literal(
+            Datum::Decimal(Decimal::from_literal(s)),
+            FieldType::new(FieldTypeCode::NewDecimal),
+        )
+    };
+    let pairs = vec![
+        (cast("1tail"), int(2)),
+        (unsigned(), int(-1)),
+        (int(-1), unsigned()),
+        (
+            unsigned(),
+            literal(Datum::UInt(u64::MAX), ty().with_unsigned(true)),
+        ),
+        (literal(Datum::Real(f64::NAN), real_ty()), cast("0")),
+        (
+            decimal("1.000000000000000000000000000000000000001"),
+            decimal("1.000000000000000000000000000000000000002"),
+        ),
+        (text("A"), text("a")),
+        (json_value("null"), json_value("false")),
+        (json_value("[1,0]"), text("[1,0]")),
+        (
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 0.0])),
+                FieldType::new(FieldTypeCode::VectorFloat32),
+            ),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 1.0])),
+                FieldType::new(FieldTypeCode::VectorFloat32),
+            ),
+        ),
+        (literal(Datum::MinNotNull, ty()), int(0)),
+        (null(), literal(Datum::MinNotNull, ty())),
+        (literal(Datum::MinNotNull, ty()), null()),
+        (
+            null(),
+            call("cast_signed", ty(), vec![json_value("bad JSON")]),
+        ),
+        (text("1tail"), json_value("bad JSON")),
+        (null(), json_value("bad JSON")),
+        (text("1tail"), int(0)),
+        (
+            call("coalesce", ty(), vec![null(), cast("3")]),
+            call("if", ty(), vec![int(1), int(3), cast("bad")]),
+        ),
+    ];
+    for name in ["eq", "ne", "lt", "le", "gt", "ge"] {
+        for (left, right) in &pairs {
+            let root = call(
+                "cast_signed",
+                ty(),
+                vec![call(name, ty(), vec![left.clone(), right.clone()])],
+            );
+            for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+                let reference = NativeCastDiagnostics::default();
+                let context = NativeCastDiagnostics::default();
+                let mut expected = output_for(&ty());
+                let mut expected_error = None;
+                for _ in &selected {
+                    match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                        Ok(value) => expected.append_datum(0, &value),
+                        Err(error) => {
+                            expected_error = Some(error);
+                            break;
+                        }
+                    }
+                }
+                let suite = self::suite(root.clone());
+                let mut input = Chunk::new_with_capacity(&[], 2);
+                input.set_num_virtual_rows(2);
+                input.set_sel(Some(selected));
+                let mut actual = output_for(&ty());
+                let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+                if let Some(expected_error) = expected_error {
+                    let Err(EvaluatorError::Eval(actual_error)) = result else {
+                        panic!("lost comparison error: {result:?}")
+                    };
+                    assert_eq!(actual_error, expected_error, "{name} {left:?} {right:?}");
+                } else {
+                    result.unwrap();
+                    assert_eq!(actual.num_rows(), expected.num_rows());
+                    for row in 0..actual.num_rows() {
+                        assert_eq!(
+                            actual.get_row(row).is_null(0),
+                            expected.get_row(row).is_null(0)
+                        );
+                        assert_eq!(
+                            actual.column(0).get_raw(row).as_ref(),
+                            expected.column(0).get_raw(row).as_ref()
+                        );
+                    }
+                }
+                assert_eq!(
+                    *context.0.borrow(),
+                    *reference.0.borrow(),
+                    "{name} {left:?} {right:?}"
+                );
+                let route = suite.batch_route_snapshot();
+                assert_eq!(
+                    (route.prepared, route.fallback, route.refusals),
+                    (1, 0, 0),
+                    "{name}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn rewritten_native_comparisons_preserve_column_constant_domains_and_composition() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    fn fields() -> Vec<FieldType> {
+        vec![
+            string_ty(),
+            string_ty(),
+            ty().with_unsigned(true),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(60)
+                .with_decimal(38),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            real_ty(),
+        ]
+    }
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            let index = match path.last()?.as_str() {
+                "a" => 0,
+                "b" => 1,
+                "u" => 2,
+                "d" => 3,
+                "t" => 4,
+                "dt" => 5,
+                "f" => 6,
+                _ => return None,
+            };
+            Some((index, fields()[index].clone(), index as i64 + 1))
+        }
+    }
+    let schema = fields();
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let duration = |n| Datum::Duration(MySqlDuration::from_nanoseconds(n, 6).unwrap());
+    let text = |s: &str| Datum::new_string(s);
+    let decimal = |s: &str| Datum::Decimal(Decimal::from_literal(s));
+    let rows = vec![
+        vec![
+            text("1tail"),
+            text("2tail"),
+            Datum::UInt(u64::MAX),
+            decimal("1.000000000000000000000000000000000000001"),
+            duration(3_600_000_000_000),
+            Datum::Time(time),
+            Datum::Real(f64::NAN),
+        ],
+        vec![
+            text("0"),
+            text("0"),
+            Datum::UInt(0),
+            decimal("1.2"),
+            duration(0),
+            Datum::Time(time),
+            Datum::Real(0.0),
+        ],
+        vec![
+            Datum::Null,
+            text("bad JSON"),
+            Datum::UInt(1),
+            Datum::Null,
+            Datum::Null,
+            Datum::Null,
+            Datum::Real(f64::INFINITY),
+        ],
+        vec![
+            text("[1,0]"),
+            text("[1,0]"),
+            Datum::UInt(7),
+            decimal("-1"),
+            duration(-3_600_000_000_000),
+            Datum::Time(time),
+            Datum::Real(f64::NAN),
+        ],
+        vec![
+            text("bad datetime"),
+            text("1"),
+            Datum::UInt(u64::MAX),
+            decimal("1"),
+            duration(3_600_000_000_000),
+            Datum::Time(time),
+            Datum::Real(-0.0),
+        ],
+    ];
+    for sql in [
+        "cast((a = 1) as signed)",
+        "cast((u < cast('-1' as signed)) as char)",
+        "cast((d = '1.000000000000000000000000000000000000001') as signed)",
+        "cast((t = '01:00:00') as signed)",
+        "cast((t = cast(a as char)) as signed)",
+        "cast((dt = 'bad datetime') as signed)",
+        "cast((cast(a as json) = cast(b as json)) as signed)",
+        "f <> f",
+        "if(t = '01:00:00', cast('1' as json), cast('0' as json))",
+        "cast((cast(a as signed) < cast(b as signed)) as char)",
+        "not (d >= '1.2')",
+        "coalesce((cast(a as signed) = NULL), cast('9' as signed))",
+        "cast(((a = 1) and (u > 0)) as signed)",
+        "cast((dt >= cast('2026-10-17 12:34:56.123456' as datetime(6))) as signed)",
+        "cast((t = cast('01:00:00' as char)) as signed)",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2, 3, 4],
+            vec![1, 0, 1],
+            (0..2050).map(|i| [2, 3, 4][i % 3]).collect(),
+        ] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for row in selected {
+                match root.eval(&reference, input.physical_row(row)) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &schema);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost logical SQL error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error, "{sql}");
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0),
+                        "{sql}"
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref(),
+                        "{sql}"
+                    );
+                }
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_comparison_handles_and_borrowed_copy_budget_are_terminal() {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    use tidb_query_expr::ComparisonOp;
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 2];
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::CompareNative(ComparisonOp::Eq),
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let facts = crate::ops::OperandFacts {
+        eval_type: Some(NativeEvalType::Int),
+        unsigned: false,
+        constant: false,
+        duration_column: false,
+    };
+    let metadata = [NativeHostMetadata::Comparison {
+        operation: ComparisonOp::Eq,
+        name: "eq".into(),
+        result_type: ty(),
+        argument_nodes: [3, 8],
+        operands: [facts; 2],
+        collation: Collation::Binary,
+        output_node: 2,
+        output_role: NativeValueRole::Output,
+    }];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 0,
+    };
+    let left_origin = NativeValueOrigin { node: 3, row };
+    let stale = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(0), NativeValueRole::CharInput, left_origin)
+        .unwrap();
+    store.borrow_mut().begin_window().unwrap();
+    let large = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Bytes(vec![b'X'; 16384]),
+            NativeValueRole::CharInput,
+            left_origin,
+        )
+        .unwrap();
+    let wrong_role = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(0), NativeValueRole::Output, left_origin)
+        .unwrap();
+    let wrong_row = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Int(0),
+            NativeValueRole::CharInput,
+            NativeValueOrigin {
+                node: 3,
+                row: InputRow {
+                    occurrence: 1,
+                    input_row: 0,
+                },
+            },
+        )
+        .unwrap();
+    let left = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(0), NativeValueRole::CharInput, left_origin)
+        .unwrap();
+    let right = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Int(1),
+            NativeValueRole::CharInput,
+            NativeValueOrigin { node: 8, row },
+        )
+        .unwrap();
+    let context = NativeCastDiagnostics::default();
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context, 512).with_native_values(Some(&store));
+    let mut ctx = EvalContext::default();
+    for token in [stale, wrong_role, wrong_row] {
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("request")
+        };
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let error = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, LocalError::BindingContract(_)));
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+    }
+    for bad_right in [true, false] {
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("request")
+        };
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(large.clone())), 1);
+        let HostStep::NeedArg(request) = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("must demand raw RHS before coercion")
+        };
+        assert_eq!(request.index, 1);
+        let values = VectorValue::from_scalar(
+            &ScalarValue::Bytes(Some(if bad_right {
+                left.clone()
+            } else {
+                right.clone()
+            })),
+            1,
+        );
+        let error = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 1,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap_err();
+        if bad_right {
+            assert!(matches!(error, LocalError::BindingContract(_)));
+        } else {
+            assert!(matches!(error, LocalError::ResourceLimit(_)));
+        }
+        assert!(provider.take_native_error().is_none());
+        assert!(context.0.borrow().is_empty());
+        provider.cancel(&task);
+    }
+    let HostStart::Pending { task, .. } = provider
+        .start(
+            &mut ctx,
+            HostInvocation {
+                slot,
+                row,
+                arg_types: &args,
+                return_type: &field,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("request")
+    };
+    for (index, token) in [left, right].into_iter().enumerate() {
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let step = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap();
+        if index == 1 {
+            let HostStep::Ready(result) = step else {
+                panic!("comparison result")
+            };
+            let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
+                panic!("output capability")
+            };
+            assert_eq!(
+                store
+                    .borrow()
+                    .get(
+                        token,
+                        NativeValueRole::Output,
+                        NativeValueOrigin { node: 2, row }
+                    )
+                    .unwrap(),
+                &Datum::Int(0)
+            );
+        }
+    }
+    let other_catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::CompareNative(ComparisonOp::Ge),
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let other_slot = other_catalog.slot(0).unwrap();
+    let mut wrong = NativeBatchHosts::new(other_catalog, &metadata, &context, 512)
+        .with_native_values(Some(&store));
+    let error = wrong
+        .start(
+            &mut ctx,
+            HostInvocation {
+                slot: other_slot,
+                row,
+                arg_types: &args,
+                return_type: &field,
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(error, LocalError::BindingContract(_)));
+    assert!(wrong.take_native_error().is_none());
+}
