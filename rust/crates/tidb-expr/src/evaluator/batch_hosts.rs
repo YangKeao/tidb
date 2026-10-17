@@ -26,6 +26,8 @@ use tidb_query_expr::local::{
 
 #[path = "batch_arithmetic_window.rs"]
 mod arithmetic_window;
+#[path = "batch_decimal_fast_window.rs"]
+mod decimal_fast_window;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum WindowArithmeticSource {
@@ -43,6 +45,11 @@ pub(super) struct WindowArithmeticMetadata {
 }
 
 pub(super) enum NativeHostMetadata {
+    DecimalFast {
+        operation: SqlBatchHostOperation,
+        argument_nodes: [usize; 2],
+        output_node: usize,
+    },
     Plain,
     Regexp(tidb_query_expr::NativeRegexpInvocation),
     CharCast {
@@ -118,6 +125,11 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    WindowDecimalFast {
+        next: usize,
+        rows: Vec<usize>,
+        left: Vec<Option<tidb_query_expr::NativeDecimalFastValue>>,
+    },
     WindowArithmetic {
         next: usize,
         rows: Vec<usize>,
@@ -170,9 +182,9 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
-            SqlDemand::WindowArithmetic { next, .. } | SqlDemand::Arithmetic { next, .. } => {
-                Ok(Some(*next))
-            }
+            SqlDemand::WindowDecimalFast { next, .. }
+            | SqlDemand::WindowArithmetic { next, .. }
+            | SqlDemand::Arithmetic { next, .. } => Ok(Some(*next)),
             SqlDemand::Comparison { left_token } => Ok(Some(usize::from(left_token.is_some()))),
             SqlDemand::Nullable { next }
             | SqlDemand::Conditional { next }
@@ -188,7 +200,8 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::WindowArithmetic { .. }
+            SqlDemand::WindowDecimalFast { .. }
+            | SqlDemand::WindowArithmetic { .. }
             | SqlDemand::Nullable { .. }
             | SqlDemand::Conditional { .. }
             | SqlDemand::Logical { .. }
@@ -223,6 +236,19 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::WindowDecimalFast { rows, left, .. } = &self.demand {
+            return bytes
+                .checked_add(array_bytes::<usize>(rows.capacity())?)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        array_bytes::<Option<tidb_query_expr::NativeDecimalFastValue>>(
+                            left.capacity(),
+                        )
+                        .ok()?,
+                    )
+                })
+                .ok_or_else(|| resource("fast decimal retained size overflow"));
+        }
         if let SqlDemand::WindowArithmetic {
             rows, left_bytes, ..
         } = &self.demand
@@ -2034,7 +2060,14 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         _ctx: &mut EvalContext,
         invocation: HostWindowInvocation<'_>,
     ) -> LocalResult<HostStart> {
-        self.start_arithmetic_window(invocation)
+        if matches!(
+            self.metadata.get(invocation.slot.index()),
+            Some(NativeHostMetadata::DecimalFast { .. })
+        ) {
+            self.start_decimal_fast_window(invocation)
+        } else {
+            self.start_arithmetic_window(invocation)
+        }
     }
     fn resume_window(
         &mut self,
@@ -2042,7 +2075,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         id: &HostTaskId,
         reply: HostWindowArgReply<'_>,
     ) -> LocalResult<HostStep> {
-        self.resume_arithmetic_window(id, reply)
+        if matches!(self.task(id)?.demand, SqlDemand::WindowDecimalFast { .. }) {
+            self.resume_decimal_fast_window(id, reply)
+        } else {
+            self.resume_arithmetic_window(id, reply)
+        }
     }
     fn resume(
         &mut self,

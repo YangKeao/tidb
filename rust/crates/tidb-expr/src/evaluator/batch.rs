@@ -55,11 +55,15 @@ use tidb_query_expr::local::{
 };
 use tidb_query_expr::types::BATCH_MAX_SIZE;
 
+#[path = "batch_decimal_fast_source.rs"]
+mod decimal_fast_source;
 #[path = "batch_hosts.rs"]
 mod hosts;
 #[path = "batch_values.rs"]
 mod native_values;
-use hosts::{NativeBatchHosts, NativeHostMetadata};
+use hosts::{
+    NativeBatchHosts, NativeHostMetadata, WindowArithmeticMetadata, WindowArithmeticSource,
+};
 use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
 use std::cell::RefCell;
 use tidb_query_expr::local::LocalHostServices;
@@ -210,15 +214,143 @@ enum NativeView {
     JsonBytes,
     ValueToken,
     RootValue,
+    BulkValue(NativeEvalType),
+    BulkRoot(NativeEvalType),
+    DecimalFast,
 }
 impl NativeView {
     fn value_role(self) -> Option<NativeValueRole> {
         match self {
-            Self::ValueToken => Some(NativeValueRole::CharInput),
-            Self::RootValue => Some(NativeValueRole::Output),
+            Self::ValueToken | Self::BulkValue(_) => Some(NativeValueRole::CharInput),
+            Self::RootValue | Self::BulkRoot(_) => Some(NativeValueRole::Output),
+            Self::DecimalFast => Some(NativeValueRole::DecimalFast),
             Self::Typed | Self::JsonBytes => None,
         }
     }
+    fn bulk_target(self) -> Option<NativeEvalType> {
+        match self {
+            Self::BulkValue(target) | Self::BulkRoot(target) => Some(target),
+            _ => None,
+        }
+    }
+}
+
+fn window_arithmetic_operation(
+    function: &ScalarFunction,
+    view: NativeView,
+) -> Option<SqlBatchHostOperation> {
+    view.bulk_target()?;
+    if !matches!(
+        function.native_arithmetic_generic_mode(),
+        crate::scalar_function::NativeArithmeticInputMode::Numeric(_)
+    ) {
+        return None;
+    }
+    Some(
+        match native_arithmetic_operation(function.func_name.lowercase())? {
+            SqlBatchHostOperation::AddNative => SqlBatchHostOperation::AddWindowNative,
+            SqlBatchHostOperation::SubtractNative => SqlBatchHostOperation::SubtractWindowNative,
+            SqlBatchHostOperation::MultiplyNative => SqlBatchHostOperation::MultiplyWindowNative,
+            _ => return None,
+        },
+    )
+}
+fn bulk_value_tree_complete(
+    node: &Expression,
+    view: NativeView,
+    depth: usize,
+    remaining: &mut usize,
+) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return true;
+    }
+    let Expression::ScalarFunction(function) = node else {
+        return native_value_tree_complete(node, depth, remaining);
+    };
+    let Some(target) = view.bulk_target() else {
+        return native_value_tree_complete(node, depth, remaining);
+    };
+    // These owners have genuine whole-child phases and need their own window
+    // descriptors; substituting a row host would change demand/error order.
+    if (function.func_name.lowercase() == "abs" && target == NativeEvalType::Int)
+        || (function.func_name.lowercase() == "cast_decimal" && target == NativeEvalType::Decimal)
+        || (function.func_name.lowercase() == "cast_json" && target == NativeEvalType::Json)
+    {
+        return false;
+    }
+    if window_arithmetic_operation(function, view).is_none() {
+        return native_value_tree_complete(node, depth, remaining);
+    }
+    *remaining -= 1;
+    function.args.iter().enumerate().all(|(index, child)| {
+        bulk_value_tree_complete(
+            child,
+            argument_view(function, view, index),
+            depth - 1,
+            remaining,
+        )
+    })
+}
+fn profile_shape(root: &Expression, limits: BatchSourceLimits) -> LocalResult<()> {
+    let mut pending = Vec::new();
+    let mut budget = Budget {
+        used: 0,
+        max: limits.max_metadata_bytes,
+    };
+    budget.array::<(&Expression, usize)>(1)?;
+    reserve(&mut pending, 1)?;
+    pending.push((root, 1usize));
+    let mut scheduled = 1usize;
+    while let Some((node, depth)) = pending.pop() {
+        if depth > limits.tree.max_depth || scheduled > limits.tree.max_nodes {
+            return Err(resource("native profile source node/depth policy exceeded"));
+        }
+        let children: &[Expression] = match node {
+            Expression::ScalarFunction(function) => &function.args,
+            Expression::Constant(constant) => match constant.deferred_expr.as_deref() {
+                Some(child) => std::slice::from_ref(child),
+                None => &[],
+            },
+            _ => &[],
+        };
+        scheduled = scheduled
+            .checked_add(children.len())
+            .filter(|count| *count <= limits.tree.max_nodes)
+            .ok_or_else(|| resource("native profile source node policy exceeded"))?;
+        budget.array::<(&Expression, usize)>(children.len())?;
+        reserve(&mut pending, children.len())?;
+        let next = depth
+            .checked_add(1)
+            .ok_or_else(|| resource("native profile source depth overflow"))?;
+        pending.extend(children.iter().rev().map(|child| (child, next)));
+    }
+    Ok(())
+}
+fn promoted_arithmetic_view(
+    root: &Expression,
+    limits: BatchSourceLimits,
+) -> Result<Option<NativeView>> {
+    let Expression::ScalarFunction(function) = root else {
+        return Ok(None);
+    };
+    if native_arithmetic_operation(function.func_name.lowercase()).is_none() {
+        return Ok(None);
+    }
+    let Some(field) = root.static_type() else {
+        return Ok(None);
+    };
+    profile_shape(root, limits)?;
+    let target = field.eval_type();
+    Ok(if crate::scalar_function::batch_supported(root, target) {
+        let view = NativeView::BulkRoot(target);
+        bulk_value_tree_complete(root, view, limits.tree.max_depth, &mut {
+            limits.tree.max_nodes
+        })
+        .then_some(view)
+    } else {
+        native_value_tree_complete(root, limits.tree.max_depth, &mut { limits.tree.max_nodes })
+            .then_some(NativeView::RootValue)
+    })
 }
 
 // Native value roots use the checked output ABI. Ordinary representable
@@ -344,9 +476,13 @@ fn typed_source_tree_complete(
             if resolve_call_in_view(function, view).is_err() {
                 return false;
             }
-            let child_view = argument_view(function, view);
-            for child in &function.args {
-                if !typed_source_tree_complete(child, child_view, depth - 1, remaining) {
+            for (index, child) in function.args.iter().enumerate() {
+                if !typed_source_tree_complete(
+                    child,
+                    argument_view(function, view, index),
+                    depth - 1,
+                    remaining,
+                ) {
                     return false;
                 }
             }
@@ -474,6 +610,7 @@ enum CallTarget {
 
 #[derive(Debug)]
 enum SourceKind {
+    DecimalFastInput(decimal_fast_source::FastInput),
     NativeConstant { value: Datum },
     Constant { value: ScalarValue },
     Column { index: usize },
@@ -682,7 +819,20 @@ fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<Sc
     }
     strict_literal(value, sql)
 }
-fn argument_view(function: &ScalarFunction, view: NativeView) -> NativeView {
+fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
+    if window_arithmetic_operation(function, view).is_some() {
+        let crate::scalar_function::NativeArithmeticInputMode::Numeric(domain) =
+            function.native_arithmetic_generic_mode()
+        else {
+            unreachable!()
+        };
+        let argument = &function.args[index];
+        return NativeView::BulkValue(crate::scalar_function::native_numeric_batch_source(
+            argument.static_type().expect("typed arithmetic child"),
+            matches!(argument, Expression::Constant(value) if matches!(value.literal_value(), Some(Datum::BinaryLiteral(_)))),
+            domain,
+        ));
+    }
     if view.value_role().is_some() && native_value_call(function) {
         return NativeView::ValueToken;
     }
@@ -912,7 +1062,8 @@ fn resolve_call_in_view(
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
-        if let Some(operation) = native_selection_operation(function)
+        if let Some(operation) = window_arithmetic_operation(function, view)
+            .or_else(|| native_selection_operation(function))
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
             .or_else(|| native_math_operation(function))
             .or_else(|| native_arithmetic_operation(function.func_name.lowercase()))
@@ -1407,10 +1558,19 @@ fn projected(sql: &FieldType, new_collation: bool) -> Result<tipb::FieldType> {
 // Complete source and incoming schema byte gates precede EVERY equality and
 // detached/projected/C snapshot. Borrowed temporary nodes have no executable
 // children and are not a second interpreter. Stable owner interval is required.
+#[cfg(test)]
 fn preflight<'a>(
     root: &'a Expression,
     row_schema: &[FieldType],
     limits: BatchSourceLimits,
+) -> Result<Vec<CheckedNode<'a>>> {
+    preflight_view(root, row_schema, limits, None)
+}
+fn preflight_view<'a>(
+    root: &'a Expression,
+    row_schema: &[FieldType],
+    limits: BatchSourceLimits,
+    view: Option<NativeView>,
 ) -> Result<Vec<CheckedNode<'a>>> {
     if limits.tree.max_nodes == 0 || limits.tree.max_depth == 0 {
         return Err(resource("batch source node/depth policy is zero").into());
@@ -1426,7 +1586,11 @@ fn preflight<'a>(
     let mut checked = Vec::new();
     budget.array::<(&Expression, usize, NativeView)>(1)?;
     reserve(&mut pending, 1)?;
-    pending.push((root, 1usize, root_source_view(root, limits.tree)));
+    pending.push((
+        root,
+        1usize,
+        view.unwrap_or_else(|| root_source_view(root, limits.tree)),
+    ));
     let mut scheduled = 1usize;
     while let Some((node, depth, view)) = pending.pop() {
         let (sql, collation) = parts(node)?;
@@ -1594,8 +1758,8 @@ fn preflight<'a>(
                     .filter(|depth| *depth <= limits.tree.max_depth)
                     .ok_or_else(|| resource("batch source depth policy exceeded"))?;
                 reserve(&mut pending, arity)?;
-                for child in function.args.iter().rev() {
-                    pending.push((child, child_depth, argument_view(function, view)));
+                for (index, child) in function.args.iter().enumerate().rev() {
+                    pending.push((child, child_depth, argument_view(function, view, index)));
                 }
             }
             Expression::CorrelatedColumn(_) => unreachable!(),
@@ -1888,8 +2052,37 @@ fn arithmetic_host_metadata(
             }
         }
     }
+    let batch = if operation.is_windowed() {
+        let target = item
+            .view
+            .bulk_target()
+            .ok_or_else(|| binding("window arithmetic target missing"))?;
+        let crate::scalar_function::NativeArithmeticInputMode::Numeric(domain) =
+            sql.native_arithmetic_generic_mode()
+        else {
+            return Err(binding("window arithmetic domain missing").into());
+        };
+        let sources = [0, 1].map(|index| match &sql.args[index] {
+            Expression::Constant(_) => WindowArithmeticSource::Literal,
+            Expression::Column(_) => WindowArithmeticSource::Column,
+            Expression::ScalarFunction(child)
+                if checked[nodes[index]].view.bulk_target() == Some(NativeEvalType::Int)
+                    && window_arithmetic_operation(child, checked[nodes[index]].view).is_some() =>
+            {
+                WindowArithmeticSource::IntegerReady
+            }
+            _ => WindowArithmeticSource::Computed,
+        });
+        Some(WindowArithmeticMetadata { domain,
+            integer: target == NativeEvalType::Int && domain == NativeEvalType::Int
+                && [0, 1].into_iter().all(|index| crate::scalar_function::native_numeric_batch_source(checked[nodes[index]].sql,
+                    matches!(&sql.args[index],Expression::Constant(value) if matches!(value.literal_value(),Some(Datum::BinaryLiteral(_)))), domain) == NativeEvalType::Int),
+            output_integer: target == NativeEvalType::Int, sources })
+    } else {
+        None
+    };
     Ok(NativeHostMetadata::Arithmetic {
-                                    batch:None, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
+                                    batch, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
                                     argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].sql),snapshot_field_type(checked[right].sql)],
                                     literal:[matches!(sql.args[0],Expression::Constant(_)),matches!(sql.args[1],Expression::Constant(_))],
                                     binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),
@@ -1900,6 +2093,7 @@ fn arithmetic_host_metadata(
                                 })
 }
 
+#[cfg(test)]
 fn lower(
     suite: &EvaluatorSuite,
     calculated_slot: usize,
@@ -1908,12 +2102,31 @@ fn lower(
     unit: u64,
     limits: BatchSourceLimits,
 ) -> Result<Arc<BatchSource>> {
+    lower_view(
+        suite,
+        calculated_slot,
+        row_schema,
+        new_collation,
+        unit,
+        limits,
+        None,
+    )
+}
+fn lower_view(
+    suite: &EvaluatorSuite,
+    calculated_slot: usize,
+    row_schema: &[FieldType],
+    new_collation: bool,
+    unit: u64,
+    limits: BatchSourceLimits,
+    view: Option<NativeView>,
+) -> Result<Arc<BatchSource>> {
     let root = suite
         .program
         .calculated
         .get(calculated_slot)
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
-    let checked = preflight(root, row_schema, limits)?;
+    let checked = preflight_view(root, row_schema, limits, view)?;
     let mut host_entries = Vec::new();
     let mut host_metadata = Vec::new();
     let mut nodes = Vec::new();
@@ -1931,6 +2144,9 @@ fn lower(
         };
         let kind = SourceKind::capture(item.node, item.sql, item.view)?;
         let construction = match &kind {
+            SourceKind::DecimalFastInput(_) => {
+                return Err(binding("fast source entered the ordinary source factory").into())
+            }
             SourceKind::Constant { value, .. } => BuildKind::Literal(value.clone()),
             SourceKind::Column { .. } | SourceKind::NativeConstant { .. } => {
                 let slot = bindings.len();
@@ -1991,6 +2207,9 @@ fn lower(
                                         | SqlBatchHostOperation::AddNative
                                         | SqlBatchHostOperation::SubtractNative
                                         | SqlBatchHostOperation::MultiplyNative
+                                        | SqlBatchHostOperation::AddWindowNative
+                                        | SqlBatchHostOperation::SubtractWindowNative
+                                        | SqlBatchHostOperation::MultiplyWindowNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -2046,7 +2265,10 @@ fn lower(
                             }
                             operation @ (SqlBatchHostOperation::AddNative
                             | SqlBatchHostOperation::SubtractNative
-                            | SqlBatchHostOperation::MultiplyNative) => {
+                            | SqlBatchHostOperation::MultiplyNative
+                            | SqlBatchHostOperation::AddWindowNative
+                            | SqlBatchHostOperation::SubtractWindowNative
+                            | SqlBatchHostOperation::MultiplyWindowNative) => {
                                 arithmetic_host_metadata(operation, sql, item, ordinal, &checked)?
                             }
                             SqlBatchHostOperation::AbsNative => {
@@ -2311,7 +2533,13 @@ fn lower(
 
 /// Independent compiled batch owner. No raw evaluation method accepts
 /// arbitrary rows; every invocation goes through the real suite dispatch seal.
+struct RowProfile {
+    source: Arc<BatchSource>,
+    program: LocalBatchProgram,
+}
 pub(crate) struct PreparedBatch {
+    fast_profile: Option<decimal_fast_source::PreparedFast>,
+    row_profile: Option<RowProfile>,
     source: Arc<BatchSource>,
     program: LocalBatchProgram,
     limits: ExecutionLimits,
@@ -2345,6 +2573,7 @@ impl PreparedBatch {
         )
     }
 
+    #[cfg(test)]
     fn compile_calculation(
         suite: &EvaluatorSuite,
         calculated_slot: usize,
@@ -2355,13 +2584,58 @@ impl PreparedBatch {
         execution: ExecutionLimits,
         max_materialization_retained_bytes: usize,
     ) -> Result<Self> {
-        let source = lower(
+        Self::compile_calculation_profile(
             suite,
             calculated_slot,
             row_schema,
             new_collation,
             unit,
             source_limits,
+            execution,
+            max_materialization_retained_bytes,
+            false,
+        )
+    }
+    fn compile_calculation_profile(
+        suite: &EvaluatorSuite,
+        calculated_slot: usize,
+        row_schema: &[FieldType],
+        new_collation: bool,
+        unit: u64,
+        source_limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        max_materialization_retained_bytes: usize,
+        promote: bool,
+    ) -> Result<Self> {
+        let root = suite
+            .program
+            .calculated
+            .get(calculated_slot)
+            .ok_or_else(|| BatchFailure::admission("batch calculation slot missing"))?;
+        let view = if promote {
+            promoted_arithmetic_view(root, source_limits)?
+        } else {
+            None
+        };
+        let pair = matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_arithmetic_operation(function, view).is_some()));
+        let fast = promote && decimal_fast_source::possible(root);
+        let groups = 1 + usize::from(pair) + usize::from(fast);
+        let limits = if groups > 1 {
+            BatchSourceLimits {
+                max_metadata_bytes: source_limits.max_metadata_bytes / groups,
+                ..source_limits
+            }
+        } else {
+            source_limits
+        };
+        let source = lower_view(
+            suite,
+            calculated_slot,
+            row_schema,
+            new_collation,
+            unit,
+            limits,
+            view,
         )?;
         let program = compile_batch(
             &source.expr,
@@ -2371,8 +2645,47 @@ impl PreparedBatch {
             },
             &source.facts,
         )?;
+        let row_profile = if pair {
+            let row_source = lower_view(
+                suite,
+                calculated_slot,
+                row_schema,
+                new_collation,
+                unit,
+                limits,
+                Some(NativeView::RootValue),
+            )?;
+            let row_program = compile_batch(
+                &row_source.expr,
+                &row_source.schema,
+                LocalCompileContext {
+                    limits: limits.tree,
+                },
+                &row_source.facts,
+            )?;
+            Some(RowProfile {
+                source: row_source,
+                program: row_program,
+            })
+        } else {
+            None
+        };
+        let fast_profile = if fast {
+            Some(decimal_fast_source::compile(
+                suite,
+                calculated_slot,
+                row_schema,
+                new_collation,
+                unit,
+                limits,
+            )?)
+        } else {
+            None
+        };
         let window_size = program.max_batch_size();
         Ok(Self {
+            fast_profile,
+            row_profile,
             source,
             program,
             limits: execution,
@@ -2384,6 +2697,24 @@ impl PreparedBatch {
         })
     }
 
+    fn compiled_node_count(&self) -> LocalResult<usize> {
+        self.source
+            .facts
+            .node_count()
+            .checked_add(
+                self.row_profile
+                    .as_ref()
+                    .map_or(0, |row| row.source.facts.node_count()),
+            )
+            .and_then(|count| {
+                count.checked_add(
+                    self.fast_profile
+                        .as_ref()
+                        .map_or(0, |fast| fast.source.facts.node_count()),
+                )
+            })
+            .ok_or_else(|| resource("profile graph count overflow"))
+    }
     pub(crate) fn scratch_snapshot(&self) -> BatchScratchSnapshot {
         BatchScratchSnapshot {
             selection_capacity: self.selection.capacity(),
@@ -2403,6 +2734,21 @@ impl PreparedBatch {
         output: &Chunk,
         row_schema: &[FieldType],
     ) -> Result<()> {
+        if self.row_profile.as_ref().is_some_and(|row| {
+            !Arc::ptr_eq(&row.source.owner, &self.source.owner)
+                || row.source.root_identity != self.source.root_identity
+                || row.source.calculated_slot != self.source.calculated_slot
+        }) {
+            return Err(binding("row/bulk profiles do not share their source owner").into());
+        }
+        if self.fast_profile.as_ref().is_some_and(|fast| {
+            !Arc::ptr_eq(&fast.source.owner, &self.source.owner)
+                || fast.source.root_identity != self.source.root_identity
+                || fast.source.calculated_slot != self.source.calculated_slot
+                || fast.source.output_index != self.source.output_index
+        }) {
+            return Err(binding("fast/ordinary profiles do not share their source owner").into());
+        }
         if !Arc::ptr_eq(&suite.program, &self.source.owner) {
             return Err(BatchFailure::admission(
                 "batch worker belongs to another native program",
@@ -2761,6 +3107,16 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch demanded occurrence/type differs"));
         }
         let node = &self.source.nodes[ordinal];
+        if let SourceKind::DecimalFastInput(value) = &node.kind {
+            let store = self
+                .native_values
+                .ok_or_else(|| binding("fast source store missing"))?;
+            let value = value.read(self.input, row.input_row)?;
+            let token = store
+                .borrow_mut()
+                .insert_decimal_fast(value, NativeValueOrigin { node: ordinal, row })?;
+            return Ok(Datum::Bytes(token));
+        }
         if node.view.value_role().is_some() {
             let store = self
                 .native_values
@@ -2834,6 +3190,50 @@ impl NativeDatumSource for NativeChunk<'_> {
             return Err(binding("batch occurrence/type differs"));
         }
         let node = &self.source.nodes[ordinal];
+        if let SourceKind::DecimalFastInput(value) = &node.kind {
+            let store = self
+                .native_values
+                .ok_or_else(|| binding("fast source store missing"))?;
+            let count = physical_rows.len();
+            let payload = count
+                .checked_mul(native_values::HANDLE_BYTES)
+                .ok_or_else(|| resource("fast input vector bytes overflow"))?;
+            store.borrow().precheck_import(
+                payload
+                    .checked_add(array_bytes::<usize>(
+                        count
+                            .checked_add(1)
+                            .ok_or_else(|| resource("fast input offsets overflow"))?,
+                    )?)
+                    .ok_or_else(|| resource("fast input vector allowance overflow"))?,
+            )?;
+            let mut output = ChunkedVecBytes::try_with_capacities(count, payload)
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+            let mut unsupported = false;
+            for (occurrence, &input_row) in physical_rows.iter().enumerate() {
+                let observed = if unsupported {
+                    tidb_query_expr::NativeDecimalFastOutcome::Unsupported
+                } else {
+                    value.read(self.input, input_row)?
+                };
+                unsupported |= matches!(
+                    observed,
+                    tidb_query_expr::NativeDecimalFastOutcome::Unsupported
+                );
+                let token = store.borrow_mut().insert_decimal_fast(
+                    observed,
+                    NativeValueOrigin {
+                        node: ordinal,
+                        row: InputRow {
+                            occurrence,
+                            input_row,
+                        },
+                    },
+                )?;
+                output.push_ref(Some(&token));
+            }
+            return Ok(Some(VectorValue::Bytes(output)));
+        }
         if node.view.value_role().is_some() {
             return Ok(None);
         }
@@ -3248,15 +3648,54 @@ impl EvaluatorSuite {
 mod tests;
 
 impl PreparedBatch {
+    #[cfg(test)]
     fn execute_chunk(
         &mut self,
         native_ctx: &dyn Columns,
         ctx: &mut EvalContext,
         input: &Chunk,
         output: &mut Chunk,
+        #[cfg(test)] override_source: Option<&mut dyn NativeDatumSource>,
+    ) -> Result<()> {
+        self.execute_profile(
+            native_ctx,
+            ctx,
+            input,
+            output,
+            false,
+            #[cfg(test)]
+            override_source,
+        )
+    }
+    fn execute_profile(
+        &mut self,
+        native_ctx: &dyn Columns,
+        ctx: &mut EvalContext,
+        input: &Chunk,
+        output: &mut Chunk,
+        row_domain: bool,
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
-        let source = Arc::clone(&self.source);
+        let use_row = row_domain && self.row_profile.is_some();
+        let source = Arc::clone(if use_row {
+            &self
+                .row_profile
+                .as_ref()
+                .expect("selected row profile")
+                .source
+        } else {
+            &self.source
+        });
+        let whole = if use_row {
+            self.row_profile
+                .as_ref()
+                .unwrap()
+                .program
+                .requires_whole_selection()
+        } else {
+            self.program.requires_whole_selection()
+        };
+        let window_size = if row_domain { 1 } else { self.window_size };
         let native_values = if source.needs_native_values {
             Some(RefCell::new(NativeValueStore::new(
                 self.max_materialization_retained_bytes,
@@ -3280,10 +3719,11 @@ impl PreparedBatch {
         // NULLs and failure propagation without entering another evaluator.
         let mut start = 0;
         while start < self.selection.len() {
-            let end = self
-                .selection
-                .len()
-                .min(start.saturating_add(self.window_size));
+            let end = if whole {
+                self.selection.len()
+            } else {
+                self.selection.len().min(start.saturating_add(window_size))
+            };
             let selection = &self.selection[start..end];
             if let Some(store) = &native_values {
                 store.borrow_mut().begin_window()?;
@@ -3307,7 +3747,12 @@ impl PreparedBatch {
                     .as_mut()
                     .map(|hosts| hosts as &mut dyn LocalHostServices),
             };
-            let result = self.program.eval_with_bindings(
+            let program = if use_row {
+                &mut self.row_profile.as_mut().unwrap().program
+            } else {
+                &mut self.program
+            };
+            let result = program.eval_with_bindings(
                 self.limits,
                 ctx,
                 input.physical_rows(),
@@ -3327,7 +3772,7 @@ impl PreparedBatch {
             self.vector_allocations = self
                 .vector_allocations
                 .saturating_add(u64::try_from(vectors).unwrap_or(u64::MAX));
-            if self.source.nodes[0].view == NativeView::RootValue {
+            if source.nodes[0].view.value_role() == Some(NativeValueRole::Output) {
                 self.write_native_output(
                     values,
                     selection,
@@ -3417,7 +3862,7 @@ impl PreparedBatchSuite {
         for slot in 0..count {
             let mut calculation_limits = limits;
             calculation_limits.tree.max_nodes = remaining_nodes;
-            let worker = PreparedBatch::compile_calculation(
+            let worker = PreparedBatch::compile_calculation_profile(
                 suite,
                 slot,
                 row_schema,
@@ -3426,9 +3871,10 @@ impl PreparedBatchSuite {
                 calculation_limits,
                 execution,
                 max_materialization_retained_bytes / count.max(1),
+                true,
             )?;
             remaining_nodes = remaining_nodes
-                .checked_sub(worker.source.facts.node_count())
+                .checked_sub(worker.compiled_node_count()?)
                 .ok_or_else(|| resource("projection source node policy exceeded"))?;
             workers.push(worker);
         }
@@ -3524,16 +3970,19 @@ impl PreparedBatchSuite {
         for worker in &mut self.workers {
             worker.validate_invocation(suite, input, output, row_schema)?;
         }
-        let vectorized = native_ctx.enable_vectorized_expression();
         for worker in &mut self.workers {
-            if !vectorized {
-                worker.window_size = 1;
+            if worker.execute_decimal_priority(native_ctx, ctx, input, output)? {
+                continue;
             }
-            worker.execute_chunk(
+            // The original getter belongs to this output and occurs only
+            // after its Decimal priority stage declined, even for empty input.
+            let vectorized = native_ctx.enable_vectorized_expression();
+            worker.execute_profile(
                 native_ctx,
                 ctx,
                 input,
                 output,
+                !vectorized,
                 #[cfg(test)]
                 None,
             )?;

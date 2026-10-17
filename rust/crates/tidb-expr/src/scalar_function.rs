@@ -3637,10 +3637,10 @@ impl ScalarFunction {
 /// coefficient at `storage_scale` fraction digits, of which `scale` are the
 /// SQL-visible result scale.
 #[derive(Clone, Copy)]
-struct DecimalValue(NativeDecimalFastValue);
+pub(crate) struct DecimalValue(pub(crate) NativeDecimalFastValue);
 
 impl DecimalValue {
-    fn from_my_decimal(value: &tidb_datatype::MyDecimal) -> Option<Self> {
+    pub(crate) fn from_my_decimal(value: &tidb_datatype::MyDecimal) -> Option<Self> {
         // `Decimal::from_my_decimal`: the stored fraction digits are padded
         // up to the result scale when the cell declares more of them.
         let (coefficient, digits_frac) = value.to_i128_scaled()?;
@@ -3658,7 +3658,7 @@ impl DecimalValue {
         }))
     }
 
-    fn from_integer(value: crate::coerce::Integer) -> Self {
+    pub(crate) fn from_integer(value: crate::coerce::Integer) -> Self {
         let coefficient = match value {
             crate::coerce::Integer::Signed(value) => i128::from(value),
             crate::coerce::Integer::Unsigned(value) => i128::from(value),
@@ -3671,12 +3671,62 @@ impl DecimalValue {
     }
 
     /// `Decimal::to_chunk_my_decimal`: the cell the row path appends.
-    fn to_my_decimal(self) -> Option<tidb_datatype::MyDecimal> {
+    pub(crate) fn to_my_decimal(self) -> Option<tidb_datatype::MyDecimal> {
         tidb_datatype::MyDecimal::from_scaled_i128(
             self.0.coefficient,
             self.0.storage_scale,
             self.0.scale,
         )
+    }
+}
+
+/// Immutable integer-column CAST shape shared by both native demand owners.
+/// This contains no expression or context callback.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NativeIntegerDecimalCast {
+    pub(crate) unsigned: bool,
+    pub(crate) scale: u32,
+    factor: i128,
+}
+impl NativeIntegerDecimalCast {
+    pub(crate) fn shape(source: &FieldType, target: &FieldType) -> Option<Self> {
+        use tidb_datatype::FieldTypeCode;
+        if !matches!(
+            source.code(),
+            FieldTypeCode::Tiny
+                | FieldTypeCode::Short
+                | FieldTypeCode::Int24
+                | FieldTypeCode::Long
+                | FieldTypeCode::LongLong
+                | FieldTypeCode::Year
+        ) || target.code() != FieldTypeCode::NewDecimal
+            || target.decimal() == UNSPECIFIED_LENGTH
+        {
+            return None;
+        }
+        let flen = u32::try_from(target.flen()).ok()?;
+        let scale = u32::try_from(target.decimal()).ok()?;
+        let unsigned = source.is_unsigned();
+        if flen == 0 || flen < scale.checked_add(if unsigned { 20 } else { 19 })? {
+            return None;
+        }
+        Some(Self {
+            unsigned,
+            scale,
+            factor: 10i128.checked_pow(scale)?,
+        })
+    }
+    pub(crate) fn value(self, bits: i64) -> Option<DecimalValue> {
+        let value = if self.unsigned {
+            i128::from(bits as u64)
+        } else {
+            i128::from(bits)
+        };
+        Some(DecimalValue(NativeDecimalFastValue {
+            coefficient: value.checked_mul(self.factor)?,
+            storage_scale: self.scale,
+            scale: self.scale,
+        }))
     }
 }
 
@@ -4250,7 +4300,7 @@ fn cast_json_argument_value(function: &ScalarFunction, value: Datum) -> Result<D
     )
 }
 
-fn batch_supported(expression: &Expression, target: EvalType) -> bool {
+pub(crate) fn batch_supported(expression: &Expression, target: EvalType) -> bool {
     match expression {
         Expression::Constant(constant) => constant
             .deferred_expr
@@ -4920,33 +4970,11 @@ fn vec_eval_cast_int_as_decimal(
     input: &Chunk,
     physical: &[usize],
 ) -> Option<Vec<Option<DecimalValue>>> {
-    use tidb_datatype::FieldTypeCode;
     let [Expression::Column(column)] = function.args.as_slice() else {
         return None;
     };
-    let source = column.get_static_type()?;
-    if !matches!(
-        source.code(),
-        FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong
-            | FieldTypeCode::Year
-    ) {
-        return None;
-    }
-    let signed = !source.is_unsigned();
-    let target = function.get_static_type()?;
-    if target.decimal() == UNSPECIFIED_LENGTH {
-        return None;
-    }
-    let flen = u32::try_from(target.flen()).ok()?;
-    let scale = u32::try_from(target.decimal()).ok()?;
-    if flen == 0 || flen < scale.checked_add(if signed { 19 } else { 20 })? {
-        return None;
-    }
-    let factor = 10i128.checked_pow(scale)?;
+    let shape =
+        NativeIntegerDecimalCast::shape(column.get_static_type()?, function.get_static_type()?)?;
     let index = usize::try_from(column.index).ok()?;
     if index >= input.num_cols() {
         return None;
@@ -4961,17 +4989,7 @@ fn vec_eval_cast_int_as_decimal(
             if column.is_null(row) {
                 return Some(None);
             }
-            let bits = column.get_int64(row);
-            let value = if signed {
-                i128::from(bits)
-            } else {
-                i128::from(bits as u64)
-            };
-            Some(Some(DecimalValue(NativeDecimalFastValue {
-                coefficient: value.checked_mul(factor)?,
-                storage_scale: scale,
-                scale,
-            })))
+            shape.value(column.get_int64(row)).map(Some)
         })
         .collect()
 }

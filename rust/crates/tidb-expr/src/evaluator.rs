@@ -625,7 +625,8 @@ impl EvaluatorSuite {
     /// Preparation covers all outputs before evaluation. Unsupported suites
     /// temporarily retain migration routing; prepared calculations use shared
     /// RPN programs and never replay after an execution error. Disabling the
-    /// vector optimization selects one-row windows in that same execution model.
+    /// vector optimization selects the original row-demand profile in that same
+    /// driver. Whole-selection profiles retain complete argument phases.
     pub fn run_with_tikv_batch<C: Columns>(
         &self,
         ctx: &C,
@@ -638,8 +639,9 @@ impl EvaluatorSuite {
 
     /// Benchmark-only ablation of the current TiKV batch implementation. It
     /// shares the current lowering, checked adapters, and generated kernels,
-    /// but deliberately invokes the program with one selected occurrence per
-    /// window. It is not evidence for a historical TiKV revision.
+    /// and requests one selected occurrence per window for windowable profiles.
+    /// Whole-selection programs retain complete phases despite that tuning;
+    /// this is not evidence for a historical TiKV revision.
     #[cfg(test)]
     pub(crate) fn run_with_tikv_row_ablation<C: Columns>(
         &self,

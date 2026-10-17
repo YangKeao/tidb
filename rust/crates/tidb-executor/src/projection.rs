@@ -2317,4 +2317,112 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn arithmetic_roots_keep_decimal_priority_and_native_results_in_serial_parallel_projection() {
+        use tidb_datatype::Decimal;
+        let integer = FieldType::new(FieldTypeCode::LongLong)
+            .with_flen(20)
+            .with_decimal(0);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6);
+        let value = |value, field| Expression::Constant(Constant::new(value, field));
+        let call = |name: &str, field, args| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        for name in ["plus", "minus", "mul"] {
+            let roots = vec![
+                call(
+                    name,
+                    decimal.clone(),
+                    vec![
+                        value(
+                            Datum::Decimal(Decimal::from_literal("-1.2300")),
+                            decimal.clone(),
+                        ),
+                        value(
+                            Datum::Decimal(Decimal::from_literal("2.5")),
+                            decimal.clone(),
+                        ),
+                    ],
+                ),
+                call(
+                    name,
+                    integer.clone(),
+                    vec![
+                        value(Datum::Int(2), integer.clone()),
+                        value(Datum::Int(3), integer.clone()),
+                    ],
+                ),
+                call(
+                    name,
+                    decimal.clone(),
+                    vec![
+                        value(
+                            Datum::Decimal(Decimal::from_literal(
+                                "100000000000000000000000000000000000000000000000000",
+                            )),
+                            decimal.clone(),
+                        ),
+                        value(Datum::Decimal(Decimal::from_int(2)), decimal.clone()),
+                    ],
+                ),
+            ];
+            let fields = vec![decimal.clone(), integer.clone(), decimal.clone()];
+            for enabled in [true, false] {
+                let reference =
+                    crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                let suite = tidb_expr::evaluator::EvaluatorSuite::new(roots.clone(), false);
+                let mut input = Chunk::new_with_capacity(&[], 3);
+                input.set_num_virtual_rows(3);
+                let mut expected = Chunk::new_with_capacity(&fields, 0);
+                suite.run(&reference, &mut input, &mut expected).unwrap();
+                let warnings = reference.take_warnings();
+                for workers in [0, 2] {
+                    let context =
+                        crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                    let (source, _) = NumberSource::new(3, 3);
+                    let schema = Schema::new(
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, field)| Column::new(index as i64 + 1, field.clone()))
+                            .collect(),
+                    );
+                    let mut projection = ProjectionExec::new(
+                        ExecutorMeta::new(schema, 1, 3, 1024),
+                        roots.clone(),
+                        source,
+                        context.clone(),
+                    )
+                    .with_workers(workers);
+                    projection.open().unwrap();
+                    let mut output = projection.new_chunk();
+                    projection.next(&mut output).unwrap();
+                    assert_eq!(output.num_rows(), expected.num_rows());
+                    for row in 0..output.num_rows() {
+                        for column in 0..fields.len() {
+                            assert_eq!(
+                                output.get_row(row).is_null(column),
+                                expected.get_row(row).is_null(column)
+                            );
+                            assert_eq!(
+                                output.column(column).get_raw(row).as_ref(),
+                                expected.column(column).get_raw(row).as_ref(),
+                                "{name} flag={enabled} workers={workers} row={row} column={column}"
+                            );
+                        }
+                    }
+                    assert_eq!(context.take_warnings(), warnings);
+                    if workers == 0 {
+                        let route = projection.evaluator_suite.batch_route_snapshot();
+                        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                    }
+                    projection.next(&mut output).unwrap();
+                    assert_eq!(output.num_rows(), 0);
+                    projection.close().unwrap();
+                }
+            }
+        }
+    }
 }

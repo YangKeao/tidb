@@ -382,6 +382,7 @@ fn signed_int_family_reuses_the_same_batch_substrate() {
                 target: CallTarget::Host(_),
                 ..
             }
+            | SourceKind::DecimalFastInput(_)
             | SourceKind::Constant { .. }
             | SourceKind::NativeConstant { .. }
             | SourceKind::Column { .. } => None,
@@ -2392,7 +2393,16 @@ fn complete_projection_keeps_multiple_outputs_and_selected_columns_in_shared_exe
                 false,
             );
             let ctx = Context::new(enabled);
+            let reference = EvaluatorSuite::new(suite.program.calculated.clone(), false);
+            let reference_ctx = Context::new(enabled);
+            let reference_schema = [ty(), string_ty(), ty(), ty()];
             for _ in 0..2 {
+                let mut native_input = chunk(&schema, &rows);
+                native_input.set_sel(selection.clone());
+                let mut native_output = Chunk::new_with_capacity(&reference_schema, 0);
+                reference
+                    .run(&reference_ctx, &mut native_input, &mut native_output)
+                    .unwrap();
                 let mut input = chunk(&schema, &rows);
                 input.set_sel(selection.clone());
                 let mut out = Chunk::new_with_capacity(&out_schema, 0);
@@ -2434,8 +2444,8 @@ fn complete_projection_keeps_multiple_outputs_and_selected_columns_in_shared_exe
             }
             assert_eq!(
                 ctx.calls.get(),
-                2,
-                "one execution-mode choice per invocation"
+                reference_ctx.calls.get(),
+                "preserve native's mode observation for each calculated output"
             );
             let route = suite.batch_route_snapshot();
             assert_eq!((route.prepared, route.fallback, route.refusals), (2, 0, 0));
@@ -7849,6 +7859,489 @@ fn numeric_diagnostic_format_failure_is_demanded_only_after_its_actual_overflow(
                 };
                 assert_eq!(actual, expected);
             }
+        }
+    }
+}
+
+#[derive(Default)]
+struct ArithmeticProfilesContext {
+    enabled: Cell<bool>,
+    trace: std::cell::RefCell<Vec<String>>,
+}
+impl Columns for ArithmeticProfilesContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("compiled arithmetic must use value bindings")
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.trace.borrow_mut().push("enable".into());
+        self.enabled.get()
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.trace.borrow_mut().push("zone".into());
+        SessionTimeZone::utc()
+    }
+    fn div_precision_increment(&self) -> u32 {
+        self.trace.borrow_mut().push("precision".into());
+        4
+    }
+    fn no_unsigned_subtraction(&self) -> bool {
+        self.trace.borrow_mut().push("unsigned-mode".into());
+        false
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        crate::ErrorLevel::Warn
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.trace
+            .borrow_mut()
+            .push(format!("warn:{code}:{message}"));
+    }
+    fn handle_truncate(&self, message: &str) -> std::result::Result<(), EvalError> {
+        self.trace.borrow_mut().push(format!("truncate:{message}"));
+        Ok(())
+    }
+}
+fn compare_arithmetic_profile(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    let actual_ctx = ArithmeticProfilesContext::default();
+    let reference_ctx = ArithmeticProfilesContext::default();
+    // Reuse the same prepared owner across flag changes. A previous scalar
+    // call must not latch the following bulk call to a one-row tuning value.
+    for enabled in [true, false, true, false] {
+        actual_ctx.enabled.set(enabled);
+        reference_ctx.enabled.set(enabled);
+        actual_ctx.trace.borrow_mut().clear();
+        reference_ctx.trace.borrow_mut().clear();
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut reference_input = chunk(schema, rows);
+        reference_input.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected_output = output_for(&field);
+        let actual = actual_suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, schema);
+        let expected =
+            reference_suite.run(&reference_ctx, &mut reference_input, &mut expected_output);
+        assert_eq!(actual, expected, "flag={enabled}, selection={selection:?}");
+        assert_eq!(
+            actual_ctx.trace.take(),
+            reference_ctx.trace.take(),
+            "flag={enabled}"
+        );
+        assert_eq!(output.num_rows(), expected_output.num_rows());
+        for position in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(position).is_null(0),
+                expected_output.get_row(position).is_null(0)
+            );
+            assert_eq!(
+                output.column(0).get_raw(position).as_ref(),
+                expected_output.column(0).get_raw(position).as_ref(),
+                "flag={enabled}, row={position}"
+            );
+        }
+        let routes = actual_suite.batch_route_snapshot();
+        assert_eq!((routes.refusals, routes.fallback), (0, 0));
+        let crate::evaluator::BatchLane::Prepared(ref prepared) = *actual_suite.batch_lane.borrow()
+        else {
+            panic!("arithmetic root was not prepared");
+        };
+        assert_eq!(prepared.workers.len(), 1);
+        assert!(prepared.workers[0].source.nodes[0]
+            .view
+            .value_role()
+            .is_some());
+        assert_eq!(
+            prepared.workers[0].program.requires_whole_selection(),
+            prepared.workers[0].row_profile.is_some()
+        );
+    }
+}
+#[test]
+fn native_arithmetic_root_profiles_preserve_bulk_row_values_diagnostics_and_context_toggles() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(40)
+        .with_decimal(4);
+    let schemas = vec![
+        (
+            vec![ty(), ty()],
+            ty(),
+            vec![
+                vec![Datum::Null, Datum::Int(3)],
+                vec![Datum::Int(-7), Datum::Int(2)],
+                vec![Datum::Int(11), Datum::Int(0)],
+            ],
+        ),
+        (
+            vec![ty().with_unsigned(true), ty()],
+            ty().with_unsigned(true),
+            vec![
+                vec![Datum::UInt(7), Datum::Int(3)],
+                vec![Datum::UInt(u64::MAX), Datum::Int(1)],
+                vec![Datum::Null, Datum::Int(-1)],
+            ],
+        ),
+        (
+            vec![real_ty(), real_ty()],
+            real_ty(),
+            vec![
+                vec![Datum::Null, Datum::Real(2.0)],
+                vec![Datum::Real(-1.5), Datum::Real(0.25)],
+                vec![Datum::Real(f64::MAX), Datum::Real(f64::MAX)],
+            ],
+        ),
+        (
+            vec![decimal.clone(), decimal.clone()],
+            decimal.clone(),
+            vec![
+                vec![Datum::Null, Datum::Decimal(Decimal::from_int(3))],
+                vec![
+                    Datum::Decimal(Decimal::from_literal("-1.25")),
+                    Datum::Decimal(Decimal::from_literal("2.5")),
+                ],
+                vec![
+                    Datum::Decimal(Decimal::from_int(11)),
+                    Datum::Decimal(Decimal::from_int(0)),
+                ],
+            ],
+        ),
+        (
+            vec![string_ty(), decimal.clone()],
+            decimal,
+            vec![
+                vec![
+                    Datum::new_string("3x"),
+                    Datum::Decimal(Decimal::from_int(2)),
+                ],
+                vec![Datum::Null, Datum::Decimal(Decimal::from_int(1))],
+                vec![Datum::new_string("12.5"), Datum::Null],
+            ],
+        ),
+    ];
+    let selections = vec![
+        vec![],
+        vec![0],
+        vec![0, 1, 2],
+        vec![2, 0, 2],
+        (0..2050).map(|position| [2, 0, 2][position % 3]).collect(),
+    ];
+    for (schema, result, rows) in schemas {
+        for name in ["plus", "minus", "mul"] {
+            for selection in &selections {
+                let root = call(
+                    name,
+                    result.clone(),
+                    vec![typed_column(0, &schema[0]), typed_column(1, &schema[1])],
+                );
+                compare_arithmetic_profile(root, &schema, &rows, selection);
+            }
+        }
+    }
+    // A genuine bulk call must demand the overflowing right subtree even
+    // when the outer left lane is NULL; scalar mode must skip that subtree.
+    let schema = vec![ty(), ty(), ty()];
+    let root = plus(column(0), plus(column(1), column(2)));
+    let rows = vec![
+        vec![Datum::Null, Datum::Int(i64::MAX), Datum::Int(1)],
+        vec![Datum::Int(1), Datum::Int(1), Datum::Int(2)],
+        vec![Datum::Int(3), Datum::Int(2), Datum::Int(1)],
+    ];
+    for selection in &selections {
+        compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
+    }
+}
+#[test]
+fn native_arithmetic_root_profiles_keep_whole_error_order_despite_window_tuning() {
+    let root = plus(mul(column(0), int(2)), plus(column(1), int(1)));
+    let schema = vec![ty(), ty()];
+    let mut rows = vec![vec![Datum::Int(1), Datum::Int(i64::MAX)]; 2050];
+    rows[2049] = vec![Datum::Int(i64::MAX), Datum::Int(1)];
+    let selection: Vec<_> = (0..2050).collect();
+    compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    let ctx = ArithmeticProfilesContext::default();
+    ctx.enabled.set(true);
+    let expected_ctx = ArithmeticProfilesContext::default();
+    expected_ctx.enabled.set(true);
+    let mut input = chunk(&schema, &rows);
+    let mut expected_input = chunk(&schema, &rows);
+    let mut output = output();
+    let mut expected_output = self::output();
+    let actual = actual_suite.run_with_tikv_row_ablation(&ctx, &mut input, &mut output, &schema);
+    let expected = reference_suite.run(&expected_ctx, &mut expected_input, &mut expected_output);
+    assert_eq!(actual, expected);
+    assert_eq!(ctx.trace.take(), expected_ctx.trace.take());
+    let routes = actual_suite.batch_route_snapshot();
+    assert_eq!((routes.refusals, routes.fallback), (0, 0));
+}
+
+#[test]
+fn native_arithmetic_root_decimal_priority_preserves_wide_refusals_nested_phases_and_empty_literals(
+) {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(6);
+    let schema = vec![decimal.clone(), decimal.clone()];
+    let dec = |value: &str| Datum::Decimal(Decimal::from_literal(value));
+    let rows = vec![
+        vec![
+            dec("-170141183460469231731687303715884105728"),
+            dec("-170141183460469231731687303715884105728"),
+        ],
+        vec![dec("100000000000000000000"), dec("100000000000000000000")],
+        vec![
+            dec("100000000000000000000000000000000000000000000000000"),
+            dec("1"),
+        ],
+        vec![Datum::Null, dec("2.500")],
+    ];
+    let c = |index| typed_column(index, &decimal);
+    let d = |value: &str| literal(dec(value), decimal.clone());
+    let roots = vec![
+        call("minus", decimal.clone(), vec![c(0), c(1)]),
+        call("mul", decimal.clone(), vec![c(0), c(1)]),
+        call("plus", decimal.clone(), vec![c(0), d("0")]),
+        call(
+            "plus",
+            decimal.clone(),
+            vec![
+                d("100000000000000000000000000000000000000000000000000"),
+                c(1),
+            ],
+        ),
+        call(
+            "plus",
+            decimal.clone(),
+            vec![
+                call("mul", decimal.clone(), vec![c(0), d("2")]),
+                call("minus", decimal.clone(), vec![c(1), d("1")]),
+            ],
+        ),
+        // A Decimal result alone does not enable native Decimal priority:
+        // the original fast owner also requires a Decimal argument.
+        call("plus", decimal.clone(), vec![int(1), int(2)]),
+    ];
+    let selections = vec![
+        vec![],
+        vec![0],
+        vec![1],
+        vec![2],
+        vec![3],
+        vec![3, 2, 0, 3],
+        (0..2050).map(|index| [3, 2, 0][index % 3]).collect(),
+    ];
+    for root in roots {
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
+        }
+    }
+}
+
+#[test]
+fn native_arithmetic_decimal_priority_resources_are_terminal_and_phase_metadata_is_shared() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(40)
+        .with_decimal(4);
+    let schema = vec![decimal.clone(), decimal.clone()];
+    let root = call(
+        "plus",
+        decimal.clone(),
+        vec![typed_column(0, &decimal), typed_column(1, &decimal)],
+    );
+    let owner = suite(root);
+    let mut too_few = limits();
+    too_few.tree.max_nodes = 8;
+    let rejected = PreparedBatchSuite::compile(
+        &owner,
+        &schema,
+        true,
+        771,
+        too_few,
+        ExecutionLimits::default(),
+        1 << 20,
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(
+        rejected.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    let mut exact = limits();
+    exact.tree.max_nodes = 9;
+    let mut prepared = PreparedBatchSuite::compile(
+        &owner,
+        &schema,
+        true,
+        771,
+        exact,
+        ExecutionLimits {
+            max_retained_bytes: 0,
+            ..ExecutionLimits::default()
+        },
+        1 << 20,
+    )
+    .unwrap();
+    assert_eq!(prepared.workers[0].compiled_node_count().unwrap(), 9);
+    assert!(prepared.workers[0].fast_profile.is_some());
+    let ctx = ArithmeticProfilesContext::default();
+    ctx.enabled.set(false);
+    let rows = vec![vec![
+        Datum::Decimal(Decimal::from_int(2)),
+        Datum::Decimal(Decimal::from_int(3)),
+    ]];
+    let mut input = chunk(&schema, &rows);
+    let mut output = output_for(&decimal);
+    let rejected = prepared
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        rejected.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(output.num_rows(), 0);
+    assert!(
+        ctx.trace.borrow().is_empty(),
+        "no vector flag or generic context after resource refusal"
+    );
+    assert_eq!(prepared.workers[0].windows, 0);
+    prepared.workers[0].limits = ExecutionLimits::default();
+    prepared
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap();
+    assert!(
+        ctx.trace.borrow().is_empty(),
+        "successful Decimal priority ignores disabled vector flag"
+    );
+    assert_eq!(output.num_rows(), 1);
+    assert_eq!(
+        output.get_row(0).get_datum(0, &decimal),
+        Datum::Decimal(Decimal::from_int(5))
+    );
+}
+
+#[test]
+fn rewritten_arithmetic_roots_use_canonical_priority_and_bulk_row_profiles() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver(Vec<FieldType>);
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            let index = match path.last()?.as_str() {
+                "i" => 0,
+                "r" => 1,
+                "d" => 2,
+                "s" => 3,
+                _ => return None,
+            };
+            Some((index, self.0[index].clone(), index as i64 + 1))
+        }
+    }
+    let schema = vec![
+        ty(),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        string_ty(),
+    ];
+    let rows = vec![
+        vec![
+            Datum::Int(2),
+            Datum::Real(1.25),
+            Datum::Decimal(Decimal::from_literal("1.500")),
+            Datum::new_string("2.5tail"),
+        ],
+        vec![Datum::Null; 4],
+        vec![
+            Datum::Int(i64::MAX),
+            Datum::Real(f64::MAX),
+            Datum::Decimal(Decimal::from_literal(
+                "100000000000000000000000000000000000000000000000000",
+            )),
+            Datum::new_string("3"),
+        ],
+    ];
+    let resolver = Resolver(schema.clone());
+    for sql in [
+        "i+i",
+        "i-i",
+        "i*i",
+        "(i*2)+(i+1)",
+        "r+r",
+        "r-r",
+        "r*r",
+        "d+d",
+        "d-d",
+        "d*d",
+        "d*(d+1)",
+        "s+r",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &resolver).unwrap();
+        for selection in [
+            vec![],
+            vec![1, 0, 2, 1],
+            (0..2050).map(|index| [1, 0, 2][index % 3]).collect(),
+        ] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_arithmetic_nonbatch_vector_roots_keep_original_row_domain() {
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let schema = vec![vector.clone(), vector.clone()];
+    let v = |values: Vec<f32>| Datum::VectorFloat32(VectorFloat32::must_create(values));
+    let rows = vec![
+        vec![v(vec![1.0, -0.0]), v(vec![2.0, 3.0])],
+        vec![Datum::Null, v(vec![2.0, 3.0])],
+        vec![v(vec![1.0]), v(vec![2.0, 3.0])],
+    ];
+    for name in ["plus", "minus", "mul"] {
+        let root = call(
+            name,
+            vector.clone(),
+            vec![typed_column(0, &vector), typed_column(1, &vector)],
+        );
+        for selection in [
+            vec![],
+            vec![0, 1, 2, 0],
+            (0..2050).map(|index| [0, 1, 2][index % 3]).collect(),
+        ] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
         }
     }
 }

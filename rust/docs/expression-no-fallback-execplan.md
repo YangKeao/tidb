@@ -18,7 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
-- [ ] N6f root integration: per-edge Bulk/Row source views and immutable paired programs are preserved outside this checkpoint in `evidence/no-fallback/n6f-source-wip-before-store.patch` in the agent workspace. Exact native trace comparisons exposed Decimal-fast priority before the global vector flag. Blanket empty-input flag suppression is incorrect. Complete the typed Decimal-fast phase before publishing the root integration.
+- [x] N6f closed arithmetic root integration: closed arithmetic roots select authentic Row/Bulk programs before values, plus a typed Decimal priority stage in the SAME SDK driver before the original per-output flag getter. Pure integer-column CAST layout is shared with the old owner. Native Unsupported alone selects the next semantic phase; errors remain terminal. Root673/fast-source150/window-provider99 comparisons pass, plus exact resource/purpose guards. Complete frontend1478same4/95ignored, Projection23, lint/pinnedfmt/diff passed. General bulk ABS/DecimalCAST/JSONCAST and control wrapping remain next work.
+
+- [x] N6f final review: initial source patch is retained as evidence only, already applied and superseded. Exact context tests now compare the native per-output getter point rather than the old once-per-suite convenience assertion. Late invalid-purpose regression was RED before complete-vector validation and now passes. Initial provider RefCell borrow RED fixed before branch publication.
 - [x] N6f0 preparation: native value storage has a separate, typed Decimal-fast outcome domain and purpose-bound capability. Unsupported, SQL NULL and an actual fast coefficient remain distinct. Ordinary SQL insertion, borrowing, kernel cloning and output roles cannot manufacture/consume a fast outcome. The existing generation/provenance and pre-insertion resource checks apply. No production root coverage changes in this step. Five store tests/complete frontend1469same4/95ignored/Projection22/lint/pinnedfmt/diff pass. Receipt rust/docs/evidence/no-fallback-n6f0.md.
 
 
@@ -762,3 +764,43 @@ Retained node/metadata budgets must include every prepared phase. Fast integer
 column casts and empty constant conversion must be covered before root
 promotion is accepted. Context traces in the uncommitted integration test are
 intentionally exact and must not be relaxed.
+
+### N6f implemented state (2026-10-18)
+
+The priority stage is a bounded factory and a value-only window provider,
+using existing Add/Subtract/MultiplyWindowNative descriptors and the existing
+single frame driver. No new SDK evaluator or native Expr callback was added.
+Factory literals convert once; raw column imports stop reading physical values
+on representation refusal and complete the private capability vector with
+typed Unsupported outcomes. Integer-column CAST shape/value layout is a pure
+shared helper, also consumed by its original native owner. Fast input/schema
+metadata and all prepared graphs share the suite's checked node budget.
+The factory gates borrowed fields and literal payload before snapshot/conversion.
+
+Operand vectors and final stage results authenticate every returned capability
+before Unsupported can select a subsequent stage. Final MyDecimal conversion
+must succeed for the entire selection before any output publication. The native
+per-output getter is after priority decline, including for empty selection, and
+is skipped after priority success even when its value would be false. Generic
+row and bulk programs share the same source owner and driver; row mode does not
+latch subsequent bulk execution to a tuning width of one. Only explicitly
+whole-selection programs ignore tiling knobs.
+
+Validated so far: 673 root/profile comparisons (including144 actual rewritten
+SQL executions), 150 fast-source integer CAST cases and99 actual fast callback
+cases, plus terminal resource, nine-node aggregate phase budget, stale-purpose
+and retry cleanup checks. Existing tests provide the remaining native-value,
+lazy control, source diagnostics and Projection coverage. Complete frontend1478
+passes with the exact four inherited failures and95ignored; full suite remains
+non-green. Projection23, lint, pinned fmt and diff checks pass; receipt
+`rust/docs/evidence/no-fallback-n6f.md` records the signed checkpoint scope. The global alternate evaluator has not been retired.
+
+Empty-selection audit: generic EligibleBatch::eval_native checks num_rows()==0
+before any batch value worker, after the getter/admission point. Therefore the
+ordinary generic program correctly has no value demand for empty selection.
+The earlier literal-before-empty-broadcast rule applies to the separate native
+Decimal priority function, which runs before that generic guard; its immutable
+empty_supported evidence is deliberately distinct. Do not introduce synthetic
+rows or an empty-expression interpreter to conflate these two owners.
+Standalone CAST priority is not yet integrated; completing bulk CAST/ABS and
+then broadening root promotion remains required before global retirement.
