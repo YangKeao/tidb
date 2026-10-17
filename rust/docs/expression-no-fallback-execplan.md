@@ -38,6 +38,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] N5a: lossless invocation-scoped native value handles; validate namespace/generation/role/source/row provenance and bounded value retention before extending CHAR beyond wire carriers. Prototype first, then integrate demanded native leaves and validate all19 kinds/representation edges.
 - [x] (2026-10-18) N5b1: direct native column transport no longer depends on computation wire type admission; raw-byte tests cover six storage cases, NULLs, aliases, selection and vectorization off. 74focused/full1426same4/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b1.md.
 - [x] (2026-10-18) N5b2: native leaf root output ABI with separate Output role, complete prepublication handle validation and native Chunk publication. 17 output kinds/216 literal scenarios, disabled-direct-column path,76focused/full1428same4/Projection12/lint/fmt pass. Receipt rust/docs/evidence/no-fallback-n5b2.md.
+- [x] (2026-10-18) N5c1: native computed CAST islands through one HostFrame, plain shared result coercion and direct real→unsigned primitive (no nested evaluated-args program). 79focused/full1431same4/core1043same6/24SQL/Projection13/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5c1.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -331,3 +332,26 @@ without a kernel clone or alternate expression call. Ordinary representable
 Int/UInt/finite Real/String/Bytes literals retain the existing broadcast path.
 Root columns with direct-column optimization disabled also use this ABI.
 Computed native values and full lazy/effect/context coverage remain incomplete.
+
+
+N5c1 outcome: native value transport now includes computed CAST producers. A
+closed 1-Bytes-to-Bytes host receives actual native values and immutable cast
+parameters/source/result types and mints a new handle with its own producer
+ordinal and requested output role. CAST islands compose with each other and
+with the existing CHAR bridge into CONCAT/REGEXP. Source metadata/payload gates
+precede snapshots, and both native CAST hosts check borrowed input allowance
+before the kernel clone. They never invoke an Expression or ScalarFunction.
+
+Result coercion is the unchanged logic extracted from ScalarFunction into a
+plain name/type/value function shared by both callers. Transitive audit caught
+the old real-to-unsigned helper using evaluate_args_in; that route is removed
+from the native helper. Both it and the framed core ABI now use the same direct
+f64 primitive, retaining ties-even, Float32 f64 bits, nonfinite results and
+exact overflow warnings. Core boundary/NaN assertions and frontend parity pass.
+
+Generic CAST warnings go directly to the actual context, whose allocation
+policy remains external. A later resource failure is terminal and never replays
+the warning-producing kernel. The earlier CHAR-specific buffered warning policy
+is retained. JSON CAST still needs its distinct typed argument admission and
+conversion order; general typed parents/controls and other functions remain
+outside these native islands. N4b/N5/N6 remain incomplete.

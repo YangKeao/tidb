@@ -4414,3 +4414,266 @@ fn native_output_checks_every_handle_before_publishing_any_cell() {
     ));
     assert_eq!(output.num_rows(), 0);
 }
+
+#[derive(Default)]
+struct NativeCastDiagnostics(RefCell<Vec<(u16, String)>>);
+impl crate::Columns for NativeCastDiagnostics {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.0.borrow_mut().push((code, message.to_owned()));
+    }
+}
+
+#[test]
+fn native_computed_cast_roots_match_value_kernels_and_diagnostics() {
+    let text = |value: &str| literal(Datum::new_string(value), string_ty());
+    let cases = [
+        call("cast_signed", ty(), vec![text("12.5tail")]),
+        call("cast_unsigned", ty().with_unsigned(true), vec![text("-1")]),
+        call(
+            "cast_unsigned_in_union",
+            ty().with_unsigned(true),
+            vec![int(-3)],
+        ),
+        call("cast_double", real_ty(), vec![text("2.75tail")]),
+        call(
+            "cast_float",
+            real_ty(),
+            vec![literal(Datum::Real(1.23456789), real_ty())],
+        ),
+        call(
+            "cast_decimal",
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(8)
+                .with_decimal(2),
+            vec![literal(Datum::Real(1.235), real_ty())],
+        ),
+        call(
+            "cast_year",
+            FieldType::new(FieldTypeCode::Year),
+            vec![text("70")],
+        ),
+        call(
+            "cast_binary",
+            FieldType::new(FieldTypeCode::String)
+                .with_flen(5)
+                .with_collation(Collation::Binary),
+            vec![text("abc")],
+        ),
+        call(
+            "cast_datetime",
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            vec![text("2026-10-18 12:34:56.123456")],
+        ),
+        call(
+            "cast_date",
+            FieldType::new(FieldTypeCode::Date),
+            vec![text("2026-10-18 12:34:56.123456")],
+        ),
+        call(
+            "cast_time",
+            FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+            vec![text("12:34:56.123456")],
+        ),
+        call(
+            "cast_vector",
+            FieldType::new(FieldTypeCode::VectorFloat32).with_flen(2),
+            vec![text("[1.25,2.5]")],
+        ),
+        call(
+            "cast_signed",
+            ty(),
+            vec![literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                FieldType::new(FieldTypeCode::VectorFloat32),
+            )],
+        ),
+        call("cast_signed", ty(), vec![null()]),
+        call(
+            "cast_signed",
+            ty(),
+            vec![call("cast_double", real_ty(), vec![text("12.75tail")])],
+        ),
+        call(
+            "cast_decimal",
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(8)
+                .with_decimal(2),
+            vec![call(
+                "cast_char",
+                string_ty(),
+                vec![literal(Datum::Real(1.235), real_ty())],
+            )],
+        ),
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call("cast_signed", ty(), vec![text("12.5tail")])],
+        ),
+        call(
+            "cast_datetime",
+            FieldType::new(FieldTypeCode::Datetime),
+            vec![literal(
+                Datum::Int(2026),
+                FieldType::new(FieldTypeCode::Year),
+            )],
+        ),
+        call(
+            "cast_unsigned",
+            ty().with_unsigned(true),
+            vec![literal(Datum::Real(-1.5), real_ty())],
+        ),
+        call(
+            "cast_unsigned",
+            ty().with_unsigned(true),
+            vec![literal(Datum::Real(f64::INFINITY), real_ty())],
+        ),
+        call(
+            "cast_unsigned",
+            ty().with_unsigned(true),
+            vec![literal(
+                Datum::Real(f64::from_bits(0x7ff8000000000042)),
+                real_ty(),
+            )],
+        ),
+        call(
+            "cast_unsigned",
+            ty().with_unsigned(true),
+            vec![literal(
+                Datum::Float32(1.5),
+                FieldType::new(FieldTypeCode::Float),
+            )],
+        ),
+    ];
+    for root in cases {
+        let field = root.static_type().unwrap().clone();
+        for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+            let actual_ctx = NativeCastDiagnostics::default();
+            let reference_ctx = NativeCastDiagnostics::default();
+            let mut expected = output_for(&field);
+            let mut expected_error = None;
+            for _ in &selected {
+                match root.eval(&reference_ctx, tidb_chunk::row::Row::empty()) {
+                    Ok(value) => expected.append_datum(0, &value),
+                    Err(error) => {
+                        expected_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let suite = self::suite(root.clone());
+            let mut input = Chunk::new_with_capacity(&[], 2);
+            input.set_num_virtual_rows(2);
+            input.set_sel(Some(selected));
+            let mut actual = output_for(&field);
+            let result = suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut actual, &[]);
+            if let Some(expected_error) = expected_error {
+                let Err(EvaluatorError::Eval(actual_error)) = result else {
+                    panic!("lost native error: {result:?}");
+                };
+                assert_eq!(actual_error, expected_error);
+            } else {
+                result.unwrap();
+                assert_eq!(actual.num_rows(), expected.num_rows());
+                for row in 0..actual.num_rows() {
+                    assert_eq!(
+                        actual.get_row(row).is_null(0),
+                        expected.get_row(row).is_null(0)
+                    );
+                    assert_eq!(
+                        actual.column(0).get_raw(row).as_ref(),
+                        expected.column(0).get_raw(row).as_ref()
+                    );
+                }
+            }
+            assert_eq!(*actual_ctx.0.borrow(), *reference_ctx.0.borrow());
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{root:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rewritten_native_cast_islands_keep_column_rows_and_exact_diagnostics() {
+    use crate::rewriter::{rewrite_expr_resolved, ColumnResolver};
+    use tidb_ast::{QueryStmt, SelectField, Stmt};
+    struct Resolver;
+    impl ColumnResolver for Resolver {
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+        fn resolve(&self, path: &[String]) -> Option<(usize, FieldType, i64)> {
+            (path.last()?.as_str() == "v").then(|| (0, string_ty(), 1))
+        }
+    }
+    let schema = [string_ty()];
+    let rows = vec![
+        vec![Datum::new_string("12.5tail")],
+        vec![Datum::Null],
+        vec![Datum::new_string("-3")],
+    ];
+    for sql in [
+        "cast(v as signed)",
+        "cast(v as unsigned)",
+        "cast(v as decimal(8,2))",
+        "cast(v as double)",
+        "cast(cast(v as signed) as decimal(8,2))",
+        "cast(cast(v as signed) as char)",
+        "concat(cast(cast(v as signed) as char), '!')",
+        "regexp_like(cast(cast(v as signed) as char), '^1')",
+    ] {
+        let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
+            panic!("query")
+        };
+        let QueryStmt::Select(select) = query.into_inner() else {
+            panic!("select")
+        };
+        let SelectField::Expr { expr, .. } = &select.fields[0] else {
+            panic!("expression")
+        };
+        let root = rewrite_expr_resolved(expr, &Resolver).unwrap();
+        let field = root.static_type().unwrap().clone();
+        for selected in [vec![], vec![2, 0, 1, 0], (0..2050).map(|i| i % 3).collect()] {
+            let reference = NativeCastDiagnostics::default();
+            let context = NativeCastDiagnostics::default();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selected.clone()));
+            let mut expected = output_for(&field);
+            for row in selected {
+                let value = root.eval(&reference, input.physical_row(row)).unwrap();
+                expected.append_datum(0, &value);
+            }
+            let suite = self::suite(root.clone());
+            let mut actual = output_for(&field);
+            suite
+                .run_with_tikv_batch(&context, &mut input, &mut actual, &schema)
+                .unwrap();
+            assert_eq!(actual.num_rows(), expected.num_rows(), "{sql}");
+            for row in 0..actual.num_rows() {
+                assert_eq!(
+                    actual.get_row(row).is_null(0),
+                    expected.get_row(row).is_null(0),
+                    "{sql}"
+                );
+                assert_eq!(
+                    actual.column(0).get_raw(row).as_ref(),
+                    expected.column(0).get_raw(row).as_ref(),
+                    "{sql}"
+                );
+            }
+            assert_eq!(*context.0.borrow(), *reference.0.borrow(), "{sql}");
+            let route = suite.batch_route_snapshot();
+            assert_eq!(
+                (route.prepared, route.fallback, route.refusals),
+                (1, 0, 0),
+                "{sql}"
+            );
+        }
+    }
+}

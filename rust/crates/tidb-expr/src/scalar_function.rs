@@ -1034,87 +1034,7 @@ impl ScalarFunction {
     /// result type's LENGTH constraints are applied only where Go's own
     /// argument cast would have applied them.
     fn coerce_to_ret_type(&self, value: Datum) -> Result<Datum, EvalError> {
-        if value.is_null() {
-            return Ok(value);
-        }
-        let Some(ret_type) = self.get_static_type() else {
-            return Ok(value);
-        };
-        // Go's `builtinCoalesceTimeSig`/`builtinCoalesceDurationSig` stamps
-        // every selected temporal value with the merged result FSP after
-        // evaluating it. `newBaseBuiltinFuncWithTp` does not wrap temporal
-        // arguments, so the selected value can still carry the first
-        // argument's original precision. Preserve the value's instant and
-        // update only that metadata here; a general `ConvertTo` would also
-        // round the instant, which is not what Coalesce's `SetFsp` does.
-        if self.func_name.lowercase() == "coalesce" {
-            let target_fsp = if ret_type.decimal() == tidb_datatype::UNSPECIFIED_LENGTH {
-                0
-            } else {
-                ret_type.decimal()
-            };
-            match (&value, ret_type.code()) {
-                (
-                    Datum::Time(time),
-                    tidb_datatype::FieldTypeCode::Date
-                    | tidb_datatype::FieldTypeCode::Datetime
-                    | tidb_datatype::FieldTypeCode::Timestamp,
-                ) => {
-                    let mut time = *time;
-                    let _ = time.set_fsp(target_fsp);
-                    return Ok(Datum::Time(time));
-                }
-                (Datum::Duration(duration), tidb_datatype::FieldTypeCode::Duration) => {
-                    return Ok(Datum::Duration(
-                        tidb_datatype::MySqlDuration::from_raw_parts(
-                            duration.nanoseconds(),
-                            target_fsp,
-                        ),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        if same_eval_family(&value, ret_type) {
-            // `mysql.TypeBit`'s eval type is `ETInt`, so the family check
-            // would keep an integer here. A BIT value's canonical carrier is
-            // instead the zero-padded byte string (`Datum::Bit`), which is
-            // what Go's `chunk.AppendDatum` stores for `KindMysqlBit` and
-            // what a var-length BIT chunk column can hold. A cast to BIT is
-            // the scalar function that produces such an integer, so convert
-            // it here; a value already carrying the bytes is left alone.
-            if ret_type.code() == tidb_datatype::FieldTypeCode::Bit {
-                let width = (ret_type.flen() > 0)
-                    .then(|| u8::try_from((ret_type.flen() + 7) / 8).ok())
-                    .flatten()
-                    .and_then(|bytes| tidb_datatype::BinaryLiteralWidth::try_from(bytes).ok());
-                match value {
-                    Datum::Int(v) => {
-                        return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
-                            v as u64, width,
-                        )));
-                    }
-                    Datum::UInt(v) => {
-                        return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
-                            v, width,
-                        )));
-                    }
-                    _ => {}
-                }
-            }
-            return Ok(value);
-        }
-        // COALESCE is built with `newBaseBuiltinFuncWithTp`, so its ARGUMENTS
-        // are cast only to the merged eval family -- but `getFunction` then
-        // assigns `bf.tp = resultFieldType`, and that merged type is what the
-        // selected value is presented as. `select coalesce(1, 2.55, 3)`
-        // answers `1.00`, not `1`: the integer branch is widened to the
-        // merged scale, exactly as IF/IFNULL/CASE widen theirs. Handled by
-        // the shared conversion below rather than a COALESCE-only rule.
-        match value.convert_to(ret_type, tidb_datatype::DEFAULT_STATEMENT_FLAGS) {
-            Ok(converted) => Ok(converted.value),
-            Err(_) => Ok(value),
-        }
+        coerce_function_result(self.func_name.lowercase(), self.get_static_type(), value)
     }
 
     /// The collation this function's own evaluation runs under: the one the
@@ -3057,7 +2977,100 @@ fn uservar_as_kind(kind: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum,
     crate::cast::eval_cast(&target, value, None, ctx)
 }
 
-fn cast_type_of(target: &str, ret_type: &FieldType) -> Result<tidb_ast::CastType, EvalError> {
+/// Value-only result boundary shared by expression callers and frame hosts.
+/// This descriptor contains no arguments or expression evaluation callback.
+pub(crate) fn coerce_function_result(
+    name: &str,
+    ret_type: Option<&FieldType>,
+    value: Datum,
+) -> Result<Datum, EvalError> {
+    if value.is_null() {
+        return Ok(value);
+    }
+    let Some(ret_type) = ret_type else {
+        return Ok(value);
+    };
+    // Go's `builtinCoalesceTimeSig`/`builtinCoalesceDurationSig` stamps
+    // every selected temporal value with the merged result FSP after
+    // evaluating it. `newBaseBuiltinFuncWithTp` does not wrap temporal
+    // arguments, so the selected value can still carry the first
+    // argument's original precision. Preserve the value's instant and
+    // update only that metadata here; a general `ConvertTo` would also
+    // round the instant, which is not what Coalesce's `SetFsp` does.
+    if name == "coalesce" {
+        let target_fsp = if ret_type.decimal() == tidb_datatype::UNSPECIFIED_LENGTH {
+            0
+        } else {
+            ret_type.decimal()
+        };
+        match (&value, ret_type.code()) {
+            (
+                Datum::Time(time),
+                tidb_datatype::FieldTypeCode::Date
+                | tidb_datatype::FieldTypeCode::Datetime
+                | tidb_datatype::FieldTypeCode::Timestamp,
+            ) => {
+                let mut time = *time;
+                let _ = time.set_fsp(target_fsp);
+                return Ok(Datum::Time(time));
+            }
+            (Datum::Duration(duration), tidb_datatype::FieldTypeCode::Duration) => {
+                return Ok(Datum::Duration(
+                    tidb_datatype::MySqlDuration::from_raw_parts(
+                        duration.nanoseconds(),
+                        target_fsp,
+                    ),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if same_eval_family(&value, ret_type) {
+        // `mysql.TypeBit`'s eval type is `ETInt`, so the family check
+        // would keep an integer here. A BIT value's canonical carrier is
+        // instead the zero-padded byte string (`Datum::Bit`), which is
+        // what Go's `chunk.AppendDatum` stores for `KindMysqlBit` and
+        // what a var-length BIT chunk column can hold. A cast to BIT is
+        // the scalar function that produces such an integer, so convert
+        // it here; a value already carrying the bytes is left alone.
+        if ret_type.code() == tidb_datatype::FieldTypeCode::Bit {
+            let width = (ret_type.flen() > 0)
+                .then(|| u8::try_from((ret_type.flen() + 7) / 8).ok())
+                .flatten()
+                .and_then(|bytes| tidb_datatype::BinaryLiteralWidth::try_from(bytes).ok());
+            match value {
+                Datum::Int(v) => {
+                    return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
+                        v as u64, width,
+                    )));
+                }
+                Datum::UInt(v) => {
+                    return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
+                        v, width,
+                    )));
+                }
+                _ => {}
+            }
+        }
+        return Ok(value);
+    }
+    // COALESCE is built with `newBaseBuiltinFuncWithTp`, so its ARGUMENTS
+    // are cast only to the merged eval family -- but `getFunction` then
+    // assigns `bf.tp = resultFieldType`, and that merged type is what the
+    // selected value is presented as. `select coalesce(1, 2.55, 3)`
+    // answers `1.00`, not `1`: the integer branch is widened to the
+    // merged scale, exactly as IF/IFNULL/CASE widen theirs. Handled by
+    // the shared conversion below rather than a COALESCE-only rule.
+    match value.convert_to(ret_type, tidb_datatype::DEFAULT_STATEMENT_FLAGS) {
+        Ok(converted) => Ok(converted.value),
+        Err(_) => Ok(value),
+    }
+}
+
+pub(crate) fn cast_type_of(
+    target: &str,
+    ret_type: &FieldType,
+) -> Result<tidb_ast::CastType, EvalError> {
     use tidb_ast::CastType;
     let len = || u32::try_from(ret_type.flen()).ok();
     Ok(match target {

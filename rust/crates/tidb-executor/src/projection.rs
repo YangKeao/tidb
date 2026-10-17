@@ -1049,4 +1049,76 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn computed_native_casts_keep_statement_diagnostics_in_serial_and_parallel_projection() {
+        let integer = FieldType::new(FieldTypeCode::LongLong)
+            .with_flen(20)
+            .with_decimal(0);
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_flen(128)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let call = |name: &str, field: FieldType, value: Expression| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, vec![value]))
+        };
+        let signed = call(
+            "cast_signed",
+            integer.clone(),
+            Expression::Constant(Constant::new(Datum::new_string("12.5tail"), string.clone())),
+        );
+        let cases = [
+            signed.clone(),
+            call("cast_char", string, signed.clone()),
+            call(
+                "cast_decimal",
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(8)
+                    .with_decimal(2),
+                signed,
+            ),
+            call(
+                "cast_datetime",
+                FieldType::new(FieldTypeCode::Datetime),
+                Expression::Constant(Constant::new(
+                    Datum::Int(2026),
+                    FieldType::new(FieldTypeCode::Year),
+                )),
+            ),
+        ];
+        for root in cases {
+            let field = root.static_type().unwrap().clone();
+            let reference = crate::StmtContext::for_query();
+            let value = root
+                .eval(&reference, tidb_chunk::row::Row::empty())
+                .unwrap();
+            let mut expected = Chunk::new_with_capacity(&[field.clone()], 1);
+            expected.append_datum(0, &value);
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context = crate::StmtContext::for_query();
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root.clone()],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                projection.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), 1);
+                assert_eq!(
+                    output.column(0).get_raw(0).as_ref(),
+                    expected.column(0).get_raw(0).as_ref()
+                );
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

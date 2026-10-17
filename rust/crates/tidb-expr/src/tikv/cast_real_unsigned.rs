@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use tidb_query_expr::decode_native_cast_real_unsigned_result;
-
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::{evaluate_args_in, identity_value, EvaluatedArgs, EvaluatedBytesOp};
 use crate::{Columns, Datum, EvalError};
 
 fn invalid_report() -> EvalError {
@@ -25,9 +22,15 @@ fn invalid_report() -> EvalError {
     ))
 }
 
-fn project_report(report: Option<Vec<u8>>, ctx: &dyn Columns) -> Result<u64, EvalError> {
-    let report = report.ok_or_else(invalid_report)?;
-    let report = decode_native_cast_real_unsigned_result(&report).ok_or_else(invalid_report)?;
+pub(crate) fn eval_cast_real_unsigned_in(
+    ctx: &dyn Columns,
+    actual: &Datum,
+) -> Result<u64, EvalError> {
+    let value = match actual {
+        Datum::Real(value) | Datum::Float32(value) => *value,
+        _ => return Err(invalid_report()),
+    };
+    let report = tidb_query_expr::native_cast_real_unsigned_value(value);
     if let Some(bits) = report.overflow_bits {
         ctx.append_warning(
             1690,
@@ -38,16 +41,4 @@ fn project_report(report: Option<Vec<u8>>, ctx: &dyn Columns) -> Result<u64, Eva
         );
     }
     Ok(report.value)
-}
-
-pub(crate) fn eval_cast_real_unsigned_in(
-    ctx: &dyn Columns,
-    actual: &Datum,
-) -> Result<u64, EvalError> {
-    evaluate_args_in(
-        EvaluatedBytesOp::CastRealUnsignedNative,
-        ctx,
-        || Ok(EvaluatedArgs::Bytes(identity_value::encode(actual)?)),
-        |computed| project_report(computed.into_bytes()?, ctx),
-    )
 }

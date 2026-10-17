@@ -227,6 +227,12 @@ impl NativeView {
 fn root_source_view(root: &Expression) -> NativeView {
     match root {
         Expression::Column(_) => NativeView::RootValue,
+        Expression::ScalarFunction(function)
+            if native_cast_name(function).is_some()
+                && function.func_name.lowercase() != "cast_char" =>
+        {
+            NativeView::RootValue
+        }
         Expression::Constant(constant) => {
             let Some(value) = constant.literal_value() else {
                 return NativeView::Typed;
@@ -287,7 +293,7 @@ impl SourceKind {
                 index: column.index as usize,
             },
             Expression::ScalarFunction(function) => {
-                let (target, arity) = resolve_call(function)?;
+                let (target, arity) = resolve_call_in_view(function, view)?;
                 Self::Call { target, arity }
             }
             Expression::CorrelatedColumn(_) => {
@@ -463,7 +469,10 @@ fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<Sc
     }
     strict_literal(value, sql)
 }
-fn argument_view(function: &ScalarFunction) -> NativeView {
+fn argument_view(function: &ScalarFunction, view: NativeView) -> NativeView {
+    if view.value_role().is_some() && native_cast_name(function).is_some() {
+        return NativeView::ValueToken;
+    }
     if matches!(
         resolve_call(function),
         Ok((
@@ -577,8 +586,8 @@ fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
         collation,
     ))
 }
-fn check_batch_call(function: &ScalarFunction) -> Result<()> {
-    let expected_arity = resolve_call(function)?.1;
+fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
+    let expected_arity = resolve_call_in_view(function, view)?.1;
     if function.args.len() != expected_arity
         || function.pb_signature().is_some()
         || function.pb_origin().is_some()
@@ -588,6 +597,46 @@ fn check_batch_call(function: &ScalarFunction) -> Result<()> {
         return Err(BatchFailure::admission("outside native batch call closure"));
     }
     Ok(())
+}
+// The native CAST island is closed over existing plain value kernels. JSON
+// has a separate typed argument conversion policy and is intentionally not
+// selected here until that policy has its own value-only boundary.
+fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
+    let target = function.func_name.lowercase().strip_prefix("cast_")?;
+    matches!(
+        target,
+        "signed"
+            | "unsigned"
+            | "unsigned_in_union"
+            | "char"
+            | "binary"
+            | "decimal"
+            | "date"
+            | "datetime"
+            | "time"
+            | "year"
+            | "double"
+            | "float"
+            | "vector"
+    )
+    .then_some(target)
+}
+fn resolve_call_in_view(
+    function: &ScalarFunction,
+    view: NativeView,
+) -> Result<(CallTarget, usize)> {
+    if view.value_role().is_some() && native_cast_name(function).is_some() {
+        if function.args.len() != 1
+            || function.get_static_type().is_none()
+            || function.args[0].static_type().is_none()
+        {
+            return Err(BatchFailure::admission(
+                "native CAST requires one typed argument and result",
+            ));
+        }
+        return Ok((CallTarget::Host(SqlBatchHostOperation::CastNative), 1));
+    }
+    resolve_call(function)
 }
 fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
     let operation = match function.func_name.lowercase() {
@@ -606,6 +655,7 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
                         && function.args.first().is_some_and(|arg| match arg {
                             Expression::Constant(value) => matches!(value.literal_value(), Some(Datum::Null | Datum::Int(_)))
                                 || matches!(value.literal_value(), Some(Datum::UInt(_)) if field.is_unsigned()),
+                            Expression::ScalarFunction(function) if native_cast_name(function).is_some() => false,
                             _ => true,
                         })
                 })
@@ -635,8 +685,8 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
             })
             && function.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
-                    if matches!(operation, SqlBatchHostOperation::CastCharNative { .. }) {
-                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some())
+                    if matches!(operation, SqlBatchHostOperation::CastCharNative { .. } | SqlBatchHostOperation::CastNative) {
+                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some()) || matches!(arg, Expression::ScalarFunction(function) if native_cast_name(function).is_some())
                     } else {
                         batch_eval_type(field.eval_type()) == operation.argument_type()
                             && (!field.is_unsigned() || field.eval_type() == NativeEvalType::Int)
@@ -1079,8 +1129,12 @@ fn preflight<'a>(
         let (sql, collation) = parts(node)?;
         if view.value_role().is_none() {
             check_type(sql)?;
-        } else if !matches!(node, Expression::Constant(_) | Expression::Column(_)) {
-            return Err(binding("native value view requires a leaf source").into());
+        } else if !matches!(node, Expression::Constant(_) | Expression::Column(_))
+            && !matches!(node, Expression::ScalarFunction(function) if native_cast_name(function).is_some())
+        {
+            return Err(
+                binding("native value view requires a leaf or a closed CAST source").into(),
+            );
         }
         budget.field(sql, 3)?; // native source, projected declaration, C snapshot
         if view != NativeView::Typed {
@@ -1124,17 +1178,17 @@ fn preflight<'a>(
                 budget.field(sql, 1)?; // projected binding declaration copy
             }
             Expression::ScalarFunction(function) => {
-                check_batch_call(function)?;
+                check_batch_call(function, view)?;
                 budget.add(function.func_name.original().len())?;
                 budget.add(function.func_name.lowercase().len())?;
                 budget.array::<OrdinaryCallSite>(2)?; // initial and lowered source ordinals
-                if matches!(resolve_call(function)?.0, CallTarget::Host(_)) {
+                if matches!(resolve_call_in_view(function, view)?.0, CallTarget::Host(_)) {
                     budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
                     budget.array::<NativeHostMetadata>(1)?;
                     if function.func_name.lowercase() == "cast_char" {
                         budget.add(sql.charset_name().len())?;
                         if matches!(
-                            resolve_call(function)?.0,
+                            resolve_call_in_view(function, view)?.0,
                             CallTarget::Host(SqlBatchHostOperation::CastCharNative { .. })
                         ) {
                             budget.field(
@@ -1144,6 +1198,19 @@ fn preflight<'a>(
                                 1,
                             )?;
                         }
+                    }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::CastNative)
+                    ) {
+                        budget.field(sql, 1)?;
+                        budget.field(
+                            function.args[0]
+                                .static_type()
+                                .expect("checked native cast argument"),
+                            1,
+                        )?;
+                        budget.add(sql.charset_name().len())?;
                     }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
@@ -1175,7 +1242,7 @@ fn preflight<'a>(
                 budget.array::<(&Expression, usize, NativeView)>(arity)?;
                 reserve(&mut pending, arity)?;
                 for child in function.args.iter().rev() {
-                    pending.push((child, child_depth, argument_view(function)));
+                    pending.push((child, child_depth, argument_view(function, view)));
                 }
             }
             Expression::CorrelatedColumn(_) => unreachable!(),
@@ -1358,8 +1425,11 @@ fn lower(
                         reserve(&mut arguments, *arity)?;
                         for argument in &sql.args {
                             arguments.push(
-                                if matches!(operation, SqlBatchHostOperation::CastCharNative { .. })
-                                {
+                                if matches!(
+                                    operation,
+                                    SqlBatchHostOperation::CastCharNative { .. }
+                                        | SqlBatchHostOperation::CastNative
+                                ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
                                     projected(
@@ -1375,6 +1445,25 @@ fn lower(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::CastNative => NativeHostMetadata::ValueCast {
+                                cast_type: crate::scalar_function::cast_type_of(
+                                    native_cast_name(sql).expect("checked native cast"),
+                                    item.sql,
+                                )?,
+                                name: sql.func_name.lowercase().into(),
+                                source_type: snapshot_field_type(
+                                    sql.args[0].static_type().expect("checked source"),
+                                ),
+                                result_type: snapshot_field_type(item.sql),
+                                argument_node: ordinal.checked_add(1).ok_or_else(|| {
+                                    resource("native cast argument ordinal overflow")
+                                })?,
+                                output_node: ordinal,
+                                output_role: item
+                                    .view
+                                    .value_role()
+                                    .ok_or_else(|| binding("native cast has no output role"))?,
+                            },
                             SqlBatchHostOperation::RegexpLike { .. } => {
                                 NativeHostMetadata::Regexp(sql.batch_regexp_like_invocation())
                             }
