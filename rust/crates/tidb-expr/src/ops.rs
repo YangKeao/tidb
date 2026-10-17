@@ -22,6 +22,7 @@ use crate::coerce::{
 };
 use crate::{Datum, Decimal, EvalError};
 
+pub(crate) mod arithmetic;
 mod comparison;
 mod integer_coerce;
 mod operand;
@@ -434,6 +435,19 @@ fn prepare_binary_arithmetic(
 ) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
     use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
     use BinaryOp::*;
+    if matches!(op, Plus | Minus | Mul) {
+        let (operation, arguments, unsigned, null) = arithmetic::prepare(
+            op,
+            l,
+            r,
+            [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
+            ctx,
+        )?
+        .into_evaluated();
+        unsigned_result.set(unsigned);
+        input_was_null.set(null);
+        return Ok((operation, arguments));
+    }
     if l.is_range_sentinel() || r.is_range_sentinel() {
         return Err(EvalError::Unsupported("range sentinel expression operand"));
     }
@@ -446,25 +460,6 @@ fn prepare_binary_arithmetic(
             EvaluatedArgs::NullWitness(None),
         ))
     };
-    if matches!(op, Plus | Minus | Mul)
-        && (matches!(l, Datum::VectorFloat32(_)) || matches!(r, Datum::VectorFloat32(_)))
-    {
-        if l == Datum::Null || r == Datum::Null {
-            return null();
-        }
-        let left = binary_vector_operand(l)?;
-        let right = binary_vector_operand(r)?;
-        let operation = match op {
-            Plus => Op::AddVectorNative,
-            Minus => Op::SubVectorNative,
-            Mul => Op::MulVectorNative,
-            _ => unreachable!("only three arithmetic families prepare here"),
-        };
-        return Ok((
-            operation,
-            EvaluatedArgs::NativeVector2(Some(left), Some(right)),
-        ));
-    }
     // These errors preceded temporal/string conversion and NULL propagation.
     if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
         return Err(EvalError::Unsupported("JSON operand"));
@@ -512,9 +507,6 @@ fn prepare_binary_arithmetic(
         let left = to_f64(l);
         let right = to_f64(r);
         let operation = match op {
-            Plus => Op::AddRealNative,
-            Minus => Op::SubRealNative,
-            Mul => Op::MulRealNative,
             Mod => Op::ModRealNative,
             Div => Op::DivRealNative,
             _ => unreachable!("only worker arithmetic families prepare here"),
@@ -550,9 +542,6 @@ fn prepare_binary_arithmetic(
         let left = to_decimal(l);
         let right = to_decimal(r);
         let operation = match op {
-            Plus => Op::AddDecimalNative,
-            Minus => Op::SubDecimalNative,
-            Mul => Op::MulDecimalNative,
             Mod => Op::ModDecimalNative,
             _ => unreachable!("only worker arithmetic families prepare here"),
         };

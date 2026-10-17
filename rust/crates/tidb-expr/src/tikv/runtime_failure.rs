@@ -443,4 +443,41 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn direct_additive_decimal_budget_retains_actual_resource_cause() {
+        use tidb_datatype::Datum;
+        use tidb_query_datatype::codec::mysql::decimal::NativeDecimalError;
+        let decimal = || {
+            Datum::Decimal(tidb_datatype::Decimal::from_literal(
+                "1234567890123456789012345678901234567890.0001",
+            ))
+        };
+        let prepared = crate::ops::arithmetic::prepare(
+            tidb_ast::BinaryOp::Mul,
+            decimal(),
+            decimal(),
+            [false; 2],
+            &crate::NoColumns,
+        )
+        .unwrap();
+        let Err(crate::EvalError::ExpressionRuntimeFailure(failure)) = prepared.compute(0) else {
+            panic!("SDK budget refusal must remain terminal");
+        };
+        // The runtime class describes the original outer SDK discriminant;
+        // the actual decimal resource cause remains inside it, not SQL overflow.
+        assert_eq!(failure.class(), Class::Evaluation);
+        assert_eq!(failure.phase(), None);
+        let LocalError::Evaluation(error) = failure.local_error() else {
+            panic!("actual SDK evaluation error missing");
+        };
+        let mut source: &(dyn std::error::Error + 'static) = error;
+        loop {
+            if let Some(cause) = source.downcast_ref::<NativeDecimalError>() {
+                assert!(matches!(cause, NativeDecimalError::Resource(_)));
+                break;
+            }
+            source = source.source().expect("actual retained decimal cause");
+        }
+    }
 }

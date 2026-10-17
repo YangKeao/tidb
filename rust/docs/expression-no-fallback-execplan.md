@@ -50,6 +50,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5f3: native NULL-safe equality shares comparison frames and pure generic preparation, preserving presence, sentinel priority and duration-versus-datetime conversion disposition. 98focused/full1453same4/core1043same6/132SQL/Projection19/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f3.md.
 - [x] (2026-10-18) N5f4: native NULLIF shares the binary frame, original literal comparison/normalization policy and first-value identity. Context traces preserve the original comparison configuration read. 101focused/full1456same4/core1043same6/192SQL/Projection20/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f4.md.
 - [x] (2026-10-18) N5g1: native ABS shares pure signed/unsigned/IEEE/Decimal primitives, actual-value dispatch and preformatted source diagnostics after a complete byte gate. 103focused/full1458same4/core1044same6/234SQL/Projection21/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5g1.md.
+- [x] (2026-10-18) N5g2: shared plain add/subtract/multiply value preparation and direct integer/IEEE/Decimal/vector kernels, with old callers sharing a temporary adapter. 24576 value/error/warning/observation comparisons,3newtests/full1461same4/core1044same6/Projection21/lint/clippy/fmt pass. Native arithmetic source demand is next. Receipt rust/docs/evidence/no-fallback-n5g2.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -526,3 +527,23 @@ conversion, source-shaped overflow rendering and configuration reads must be
 extracted as plain policies before connecting their shared value kernels.
 Remaining functions, effects, sources/callers and global dispatch still require
 migration; the no-fallback goal remains active.
+
+
+N5g2 outcome: add/subtract/multiply now have an owned prepared-value boundary
+independent of expressions or argument programs. The original generic ladder
+and typed integer callers share that preparation; the temporary adapter is
+explicit. Pure compute invokes the original core value methods directly and
+retains actual structured arithmetic failures. A24576-case comparison checks
+values, native error types, warning contents and subtraction-mode reads.
+Actual SDK Decimal budget refusal retains its typed resource cause and outer
+Evaluation class, while local observer refusals retain ResourceLimit.
+
+Next connect these values to the common HostFrame after extracting plain
+numeric operand conversion and immutable source diagnostics. Preserve the
+integer fast path's actual typed input normalization, generic binary-literal
+normalization, context-read points and signature-specific NULL demand.
+Do not reuse comparison demand as an eager arithmetic policy. Whole-source
+formatting budgets must also cover diagnostic formatting work buffers before
+capturing text; nested unsupported diagnostic shapes keep the original
+unavailable-text behavior. Remove the temporary adapter only as remaining
+source/caller coverage becomes native. The global no-fallback goal is active.

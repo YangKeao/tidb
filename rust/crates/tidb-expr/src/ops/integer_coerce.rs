@@ -112,29 +112,18 @@ pub(super) fn prepare_integer_arithmetic(
     unsigned_result: &std::cell::Cell<bool>,
 ) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
     use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
+    if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
+        let (operation, arguments, unsigned, _) =
+            super::arithmetic::prepare_integer(op, a, b, ctx).into_evaluated();
+        unsigned_result.set(unsigned);
+        return (operation, arguments);
+    }
     let left_unsigned = matches!(a, Integer::Unsigned(_));
     let right_unsigned = matches!(b, Integer::Unsigned(_));
     let left = integer_bits(a) as i64;
     let right = integer_bits(b) as i64;
     let force_signed = op == BinaryOp::Minus && ctx.no_unsigned_subtraction();
     let operation = match op {
-        BinaryOp::Plus => match (left_unsigned, right_unsigned) {
-            (false, false) => Op::AddIntSsNative,
-            (false, true) => Op::AddIntSuNative,
-            (true, false) => Op::AddIntUsNative,
-            (true, true) => Op::AddIntUuNative,
-        },
-        BinaryOp::Minus => match (left_unsigned, right_unsigned, force_signed) {
-            (false, false, _) => Op::SubIntSsNative,
-            (false, true, false) => Op::SubIntSuNative,
-            (true, false, false) => Op::SubIntUsNative,
-            (true, true, false) => Op::SubIntUuNative,
-            (false, true, true) => Op::SubIntSuForcedNative,
-            (true, false, true) => Op::SubIntUsForcedNative,
-            (true, true, true) => Op::SubIntUuForcedNative,
-        },
-        BinaryOp::Mul if left_unsigned || right_unsigned => Op::MulIntUnsignedNative,
-        BinaryOp::Mul => Op::MulIntSignedNative,
         BinaryOp::Mod => match (left_unsigned, right_unsigned) {
             (false, false) => Op::ModIntSsNative,
             (false, true) => Op::ModIntSuNative,
