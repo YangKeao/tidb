@@ -2125,4 +2125,196 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn native_arithmetic_preserves_signature_demand_and_errors_in_projection() {
+        use tidb_datatype::{Decimal, VectorFloat32};
+        let integer = FieldType::new(FieldTypeCode::LongLong)
+            .with_flen(20)
+            .with_decimal(0);
+        let unsigned = integer.clone().with_unsigned(true);
+        let real = FieldType::new(FieldTypeCode::Double);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(60)
+            .with_decimal(6);
+        let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+        let string = FieldType::new(FieldTypeCode::VarString);
+        let json = FieldType::new(FieldTypeCode::Json)
+            .with_flags(tidb_datatype::FieldTypeFlags::PARSE_TO_JSON);
+        let call = |name: &str, field: FieldType, args: Vec<Expression>| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let value = |datum, field| Expression::Constant(Constant::new(datum, field));
+        let bad = || {
+            call(
+                "cast_json",
+                json.clone(),
+                vec![value(Datum::new_string("bad JSON"), string.clone())],
+            )
+        };
+        let mut cases = Vec::new();
+        for name in ["plus", "minus", "mul"] {
+            let fixtures = vec![
+                (
+                    integer.clone(),
+                    value(Datum::Int(-7), integer.clone()),
+                    value(Datum::Int(3), integer.clone()),
+                ),
+                (
+                    integer.clone(),
+                    value(Datum::Int(i64::MAX), integer.clone()),
+                    value(Datum::Int(1), integer.clone()),
+                ),
+                (
+                    unsigned.clone(),
+                    value(Datum::UInt(u64::MAX), unsigned.clone()),
+                    value(Datum::Int(1), integer.clone()),
+                ),
+                (
+                    unsigned.clone(),
+                    value(Datum::Int(-1), unsigned.clone()),
+                    value(Datum::Int(1), integer.clone()),
+                ),
+                (
+                    real.clone(),
+                    value(Datum::Real(12.5), real.clone()),
+                    value(Datum::new_string("2tail"), string.clone()),
+                ),
+                (
+                    real.clone(),
+                    value(Datum::Real(f64::MAX), real.clone()),
+                    value(Datum::Real(2.0), real.clone()),
+                ),
+                (real.clone(), value(Datum::Null, real.clone()), bad()),
+                (
+                    integer.clone(),
+                    value(Datum::Null, integer.clone()),
+                    call("cast_signed", integer.clone(), vec![bad()]),
+                ),
+                (
+                    decimal.clone(),
+                    value(
+                        Datum::Decimal(Decimal::from_literal(
+                            "-1234567890123456789012345678901234567890.001",
+                        )),
+                        decimal.clone(),
+                    ),
+                    value(Datum::Int(2), integer.clone()),
+                ),
+                (
+                    decimal.clone(),
+                    value(Datum::Real(f64::MAX), real.clone()),
+                    value(Datum::Decimal(Decimal::from_literal("0")), decimal.clone()),
+                ),
+                (
+                    vector.clone(),
+                    value(
+                        Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, -0.0])),
+                        vector.clone(),
+                    ),
+                    value(
+                        Datum::VectorFloat32(VectorFloat32::must_create(vec![2.0, 3.0])),
+                        vector.clone(),
+                    ),
+                ),
+                (
+                    vector.clone(),
+                    value(
+                        Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                        vector.clone(),
+                    ),
+                    value(
+                        Datum::VectorFloat32(VectorFloat32::must_create(vec![2.0, 3.0])),
+                        vector.clone(),
+                    ),
+                ),
+            ];
+            for (field, left, right) in fixtures {
+                cases.push(call(name, field, vec![left, right]));
+            }
+            cases.push(call(
+                "cast_char",
+                string.clone(),
+                vec![call(
+                    name,
+                    integer.clone(),
+                    vec![
+                        call(
+                            "abs",
+                            integer.clone(),
+                            vec![value(Datum::Int(-7), integer.clone())],
+                        ),
+                        value(Datum::Int(3), integer.clone()),
+                    ],
+                )],
+            ));
+        }
+        // The native parent selects row demand. Ordinary typed arithmetic
+        // keeps its separately tested complete batch operand phases.
+        let cases = cases
+            .into_iter()
+            .map(|root| {
+                let field = root.static_type().unwrap().clone();
+                call(
+                    "if",
+                    field,
+                    vec![
+                        call(
+                            "cast_signed",
+                            integer.clone(),
+                            vec![value(Datum::Int(1), integer.clone())],
+                        ),
+                        root,
+                        bad(),
+                    ],
+                )
+            })
+            .collect::<Vec<_>>();
+        for root in cases {
+            let field = root.static_type().unwrap().clone();
+            let reference = crate::StmtContext::for_query();
+            let expected = root.eval(&reference, tidb_chunk::row::Row::empty());
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context = crate::StmtContext::for_query();
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root.clone()],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                let actual = projection.next(&mut output);
+                match &expected {
+                    Ok(value) => {
+                        actual.unwrap();
+                        let mut expected = Chunk::new_with_capacity(&[field.clone()], 1);
+                        expected.append_datum(0, value);
+                        assert_eq!(output.num_rows(), 1);
+                        assert_eq!(output.get_row(0).is_null(0), expected.get_row(0).is_null(0));
+                        assert_eq!(
+                            output.column(0).get_raw(0).as_ref(),
+                            expected.column(0).get_raw(0).as_ref()
+                        );
+                    }
+                    Err(expected_error) => {
+                        let Err(ExecError::Eval(actual_error)) = actual else {
+                            panic!("lost logical error: {actual:?}");
+                        };
+                        assert_eq!(&actual_error, expected_error);
+                        assert_eq!(output.num_rows(), 0);
+                    }
+                }
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

@@ -364,41 +364,48 @@ pub(crate) fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> 
     Some(native_arithmetic_symbol(native_arithmetic_operator(op)?))
 }
 
+fn numeric_diagnostic_literal(value: &Datum, go_float_format: bool) -> Option<String> {
+    Some(match value {
+        Datum::Int(value) => value.to_string(),
+        Datum::UInt(value) => value.to_string(),
+        Datum::Float32(value) | Datum::Real(value) => {
+            if go_float_format {
+                tidb_datatype::format_float_g_shortest(*value)
+            } else {
+                value.to_string()
+            }
+        }
+        Datum::Decimal(value) => value.to_string(),
+        Datum::BinaryLiteral(value) => value.to_int().value().to_string(),
+        Datum::Null => "NULL".into(),
+        value @ (Datum::String(_) | Datum::Bytes(_) | Datum::Json(_)) => {
+            String::from_utf8(value.truncated_stringify().ok()?).ok()?
+        }
+        _ => return None,
+    })
+}
+
 fn numeric_expression_text(
     expression: &Expression,
     go_float_format: bool,
     ctx: &dyn Columns,
 ) -> Option<String> {
+    render_numeric_expression_text(expression, go_float_format, &|constant, mode| {
+        numeric_diagnostic_literal(&constant.eval_in(ctx).ok()?, mode)
+    })
+}
+
+fn render_numeric_expression_text(
+    expression: &Expression,
+    go_float_format: bool,
+    literal: &impl Fn(&crate::constant::Constant, bool) -> Option<String>,
+) -> Option<String> {
     match expression {
-        Expression::Constant(constant) => match constant.eval_in(ctx).ok()? {
-            Datum::Int(value) => Some(value.to_string()),
-            Datum::UInt(value) => Some(value.to_string()),
-            Datum::Float32(value) => {
-                if go_float_format {
-                    Some(tidb_datatype::format_float_g_shortest(value))
-                } else {
-                    Some(value.to_string())
-                }
-            }
-            Datum::Real(value) => {
-                if go_float_format {
-                    Some(tidb_datatype::format_float_g_shortest(value))
-                } else {
-                    Some(value.to_string())
-                }
-            }
-            Datum::Decimal(value) => Some(value.to_string()),
-            Datum::BinaryLiteral(value) => Some(value.to_int().value().to_string()),
-            Datum::Null => Some("NULL".to_owned()),
-            value @ (Datum::String(_) | Datum::Bytes(_) | Datum::Json(_)) => {
-                String::from_utf8(value.truncated_stringify().ok()?).ok()
-            }
-            _ => None,
-        },
+        Expression::Constant(constant) => literal(constant, go_float_format),
         Expression::Column(column) => {
             if column.is_hidden {
                 if let Some(expression) = column.virtual_expr.as_deref() {
-                    return numeric_expression_text(expression, go_float_format, ctx);
+                    return render_numeric_expression_text(expression, go_float_format, literal);
                 }
             }
             Some(native_render_column_reference(
@@ -416,7 +423,7 @@ fn numeric_expression_text(
                     return None;
                 };
                 return Some(native_render_cast_expression(
-                    &numeric_expression_text(argument, go_float_format, ctx)?,
+                    &render_numeric_expression_text(argument, go_float_format, literal)?,
                     &function.get_static_type()?.source_string(),
                 ));
             }
@@ -426,9 +433,9 @@ fn numeric_expression_text(
                 return None;
             };
             Some(native_render_binary_expression(
-                &numeric_expression_text(left, go_float_format, ctx)?,
+                &render_numeric_expression_text(left, go_float_format, literal)?,
                 op,
-                &numeric_expression_text(right, go_float_format, ctx)?,
+                &render_numeric_expression_text(right, go_float_format, literal)?,
             ))
         }
     }
@@ -512,6 +519,164 @@ fn integer_division_overflow(
         },
         expression: format!("({}, {})", text(left), text(right)),
     }
+}
+
+#[cfg(test)]
+std::thread_local! { static STATIC_NUMERIC_FORMATS:std::cell::Cell<usize>=const{std::cell::Cell::new(0)}; }
+#[cfg(test)]
+pub(crate) fn static_numeric_formats_for_test() -> usize {
+    STATIC_NUMERIC_FORMATS.with(std::cell::Cell::get)
+}
+
+pub(crate) fn static_numeric_expression_text(
+    expression: &Expression,
+    float: bool,
+) -> Option<String> {
+    #[cfg(test)]
+    STATIC_NUMERIC_FORMATS.with(|count| count.set(count.get() + 1));
+    render_numeric_expression_text(expression, float, &|constant, mode| {
+        numeric_diagnostic_literal(constant.literal_value()?, mode)
+    })
+}
+
+pub(crate) fn static_arithmetic_overflow_expression(
+    function: &ScalarFunction,
+    op: BinaryOp,
+    float: bool,
+) -> Option<String> {
+    #[cfg(test)]
+    STATIC_NUMERIC_FORMATS.with(|count| count.set(count.get() + 1));
+    let [left, right] = function.args.as_slice() else {
+        return None;
+    };
+    let text = |expression: &Expression| {
+        if let Expression::Constant(constant) = expression {
+            if let Datum::BinaryLiteral(value) = &constant.value {
+                let value = value.to_int().value();
+                return Some(
+                    match native_binary_literal_render(
+                        native_numeric_diagnostic_domain(function.numeric_operand_domain()),
+                        expression.static_type()?.is_unsigned(),
+                    ) {
+                        NativeBinaryLiteralRender::Signed => (value as i64).to_string(),
+                        NativeBinaryLiteralRender::Real => {
+                            tidb_datatype::format_float_g_shortest(value as f64)
+                        }
+                        NativeBinaryLiteralRender::Unsigned => value.to_string(),
+                    },
+                );
+            }
+        }
+        static_numeric_expression_text(expression, float)
+    };
+    Some(native_render_binary_expression(
+        &text(left)?,
+        native_arithmetic_operator(op)?,
+        &text(right)?,
+    ))
+}
+
+/// Retain only the exact fixed native literal which has a demand-sensitive
+/// Display failure. The compiler must not execute that failure in a dead arm.
+pub(crate) fn numeric_diagnostic_format_failure(
+    node: &Expression,
+    children: Option<[u8; 8]>,
+) -> Option<[u8; 8]> {
+    match node {
+        Expression::Constant(constant) => {
+            let Datum::Json(value) = constant.literal_value()? else {
+                return None;
+            };
+            if value.type_code() != 0x0b {
+                return None;
+            }
+            let bits = <[u8; 8]>::try_from(value.value()).ok()?;
+            (!f64::from_bits(u64::from_le_bytes(bits)).is_finite()).then_some(bits)
+        }
+        Expression::ScalarFunction(function)
+            if (function.func_name.lowercase() == "cast_json" && function.args.len() == 1)
+                || (function.args.len() == 2
+                    && binary_op_for_name(function.func_name.lowercase())
+                        .and_then(native_arithmetic_operator)
+                        .is_some()) =>
+        {
+            children
+        }
+        _ => None,
+    }
+}
+
+/// Invoke the original literal formatter only when the diagnostic is needed.
+/// A native nonfinite JSON double retains Display's own formatting-error panic.
+pub(crate) fn render_numeric_format_failure(bits: [u8; 8]) -> String {
+    tidb_datatype::BinaryJSON::from_encoded_parts(0x0b, bits.to_vec()).to_string()
+}
+
+/// Borrowed bound includes diagnostic formatting work buffers, not just the
+/// truncated final text. No source value is cloned or formatted in this pass.
+pub(crate) fn numeric_diagnostic_node_bound(
+    node: &Expression,
+    children: Option<usize>,
+) -> Result<Option<usize>, &'static str> {
+    let overflow = "numeric diagnostic byte size overflow";
+    Ok(match node {
+        Expression::Constant(constant) => match constant.literal_value() {
+            Some(Datum::BinaryLiteral(_)) => Some(64),
+            Some(Datum::Float32(_) | Datum::Real(_)) => Some(384),
+            Some(Datum::String(value)) => numeric_string_diagnostic_bound(value.bytes())?,
+            Some(Datum::Bytes(value)) => numeric_string_diagnostic_bound(value)?,
+            // JSON's fixed numeric/temporal cells, escaped text and container
+            // punctuation fit this conservative binary-to-text work allowance.
+            Some(Datum::Json(_)) if numeric_diagnostic_format_failure(node, None).is_some() => None,
+            Some(Datum::Json(value)) => Some(
+                value
+                    .value()
+                    .len()
+                    .checked_add(1)
+                    .and_then(|n| n.checked_mul(128))
+                    .and_then(|n| n.checked_add(512))
+                    .ok_or(overflow)?,
+            ),
+            _ => math_diagnostic_node_bound(node, None)?,
+        },
+        Expression::Column(column) => Some(column.orig_name.len().max(40)),
+        Expression::CorrelatedColumn(column) => Some(column.column.orig_name.len().max(40)),
+        Expression::ScalarFunction(function) => {
+            let Some(children) = children else {
+                return Ok(None);
+            };
+            if function.func_name.lowercase() == "cast_json" && function.args.len() == 1 {
+                let Some(field) = function.get_static_type() else {
+                    return Ok(None);
+                };
+                let extra = field
+                    .checked_snapshot_payload_bytes()
+                    .and_then(|n| n.checked_mul(6))
+                    .and_then(|n| n.checked_add(512))
+                    .ok_or(overflow)?;
+                Some(children.checked_add(extra).ok_or(overflow)?)
+            } else if function.args.len() == 2
+                && binary_op_for_name(function.func_name.lowercase())
+                    .and_then(native_arithmetic_operator)
+                    .is_some()
+            {
+                Some(children.checked_add(8).ok_or(overflow)?)
+            } else {
+                None
+            }
+        }
+    })
+}
+fn numeric_string_diagnostic_bound(bytes: &[u8]) -> Result<Option<usize>, &'static str> {
+    if std::str::from_utf8(&bytes[..bytes.len().min(64)]).is_err() {
+        return Ok(None);
+    }
+    bytes
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(128))
+        .map(Some)
+        .ok_or("numeric string diagnostic size overflow")
 }
 
 /// Renders the operand list Go's `StringWithCtx(errors.RedactLogDisable)` uses
@@ -3612,6 +3777,79 @@ fn numeric_argument_domain(source: EvalType, target: EvalType) -> bool {
         || (target == EvalType::Decimal && matches!(source, EvalType::Int | EvalType::Real))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeArithmeticInputMode {
+    TypedInteger,
+    Numeric(EvalType),
+    Raw,
+}
+impl ScalarFunction {
+    pub(crate) fn native_arithmetic_mode(&self) -> NativeArithmeticInputMode {
+        if self.args.len() == 2
+            && self.args.iter().all(|arg| {
+                arg.static_type()
+                    .is_some_and(|field| field.eval_type() == EvalType::Int)
+            })
+        {
+            NativeArithmeticInputMode::TypedInteger
+        } else {
+            self.native_arithmetic_generic_mode()
+        }
+    }
+    pub(crate) fn native_arithmetic_generic_mode(&self) -> NativeArithmeticInputMode {
+        self.numeric_operand_domain().map_or(
+            NativeArithmeticInputMode::Raw,
+            NativeArithmeticInputMode::Numeric,
+        )
+    }
+}
+
+/// Same typed owner boundary after the driver has fetched the actual value.
+pub(crate) fn native_numeric_operand(
+    field: &FieldType,
+    literal: bool,
+    binary_literal: bool,
+    value: Datum,
+    mode: NativeArithmeticInputMode,
+    ctx: &dyn Columns,
+    subject: Option<&str>,
+    subject_format_failure: Option<[u8; 8]>,
+) -> Result<Datum, EvalError> {
+    let (source, target, cast) = match mode {
+        NativeArithmeticInputMode::Raw => return Ok(value),
+        NativeArithmeticInputMode::TypedInteger => (EvalType::Int, EvalType::Int, false),
+        NativeArithmeticInputMode::Numeric(target) => {
+            let source = if binary_literal {
+                target
+            } else if field.is_hybrid() {
+                EvalType::Int
+            } else {
+                field.eval_type()
+            };
+            (source, target, !binary_literal)
+        }
+    };
+    let value = if literal {
+        crate::constant::typed_constant_value(field, ctx, source, value)?
+    } else {
+        normalize_numeric_row_value(value, Some(field), source, ctx)?
+    };
+    let value = match (source, value) {
+        (EvalType::Int, Datum::UInt(value)) => Datum::Int(value as i64),
+        (EvalType::Real, Datum::Float32(value)) => Datum::Real(value),
+        (_, value) => value,
+    };
+    if cast {
+        cast_numeric_argument_value(field, value, target, ctx, false, || {
+            subject_format_failure
+                .map(render_numeric_format_failure)
+                .or_else(|| subject.map(str::to_owned))
+        })
+    } else {
+        Ok(value)
+    }
+}
+
 // Go's builder inserts numeric argument casts. Native arithmetic retains
 // those source FieldTypes, so apply the same conversion before the operator.
 pub(crate) fn cast_numeric_argument(
@@ -3633,6 +3871,19 @@ fn cast_numeric_argument_in_mode(
     let field = expression
         .static_type()
         .expect("numeric argument has a type");
+    cast_numeric_argument_value(field, value, target, ctx, vectorized, || {
+        numeric_expression_text(expression, true, ctx)
+    })
+}
+
+fn cast_numeric_argument_value(
+    field: &FieldType,
+    value: Datum,
+    target: EvalType,
+    ctx: &dyn Columns,
+    vectorized: bool,
+    subject: impl FnOnce() -> Option<String>,
+) -> Result<Datum, EvalError> {
     use tidb_query_expr::{
         NativeNumericArgumentHead as Head, NativeNumericArgumentNormalization as Normalization,
         NativeNumericArgumentRoute as Route,
@@ -3718,7 +3969,7 @@ fn cast_numeric_argument_in_mode(
                 })
                 .map_err(|kind| EvalError::Conversion(numeric_argument_conversion_error(kind)))?;
             let subject = if state.requires_expression_subject() {
-                numeric_expression_text(expression, true, ctx)
+                subject()
             } else {
                 None
             };

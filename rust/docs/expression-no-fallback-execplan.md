@@ -51,6 +51,7 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-18) N5f4: native NULLIF shares the binary frame, original literal comparison/normalization policy and first-value identity. Context traces preserve the original comparison configuration read. 101focused/full1456same4/core1043same6/192SQL/Projection20/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5f4.md.
 - [x] (2026-10-18) N5g1: native ABS shares pure signed/unsigned/IEEE/Decimal primitives, actual-value dispatch and preformatted source diagnostics after a complete byte gate. 103focused/full1458same4/core1044same6/234SQL/Projection21/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5g1.md.
 - [x] (2026-10-18) N5g2: shared plain add/subtract/multiply value preparation and direct integer/IEEE/Decimal/vector kernels, with old callers sharing a temporary adapter. 24576 value/error/warning/observation comparisons,3newtests/full1461same4/core1044same6/Projection21/lint/clippy/fmt pass. Native arithmetic source demand is next. Receipt rust/docs/evidence/no-fallback-n5g2.md.
+- [x] (2026-10-18) N5g3: native PLUS/MINUS/MUL producers beneath row-demand boundaries, with plain numeric conversion, exact fast-probe re-demands and demand-sensitive source diagnostics. Existing bulk phases preserved. 106batch/504manual/342SQL/full1464same4/core1044same6/Projection22/lint/clippy/fmt pass. Receipt rust/docs/evidence/no-fallback-n5g3.md.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
 - [ ] N6: Remove alternate-evaluator dispatch and migration state; validate full SQL,
   shared-library and release-server cohorts and report remaining performance costs.
@@ -547,3 +548,31 @@ formatting budgets must also cover diagnostic formatting work buffers before
 capturing text; nested unsupported diagnostic shapes keep the original
 unavailable-text behavior. Remove the temporary adapter only as remaining
 source/caller coverage becomes native. The global no-fallback goal is active.
+
+
+N5g3 outcome: additive producers now compose inside existing native CAST and
+row-demand conditional boundaries. Numeric conversion is shared as plain
+value policy, with original typed/generic modes, NULL demand, subtraction and
+configuration reads. Failed typed probes use fresh argument requests within
+the same HostFrame. The previous CAST(PLUS(...)) admission fallback is closed.
+
+The implementation audit exposed a required distinction: existing complete
+compiled arithmetic finishes the entire left operand batch and entire right
+operand batch before arithmetic; scalar row signatures have their own NULL
+short-circuit rules. Automatic native root selection changed those observable
+phases. Existing root source selection and proved ABS/arithmetic typed closures
+are therefore preserved. A bulk-aware extension of the canonical driver is
+required before retiring root profiles that still use migration dispatch;
+merely forcing them into row frames would violate the objective.
+
+Source diagnostics are bounded before capture or formatting. A RED regression
+also proved that eager formatting of a nonfinite raw JSON literal could fail
+inside a dead branch. The compiler now retains the actual fixed literal and
+first rendering disposition as immutable metadata; the runtime invokes the
+original formatter only on actual diagnostic demand. Earlier unavailable text
+still prevents a later formatting failure, preserving the original order.
+
+Next complete bulk-aware orchestration and remaining source/caller profiles,
+then migrate other functions, effects and dynamic sources and remove global
+migration dispatch. The goal is not complete at this checkpoint. The N5g3
+receipt records the phase evidence and regression commands for this change.

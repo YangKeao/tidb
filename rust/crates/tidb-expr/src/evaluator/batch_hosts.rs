@@ -47,6 +47,23 @@ pub(super) enum NativeHostMetadata {
         output_node: usize,
         output_role: NativeValueRole,
     },
+    Arithmetic {
+        operation: SqlBatchHostOperation,
+        name: Box<str>,
+        result_type: FieldType,
+        argument_nodes: [usize; 2],
+        source_types: [FieldType; 2],
+        literal: [bool; 2],
+        binary_literal: [bool; 2],
+        mode: crate::scalar_function::NativeArithmeticInputMode,
+        generic_mode: crate::scalar_function::NativeArithmeticInputMode,
+        subjects: [Option<Box<str>>; 2],
+        subject_format_failures: [Option<[u8; 8]>; 2],
+        overflow_format_failure: Option<[u8; 8]>,
+        overflow_expressions: [Option<Box<str>>; 2],
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     Math {
         name: Box<str>,
         result_type: FieldType,
@@ -81,6 +98,11 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Arithmetic {
+        next: usize,
+        typed: bool,
+        left: Option<Datum>,
+    },
     Math,
     Comparison {
         left_token: Option<[u8; native_values::HANDLE_BYTES]>,
@@ -122,6 +144,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Arithmetic { next, .. } => Ok(Some(*next)),
             SqlDemand::Comparison { left_token } => Ok(Some(usize::from(left_token.is_some()))),
             SqlDemand::Nullable { next }
             | SqlDemand::Conditional { next }
@@ -142,6 +165,7 @@ impl NativeTask {
             | SqlDemand::Logical { .. }
             | SqlDemand::Truth
             | SqlDemand::Comparison { .. }
+            | SqlDemand::Arithmetic { .. }
             | SqlDemand::Math => Err(LocalError::HostContract(
                 "native nullable control does not buffer a prefix".into(),
             )),
@@ -162,14 +186,28 @@ impl NativeTask {
         }
     }
     fn retained_bytes(&self) -> LocalResult<usize> {
-        self.values.iter().flatten().try_fold(
+        let bytes = self.values.iter().flatten().try_fold(
             array_bytes::<Option<Vec<u8>>>(self.values.capacity())?,
             |bytes, value| {
                 bytes
                     .checked_add(value.capacity())
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
-        )
+        )?;
+        if let SqlDemand::Arithmetic {
+            left: Some(value), ..
+        } = &self.demand
+        {
+            bytes
+                .checked_add(
+                    native_payload_bytes(value)?
+                        .checked_mul(2)
+                        .ok_or_else(|| resource("arithmetic retained value overflow"))?,
+                )
+                .ok_or_else(|| resource("arithmetic retained bytes overflow"))
+        } else {
+            Ok(bytes)
+        }
     }
 }
 struct CapturedWarnings {
@@ -585,6 +623,220 @@ impl<'a> NativeBatchHosts<'a> {
             };
         self.finish_native_value(id, value, *output_node, *output_role, row, base)
     }
+    fn resume_arithmetic(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
+        use crate::scalar_function::NativeArithmeticInputMode as Mode;
+        let task = self.task(id)?;
+        let SqlDemand::Arithmetic { next, typed, .. } = &task.demand else {
+            return Err(binding("arithmetic resume task differs"));
+        };
+        let (index, typed, row, slot) = (*next, *typed, task.row, task.slot);
+        let Some(NativeHostMetadata::Arithmetic {
+            operation,
+            name,
+            result_type,
+            argument_nodes,
+            source_types,
+            literal,
+            binary_literal,
+            mode: _,
+            generic_mode,
+            subjects,
+            subject_format_failures,
+            overflow_format_failure,
+            overflow_expressions,
+            output_node,
+            output_role,
+        }) = self.metadata.get(slot.index())
+        else {
+            return Err(binding("arithmetic source descriptor missing"));
+        };
+        let op = match operation {
+            SqlBatchHostOperation::AddNative => tidb_ast::BinaryOp::Plus,
+            SqlBatchHostOperation::SubtractNative => tidb_ast::BinaryOp::Minus,
+            SqlBatchHostOperation::MultiplyNative => tidb_ast::BinaryOp::Mul,
+            _ => return Err(binding("arithmetic operation differs")),
+        };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("arithmetic native value store missing"))?;
+        let origin = NativeValueOrigin {
+            node: argument_nodes[index],
+            row,
+        };
+        let payload = native_payload_bytes(store.borrow().get(
+            token,
+            NativeValueRole::CharInput,
+            origin,
+        )?)?;
+        let diagnostic_copies = subjects
+            .iter()
+            .chain(overflow_expressions.iter())
+            .flatten()
+            .try_fold(0usize, |total, text| {
+                total
+                    .checked_add(text.len())
+                    .ok_or_else(|| resource("arithmetic diagnostics overflow"))
+            })?
+            .checked_mul(2)
+            .ok_or_else(|| resource("arithmetic diagnostics copy overflow"))?;
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("arithmetic argument copy overflow"))?,
+            )
+            .and_then(|bytes| bytes.checked_add(diagnostic_copies))
+            .ok_or_else(|| resource("arithmetic argument allowance overflow"))?;
+        self.check_bytes(base)?;
+        let value = store
+            .borrow()
+            .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
+        let mode = if typed {
+            Mode::TypedInteger
+        } else {
+            *generic_mode
+        };
+        let value = match crate::scalar_function::native_numeric_operand(
+            &source_types[index],
+            literal[index],
+            binary_literal[index],
+            value,
+            mode,
+            self.context,
+            subjects[index].as_deref(),
+            subject_format_failures[index],
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        let prepared = if index == 0 {
+            let stop = value.is_null()
+                && (typed
+                    || matches!(mode,Mode::Numeric(domain) if !(domain==NativeEvalType::Real && op==tidb_ast::BinaryOp::Plus)));
+            if stop {
+                crate::ops::arithmetic::PreparedArithmetic::Null
+            } else {
+                self.check_bytes(
+                    base.checked_add(
+                        native_payload_bytes(&value)?
+                            .checked_mul(2)
+                            .ok_or_else(|| resource("arithmetic converted value overflow"))?,
+                    )
+                    .ok_or_else(|| resource("arithmetic left allowance overflow"))?,
+                )?;
+                let SqlDemand::Arithmetic { next, left, .. } = &mut self.slots[id.slot]
+                    .task
+                    .as_mut()
+                    .expect("validated arithmetic task")
+                    .demand
+                else {
+                    unreachable!()
+                };
+                *left = Some(value);
+                *next = 1;
+                return Ok(HostStep::NeedArg(HostArgRequest {
+                    index: 1,
+                    mode: ArgMode::Fresh,
+                }));
+            }
+        } else {
+            let SqlDemand::Arithmetic { left, .. } = &mut self.slots[id.slot]
+                .task
+                .as_mut()
+                .expect("validated arithmetic task")
+                .demand
+            else {
+                unreachable!()
+            };
+            let left = left
+                .take()
+                .ok_or_else(|| binding("arithmetic left value missing"))?;
+            let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+            if typed {
+                match crate::ops::prepare_native_typed_arithmetic(
+                    op,
+                    left,
+                    value,
+                    unsigned,
+                    self.context,
+                ) {
+                    Ok(Some(prepared)) => prepared,
+                    Ok(None) => {
+                        // Retain the original failed fast probe's fresh second
+                        // demands inside the same shared driver.
+                        let SqlDemand::Arithmetic { next, typed, .. } = &mut self.slots[id.slot]
+                            .task
+                            .as_mut()
+                            .expect("validated arithmetic task")
+                            .demand
+                        else {
+                            unreachable!()
+                        };
+                        *typed = false;
+                        *next = 0;
+                        return Ok(HostStep::NeedArg(HostArgRequest {
+                            index: 0,
+                            mode: ArgMode::Fresh,
+                        }));
+                    }
+                    Err(error) => return self.native_failure(error),
+                }
+            } else {
+                let (left, right) = crate::binary_literal::cast_signed_literal_operands(
+                    op,
+                    left,
+                    value,
+                    unsigned.map(|value| !value),
+                );
+                let _ = self.context.div_precision_increment();
+                match crate::ops::arithmetic::prepare(op, left, right, unsigned, self.context) {
+                    Ok(prepared) => prepared,
+                    Err(error) => return self.native_failure(error),
+                }
+            }
+        };
+        let available = self
+            .max_retained_bytes
+            .checked_sub(base)
+            .ok_or_else(|| resource("arithmetic kernel allowance exhausted"))?;
+        let value = match prepared.compute(available) {
+            Ok(value) => value,
+            Err(error) => {
+                let (class, text) = match error {
+                    EvalError::IntOverflow => (
+                        if result_type.is_unsigned() {
+                            "BIGINT UNSIGNED"
+                        } else {
+                            "BIGINT"
+                        },
+                        overflow_expressions[0].as_deref(),
+                    ),
+                    EvalError::FloatOverflow => ("DOUBLE", overflow_expressions[1].as_deref()),
+                    EvalError::DecimalOverflow => ("DECIMAL", overflow_expressions[0].as_deref()),
+                    other => return self.native_failure(other),
+                };
+                if let Some(bits) = overflow_format_failure {
+                    let _ = crate::scalar_function::render_numeric_format_failure(*bits);
+                }
+                let Some(text) = text else {
+                    return self.native_failure(error);
+                };
+                return self.native_failure(EvalError::DataOutOfRange {
+                    value: class,
+                    expression: text.to_owned(),
+                });
+            }
+        };
+        let value =
+            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            };
+        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+            .map(HostStep::Ready)
+    }
+
     fn finish_math(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
         let task = self.task(id)?;
         let Some(NativeHostMetadata::Math {
@@ -1429,6 +1681,31 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 kind: ConcatKind::ConcatWs,
                 demand: ConcatDemand::new(ConcatKind::ConcatWs, invocation.arg_types.len())?,
             },
+            operation @ (SqlBatchHostOperation::AddNative
+            | SqlBatchHostOperation::SubtractNative
+            | SqlBatchHostOperation::MultiplyNative) => {
+                let Some(NativeHostMetadata::Arithmetic {
+                    operation: descriptor_operation,
+                    name,
+                    mode,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("arithmetic descriptor missing"));
+                };
+                if self.native_values.is_none()
+                    || invocation.arg_types.len() != 2
+                    || operation != *descriptor_operation
+                    || native_arithmetic_operation(name) != Some(operation)
+                {
+                    return Err(binding("arithmetic catalog descriptor differs"));
+                }
+                SqlDemand::Arithmetic {
+                    next: 0,
+                    typed: *mode == crate::scalar_function::NativeArithmeticInputMode::TypedInteger,
+                    left: None,
+                }
+            }
             SqlBatchHostOperation::AbsNative => {
                 let Some(NativeHostMetadata::Math { name, .. }) =
                     self.metadata.get(invocation.slot.index())
@@ -1710,6 +1987,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Arithmetic { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("arithmetic argument cannot be wire NULL"));
+            };
+            return self.resume_arithmetic(id, token);
         }
         if matches!(task.demand, SqlDemand::Math) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

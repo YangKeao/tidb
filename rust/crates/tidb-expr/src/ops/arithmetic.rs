@@ -46,7 +46,7 @@ fn operation(op: BinaryOp) -> Operation {
     }
 }
 
-pub(super) fn prepare_integer(
+pub(crate) fn prepare_integer(
     op: BinaryOp,
     left: Integer,
     right: Integer,

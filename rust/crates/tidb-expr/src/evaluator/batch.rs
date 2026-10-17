@@ -235,6 +235,14 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
         }
         Expression::ScalarFunction(function)
             if native_math_operation(function).is_some()
+                && !(contains_native_arithmetic(root, limits.max_depth, &mut {
+                    limits.max_nodes
+                }) && typed_source_tree_complete(
+                    root,
+                    NativeView::Typed,
+                    limits.max_depth,
+                    &mut { limits.max_nodes },
+                ))
                 && native_value_tree_complete(root, limits.max_depth, &mut {
                     limits.max_nodes
                 }) =>
@@ -270,6 +278,80 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
             }
         }
         _ => NativeView::Typed,
+    }
+}
+
+fn contains_native_arithmetic(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return true;
+    }
+    *remaining -= 1;
+    if let Expression::ScalarFunction(function) = node {
+        if native_arithmetic_operation(function.func_name.lowercase()).is_some() {
+            return true;
+        }
+        for child in &function.args {
+            if contains_native_arithmetic(child, depth - 1, remaining) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// Preserve the existing compiled batch's operand phases when its whole
+// source closure is proved. Native value islands extend missing producers;
+// choosing them must not silently turn an eager batch into a row evaluation.
+// This is borrowed metadata/kind inspection, not conversion before preflight.
+fn typed_source_tree_complete(
+    node: &Expression,
+    view: NativeView,
+    depth: usize,
+    remaining: &mut usize,
+) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return false;
+    }
+    if view.value_role().is_some() {
+        return native_value_tree_complete(node, depth, remaining);
+    }
+    *remaining -= 1;
+    let Ok((field, _)) = parts(node) else {
+        return false;
+    };
+    if check_type(field).is_err() {
+        return false;
+    }
+    match node {
+        Expression::Constant(value) => match (field.eval_type(), value.literal_value()) {
+            (_, Some(Datum::Null)) => true,
+            (NativeEvalType::Int, Some(Datum::Int(_))) => true,
+            (NativeEvalType::Int, Some(Datum::UInt(_))) => field.is_unsigned(),
+            (NativeEvalType::Real, Some(Datum::Real(value))) => !value.is_nan(),
+            (NativeEvalType::Decimal, Some(Datum::Decimal(_))) => true,
+            (NativeEvalType::String, Some(value)) => value.as_raw_bytes().is_some(),
+            (NativeEvalType::Datetime | NativeEvalType::Timestamp, Some(Datum::Time(_))) => true,
+            (NativeEvalType::Duration, Some(Datum::Duration(_))) => true,
+            (NativeEvalType::Json, Some(Datum::Json(_))) => true,
+            (NativeEvalType::VectorFloat32, Some(Datum::VectorFloat32(_))) => true,
+            _ => false,
+        },
+        Expression::Column(column) => {
+            column.virtual_expr.is_none() && column.correlated_col_unique_id == 0
+        }
+        Expression::CorrelatedColumn(_) => false,
+        Expression::ScalarFunction(function) => {
+            if resolve_call_in_view(function, view).is_err() {
+                return false;
+            }
+            let child_view = argument_view(function, view);
+            for child in &function.args {
+                if !typed_source_tree_complete(child, child_view, depth - 1, remaining) {
+                    return false;
+                }
+            }
+            true
+        }
     }
 }
 
@@ -474,6 +556,8 @@ struct CheckedNode<'a> {
     subtree_end: usize,
     folds_to_constant: bool,
     math_render_bound: Option<usize>,
+    numeric_render_bound: Option<usize>,
+    numeric_format_failure: Option<[u8; 8]>,
 }
 struct Budget {
     used: usize,
@@ -751,6 +835,22 @@ fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     )
     .then_some(target)
 }
+fn native_arithmetic_operation(name: &str) -> Option<SqlBatchHostOperation> {
+    Some(match name {
+        "plus" => SqlBatchHostOperation::AddNative,
+        "minus" => SqlBatchHostOperation::SubtractNative,
+        "mul" => SqlBatchHostOperation::MultiplyNative,
+        _ => return None,
+    })
+}
+fn arithmetic_subject_required(function: &ScalarFunction, arg: &Expression) -> bool {
+    function.native_arithmetic_generic_mode()
+        == crate::scalar_function::NativeArithmeticInputMode::Numeric(NativeEvalType::Decimal)
+        && arg
+            .static_type()
+            .is_some_and(|field| field.eval_type() != NativeEvalType::Decimal)
+        && !matches!(arg,Expression::Constant(constant) if matches!(constant.value,Datum::BinaryLiteral(_)))
+}
 fn native_math_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
     (function.func_name.lowercase() == "abs").then_some(SqlBatchHostOperation::AbsNative)
 }
@@ -805,6 +905,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
         || native_math_operation(function).is_some()
+        || native_arithmetic_operation(function.func_name.lowercase()).is_some()
 }
 fn resolve_call_in_view(
     function: &ScalarFunction,
@@ -814,6 +915,7 @@ fn resolve_call_in_view(
         if let Some(operation) = native_selection_operation(function)
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
             .or_else(|| native_math_operation(function))
+            .or_else(|| native_arithmetic_operation(function.func_name.lowercase()))
         {
             if !operation.accepts_arity(function.args.len())
                 || function.get_static_type().is_none()
@@ -1469,6 +1571,13 @@ fn preflight<'a>(
                     ) {
                         budget.field(sql, 1)?;
                     }
+                    if native_arithmetic_operation(function.func_name.lowercase()).is_some() {
+                        budget.field(sql, 1)?;
+                        for arg in &function.args {
+                            budget
+                                .field(arg.static_type().expect("checked arithmetic source"), 1)?;
+                        }
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -1499,6 +1608,8 @@ fn preflight<'a>(
             subtree_end: 0,
             folds_to_constant: false,
             math_render_bound: None,
+            numeric_render_bound: None,
+            numeric_format_failure: None,
         });
     }
     for index in (0..checked.len()).rev() {
@@ -1506,6 +1617,8 @@ fn preflight<'a>(
             .checked_add(1)
             .ok_or_else(|| resource("source subtree ordinal overflow"))?;
         let mut math_children = Some(0usize);
+        let mut numeric_children = Some(0usize);
+        let mut numeric_child_failure = None;
         let mut folds_to_constant = matches!(checked[index].node, Expression::Constant(_));
         if let Expression::ScalarFunction(function) = checked[index].node {
             folds_to_constant = !crate::constant_fold::is_unfoldable_call(
@@ -1527,6 +1640,22 @@ fn preflight<'a>(
                     ),
                     _ => None,
                 };
+                if let Some(total) = numeric_children {
+                    let child = checked
+                        .get(end)
+                        .ok_or_else(|| binding("numeric diagnostic source missing"))?;
+                    if let Some(bits) = child.numeric_format_failure {
+                        numeric_child_failure = Some(bits);
+                        numeric_children = None;
+                    } else if let Some(bytes) = child.numeric_render_bound {
+                        numeric_children =
+                            Some(total.checked_add(bytes).ok_or_else(|| {
+                                resource("numeric diagnostic byte size overflow")
+                            })?);
+                    } else {
+                        numeric_children = None;
+                    }
+                }
                 folds_to_constant &= checked
                     .get(end)
                     .ok_or_else(|| binding("constant metadata source missing"))?
@@ -1545,6 +1674,17 @@ fn preflight<'a>(
         checked[index].math_render_bound =
             crate::scalar_function::math_diagnostic_node_bound(checked[index].node, math_children)
                 .map_err(resource)?;
+        checked[index].numeric_format_failure =
+            crate::scalar_function::numeric_diagnostic_format_failure(
+                checked[index].node,
+                numeric_child_failure,
+            );
+        checked[index].numeric_render_bound =
+            crate::scalar_function::numeric_diagnostic_node_bound(
+                checked[index].node,
+                numeric_children,
+            )
+            .map_err(resource)?;
     }
     // Charge every owned diagnostic copy group before any temporary literal
     // conversion, source capture, formatting or immutable metadata snapshot.
@@ -1559,6 +1699,37 @@ fn preflight<'a>(
                         .ok_or_else(|| resource("math diagnostic copy allowance overflow"))?,
                 )?;
             }
+        }
+    }
+    for (index, item) in checked.iter().enumerate() {
+        let Expression::ScalarFunction(function) = item.node else {
+            continue;
+        };
+        if item.view.value_role().is_none()
+            || native_arithmetic_operation(function.func_name.lowercase()).is_none()
+        {
+            continue;
+        }
+        if let Some(bytes) = item.numeric_render_bound {
+            budget.add(
+                bytes
+                    .checked_mul(8)
+                    .ok_or_else(|| resource("arithmetic diagnostic copies overflow"))?,
+            )?;
+        }
+        let mut child = index + 1;
+        for arg in &function.args {
+            let item = checked
+                .get(child)
+                .ok_or_else(|| binding("arithmetic diagnostic argument missing"))?;
+            if arithmetic_subject_required(function, arg) {
+                if let Some(bytes) = item.numeric_render_bound {
+                    budget.add(bytes.checked_mul(4).ok_or_else(|| {
+                        resource("numeric argument diagnostic copies overflow")
+                    })?)?;
+                }
+            }
+            child = item.subtree_end;
         }
     }
     // Even a temporary representability conversion must wait for the complete
@@ -1671,6 +1842,64 @@ fn lowered_call_sites(
     Ok(sites)
 }
 
+fn arithmetic_host_metadata(
+    operation: SqlBatchHostOperation,
+    sql: &ScalarFunction,
+    item: &CheckedNode<'_>,
+    ordinal: usize,
+    checked: &[CheckedNode<'_>],
+) -> Result<NativeHostMetadata> {
+    let left = ordinal
+        .checked_add(1)
+        .ok_or_else(|| resource("arithmetic source ordinal overflow"))?;
+    let right = checked
+        .get(left)
+        .ok_or_else(|| binding("arithmetic left source missing"))?
+        .subtree_end;
+    let nodes = [left, right];
+    let op = crate::scalar_function::binary_op_for_name(sql.func_name.lowercase())
+        .ok_or_else(|| binding("arithmetic source operation missing"))?;
+    let capture = |float| -> Result<Option<Box<str>>> {
+        if let Some(bound) = item.numeric_render_bound {
+            let text =
+                crate::scalar_function::static_arithmetic_overflow_expression(sql, op, float);
+            if text.as_ref().is_some_and(|text| text.len() > bound) {
+                return Err(binding("arithmetic diagnostic exceeds its admitted bound").into());
+            }
+            Ok(text.map(String::into_boxed_str))
+        } else {
+            Ok(None)
+        }
+    };
+    let mut subjects = [None, None];
+    let mut subject_format_failures = [None, None];
+    for index in 0..2 {
+        let child = checked
+            .get(nodes[index])
+            .ok_or_else(|| binding("arithmetic child source missing"))?;
+        if arithmetic_subject_required(sql, &sql.args[index]) {
+            subject_format_failures[index] = child.numeric_format_failure;
+            if let Some(bound) = child.numeric_render_bound {
+                let text = crate::scalar_function::static_numeric_expression_text(child.node, true);
+                if text.as_ref().is_some_and(|text| text.len() > bound) {
+                    return Err(binding("numeric subject exceeds its admitted bound").into());
+                }
+                subjects[index] = text.map(String::into_boxed_str);
+            }
+        }
+    }
+    Ok(NativeHostMetadata::Arithmetic {
+                                    operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
+                                    argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].sql),snapshot_field_type(checked[right].sql)],
+                                    literal:[matches!(sql.args[0],Expression::Constant(_)),matches!(sql.args[1],Expression::Constant(_))],
+                                    binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),
+                                    mode:sql.native_arithmetic_mode(),generic_mode:sql.native_arithmetic_generic_mode(),subjects,
+                                    subject_format_failures,overflow_format_failure:item.numeric_format_failure,
+                                    overflow_expressions:[capture(false)?,capture(true)?],output_node:ordinal,
+                                    output_role:item.view.value_role().ok_or_else(||binding("arithmetic result role missing"))?,
+                                })
+}
+
 fn lower(
     suite: &EvaluatorSuite,
     calculated_slot: usize,
@@ -1759,6 +1988,9 @@ fn lower(
                                         | SqlBatchHostOperation::NullSafeEqNative
                                         | SqlBatchHostOperation::NullIfNative
                                         | SqlBatchHostOperation::AbsNative
+                                        | SqlBatchHostOperation::AddNative
+                                        | SqlBatchHostOperation::SubtractNative
+                                        | SqlBatchHostOperation::MultiplyNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -1811,6 +2043,11 @@ fn lower(
                                         binding("nullable control lacks native result role")
                                     })?,
                                 }
+                            }
+                            operation @ (SqlBatchHostOperation::AddNative
+                            | SqlBatchHostOperation::SubtractNative
+                            | SqlBatchHostOperation::MultiplyNative) => {
+                                arithmetic_host_metadata(operation, sql, item, ordinal, &checked)?
                             }
                             SqlBatchHostOperation::AbsNative => {
                                 let expression = if item.math_render_bound.is_some() {

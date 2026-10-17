@@ -4917,7 +4917,7 @@ fn rewritten_json_cast_islands_preserve_documents_errors_and_nested_warnings() {
 }
 
 #[test]
-fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connected() {
+fn native_cast_arithmetic_producers_are_prepared() {
     let schema = [ty()];
     for (case, root) in [
         call("cast_signed", ty(), vec![abs(column(0))]),
@@ -4958,14 +4958,12 @@ fn native_cast_capability_gaps_preserve_existing_sql_until_producers_are_connect
             .unwrap();
         assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
         let route = suite.batch_route_snapshot();
-        if case != 2 {
-            // ABS and IF have native producers; PLUS remains a migration gap.
-            assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
-            assert_eq!(route.refusal, None);
-        } else {
-            assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
-            assert_eq!(route.refusal, Some(BatchRefusal::Admission));
-        }
+        assert_eq!(
+            (route.prepared, route.fallback, route.refusals),
+            (1, 0, 0),
+            "case {case}"
+        );
+        assert_eq!(route.refusal, None);
     }
 }
 
@@ -6418,6 +6416,24 @@ fn rewritten_native_comparisons_preserve_column_constant_domains_and_composition
         ],
     ];
     for sql in [
+        "cast((cast(a as signed) + cast(b as signed)) as char)",
+        "cast((u + cast(a as signed)) as char)",
+        "cast((d + d) as char)",
+        "cast((f + f) as char)",
+        "cast((a + b) as char)",
+        "cast((if(u > 0, NULL, cast(a as double)) + cast(b as double)) as char)",
+        "cast((cast(a as signed) - cast(b as signed)) as char)",
+        "cast((u - cast(a as signed)) as char)",
+        "cast((d - d) as char)",
+        "cast((f - f) as char)",
+        "cast((a - b) as char)",
+        "cast((if(u > 0, NULL, cast(a as double)) - cast(b as double)) as char)",
+        "cast((cast(a as signed) * cast(b as signed)) as char)",
+        "cast((u * cast(a as signed)) as char)",
+        "cast((d * d) as char)",
+        "cast((f * f) as char)",
+        "cast((a * b) as char)",
+        "cast((if(u > 0, NULL, cast(a as double)) * cast(b as double)) as char)",
         "abs(a)",
         "abs(cast(a as signed))",
         "cast(abs(u) as char)",
@@ -7370,4 +7386,469 @@ fn math_diagnostic_budget_precedes_formatting_and_skips_unrenderable_trees() {
         before + 1
     );
     assert!(worker.source.host_metadata.iter().any(|meta|matches!(meta,NativeHostMetadata::Math{overflow_expression:Some(text),..} if text.as_ref()=="abs(-9223372036854775808)")));
+}
+
+#[derive(Default)]
+struct NativeArithmeticDiagnostics {
+    forced: bool,
+    warnings: RefCell<Vec<(u16, String)>>,
+    observations: RefCell<Vec<&'static str>>,
+}
+impl crate::Columns for NativeArithmeticDiagnostics {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.warnings.borrow_mut().push((code, message.to_owned()));
+    }
+    fn no_unsigned_subtraction(&self) -> bool {
+        self.observations.borrow_mut().push("subtraction");
+        self.forced
+    }
+    fn div_precision_increment(&self) -> u32 {
+        self.observations.borrow_mut().push("div_precision");
+        4
+    }
+}
+
+#[test]
+fn native_arithmetic_islands_preserve_typed_demands_values_diagnostics_and_mode_reads() {
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    let real = real_ty();
+    let integer = ty();
+    let unsigned = ty().with_unsigned(true);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(60)
+        .with_decimal(6);
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let literal_real = |value| literal(Datum::Real(value), real.clone());
+    let literal_decimal = |value| {
+        literal(
+            Datum::Decimal(Decimal::from_literal(value)),
+            decimal.clone(),
+        )
+    };
+    let bad = || {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![literal(Datum::new_string("bad JSON"), string_ty())],
+        )
+    };
+    let operands = vec![
+        (integer.clone(), int(-7), int(3)),
+        (integer.clone(), int(i64::MAX), int(1)),
+        (integer.clone(), int(0), int(i64::MIN)),
+        (
+            unsigned.clone(),
+            literal(Datum::UInt(u64::MAX), unsigned.clone()),
+            int(1),
+        ),
+        (
+            unsigned.clone(),
+            literal(Datum::Int(-1), unsigned.clone()),
+            int(1),
+        ),
+        (
+            unsigned.clone(),
+            literal(Datum::UInt(0), unsigned.clone()),
+            int(1),
+        ),
+        (
+            integer.clone(),
+            null(),
+            call("cast_signed", integer.clone(), vec![bad()]),
+        ),
+        (real.clone(), literal(Datum::Null, real.clone()), bad()),
+        (
+            real.clone(),
+            literal(Datum::Null, real.clone()),
+            literal(Datum::new_string("2tail"), string_ty()),
+        ),
+        (real.clone(), literal_real(-0.0), literal_real(0.0)),
+        (real.clone(), literal_real(f64::MAX), literal_real(2.0)),
+        (
+            real.clone(),
+            literal_real(f64::from_bits(0x7ff8000000000042)),
+            literal_real(1.0),
+        ),
+        (real.clone(), literal_real(f64::INFINITY), literal_real(1.0)),
+        (
+            real.clone(),
+            literal(Datum::new_string("2.5tail"), string_ty()),
+            literal(Datum::Bytes(b"-3.5tail".to_vec()), string_ty()),
+        ),
+        (
+            decimal.clone(),
+            literal_decimal("-1.2300"),
+            literal_decimal("2.5000"),
+        ),
+        (
+            decimal.clone(),
+            literal_decimal("123456789012345678901234567890123456789012345678901234567890.001"),
+            int(2),
+        ),
+        (
+            decimal.clone(),
+            literal_real(f64::MAX),
+            literal_decimal("0"),
+        ),
+        (
+            real.clone(),
+            literal(
+                Datum::Float32(-0.10000000149011612),
+                FieldType::new(FieldTypeCode::Float),
+            ),
+            literal_real(2.0),
+        ),
+        (
+            real.clone(),
+            literal(
+                Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff; 8])),
+                string_ty(),
+            ),
+            literal_real(1.0),
+        ),
+        (
+            real.clone(),
+            literal(
+                Datum::Enum(MysqlEnum::new("b", 2), Collation::GbkBin),
+                FieldType::new(FieldTypeCode::Enum),
+            ),
+            literal_real(1.0),
+        ),
+        (
+            real.clone(),
+            literal(
+                Datum::Set(MysqlSet::new("a,b", 3), Collation::GbkBin),
+                FieldType::new(FieldTypeCode::Set),
+            ),
+            literal_real(1.0),
+        ),
+        (
+            decimal.clone(),
+            literal(
+                Datum::Duration(MySqlDuration::from_nanoseconds(-123456789000, 6).unwrap()),
+                FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            ),
+            int(2),
+        ),
+        (
+            real.clone(),
+            literal(
+                Datum::Json(BinaryJSON::parse("[1,true]").unwrap()),
+                json.clone(),
+            ),
+            literal_real(1.0),
+        ),
+        (
+            real.clone(),
+            literal(Datum::MinNotNull, integer.clone()),
+            literal_real(1.0),
+        ),
+        (
+            vector.clone(),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, -0.0])),
+                vector.clone(),
+            ),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![2.0, 3.0])),
+                vector.clone(),
+            ),
+        ),
+        (
+            vector.clone(),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                vector.clone(),
+            ),
+            literal(
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![2.0, 3.0])),
+                vector.clone(),
+            ),
+        ),
+    ];
+    for name in ["plus", "minus", "mul"] {
+        let mut roots = operands
+            .iter()
+            .map(|(field, left, right)| {
+                call(name, field.clone(), vec![left.clone(), right.clone()])
+            })
+            .collect::<Vec<_>>();
+        roots.push(call(
+            name,
+            integer.clone(),
+            vec![
+                call("abs", integer.clone(), vec![int(-7)]),
+                call("coalesce", integer.clone(), vec![null(), int(2)]),
+            ],
+        ));
+        // A mismatched computed Int declaration can fail the old fast
+        // probe. Its warning-producing child must be freshly demanded again.
+        roots.push(call(
+            name,
+            integer.clone(),
+            vec![
+                call(
+                    "if",
+                    integer.clone(),
+                    vec![
+                        call(
+                            "and",
+                            integer.clone(),
+                            vec![literal(Datum::new_string("1tail"), string_ty()), int(1)],
+                        ),
+                        literal(
+                            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+                            vector.clone(),
+                        ),
+                        int(0),
+                    ],
+                ),
+                int(1),
+            ],
+        ));
+        for root in roots {
+            let field = root.static_type().unwrap().clone();
+            // CAST in the condition selects the native row-demand boundary.
+            // Existing complete typed arithmetic retains whole-batch phases.
+            let root = call(
+                "if",
+                field.clone(),
+                vec![
+                    call("cast_signed", integer.clone(), vec![int(1)]),
+                    root,
+                    bad(),
+                ],
+            );
+            for forced in [false, true] {
+                for selected in [vec![], vec![0, 1, 0], (0..2050).map(|i| i % 2).collect()] {
+                    let reference = NativeArithmeticDiagnostics {
+                        forced,
+                        ..NativeArithmeticDiagnostics::default()
+                    };
+                    let context = NativeArithmeticDiagnostics {
+                        forced,
+                        ..NativeArithmeticDiagnostics::default()
+                    };
+                    let mut expected = output_for(&field);
+                    let mut expected_error = None;
+                    for _ in &selected {
+                        match root.eval(&reference, tidb_chunk::row::Row::empty()) {
+                            Ok(value) => expected.append_datum(0, &value),
+                            Err(error) => {
+                                expected_error = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    let suite = self::suite(root.clone());
+                    let mut input = Chunk::new_with_capacity(&[], 2);
+                    input.set_num_virtual_rows(2);
+                    input.set_sel(Some(selected));
+                    let mut actual = output_for(&field);
+                    let result = suite.run_with_tikv_batch(&context, &mut input, &mut actual, &[]);
+                    if let Some(expected) = expected_error {
+                        let Err(EvaluatorError::Eval(actual)) = result else {
+                            panic!("lost native arithmetic error: {result:?}")
+                        };
+                        assert_eq!(actual, expected, "{root:?}");
+                    } else {
+                        result.unwrap();
+                        assert_eq!(actual.num_rows(), expected.num_rows());
+                        for row in 0..actual.num_rows() {
+                            assert_eq!(
+                                actual.get_row(row).is_null(0),
+                                expected.get_row(row).is_null(0)
+                            );
+                            assert_eq!(
+                                actual.column(0).get_raw(row).as_ref(),
+                                expected.column(0).get_raw(row).as_ref(),
+                                "{root:?}"
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        *context.warnings.borrow(),
+                        *reference.warnings.borrow(),
+                        "{root:?}"
+                    );
+                    assert_eq!(
+                        *context.observations.borrow(),
+                        *reference.observations.borrow(),
+                        "{root:?}"
+                    );
+                    let route = suite.batch_route_snapshot();
+                    assert_eq!(
+                        (route.prepared, route.fallback, route.refusals),
+                        (1, 0, 0),
+                        "{root:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn arithmetic_diagnostics_are_gated_before_formatting_and_skip_unrenderable_trees() {
+    let huge = literal(
+        Datum::Decimal(Decimal::from_raw_parts(false, b"1".to_vec(), 200_000, 0)),
+        FieldType::new(FieldTypeCode::NewDecimal),
+    );
+    let wrap = |root| call("cast_char", string_ty(), vec![root]);
+    let mut source_limits = limits();
+    source_limits.max_metadata_bytes = 128 * 1024;
+    let compile = |root| {
+        PreparedBatch::compile_calculation(
+            &suite(root),
+            0,
+            &[],
+            true,
+            211,
+            source_limits,
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+    };
+    let before = crate::scalar_function::static_numeric_formats_for_test();
+    let failure = match compile(wrap(plus(huge.clone(), int(1)))) {
+        Err(error) => error,
+        Ok(_) => panic!("oversized numeric diagnostic admitted"),
+    };
+    assert!(matches!(
+        failure.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(
+        crate::scalar_function::static_numeric_formats_for_test(),
+        before
+    );
+    // IF has no numeric source rendering, so no earlier large literal is
+    // formatted just to discover that unavailable diagnostic shape later.
+    let root = wrap(plus(int(1), call("if", ty(), vec![int(1), int(2), huge])));
+    let worker = compile(root).unwrap();
+    assert_eq!(
+        crate::scalar_function::static_numeric_formats_for_test(),
+        before
+    );
+    assert!(worker.source.host_metadata.iter().any(|metadata| matches!(
+        metadata,
+        NativeHostMetadata::Arithmetic {
+            overflow_expressions: [None, None],
+            ..
+        }
+    )));
+    let json = BinaryJSON::parse(&format!("{{\"text\":\"{}\"}}", "x".repeat(10_000))).unwrap();
+    let root = wrap(call(
+        "plus",
+        real_ty(),
+        vec![
+            literal(Datum::Json(json), FieldType::new(FieldTypeCode::Json)),
+            literal(Datum::Real(1.0), real_ty()),
+        ],
+    ));
+    let failure = match compile(root) {
+        Err(error) => error,
+        Ok(_) => panic!("full JSON formatting work escaped source gate"),
+    };
+    assert!(matches!(
+        failure.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(
+        crate::scalar_function::static_numeric_formats_for_test(),
+        before
+    );
+    let worker = compile(wrap(plus(int(i64::MAX), int(1)))).unwrap();
+    assert!(crate::scalar_function::static_numeric_formats_for_test() > before);
+    assert!(worker.source.host_metadata.iter().any(|metadata|matches!(metadata,NativeHostMetadata::Arithmetic{overflow_expressions:[Some(text),_],..} if text.as_ref()=="(9223372036854775807 + 1)")));
+    let worker = compile(wrap(call(
+        "plus",
+        real_ty(),
+        vec![
+            literal(Datum::Real(f64::from_bits(1)), real_ty()),
+            literal(Datum::Real(1.0), real_ty()),
+        ],
+    )))
+    .unwrap();
+    assert!(worker.source.host_metadata.iter().any(|metadata|matches!(metadata,NativeHostMetadata::Arithmetic{overflow_expressions:[Some(text),_],..} if text.len()>300)));
+}
+
+#[test]
+fn numeric_diagnostic_format_failure_is_demanded_only_after_its_actual_overflow() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let field = real_ty();
+    let poison = literal(
+        Datum::Json(BinaryJSON::from_encoded_parts(
+            0x0b,
+            f64::NAN.to_bits().to_le_bytes().to_vec(),
+        )),
+        FieldType::new(FieldTypeCode::Json),
+    );
+    for shape in 0..3 {
+        for selected in [false, true] {
+            let opaque = || {
+                call(
+                    "if",
+                    field.clone(),
+                    vec![
+                        int(1),
+                        literal(Datum::Real(1.0), field.clone()),
+                        literal(Datum::Real(0.0), field.clone()),
+                    ],
+                )
+            };
+            let args = match shape {
+                0 => vec![poison.clone(), literal(Datum::Real(1.0), field.clone())],
+                1 => vec![opaque(), poison.clone()],
+                _ => vec![poison.clone(), opaque()],
+            };
+            let bad = call("plus", field.clone(), args);
+            let root = call(
+                "if",
+                field.clone(),
+                vec![
+                    call("cast_signed", ty(), vec![int(i64::from(selected))]),
+                    bad,
+                    literal(Datum::Real(7.0), field.clone()),
+                ],
+            );
+            let reference = catch_unwind(AssertUnwindSafe(|| {
+                root.eval(&crate::NoColumns, tidb_chunk::row::Row::empty())
+            }));
+            assert_eq!(
+                reference.is_err(),
+                selected && shape != 1,
+                "original formatting order"
+            );
+            let expected_panic = reference.is_err();
+            let suite = self::suite(root);
+            let mut input = Chunk::new_with_capacity(&[], 1);
+            input.set_num_virtual_rows(1);
+            let mut output = output_for(&field);
+            let actual = catch_unwind(AssertUnwindSafe(|| {
+                suite.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+            }));
+            assert_eq!(
+                actual.is_err(),
+                expected_panic,
+                "an unselected formatting failure must not run during compilation"
+            );
+            if !selected {
+                actual.unwrap().unwrap();
+                assert_eq!(output.get_row(0).get_float64(0), 7.0);
+            } else if shape == 1 {
+                let Err(expected) = reference.unwrap() else {
+                    panic!("earlier unavailable source text must keep overflow");
+                };
+                let Err(EvaluatorError::Eval(actual)) = actual.unwrap() else {
+                    panic!("actual overflow missing");
+                };
+                assert_eq!(actual, expected);
+            }
+        }
+    }
 }

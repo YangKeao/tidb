@@ -1294,6 +1294,28 @@ pub(crate) fn integer_binary_typed(
     }
 }
 
+/// Original typed arithmetic policy after the driver's actual typed fetches.
+/// None retains the original fast-probe refusal, so the driver can demand a
+/// fresh generic pass instead of calling an alternate evaluator.
+pub(crate) fn prepare_native_typed_arithmetic(
+    op: BinaryOp,
+    left: Datum,
+    right: Datum,
+    unsigned: [bool; 2],
+    ctx: &dyn crate::Columns,
+) -> Result<Option<arithmetic::PreparedArithmetic>, EvalError> {
+    let signed = unsigned.map(|unsigned| !unsigned);
+    let (left, right) =
+        crate::binary_literal::cast_signed_literal_operands(op, left, right, signed);
+    Ok(match prepare_typed_integer_values(&left, &right, signed)? {
+        TypedIntegerValues::Null => Some(arithmetic::PreparedArithmetic::Null),
+        TypedIntegerValues::Pair(left, right) => {
+            Some(arithmetic::prepare_integer(op, left, right, ctx))
+        }
+        TypedIntegerValues::Outside => None,
+    })
+}
+
 /// Evaluates a context-free binary operation with TiDB's default
 /// `div_precision_increment` of 4.
 pub(crate) fn eval_binary(op: BinaryOp, l: Datum, r: Datum) -> Result<Datum, EvalError> {
