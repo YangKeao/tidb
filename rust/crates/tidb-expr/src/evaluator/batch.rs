@@ -48,11 +48,17 @@ use tidb_query_datatype::codec::mysql::{
 use tidb_query_datatype::expr::EvalContext;
 use tidb_query_datatype::EvalType as TikvEvalType;
 use tidb_query_expr::local::{
-    compile_batch, BatchFacts, CallMetadata, CompileLimits, ExecutionLimits, FunctionRef, InputRow,
-    LiteralKind, LocalBatchProgram, LocalCompileContext, LocalError, LocalExpr, LocalResult,
-    LocalRuntimeServices, OrdinaryCallSite, OrdinarySourceId,
+    compile_batch, BatchFacts, CallMetadata, CompileLimits, ExecutionLimits, FunctionRef,
+    HostCatalog, HostSignature, InputRow, LiteralKind, LocalBatchProgram, LocalCompileContext,
+    LocalError, LocalExpr, LocalResult, LocalRuntimeServices, OrdinaryCallSite, OrdinarySourceId,
+    SqlBatchHostOperation,
 };
 use tidb_query_expr::types::BATCH_MAX_SIZE;
+
+#[path = "batch_hosts.rs"]
+mod hosts;
+use hosts::NativeBatchHosts;
+use tidb_query_expr::local::LocalHostServices;
 
 use crate::expr_collation::CollationInfo;
 use crate::pushdown_catalog::CATALOG;
@@ -194,11 +200,17 @@ fn reserve<T>(values: &mut Vec<T>, count: usize) -> LocalResult<()> {
         .map_err(|_| resource("batch caller reservation failed"))
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CallTarget {
+    Kernel(FunctionRef),
+    Host(SqlBatchHostOperation),
+}
+
 #[derive(Debug)]
 enum SourceKind {
     Constant { value: ScalarValue },
     Column { index: usize },
-    Call { function: FunctionRef, arity: usize },
+    Call { target: CallTarget, arity: usize },
 }
 impl SourceKind {
     fn capture(node: &Expression, sql: &FieldType, raw_json_bytes: bool) -> Result<Self> {
@@ -216,8 +228,8 @@ impl SourceKind {
                 index: column.index as usize,
             },
             Expression::ScalarFunction(function) => {
-                let (function, arity) = batch_fact(function)?;
-                Self::Call { function, arity }
+                let (target, arity) = resolve_call(function)?;
+                Self::Call { target, arity }
             }
             Expression::CorrelatedColumn(_) => {
                 return Err(BatchFailure::admission("correlated source"))
@@ -250,6 +262,7 @@ struct BatchSource {
     expr: LocalExpr,
     schema: Box<[tipb::FieldType]>,
     facts: BatchFacts,
+    hosts: Option<HostCatalog>,
     limits: BatchSourceLimits,
 }
 impl std::fmt::Debug for BatchSource {
@@ -462,7 +475,7 @@ fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
     ))
 }
 fn check_batch_call(function: &ScalarFunction) -> Result<()> {
-    let expected_arity = batch_fact(function)?.1;
+    let expected_arity = resolve_call(function)?.1;
     if function.args.len() != expected_arity
         || function.pb_signature().is_some()
         || function.pb_origin().is_some()
@@ -472,6 +485,33 @@ fn check_batch_call(function: &ScalarFunction) -> Result<()> {
         return Err(BatchFailure::admission("outside native batch call closure"));
     }
     Ok(())
+}
+fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
+    let operation = match function.func_name.lowercase() {
+        "concat" => Some(SqlBatchHostOperation::Concat),
+        "concat_ws" => Some(SqlBatchHostOperation::ConcatWs),
+        _ => None,
+    };
+    if let Some(operation) = operation {
+        let arity = function.args.len();
+        let exact = operation.accepts_arity(arity)
+            && function.get_static_type().is_some_and(|field| {
+                field.eval_type() == NativeEvalType::String && !field.is_unsigned()
+            })
+            && function.args.iter().all(|arg| {
+                arg.static_type().is_some_and(|field| {
+                    field.eval_type() == NativeEvalType::String && !field.is_unsigned()
+                })
+            });
+        return exact
+            .then_some((CallTarget::Host(operation), arity))
+            .ok_or_else(|| {
+                BatchFailure::admission(
+                    "CONCAT host requires exact ready String argument/result declarations",
+                )
+            });
+    }
+    batch_fact(function).map(|(function, arity)| (CallTarget::Kernel(function), arity))
 }
 fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
     let name = match function.func_name.lowercase() {
@@ -790,8 +830,15 @@ fn batch_eval_type(native: NativeEvalType) -> TikvEvalType {
 pub(crate) fn batch_call_signature(
     function: &ScalarFunction,
 ) -> Option<tidb_query_expr::local::BatchCallSignature> {
-    let (function, arity) = batch_fact(function).ok()?;
-    tidb_query_expr::local::batch_signature_for_arity(function, arity)
+    let (target, arity) = resolve_call(function).ok()?;
+    match target {
+        CallTarget::Kernel(function) => {
+            tidb_query_expr::local::batch_signature_for_arity(function, arity)
+        }
+        CallTarget::Host(operation) => {
+            tidb_query_expr::local::BatchCallSignature::for_host(operation, arity)
+        }
+    }
 }
 fn projected(sql: &FieldType, new_collation: bool) -> Result<tipb::FieldType> {
     let collation = tidb_datatype::get_collation_by_name(sql.collation_name())
@@ -887,6 +934,19 @@ fn preflight<'a>(
                 budget.add(function.func_name.original().len())?;
                 budget.add(function.func_name.lowercase().len())?;
                 budget.array::<OrdinaryCallSite>(2)?; // initial and lowered source ordinals
+                if matches!(resolve_call(function)?.0, CallTarget::Host(_)) {
+                    budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
+                    budget.array::<tipb::FieldType>(function.args.len())?;
+                    budget.field(sql, 1)?;
+                    for argument in &function.args {
+                        budget.field(
+                            argument.static_type().ok_or_else(|| {
+                                BatchFailure::admission("host argument has no static declaration")
+                            })?,
+                            1,
+                        )?;
+                    }
+                }
                 let arity = function.args.len();
                 let policy_nodes = usize::from(native_batch_policy(function).is_some());
                 if policy_nodes != 0 {
@@ -955,6 +1015,10 @@ fn suite_shape(suite: &EvaluatorSuite) -> Result<&Expression> {
 enum BuildKind {
     Literal(ScalarValue),
     Input(usize),
+    Host {
+        slot: usize,
+        arity: usize,
+    },
     Call {
         function: FunctionRef,
         arity: usize,
@@ -995,7 +1059,7 @@ fn lowered_call_sites(
         if ordinal >= limits.max_nodes {
             return Err(resource("lowered batch source node policy exceeded").into());
         }
-        if let LocalExpr::Call { args, .. } = node {
+        if let LocalExpr::Call { args, .. } | LocalExpr::HostCall { args, .. } = node {
             let source = original
                 .next()
                 .ok_or_else(|| binding("lowered call has no SQL source"))?
@@ -1026,6 +1090,7 @@ fn lower(
         .get(calculated_slot)
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
     let checked = preflight(root, row_schema, limits)?;
+    let mut host_entries = Vec::new();
     let mut nodes = Vec::new();
     let mut bindings = Vec::new();
     let mut schema = Vec::new();
@@ -1050,7 +1115,7 @@ fn lower(
                 schema.push(field.clone());
                 BuildKind::Input(slot)
             }
-            SourceKind::Call { function, arity } => {
+            SourceKind::Call { target, arity } => {
                 reserve(&mut sites, 1)?;
                 let node =
                     u64::try_from(ordinal).map_err(|_| resource("batch source ID overflow"))?;
@@ -1058,13 +1123,43 @@ fn lower(
                     ordinal,
                     OrdinarySourceId::new(unit, node),
                 ));
-                BuildKind::Call {
-                    function: *function,
-                    arity: *arity,
-                    policy: match item.node {
-                        Expression::ScalarFunction(sql) => native_batch_policy(sql),
-                        _ => None,
+                match *target {
+                    CallTarget::Kernel(function) => BuildKind::Call {
+                        function,
+                        arity: *arity,
+                        policy: match item.node {
+                            Expression::ScalarFunction(sql) => native_batch_policy(sql),
+                            _ => None,
+                        },
                     },
+                    CallTarget::Host(operation) => {
+                        let Expression::ScalarFunction(sql) = item.node else {
+                            return Err(binding("host call lost its SQL source").into());
+                        };
+                        let mut arguments = Vec::new();
+                        reserve(&mut arguments, *arity)?;
+                        for argument in &sql.args {
+                            arguments.push(projected(
+                                argument
+                                    .static_type()
+                                    .ok_or_else(|| binding("host argument lost its type"))?,
+                                new_collation,
+                            )?);
+                        }
+                        let slot = host_entries.len();
+                        reserve(&mut host_entries, 1)?;
+                        host_entries.push((
+                            operation,
+                            HostSignature {
+                                arg_types: arguments.into_boxed_slice(),
+                                return_type: field.clone(),
+                            },
+                        ));
+                        BuildKind::Host {
+                            slot,
+                            arity: *arity,
+                        }
+                    }
                 }
             }
         };
@@ -1078,6 +1173,11 @@ fn lower(
             raw_json_bytes: item.raw_json_bytes,
         });
     }
+    let hosts = if host_entries.is_empty() {
+        None
+    } else {
+        Some(HostCatalog::for_sql_batch(host_entries)?)
+    };
     let mut stack = Vec::new();
     reserve(&mut stack, nodes.len())?;
     for node in build.into_iter().rev() {
@@ -1091,6 +1191,25 @@ fn lower(
                 slot,
                 field_type: node.field,
             },
+            BuildKind::Host { slot, arity } => {
+                let mut args = Vec::new();
+                reserve(&mut args, arity)?;
+                for _ in 0..arity {
+                    args.push(
+                        stack
+                            .pop()
+                            .ok_or_else(|| binding("missing SQL host argument"))?,
+                    );
+                }
+                let catalog = hosts
+                    .as_ref()
+                    .ok_or_else(|| binding("SQL host call has no catalog"))?;
+                LocalExpr::HostCall {
+                    slot: catalog.slot(slot)?,
+                    args: args.into_boxed_slice(),
+                    return_type: node.field,
+                }
+            }
             BuildKind::Call {
                 function,
                 arity,
@@ -1132,7 +1251,12 @@ fn lower(
         .pop()
         .ok_or_else(|| BatchFailure::admission("missing batch root"))?;
     let sites = lowered_call_sites(&expr, sites, limits.tree)?;
-    let facts = BatchFacts::sql_native_batch(&expr, &schema, sites, limits.tree)?;
+    let facts = match &hosts {
+        Some(hosts) => {
+            BatchFacts::sql_native_batch_with_hosts(&expr, &schema, sites, limits.tree, hosts)?
+        }
+        None => BatchFacts::sql_native_batch(&expr, &schema, sites, limits.tree)?,
+    };
     let mut detached = Vec::new();
     reserve(&mut detached, row_schema.len())?;
     detached.extend(row_schema.iter().map(snapshot_field_type));
@@ -1148,6 +1272,7 @@ fn lower(
         expr,
         schema: schema.into_boxed_slice(),
         facts,
+        hosts,
         limits,
     }))
 }
@@ -1757,8 +1882,15 @@ impl NativeDatumSource for NativeChunk<'_> {
 }
 struct CheckedInputs<'a> {
     source: &'a mut dyn NativeDatumSource,
+    hosts: Option<&'a mut dyn LocalHostServices>,
 }
 impl LocalRuntimeServices for CheckedInputs<'_> {
+    fn host_services(&mut self) -> Option<&mut dyn LocalHostServices> {
+        match &mut self.hosts {
+            Some(hosts) => Some(&mut **hosts),
+            None => None,
+        }
+    }
     fn binding_schema(&self) -> &[tipb::FieldType] {
         self.source.schema()
     }
@@ -1925,7 +2057,7 @@ impl BatchConsumer for Consumer<'_> {
     fn consume(
         &mut self,
         invocation: BatchInvocation<'_>,
-        _native_ctx: &dyn Columns,
+        native_ctx: &dyn Columns,
         output: &mut Chunk,
     ) -> Result<()> {
         let source = Arc::clone(&self.worker.source);
@@ -1947,6 +2079,7 @@ impl BatchConsumer for Consumer<'_> {
         // worker. The actual suite/global decision minted it for THIS call.
         drop(invocation.candidate);
         self.worker.execute_chunk(
+            native_ctx,
             self.ctx,
             invocation.input,
             output,
@@ -1997,12 +2130,16 @@ mod tests;
 impl PreparedBatch {
     fn execute_chunk(
         &mut self,
+        native_ctx: &dyn Columns,
         ctx: &mut EvalContext,
         input: &Chunk,
         output: &mut Chunk,
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
         let source = Arc::clone(&self.source);
+        let mut hosts = source.hosts.clone().map(|catalog| {
+            NativeBatchHosts::new(catalog, native_ctx, self.max_materialization_retained_bytes)
+        });
         // TiKV deliberately bounds one driver invocation. A TiDB Chunk may be
         // wider than that boundary, so keep one canonical prepared route and
         // stream it through consecutive whole-selection windows. Every window
@@ -2027,17 +2164,24 @@ impl PreparedBatch {
             };
             #[cfg(not(test))]
             let provider: &mut dyn NativeDatumSource = &mut native;
-            let mut checked = CheckedInputs { source: provider };
-            let values = self
-                .program
-                .eval_with_bindings(
-                    self.limits,
-                    ctx,
-                    input.physical_rows(),
-                    selection,
-                    &mut checked,
-                )
-                .map_err(BatchFailure::from)?;
+            let mut checked = CheckedInputs {
+                source: provider,
+                hosts: hosts
+                    .as_mut()
+                    .map(|hosts| hosts as &mut dyn LocalHostServices),
+            };
+            let result = self.program.eval_with_bindings(
+                self.limits,
+                ctx,
+                input.physical_rows(),
+                selection,
+                &mut checked,
+            );
+            drop(checked);
+            if let Some(error) = hosts.as_mut().and_then(NativeBatchHosts::take_native_error) {
+                return Err(error.into());
+            }
+            let values = result.map_err(BatchFailure::from)?;
             self.windows = self.windows.saturating_add(1);
             let vectors = source
                 .bindings
@@ -2235,6 +2379,7 @@ impl PreparedBatchSuite {
                 worker.window_size = 1;
             }
             worker.execute_chunk(
+                native_ctx,
                 ctx,
                 input,
                 output,

@@ -453,7 +453,9 @@ pub struct BatchRouteSnapshot {
 pub struct BatchScratchSnapshot {
     /// Capacity of the reusable selected-row index buffer.
     pub selection_capacity: usize,
-    /// Typed carrier vectors constructed by successful prepared windows.
+    /// Static input/call carrier-node estimate across successful windows.
+    /// Historical field name: this is not an allocator counter. Controls may
+    /// skip nodes; host caches and private task buffers are not included.
     pub vector_allocations: u64,
     /// TiKV program windows invoked by this lane.
     pub windows: u64,

@@ -372,6 +372,7 @@ fn tikv_batch_workload(name: &str) -> bool {
                 | "lazy_if"
                 | "coalesce_nullif"
                 | "json_type"
+                | "concat"
                 | "lower"
                 | "upper"
                 | "substring"
@@ -767,8 +768,8 @@ fn bench_scenario(
     println!(
         "EXPR_BATCH_SCRATCH route={route} name={} scenario={scenario} \
          selection_capacity={} measured_calls={measured_calls} \
-         vector_allocations={vector_allocations} windows={windows} \
-         vector_allocations_per_call={:.3} windows_per_call={:.3}",
+         estimated_carrier_nodes={vector_allocations} windows={windows} \
+         estimated_carrier_nodes_per_call={:.3} windows_per_call={:.3}",
         workload.name,
         scratch_after_samples.selection_capacity,
         vector_allocations as f64 / measured_calls.max(1) as f64,

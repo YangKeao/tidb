@@ -27,7 +27,8 @@ previous user contract; demand and side-effect ordering do not.
 - [x] (2026-10-17) N2: multi-output/leaf/direct-column scheduling, selected raw-column alias-safe copy, suite metadata/node caps. Batch40/Chunk275/pinned-nightly Projection9 pass; full1392 retains same4 inherited failures; lint/fmt pass.
 - [x] (2026-10-17) N3a: STRCMP uses its existing native collation kernel in composed shared graphs; batch41/full1393 retain same4 failures, TiKV1033 retains same6, actual rewritten SQL25 scenarios all prepared without fallback/refusal; scoped project clippy/lint/fmt pass.
 - [x] (2026-10-17) N3b: JSON_TYPE SQL kernels, explicit native failure kinds and raw native JSON leaf view. Frontbatch47/full1399same4, coreprofile60/full1036same6 pass;25 SQL routes pass without fallback/refusal; lint/scoped project clippy/fmt pass.
-- [ ] N3c: CONCAT/CONCAT_WS with packet policy and demanded prefixes.
+- [x] (2026-10-17) N3c: CONCAT/CONCAT_WS use a closed SQL host catalog and the existing shared HostFrame. One shared demanded-prefix policy and join algorithm; exact native packet observations/warnings/errors, generation-safe cleanup and bounded opaque heaps. Front52/full1404same4, core1039same6, production Projection10 including serial/parallel packet policy, concat25 SQL routes pass; lint/scoped clippy/fmt pass.
+- [ ] N3d: REGEXP_LIKE native policy and demanded arguments.
 - [x] (2026-10-17) N4a: shared frame controls IF/IFNULL/COALESCE/CASE and AND/OR, exact native carriers, signed Int NULLIF, compiled singleton window. Batch43/core profile59/Projection9 pass; full1395 and1035 retain exactly the inherited4/6 failures. Both25-scenario SQL cohorts pass with no fallback/refusal; lint/scoped project clippy/fmt pass.
 - [ ] N4b: Complete coercions, temporal result transforms, full argument demand policies and effectful multi-output ordering.
 - [ ] N5: Cover remaining calls, source metadata, host context and non-projection callers.
@@ -209,3 +210,27 @@ copies preserve duplicates and NULL. Raw JSON literal source bytes are gated
 before cloning. Computed JSON subtrees, non-String/Bytes text datum kinds and
 other implicit coercions are still unfinished, not silently reclassified as
 supported. No source or failure path calls the legacy expression evaluator.
+
+N3c architectural decision: reuse the existing staged HostFrame instead of
+adding another expression node scheduler. An explicit SQL-only host catalog
+contains closed operation IDs and immutable signatures, never native expression
+objects or evaluation callbacks. The production provider holds values/types,
+ConcatDemand, task generations and the original native Columns interface. The
+same shared driver evaluates every requested argument. Context errors are kept
+as their original owned EvalError in a private failure slot, consumed immediately
+after the frame failure; no code/message inference or re-evaluation occurs.
+
+The original native ConcatPreparation now shares its demanded-prefix state with
+the new provider. The generated RPN wrapper and direct PreparedConcatArgs entry
+share one fallible join helper. Provider heaps have their own bounded ledger;
+frame caches and results remain in the shared exact ledger. This is a separate
+policy from statement/allocator peak accounting. Legacy row host catalogs remain
+signed-Int-only and cannot authorize SQL batch hosts; every SQL host source and
+catalog identity is snapshotted/revalidated, including dead branches and empty
+invocations. Context hosts currently use singleton windows.
+
+Accuracy correction: the historical scratch vector_allocations field sums
+static input/call nodes across successful windows; it does not observe allocator
+calls. Dynamic controls may skip nodes and hosts own additional caches/buffers.
+The field is now documented as an estimate and the probe labels it
+estimated_carrier_nodes. Historical reports/binaries remain unchanged.

@@ -868,4 +868,74 @@ mod tests {
         let out = expr.eval(&NoColumns, row).unwrap();
         assert_eq!(out, Datum::Int(42));
     }
+
+    #[test]
+    fn concat_context_hosts_keep_packet_policy_in_serial_and_parallel_projection() {
+        let field = FieldType::new(FieldTypeCode::Varchar)
+            .with_flen(128)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let json = FieldType::new(FieldTypeCode::Json);
+        let bad = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("json_type"),
+            field.clone(),
+            vec![Expression::Constant(Constant::new(
+                Datum::Json(tidb_datatype::BinaryJSON::from_encoded_parts(0xff, [])),
+                json,
+            ))],
+        ));
+        let root = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("concat"),
+            field.clone(),
+            vec![
+                Expression::Constant(Constant::new(
+                    Datum::new_string(b"abc".to_vec()),
+                    field.clone(),
+                )),
+                bad,
+            ],
+        ));
+        for workers in [0, 2] {
+            for strict in [false, true] {
+                let context = if strict {
+                    crate::StmtContext::for_dml(true, true, false)
+                } else {
+                    crate::StmtContext::for_query()
+                }
+                .with_max_allowed_packet(2);
+                let dual =
+                    TableDualExec::new(ExecutorMeta::new(Schema::new(vec![]), 0, 1, 1024), 1);
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(Schema::new(vec![Column::new(1, field.clone())]), 1, 1, 1024),
+                    vec![root.clone()],
+                    Box::new(dual),
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                let result = projection.next(&mut output);
+                if strict {
+                    assert!(matches!(
+                        result,
+                        Err(ExecError::Eval(
+                            tidb_expr::EvalError::AllowedPacketOverflowed(_)
+                        ))
+                    ));
+                    assert!(context.take_warnings().is_empty());
+                } else {
+                    result.unwrap();
+                    assert_eq!(output.num_rows(), 1);
+                    assert!(output.get_row(0).is_null(0));
+                    let warnings = context.take_warnings();
+                    assert_eq!(warnings.len(), 1);
+                    assert_eq!(warnings[0].1, 1301);
+                }
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }

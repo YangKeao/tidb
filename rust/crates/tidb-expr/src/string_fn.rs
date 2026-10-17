@@ -32,6 +32,7 @@ pub(crate) fn concat(vals: &[Datum]) -> Result<Datum, EvalError> {
 
 pub(crate) use crate::tikv::ConcatKind;
 use crate::tikv::ConcatTerminal;
+use tidb_query_expr::local::{ConcatDemand, ConcatDemandAction};
 
 /// Prepares a demanded prefix without concatenating any output bytes.
 /// Shared by the eager value entry and the scalar entry's lazy child loop.
@@ -39,9 +40,7 @@ pub(crate) struct ConcatPreparation {
     kind: ConcatKind,
     arity: usize,
     values: Vec<Option<Vec<u8>>>,
-    concat_len: usize,
-    ws_budget: u64,
-    terminal: Option<ConcatTerminal>,
+    demand: ConcatDemand,
 }
 
 impl ConcatPreparation {
@@ -63,9 +62,8 @@ impl ConcatPreparation {
             kind,
             arity,
             values: Vec::new(),
-            concat_len: 0,
-            ws_budget: 0,
-            terminal: None,
+            demand: ConcatDemand::new(kind, arity)
+                .map_err(|_| EvalError::Unsupported("bad CONCAT demand arity"))?,
         })
     }
 
@@ -75,57 +73,32 @@ impl ConcatPreparation {
         value: &Datum,
         ctx: &dyn crate::Columns,
     ) -> Result<bool, EvalError> {
-        if self.terminal.is_some() || self.values.len() >= self.arity {
+        if self.demand.terminal().is_some() || self.values.len() >= self.arity {
             return Err(EvalError::Unsupported(
                 "CONCAT preparation already complete",
             ));
         }
-        let index = self.values.len();
         self.values.push(coerce_str_bytes(value)?);
-        let bytes_len = self.values[index].as_ref().map(Vec::len);
-        let (requested, function) = match self.kind {
-            ConcatKind::Concat => {
-                let Some(bytes_len) = bytes_len else {
-                    self.terminal = Some(ConcatTerminal::InputNull);
-                    return Ok(false);
+        let length = self.values.last().and_then(Option::as_ref).map(Vec::len);
+        let action = self
+            .demand
+            .observe(length)
+            .map_err(|_| EvalError::Unsupported("CONCAT preparation already complete"))?;
+        if action == ConcatDemandAction::ReadPacketLimit {
+            let limit = ctx.max_allowed_packet();
+            if self
+                .demand
+                .accept_packet_limit(limit)
+                .map_err(|_| EvalError::Unsupported("CONCAT packet observation is invalid"))?
+            {
+                let function = match self.kind {
+                    ConcatKind::Concat => "concat",
+                    ConcatKind::ConcatWs => "concat_ws",
                 };
-                self.concat_len = self.concat_len.saturating_add(bytes_len);
-                (self.concat_len as u64, "concat")
+                ctx.handle_allowed_packet_overflowed(function)?;
             }
-            ConcatKind::ConcatWs => {
-                if index == 0 {
-                    if bytes_len.is_none() {
-                        self.terminal = Some(ConcatTerminal::InputNull);
-                        return Ok(false);
-                    }
-                    // The separator never reads max_allowed_packet itself.
-                    return Ok(true);
-                }
-                let Some(bytes_len) = bytes_len else {
-                    return Ok(true);
-                };
-                self.ws_budget = self.ws_budget.saturating_add(bytes_len as u64);
-                // Original data-argument index, not the count of surviving parts.
-                if index > 1 {
-                    self.ws_budget = self.ws_budget.saturating_add(
-                        self.values[0]
-                            .as_ref()
-                            .expect("demanded non-NULL separator")
-                            .len() as u64,
-                    );
-                }
-                (self.ws_budget, "concat_ws")
-            }
-        };
-        let observed_limit = ctx.max_allowed_packet();
-        if requested > observed_limit {
-            self.terminal = Some(ConcatTerminal::PacketExceeded {
-                limit: observed_limit,
-            });
-            ctx.handle_allowed_packet_overflowed(function)?;
-            return Ok(false);
         }
-        Ok(true)
+        Ok(self.demand.terminal().is_none())
     }
 
     pub(crate) fn finish_in(self, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
@@ -142,7 +115,7 @@ impl ConcatPreparation {
                         self.kind,
                         self.arity,
                         self.values,
-                        self.terminal.unwrap_or(ConcatTerminal::Complete),
+                        self.demand.terminal().unwrap_or(ConcatTerminal::Complete),
                     )?,
                 ))
             },

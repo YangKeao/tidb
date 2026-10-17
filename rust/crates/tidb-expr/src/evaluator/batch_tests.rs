@@ -374,8 +374,16 @@ fn signed_int_family_reuses_the_same_batch_substrate() {
         .nodes
         .iter()
         .filter_map(|node| match &node.kind {
-            SourceKind::Call { function, .. } => Some(*function),
-            SourceKind::Constant { .. } | SourceKind::Column { .. } => None,
+            SourceKind::Call {
+                target: CallTarget::Kernel(function),
+                ..
+            } => Some(*function),
+            SourceKind::Call {
+                target: CallTarget::Host(_),
+                ..
+            }
+            | SourceKind::Constant { .. }
+            | SourceKind::Column { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -440,9 +448,9 @@ fn bytes_to_fixed_and_varlen_share_the_whole_selection_driver() {
         assert!(worker.source.nodes.iter().any(|node| matches!(
             &node.kind,
             SourceKind::Call {
-                function: FunctionRef::TiPb(
+                target: CallTarget::Kernel(FunctionRef::TiPb(
                     tipb::ScalarFuncSig::CharLengthUtf8 | tipb::ScalarFuncSig::LowerUtf8
-                ),
+                )),
                 ..
             }
         )));
@@ -497,7 +505,7 @@ fn mixed_carrier_and_three_argument_calls_use_the_shared_registry() {
     assert!(worker.source.nodes.iter().any(|node| matches!(
         &node.kind,
         SourceKind::Call {
-            function: FunctionRef::TiPb(tipb::ScalarFuncSig::Substring3ArgsUtf8),
+            target: CallTarget::Kernel(FunctionRef::TiPb(tipb::ScalarFuncSig::Substring3ArgsUtf8)),
             arity: 3,
         }
     )));
@@ -577,7 +585,7 @@ fn real_arithmetic_uses_the_same_batch_carrier_contract() {
     assert!(worker.source.nodes.iter().any(|node| matches!(
         &node.kind,
         SourceKind::Call {
-            function: FunctionRef::TiPb(tipb::ScalarFuncSig::PlusReal),
+            target: CallTarget::Kernel(FunctionRef::TiPb(tipb::ScalarFuncSig::PlusReal)),
             arity: 2,
         }
     )));
@@ -625,7 +633,7 @@ fn decimal_arithmetic_uses_the_exact_shared_representation() {
     assert!(worker.source.nodes.iter().any(|node| matches!(
         &node.kind,
         SourceKind::Call {
-            function: FunctionRef::TiPb(tipb::ScalarFuncSig::PlusDecimal),
+            target: CallTarget::Kernel(FunctionRef::TiPb(tipb::ScalarFuncSig::PlusDecimal)),
             arity: 2,
         }
     )));
@@ -2915,5 +2923,363 @@ fn raw_json_literal_source_budget_fails_before_preparation_clones() {
         crate::ExpressionRuntimeFailureClass::ResourceLimit
     );
     assert_eq!(suite.batch_route_snapshot().fallback, 0);
+    assert_eq!(output.num_rows(), 0);
+}
+
+struct PacketTrace {
+    limit: Cell<u64>,
+    limits: std::cell::RefCell<std::collections::VecDeque<u64>>,
+    strict: bool,
+    events: std::cell::RefCell<Vec<String>>,
+}
+impl PacketTrace {
+    fn new(limit: u64, strict: bool) -> Self {
+        Self {
+            limit: Cell::new(limit),
+            limits: Default::default(),
+            strict,
+            events: Default::default(),
+        }
+    }
+}
+impl Columns for PacketTrace {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        true
+    }
+    fn max_allowed_packet(&self) -> u64 {
+        let value = self
+            .limits
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or_else(|| self.limit.get());
+        self.events.borrow_mut().push(format!("limit:{value}"));
+        value
+    }
+    fn truncate_level(&self) -> crate::context::ErrorLevel {
+        self.events.borrow_mut().push("truncate".into());
+        if self.strict {
+            crate::context::ErrorLevel::Error
+        } else {
+            crate::context::ErrorLevel::Warn
+        }
+    }
+    fn append_warning(&self, code: u16, _: &str) {
+        self.events.borrow_mut().push(format!("warning:{code}"));
+    }
+}
+fn text(value: Option<&[u8]>) -> Expression {
+    literal(
+        value.map_or(Datum::Null, |bytes| Datum::new_string(bytes.to_vec())),
+        string_ty(),
+    )
+}
+fn bad_document_string() -> Expression {
+    call(
+        "json_type",
+        string_ty(),
+        vec![literal(
+            Datum::Json(BinaryJSON::from_encoded_parts(0xff, [])),
+            FieldType::new(FieldTypeCode::Json),
+        )],
+    )
+}
+
+#[test]
+fn concat_host_preserves_packet_observations_and_never_demands_the_skipped_tail() {
+    for (root, limit, expected, events) in [
+        (
+            call(
+                "concat",
+                string_ty(),
+                vec![text(None), bad_document_string()],
+            ),
+            2,
+            None,
+            vec![],
+        ),
+        (
+            call(
+                "concat",
+                string_ty(),
+                vec![text(Some(b"abc")), bad_document_string()],
+            ),
+            2,
+            None,
+            vec!["limit:2", "limit:2", "truncate", "warning:1301"],
+        ),
+        (
+            call(
+                "concat_ws",
+                string_ty(),
+                vec![text(None), bad_document_string()],
+            ),
+            2,
+            None,
+            vec![],
+        ),
+        // Native packet accounting uses the original data-argument index,
+        // including the preceding NULL; the displayed result would be only x.
+        (
+            call(
+                "concat_ws",
+                string_ty(),
+                vec![
+                    text(Some(b",")),
+                    text(None),
+                    text(Some(b"x")),
+                    bad_document_string(),
+                ],
+            ),
+            1,
+            None,
+            vec!["limit:1", "limit:1", "truncate", "warning:1301"],
+        ),
+        (
+            call(
+                "concat_ws",
+                string_ty(),
+                vec![
+                    text(Some(b",")),
+                    text(None),
+                    text(Some(b"x")),
+                    text(None),
+                    text(Some(b"y")),
+                ],
+            ),
+            99,
+            Some(&b"x,y"[..]),
+            vec!["limit:99", "limit:99"],
+        ),
+        (
+            call("concat_ws", string_ty(), vec![text(Some(b",")), text(None)]),
+            99,
+            Some(&b""[..]),
+            vec![],
+        ),
+        (
+            call(
+                "concat",
+                string_ty(),
+                vec![text(Some(b"a")), text(Some(b"b"))],
+            ),
+            99,
+            Some(&b"ab"[..]),
+            vec!["limit:99", "limit:99"],
+        ),
+    ] {
+        let native = PacketTrace::new(limit, false);
+        let mut native_input = chunk(&[], &[vec![]]);
+        let mut reference = output_for(&string_ty());
+        let suite = self::suite(root);
+        suite
+            .run(&native, &mut native_input, &mut reference)
+            .unwrap();
+        let context = PacketTrace::new(limit, false);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        suite
+            .run_with_tikv_batch(&context, &mut input, &mut output, &[])
+            .unwrap();
+        assert_eq!(
+            values_for(&output, &string_ty()),
+            values_for(&reference, &string_ty())
+        );
+        assert_eq!(output.get_row(0).is_null(0), expected.is_none());
+        if let Some(expected) = expected {
+            assert_eq!(output.get_row(0).get_string(0).as_bytes(), expected);
+        }
+        let expected: Vec<String> = events.into_iter().map(str::to_owned).collect();
+        assert_eq!(*context.events.borrow(), expected);
+        assert_eq!(*native.events.borrow(), expected);
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+    }
+}
+
+#[test]
+fn concat_host_forwards_the_exact_native_error_and_reads_fresh_packet_policy() {
+    let root = call(
+        "concat",
+        string_ty(),
+        vec![text(Some(b"abc")), bad_document_string()],
+    );
+    let native = PacketTrace::new(2, true);
+    let input = chunk(&[], &[vec![]]);
+    let expected = root.eval(&native, input.get_row(0)).unwrap_err();
+    let suite = self::suite(root);
+    let context = PacketTrace::new(2, true);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    let EvaluatorError::Eval(actual) = suite
+        .run_with_tikv_batch(&context, &mut input, &mut output, &[])
+        .unwrap_err()
+    else {
+        panic!("expected native SQL error")
+    };
+    assert_eq!(actual, expected);
+    assert_eq!(*context.events.borrow(), *native.events.borrow());
+    assert_eq!(output.num_rows(), 0);
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+    let suite = self::suite(call(
+        "concat",
+        string_ty(),
+        vec![text(Some(b"a")), text(Some(b"b"))],
+    ));
+    let context = PacketTrace::new(10, false);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    suite
+        .run_with_tikv_batch(&context, &mut input, &mut output, &[])
+        .unwrap();
+    assert_eq!(output.get_row(0).get_string(0), "ab");
+    context.limit.set(0);
+    context.events.borrow_mut().clear();
+    output.reset();
+    suite
+        .run_with_tikv_batch(&context, &mut input, &mut output, &[])
+        .unwrap();
+    assert!(output.get_row(0).is_null(0));
+    assert_eq!(
+        *context.events.borrow(),
+        ["limit:0", "limit:0", "truncate", "warning:1301"]
+    );
+    assert_eq!(suite.batch_route_snapshot().fallback, 0);
+    let context = PacketTrace::new(0, false);
+    context.limits.borrow_mut().extend([10, 0, 0]);
+    output.reset();
+    suite
+        .run_with_tikv_batch(&context, &mut input, &mut output, &[])
+        .unwrap();
+    assert!(output.get_row(0).is_null(0));
+    assert_eq!(
+        *context.events.borrow(),
+        ["limit:10", "limit:0", "limit:0", "truncate", "warning:1301"]
+    );
+}
+
+#[test]
+fn concat_host_selection_and_nested_tasks_match_native_results_without_fallback() {
+    let field = string_ty();
+    let schema = [field.clone(), field.clone(), field.clone()];
+    let rows = vec![
+        vec![
+            Datum::new_string(b"a".to_vec()),
+            Datum::new_string(b"b".to_vec()),
+            Datum::new_string(b"c".to_vec()),
+        ],
+        vec![Datum::Null, Datum::new_string(b"d".to_vec()), Datum::Null],
+        vec![
+            Datum::new_string(vec![0xff]),
+            Datum::new_string(b"X".to_vec()),
+            Datum::new_string(vec![0]),
+        ],
+    ];
+    for root in [
+        call(
+            "concat",
+            field.clone(),
+            vec![typed_column(0, &field), typed_column(1, &field)],
+        ),
+        call(
+            "concat_ws",
+            field.clone(),
+            vec![
+                text(Some(b",")),
+                typed_column(0, &field),
+                typed_column(1, &field),
+            ],
+        ),
+        call(
+            "concat",
+            field.clone(),
+            vec![
+                typed_column(0, &field),
+                call(
+                    "concat_ws",
+                    field.clone(),
+                    vec![
+                        text(Some(b",")),
+                        typed_column(1, &field),
+                        typed_column(2, &field),
+                    ],
+                ),
+            ],
+        ),
+    ] {
+        let suite = self::suite(root);
+        for selection in [
+            None,
+            Some(vec![]),
+            Some((0..2050).map(|index| (2050 - index) % 3).collect()),
+        ] {
+            let mut native_input = chunk(&schema, &rows);
+            native_input.set_sel(selection.clone());
+            let mut expected = output_for(&field);
+            suite
+                .run(
+                    &PacketTrace::new(99, false),
+                    &mut native_input,
+                    &mut expected,
+                )
+                .unwrap();
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(selection);
+            let mut actual = output_for(&field);
+            suite
+                .run_with_tikv_batch(
+                    &PacketTrace::new(99, false),
+                    &mut input,
+                    &mut actual,
+                    &schema,
+                )
+                .unwrap();
+            assert_eq!(values_for(&actual, &field), values_for(&expected, &field));
+        }
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.prepared, route.fallback, route.refusals), (3, 0, 0));
+    }
+}
+
+#[test]
+fn concat_host_resource_denial_precedes_packet_observations_and_has_no_retry() {
+    let suite = self::suite(call(
+        "concat",
+        string_ty(),
+        vec![text(Some(b"a")), text(Some(b"b"))],
+    ));
+    let mut worker = PreparedBatch::compile(
+        &suite,
+        &[],
+        true,
+        1,
+        limits(),
+        ExecutionLimits {
+            max_active_tasks: 0,
+            ..ExecutionLimits::default()
+        },
+        65536,
+    )
+    .unwrap();
+    let context = PacketTrace::new(99, false);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    let error = suite
+        .run_batch(
+            &context,
+            &mut EvalContext::default(),
+            &mut worker,
+            &mut input,
+            &mut output,
+            &[],
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert!(context.events.borrow().is_empty());
     assert_eq!(output.num_rows(), 0);
 }
