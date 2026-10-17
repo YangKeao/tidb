@@ -593,3 +593,26 @@ force singleton admission, and windows are bounded at1024. Whole-selection
 phase preservation must precede wider root/caller promotion. No new frontend
 root fallback is removed by this protocol-only step; all remaining migration
 work listed above remains active.
+
+
+N6b implementation: RowHostScope is a scheduling frame in the
+existing canonical loop. Under an explicit window root, it finishes each
+complete row-host operand subtree in original occurrence order before returning
+that operand's full compact vector. It does not call any other evaluator.
+Scoped row maps preserve original occurrence identity, including through an
+inner window callback. Window start/reply therefore carry occurrence_start;
+a column-only batch import cannot represent that identity and is bypassed
+inside a row scope. Row roots and typed-control descendants retain singleton
+admission at this step.
+
+Acceptance is Window -> RowHost -> Window over repeated/reordered physical
+rows, with exact read order and identities; an inner-row failure must preserve
+the original boxed error and cancel all pending enclosing tasks. Whole-operand
+Fresh must restart every row, and resource limits must remain terminal with
+cleanup. Core1051 pass with the exact inherited six failures and one ignored;
+frontend106 focused and full1464 pass with the exact inherited four failures
+and95 ignored. All22 Projection tests, required lint, scoped SDK clippy,
+pinned formatting and diff checks pass. Paired TiKVec9cc67 and
+evidence/no-fallback-n6b.md record the completed SDK checkpoint.
+Frontend window providers, per-edge numeric conversion and whole-selection
+orchestration still follow this SDK step. Global dispatch remains unfinished.
