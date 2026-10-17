@@ -616,3 +616,33 @@ pinned formatting and diff checks pass. Paired TiKVec9cc67 and
 evidence/no-fallback-n6b.md record the completed SDK checkpoint.
 Frontend window providers, per-edge numeric conversion and whole-selection
 orchestration still follow this SDK step. Global dispatch remains unfinished.
+
+
+N6c outcome: the original native batch reference owner now
+shares plain source-domain selection, strict Int/UInt bit extraction/repacking,
+and vectorized numeric cast completion with the future window provider. The
+new value-only cast seam receives actual values, immutable field/domain facts
+and bounded diagnostic metadata; it has no expression or evaluator callback.
+Source-typed owner evaluation remains a separate phase and retains its original
+literal-once broadcast. Matching source/target domains skip the cast entirely.
+
+Discovery: eval_integer_batch has its own bulk integer arithmetic loop when
+its operand domains are Int. It is not the row typed probe and does not always
+use the generic eval_arithmetic_batch ladder. The frontend window provider must
+represent this mode explicitly, preserving its bit normalization, overflow
+formatting, context reads and result handling. Per-edge lowering must distinguish
+that bulk owner from row arithmetic beneath row-demand boundaries. N6c validates
+the shared value interfaces first; frontend window providers and root promotion
+remain unfinished.
+
+
+N6c validation: six numeric-argument tests pass, including120 new value/error
+and diagnostic/context-trace comparisons. Matching-domain tests retain even
+an actual Float32 carrier without context reads or eager diagnostic rendering.
+Full frontend1465 pass with the exact inherited four failures and95 ignored;
+all106 existing batch tests pass within that run. All22 Projection tests,
+required lint, pinned formatting and diff checks pass. TiKVec9cc67 is unchanged;
+its N6b core evidence remains applicable. See evidence/no-fallback-n6c.md.
+Next implement actual window providers and per-edge lowering, preserving the
+bulk integer versus generic arithmetic distinction described above. No new
+frontend root fallback is retired by this value-interface checkpoint.

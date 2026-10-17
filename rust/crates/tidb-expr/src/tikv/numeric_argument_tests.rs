@@ -880,3 +880,158 @@ fn numeric_argument_completion_keeps_default_metadata_string_integer_and_result_
     assert_eq!(error.message(), "Truncated incorrect DECIMAL value: '{}'");
     assert_eq!(ctx.0.take(), ["zone", "flags"]);
 }
+
+#[test]
+fn numeric_batch_value_boundary_preserves_domains_diagnostics_and_lazy_subjects() {
+    use super::{
+        cast_numeric_argument_in_mode, native_batch_integer_bits, native_batch_integer_value,
+        native_numeric_batch_cast, native_numeric_batch_source,
+    };
+    use crate::{
+        constant::Constant, expression::Expression, Columns, Datum, ErrorLevel, EvalError,
+    };
+    use std::cell::RefCell;
+    use tidb_datatype::{
+        BinaryJSON, Decimal, EvalType, FieldType, FieldTypeCode, FieldTypeFlags, SessionTimeZone,
+    };
+    #[derive(Default)]
+    struct Trace(RefCell<Vec<String>>);
+    impl Columns for Trace {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("value-only boundary")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            self.0.borrow_mut().push("zone".into());
+            crate::NoColumns.time_zone()
+        }
+        fn truncate_level(&self) -> ErrorLevel {
+            self.0.borrow_mut().push("level".into());
+            ErrorLevel::Warn
+        }
+        fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+            self.0.borrow_mut().push(format!("truncate:{message}"));
+            Ok(())
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0
+                .borrow_mut()
+                .push(format!("warning:{code}:{message}"));
+        }
+    }
+    // Already source-typed inputs: the boundary must not replay their owner.
+    let values = vec![
+        (FieldTypeCode::LongLong, Datum::Int(-17)),
+        (FieldTypeCode::LongLong, Datum::UInt(u64::MAX)),
+        (FieldTypeCode::Double, Datum::Real(1.25)),
+        (FieldTypeCode::Double, Datum::Real(f64::MAX)),
+        (
+            FieldTypeCode::NewDecimal,
+            Datum::Decimal(Decimal::from_int(-19)),
+        ),
+        (FieldTypeCode::VarString, Datum::new_string("12.5")),
+        (
+            FieldTypeCode::VarString,
+            Datum::new_string(" \u{2003}-12x "),
+        ),
+        (FieldTypeCode::VarString, Datum::new_string("")),
+        (
+            FieldTypeCode::Json,
+            Datum::Json(BinaryJSON::parse("{\"a\":1}").unwrap()),
+        ),
+        (
+            FieldTypeCode::Json,
+            Datum::Json(BinaryJSON::parse("2.5").unwrap()),
+        ),
+    ];
+    for (code, raw) in values {
+        for unsigned in [false, true] {
+            let field = FieldType::new(code)
+                .with_flen(-1)
+                .with_decimal(-1)
+                .with_raw_flags(if unsigned {
+                    u64::from(FieldTypeFlags::UNSIGNED)
+                } else {
+                    0
+                });
+            for target in [EvalType::Int, EvalType::Real, EvalType::Decimal] {
+                for value in [Datum::Null, raw.clone()] {
+                    let source = native_numeric_batch_source(&field, false, target);
+                    let expression =
+                        Expression::Constant(Constant::new(value.clone(), field.clone()));
+                    let subject = super::static_numeric_expression_text(&expression, true);
+                    let native = Trace::default();
+                    let result = native_numeric_batch_cast(
+                        &field,
+                        source,
+                        target,
+                        value.clone(),
+                        &native,
+                        subject.as_deref(),
+                        None,
+                    );
+                    if source == target {
+                        assert_eq!(result, Ok(value));
+                        assert!(native.0.borrow().is_empty());
+                    } else {
+                        let old = Trace::default();
+                        let expression =
+                            Expression::Constant(Constant::new(value.clone(), field.clone()));
+                        let expected =
+                            cast_numeric_argument_in_mode(&expression, value, target, &old, true);
+                        assert_eq!(result, expected, "{field:?} -> {target:?}");
+                        assert_eq!(native.0.take(), old.0.take(), "{field:?} -> {target:?}");
+                    }
+                }
+            }
+        }
+    }
+    // No matching-domain coercion, context read, or diagnostic render, even
+    // with an actual native formatter failure retained in immutable metadata.
+    let same = Trace::default();
+    let field = FieldType::new(FieldTypeCode::Double);
+    assert_eq!(
+        native_numeric_batch_cast(
+            &field,
+            EvalType::Real,
+            EvalType::Real,
+            Datum::Float32(2.0),
+            &same,
+            None,
+            Some(f64::NAN.to_le_bytes())
+        ),
+        Ok(Datum::Float32(2.0))
+    );
+    assert!(same.0.borrow().is_empty());
+    for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+        let field = FieldType::new(code);
+        for target in [EvalType::Int, EvalType::Real, EvalType::Decimal] {
+            assert_eq!(native_numeric_batch_source(&field, true, target), target);
+            let expected = if field.is_hybrid() {
+                EvalType::Int
+            } else {
+                field.eval_type()
+            };
+            assert_eq!(native_numeric_batch_source(&field, false, target), expected);
+        }
+    }
+    for bits in [i64::MIN, -1, 0, 1, i64::MAX] {
+        for unsigned in [false, true] {
+            let value = native_batch_integer_value(Some(bits), unsigned);
+            assert_eq!(native_batch_integer_bits(value), Ok(Some(bits)));
+        }
+    }
+    assert_eq!(native_batch_integer_bits(Datum::Null), Ok(None));
+    assert_eq!(native_batch_integer_value(None, true), Datum::Null);
+    for value in [
+        Datum::Real(1.0),
+        Datum::new_string("1"),
+        Datum::Decimal(Decimal::from_int(1)),
+    ] {
+        assert_eq!(
+            native_batch_integer_bits(value),
+            Err(EvalError::Unsupported(
+                "integer batch value is outside its typed domain"
+            ))
+        );
+    }
+}

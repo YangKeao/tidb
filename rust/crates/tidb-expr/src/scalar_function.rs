@@ -3751,14 +3751,80 @@ pub(crate) fn normalize_numeric_row_value(
 // Go's hybrid cast signatures read EvalInt. Binary constants are special:
 // EvalReal/EvalDecimal reads their unsigned literal value directly.
 fn numeric_argument_source(expression: &Expression, target: EvalType) -> Option<EvalType> {
-    let field = expression.static_type()?;
-    Some(if is_numeric_binary_literal(expression) {
+    Some(native_numeric_batch_source(
+        expression.static_type()?,
+        is_numeric_binary_literal(expression),
+        target,
+    ))
+}
+
+/// Source-typed batch domain, independent of an expression or ready-argument
+/// program. Binary literals use the requested domain; other hybrids use Int.
+pub(crate) fn native_numeric_batch_source(
+    field: &FieldType,
+    binary_literal: bool,
+    target: EvalType,
+) -> EvalType {
+    if binary_literal {
         target
     } else if field.is_hybrid() {
         EvalType::Int
     } else {
         field.eval_type()
+    }
+}
+
+/// Strict bit carrier used by the native integer batch owner. UInt keeps its
+/// full bit pattern; values outside this typed domain are not coerced here.
+pub(crate) fn native_batch_integer_bits(value: Datum) -> Result<Option<i64>, EvalError> {
+    match value {
+        Datum::Null => Ok(None),
+        Datum::Int(value) => Ok(Some(value)),
+        Datum::UInt(value) => Ok(Some(value as i64)),
+        _ => Err(EvalError::Unsupported(
+            "integer batch value is outside its typed domain",
+        )),
+    }
+}
+pub(crate) fn native_batch_integer_value(value: Option<i64>, unsigned: bool) -> Datum {
+    match value {
+        None => Datum::Null,
+        Some(value) if unsigned => Datum::UInt(value as u64),
+        Some(value) => Datum::Int(value),
+    }
+}
+
+/// Finishes a value AFTER its complete source-typed argument batch has been
+/// obtained. The caller owns the source phase, including literal-once broadcast.
+/// The original vectorized cast is skipped entirely for matching domains.
+pub(crate) fn native_numeric_batch_cast(
+    field: &FieldType,
+    source: EvalType,
+    target: EvalType,
+    value: Datum,
+    ctx: &dyn Columns,
+    subject: Option<&str>,
+    subject_format_failure: Option<[u8; 8]>,
+) -> Result<Datum, EvalError> {
+    finish_numeric_batch_cast(field, source, target, value, ctx, || {
+        subject_format_failure
+            .map(render_numeric_format_failure)
+            .or_else(|| subject.map(str::to_owned))
     })
+}
+fn finish_numeric_batch_cast(
+    field: &FieldType,
+    source: EvalType,
+    target: EvalType,
+    value: Datum,
+    ctx: &dyn Columns,
+    subject: impl FnOnce() -> Option<String>,
+) -> Result<Datum, EvalError> {
+    if source == target {
+        Ok(value)
+    } else {
+        cast_numeric_argument_value(field, value, target, ctx, true, subject)
+    }
 }
 
 fn is_numeric_binary_literal(expression: &Expression) -> bool {
@@ -3819,13 +3885,7 @@ pub(crate) fn native_numeric_operand(
         NativeArithmeticInputMode::Raw => return Ok(value),
         NativeArithmeticInputMode::TypedInteger => (EvalType::Int, EvalType::Int, false),
         NativeArithmeticInputMode::Numeric(target) => {
-            let source = if binary_literal {
-                target
-            } else if field.is_hybrid() {
-                EvalType::Int
-            } else {
-                field.eval_type()
-            };
+            let source = native_numeric_batch_source(field, binary_literal, target);
             (source, target, !binary_literal)
         }
     };
@@ -4172,7 +4232,11 @@ fn eval_numeric_operand_batch(
     }
     values
         .into_iter()
-        .map(|value| cast_numeric_argument_in_mode(expression, value, target, ctx, true))
+        .map(|value| {
+            finish_numeric_batch_cast(field, source, target, value, ctx, || {
+                numeric_expression_text(expression, true, ctx)
+            })
+        })
         .collect()
 }
 
@@ -4330,16 +4394,7 @@ fn eval_integer_batch(
     ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Vec<Option<i64>>, EvalError> {
-    let bits = |value: Datum| -> Result<Option<i64>, EvalError> {
-        match value {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            Datum::UInt(value) => Ok(Some(value as i64)),
-            _ => Err(EvalError::Unsupported(
-                "integer batch value is outside its typed domain",
-            )),
-        }
-    };
+    let bits = native_batch_integer_bits;
     match expression {
         Expression::Constant(constant) => {
             if let Some(child) = constant.deferred_expr.as_deref() {
@@ -4499,11 +4554,7 @@ fn eval_batch_values(
             .is_some_and(|field| field.is_unsigned());
         return Ok(eval_integer_batch(expression, ctx, input)?
             .into_iter()
-            .map(|value| match value {
-                None => Datum::Null,
-                Some(value) if unsigned => Datum::UInt(value as u64),
-                Some(value) => Datum::Int(value),
-            })
+            .map(|value| native_batch_integer_value(value, unsigned))
             .collect());
     }
     match expression {
