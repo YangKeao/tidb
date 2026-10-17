@@ -37,16 +37,23 @@ impl NativeBatchHosts<'_> {
         let actual = self.catalog.sql_batch_operation(invocation.slot)?;
         let Some(NativeHostMetadata::DecimalFast {
             operation: expected,
+            argument_nodes,
             ..
         }) = self.metadata.get(invocation.slot.index())
         else {
             return Err(binding("fast decimal descriptor missing"));
         };
-        operation(actual)?;
+        let arity = if actual == SqlBatchHostOperation::CastDecimalWindowNative {
+            1
+        } else {
+            operation(actual)?;
+            2
+        };
         if *expected != actual
             || signature.arg_types.as_ref() != invocation.arg_types
             || &signature.return_type != invocation.return_type
-            || invocation.arg_types.len() != 2
+            || invocation.arg_types.len() != arity
+            || argument_nodes.len() != arity
             || invocation.physical_rows.is_empty()
             || invocation
                 .occurrence_start
@@ -89,7 +96,8 @@ impl NativeBatchHosts<'_> {
             return Err(binding("fast decimal reply reached a different task"));
         };
         let (slot, start, index) = (task.slot, task.row.occurrence, *next);
-        if index >= 2
+        let arity = self.catalog.signature(slot)?.arg_types.len();
+        if index >= arity
             || reply.index != index
             || reply.physical_rows != rows
             || reply.occurrence_start != start
@@ -162,6 +170,11 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("validated fast argument changed domain"));
             };
             values.push(value);
+        }
+        if arity == 1 {
+            return self
+                .publish_decimal_fast(id, Some(values))
+                .map(HostStep::Ready);
         }
         if index == 0 {
             let SqlDemand::WindowDecimalFast { next, left, .. } = &mut self.slots[id.slot]

@@ -8299,6 +8299,18 @@ fn rewritten_arithmetic_roots_use_canonical_priority_and_bulk_row_profiles() {
         "d*d",
         "d*(d+1)",
         "s+r",
+        "abs(i)",
+        "abs(i+1)",
+        "cast(i as decimal(65,4))",
+        "cast(i as decimal(3,1))",
+        "cast(i as decimal)",
+        "cast(i as json)",
+        "cast(s as json)",
+        "cast(cast(i as decimal(65,4)) as json)",
+        "d+cast(i as decimal(65,4))",
+        "abs(i-1)+1",
+        "cast(i as json)+r",
+        "cast((i+1) as decimal(3,1))",
     ] {
         let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
             panic!("query")
@@ -8342,6 +8354,142 @@ fn native_arithmetic_nonbatch_vector_roots_keep_original_row_domain() {
             (0..2050).map(|index| [0, 1, 2][index % 3]).collect(),
         ] {
             compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_unary_roots_preserve_abs_cast_window_domains_and_decimal_priority() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let selections = vec![
+        vec![],
+        vec![0],
+        vec![2, 0, 2],
+        (0..2050).map(|index| [2, 0, 2][index % 3]).collect(),
+    ];
+    for unsigned in [false, true] {
+        let source = ty().with_unsigned(unsigned);
+        let schema = vec![source.clone()];
+        let rows = vec![
+            vec![Datum::Null],
+            vec![Datum::Int(1)],
+            vec![if unsigned {
+                Datum::UInt(u64::MAX)
+            } else {
+                Datum::Int(i64::MIN)
+            }],
+        ];
+        let c = || typed_column(0, &source);
+        let roots = vec![
+            call("abs", source.clone(), vec![c()]),
+            call("cast_decimal", decimal.clone(), vec![c()]),
+            call(
+                "cast_decimal",
+                decimal.clone().with_unsigned(true),
+                vec![c()],
+            ),
+            call(
+                "cast_decimal",
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(3)
+                    .with_decimal(1),
+                vec![c()],
+            ),
+            call(
+                "cast_decimal",
+                FieldType::new(FieldTypeCode::NewDecimal),
+                vec![c()],
+            ),
+            call("cast_json", json.clone(), vec![c()]),
+        ];
+        for root in roots {
+            for selection in &selections {
+                compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
+            }
+        }
+    }
+    // The genuine integer bulk owner reads a strict bit carrier. Row ABS and
+    // row DECIMAL CAST retain the original UInt value of this signed literal.
+    let raw = || literal(Datum::UInt(u64::MAX), ty());
+    for root in [
+        call("abs", ty(), vec![raw()]),
+        call("cast_decimal", decimal, vec![raw()]),
+    ] {
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &[], &vec![vec![]; 3], selection);
+        }
+    }
+    let schema = vec![string_ty()];
+    let rows = vec![
+        vec![Datum::new_string("{\"a\":[1,null]}")],
+        vec![Datum::Null],
+        vec![Datum::new_string("bad JSON")],
+    ];
+    for parse in [true, false] {
+        let root = call(
+            "cast_json",
+            if parse {
+                json.clone()
+            } else {
+                FieldType::new(FieldTypeCode::Json)
+            },
+            vec![string_column(0)],
+        );
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
+        }
+    }
+}
+
+#[test]
+fn native_unary_arithmetic_nested_windows_keep_child_phases_before_conversion() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    let json = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
+    let schema = vec![ty(), decimal.clone()];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Decimal(Decimal::from_int(2))],
+        vec![Datum::Int(i64::MIN), Datum::Null],
+        vec![Datum::Int(i64::MAX), Datum::Decimal(Decimal::from_int(4))],
+    ];
+    let cast = || {
+        call(
+            "cast_decimal",
+            decimal.clone(),
+            vec![plus(column(0), int(1))],
+        )
+    };
+    let roots = vec![
+        cast(),
+        plus(call("abs", ty(), vec![minus(column(0), int(1))]), int(0)),
+        call(
+            "plus",
+            decimal.clone(),
+            vec![cast(), typed_column(1, &decimal)],
+        ),
+        call("cast_json", json.clone(), vec![cast()]),
+        call(
+            "plus",
+            real_ty(),
+            vec![
+                call("cast_json", json, vec![column(0)]),
+                literal(Datum::Real(1.0), real_ty()),
+            ],
+        ),
+    ];
+    let selections = vec![
+        vec![],
+        vec![0],
+        vec![2, 0, 2],
+        (0..2050).map(|index| [2, 0, 1][index % 3]).collect(),
+    ];
+    for root in roots {
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
         }
     }
 }

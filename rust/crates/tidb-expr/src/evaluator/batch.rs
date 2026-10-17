@@ -255,6 +255,37 @@ fn window_arithmetic_operation(
         },
     )
 }
+fn window_unary_operation(
+    function: &ScalarFunction,
+    view: NativeView,
+) -> Option<SqlBatchHostOperation> {
+    let target = view.bulk_target()?;
+    if function.args.len() != 1 {
+        return None;
+    }
+    let result = function.get_static_type()?;
+    Some(match (function.func_name.lowercase(), target) {
+        ("abs", NativeEvalType::Int) if result.eval_type() == NativeEvalType::Int => {
+            SqlBatchHostOperation::AbsIntWindowNative
+        }
+        ("cast_decimal", NativeEvalType::Decimal)
+            if result.eval_type() == NativeEvalType::Decimal =>
+        {
+            SqlBatchHostOperation::CastDecimalWindowNative
+        }
+        ("cast_json", NativeEvalType::Json) if result.eval_type() == NativeEvalType::Json => {
+            SqlBatchHostOperation::CastJsonWindowNative
+        }
+        _ => return None,
+    })
+}
+fn window_value_operation(
+    function: &ScalarFunction,
+    view: NativeView,
+) -> Option<SqlBatchHostOperation> {
+    window_arithmetic_operation(function, view).or_else(|| window_unary_operation(function, view))
+}
+
 fn bulk_value_tree_complete(
     node: &Expression,
     view: NativeView,
@@ -267,18 +298,10 @@ fn bulk_value_tree_complete(
     let Expression::ScalarFunction(function) = node else {
         return native_value_tree_complete(node, depth, remaining);
     };
-    let Some(target) = view.bulk_target() else {
+    if view.bulk_target().is_none() {
         return native_value_tree_complete(node, depth, remaining);
-    };
-    // These owners have genuine whole-child phases and need their own window
-    // descriptors; substituting a row host would change demand/error order.
-    if (function.func_name.lowercase() == "abs" && target == NativeEvalType::Int)
-        || (function.func_name.lowercase() == "cast_decimal" && target == NativeEvalType::Decimal)
-        || (function.func_name.lowercase() == "cast_json" && target == NativeEvalType::Json)
-    {
-        return false;
     }
-    if window_arithmetic_operation(function, view).is_none() {
+    if window_value_operation(function, view).is_none() {
         return native_value_tree_complete(node, depth, remaining);
     }
     *remaining -= 1;
@@ -326,14 +349,19 @@ fn profile_shape(root: &Expression, limits: BatchSourceLimits) -> LocalResult<()
     }
     Ok(())
 }
-fn promoted_arithmetic_view(
+fn promoted_native_root_view(
     root: &Expression,
     limits: BatchSourceLimits,
 ) -> Result<Option<NativeView>> {
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    if native_arithmetic_operation(function.func_name.lowercase()).is_none() {
+    if native_arithmetic_operation(function.func_name.lowercase()).is_none()
+        && !matches!(
+            function.func_name.lowercase(),
+            "abs" | "cast_decimal" | "cast_json"
+        )
+    {
         return Ok(None);
     }
     let Some(field) = root.static_type() else {
@@ -820,6 +848,18 @@ fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<Sc
     strict_literal(value, sql)
 }
 fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
+    if let Some(operation) = window_unary_operation(function, view) {
+        return NativeView::BulkValue(
+            if operation == SqlBatchHostOperation::CastJsonWindowNative {
+                function.args[0]
+                    .static_type()
+                    .expect("typed JSON source")
+                    .eval_type()
+            } else {
+                NativeEvalType::Int
+            },
+        );
+    }
     if window_arithmetic_operation(function, view).is_some() {
         let crate::scalar_function::NativeArithmeticInputMode::Numeric(domain) =
             function.native_arithmetic_generic_mode()
@@ -1062,7 +1102,7 @@ fn resolve_call_in_view(
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
-        if let Some(operation) = window_arithmetic_operation(function, view)
+        if let Some(operation) = window_value_operation(function, view)
             .or_else(|| native_selection_operation(function))
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
             .or_else(|| native_math_operation(function))
@@ -1735,6 +1775,15 @@ fn preflight_view<'a>(
                     ) {
                         budget.field(sql, 1)?;
                     }
+                    if window_unary_operation(function, view).is_some() {
+                        budget.field(sql, 1)?;
+                        budget.field(
+                            function.args[0]
+                                .static_type()
+                                .expect("checked unary source"),
+                            1,
+                        )?;
+                    }
                     if native_arithmetic_operation(function.func_name.lowercase()).is_some() {
                         budget.field(sql, 1)?;
                         for arg in &function.args {
@@ -2067,7 +2116,7 @@ fn arithmetic_host_metadata(
             Expression::Column(_) => WindowArithmeticSource::Column,
             Expression::ScalarFunction(child)
                 if checked[nodes[index]].view.bulk_target() == Some(NativeEvalType::Int)
-                    && window_arithmetic_operation(child, checked[nodes[index]].view).is_some() =>
+                    && window_value_operation(child, checked[nodes[index]].view).is_some() =>
             {
                 WindowArithmeticSource::IntegerReady
             }
@@ -2210,6 +2259,9 @@ fn lower_view(
                                         | SqlBatchHostOperation::AddWindowNative
                                         | SqlBatchHostOperation::SubtractWindowNative
                                         | SqlBatchHostOperation::MultiplyWindowNative
+                                        | SqlBatchHostOperation::AbsIntWindowNative
+                                        | SqlBatchHostOperation::CastDecimalWindowNative
+                                        | SqlBatchHostOperation::CastJsonWindowNative
                                 ) {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
@@ -2270,6 +2322,57 @@ fn lower_view(
                             | SqlBatchHostOperation::SubtractWindowNative
                             | SqlBatchHostOperation::MultiplyWindowNative) => {
                                 arithmetic_host_metadata(operation, sql, item, ordinal, &checked)?
+                            }
+                            operation @ (SqlBatchHostOperation::AbsIntWindowNative
+                            | SqlBatchHostOperation::CastDecimalWindowNative
+                            | SqlBatchHostOperation::CastJsonWindowNative) => {
+                                let argument = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("unary child ordinal overflow"))?;
+                                let child = &checked[argument];
+                                let source = match &sql.args[0] {
+                                    Expression::Constant(_) => WindowArithmeticSource::Literal,
+                                    Expression::Column(_) => WindowArithmeticSource::Column,
+                                    Expression::ScalarFunction(function)
+                                        if child.view.bulk_target()
+                                            == Some(NativeEvalType::Int)
+                                            && window_value_operation(function, child.view)
+                                                .is_some() =>
+                                    {
+                                        WindowArithmeticSource::IntegerReady
+                                    }
+                                    _ => WindowArithmeticSource::Computed,
+                                };
+                                let overflow = if operation
+                                    == SqlBatchHostOperation::AbsIntWindowNative
+                                    && item.math_render_bound.is_some()
+                                {
+                                    crate::scalar_function::static_math_overflow_expression(sql)
+                                } else {
+                                    None
+                                };
+                                if overflow.as_ref().is_some_and(|text| {
+                                    item.math_render_bound
+                                        .is_none_or(|bound| text.len() > bound)
+                                }) {
+                                    return Err(binding(
+                                        "unary diagnostic exceeds its admitted bound",
+                                    )
+                                    .into());
+                                }
+                                NativeHostMetadata::UnaryWindow {
+                                    operation,
+                                    result_type: snapshot_field_type(item.sql),
+                                    source_type: snapshot_field_type(child.sql),
+                                    source,
+                                    argument_node: argument,
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("unary result role missing"))?,
+                                    overflow_expression: overflow.map(String::into_boxed_str),
+                                }
                             }
                             SqlBatchHostOperation::AbsNative => {
                                 let expression = if item.math_render_bound.is_some() {
@@ -2613,11 +2716,11 @@ impl PreparedBatch {
             .get(calculated_slot)
             .ok_or_else(|| BatchFailure::admission("batch calculation slot missing"))?;
         let view = if promote {
-            promoted_arithmetic_view(root, source_limits)?
+            promoted_native_root_view(root, source_limits)?
         } else {
             None
         };
-        let pair = matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_arithmetic_operation(function, view).is_some()));
+        let pair = matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()));
         let fast = promote && decimal_fast_source::possible(root);
         let groups = 1 + usize::from(pair) + usize::from(fast);
         let limits = if groups > 1 {

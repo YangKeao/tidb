@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6g whole-child unary integration: three explicit unary-window descriptors (integer ABS, integer-source Decimal CAST, source-typed JSON CAST) use the same SDK frame. Core11window/full1055same6/1ignored and scopedclippy89warnings pass. Native providers share the extracted complete source-vector normalization owner with arithmetic;71 actual provider/input-failure comparisons plus108 resource cases and early unsupported-source/large-Decimal formatting guards pass. New root/edge lowering selects these actual phases instead of the former three exclusions. Standalone Decimal CAST priority now has a genuine single-argument window phase over the same strict column-padding import, before the original flag point. Existing122batch tests pass after source integration; new336root/nested native comparisons pass. Full frontend1483same4/95ignored, ProductionProjection24, core1055same6/1ignored, scopedclippy/lint/pinnedfmt/diff pass. Receipt rust/docs/evidence/no-fallback-n6g.md.
+
 - [x] N6f closed arithmetic root integration: closed arithmetic roots select authentic Row/Bulk programs before values, plus a typed Decimal priority stage in the SAME SDK driver before the original per-output flag getter. Pure integer-column CAST layout is shared with the old owner. Native Unsupported alone selects the next semantic phase; errors remain terminal. Root673/fast-source150/window-provider99 comparisons pass, plus exact resource/purpose guards. Complete frontend1478same4/95ignored, Projection23, lint/pinnedfmt/diff passed. General bulk ABS/DecimalCAST/JSONCAST and control wrapping remain next work.
 
 - [x] N6f final review: initial source patch is retained as evidence only, already applied and superseded. Exact context tests now compare the native per-output getter point rather than the old once-per-suite convenience assertion. Late invalid-purpose regression was RED before complete-vector validation and now passes. Initial provider RefCell borrow RED fixed before branch publication.
@@ -804,3 +806,32 @@ empty_supported evidence is deliberately distinct. Do not introduce synthetic
 rows or an empty-expression interpreter to conflate these two owners.
 Standalone CAST priority is not yet integrated; completing bulk CAST/ABS and
 then broadening root promotion remains required before global retirement.
+
+### N6g implemented state (2026-10-18)
+
+The three unary operations now lower only through their genuine whole-child
+recipes, replacing the earlier exclusion with actual implementation. The row
+companion remains separate and uses the same driver. Arithmetic, ABS and CAST
+share source-vector ownership/normalization; only their subsequent value
+kernels differ. Source normalization is complete before ABS/Decimal/JSON
+conversion. Integer-source Decimal conversion is also shared with its original
+native owner. Neither an Expr callback nor an old ready-arguments program was
+introduced. A borrowed Decimal work bound includes visible/storage padding
+before a conversion can format it.
+
+Standalone Decimal priority is a genuine one-argument cast window over the
+original strict integer-column padding import. Its metadata now records the
+actual one/two argument ordinals and checks that cardinality against the closed
+catalog. A non-column/unsupported CAST shape becomes typed Unsupported without
+child evaluation. Empty evidence still precedes the generic guard, and only
+that typed result/final-cell representation refusal may continue to native's
+subsequent canonical bulk/row phase. Every error remains terminal.
+
+Verified: core11 window cases/full1055 with exact same6 failures/1ignored,
+scopedclippy89warnings, prior122 frontend batch tests and336 new root/nested
+comparisons; provider71 value/input-failure cases plus108 resource attempts,
+source admission before data and1M-digit Decimal work refusal before context.
+Additional12 rewritten SQL forms and a production mixed-column Projection test
+pass in full frontend1483same4/95ignored, Projection24 and lint. Do not mark the goal
+complete: control wrapping, other functions/callers, dynamic sources and ordered
+effectful multi-output execution still require implementation and retirement.

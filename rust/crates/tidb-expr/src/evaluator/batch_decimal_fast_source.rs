@@ -97,9 +97,14 @@ fn arithmetic(node: &Expression) -> Option<SqlBatchHostOperation> {
         _ => return None,
     })
 }
-pub(super) fn possible(root: &Expression) -> bool {
-    arithmetic(root).is_some()
+fn cast_root(root: &Expression) -> bool {
+    matches!(root,Expression::ScalarFunction(function) if function.func_name.lowercase()=="cast_decimal"
+        && function.get_static_type().is_some_and(|field|field.code()==FieldTypeCode::NewDecimal))
 }
+pub(super) fn possible(root: &Expression) -> bool {
+    arithmetic(root).is_some() || cast_root(root)
+}
+
 fn literal(value: &Datum, field: &FieldType) -> Outcome {
     let is_int = integer(field);
     let is_decimal = field.code() == FieldTypeCode::NewDecimal;
@@ -207,10 +212,12 @@ pub(super) struct PreparedFast {
 struct Pending<'a> {
     expression: &'a Expression,
     depth: usize,
+    force_input: bool,
 }
 struct Arena {
     child: Option<usize>,
     operation: Option<SqlBatchHostOperation>,
+    arity: usize,
     field: FieldType,
     input: Option<FastInput>,
 }
@@ -244,10 +251,16 @@ pub(super) fn compile(
     pending.push(Pending {
         expression: root,
         depth: 1,
+        force_input: false,
     });
     let mut arena = Vec::new();
     let mut empty_supported = true;
-    while let Some(Pending { expression, depth }) = pending.pop() {
+    while let Some(Pending {
+        expression,
+        depth,
+        force_input,
+    }) = pending.pop()
+    {
         if depth > limits.tree.max_depth || arena.len() >= limits.tree.max_nodes {
             return Err(resource("fast source tree policy exceeded").into());
         }
@@ -260,7 +273,18 @@ pub(super) fn compile(
         budget.field(&native_bytes_type(), 6)?;
         budget.array::<BuildNode>(1)?;
         let field = snapshot_field_type(borrowed);
-        let op = arithmetic(expression);
+        let op = if force_input {
+            None
+        } else if depth == 1 && cast_root(expression) {
+            Some(SqlBatchHostOperation::CastDecimalWindowNative)
+        } else {
+            arithmetic(expression)
+        };
+        let arity = match op {
+            None => 0,
+            Some(SqlBatchHostOperation::CastDecimalWindowNative) => 1,
+            Some(_) => 2,
+        };
         let input = if op.is_none() {
             let value = capture(expression, row_schema, &mut budget)?;
             empty_supported &= !matches!(value, FastInput::Constant(Outcome::Unsupported));
@@ -272,10 +296,22 @@ pub(super) fn compile(
         arena.push(Arena {
             child: None,
             operation: op,
+            arity,
             field,
             input,
         });
-        if op.is_some() {
+        if arity == 1 {
+            // The genuine column-only priority CAST imports its checked,
+            // padded coefficient directly, stopping physical reads on the
+            // first representation refusal as the native owner does.
+            budget.array::<Pending<'_>>(1)?;
+            reserve(&mut pending, 1)?;
+            pending.push(Pending {
+                expression,
+                depth: depth + 1,
+                force_input: true,
+            });
+        } else if arity == 2 {
             let Expression::ScalarFunction(function) = expression else {
                 unreachable!()
             };
@@ -284,27 +320,37 @@ pub(super) fn compile(
             pending.extend(function.args.iter().rev().map(|expression| Pending {
                 expression,
                 depth: depth + 1,
+                force_input: false,
             }));
         }
     }
+
     // Close original-preorder child boundaries before moving any arena values.
     let mut ends = Vec::new();
     budget.array::<usize>(arena.len())?;
     reserve(&mut ends, arena.len())?;
     ends.resize(arena.len(), 0);
     for index in (0..arena.len()).rev() {
-        if arena[index].operation.is_some() {
+        if arena[index].arity != 0 {
             let left = index + 1;
-            let right = *ends
+            let first_end = *ends
                 .get(left)
-                .ok_or_else(|| binding("fast left source missing"))?;
-            let end = *ends
-                .get(right)
-                .ok_or_else(|| binding("fast right source missing"))?;
-            if right <= left || end <= right || end > arena.len() {
-                return Err(binding("fast source subtree differs").into());
+                .ok_or_else(|| binding("fast first source missing"))?;
+            let end = if arena[index].arity == 1 {
+                first_end
+            } else {
+                let end = *ends
+                    .get(first_end)
+                    .ok_or_else(|| binding("fast second source missing"))?;
+                if first_end <= left || end <= first_end {
+                    return Err(binding("fast source subtree differs").into());
+                }
+                arena[index].child = Some(first_end);
+                end
+            };
+            if end <= left || end > arena.len() {
+                return Err(binding("fast source subtree extent differs").into());
             }
-            arena[index].child = Some(right);
             ends[index] = end;
         } else {
             ends[index] = index + 1;
@@ -330,13 +376,20 @@ pub(super) fn compile(
             entries.push((
                 operation,
                 HostSignature {
-                    arg_types: vec![carrier.clone(); 2].into_boxed_slice(),
+                    arg_types: vec![carrier.clone(); node.arity].into_boxed_slice(),
                     return_type: carrier.clone(),
                 },
             ));
+            budget.array::<usize>(node.arity)?;
+            let mut argument_nodes = Vec::new();
+            reserve(&mut argument_nodes, node.arity)?;
+            argument_nodes.push(ordinal + 1);
+            if node.arity == 2 {
+                argument_nodes.push(node.child.expect("joined children"));
+            }
             metadata.push(NativeHostMetadata::DecimalFast {
                 operation,
-                argument_nodes: [ordinal + 1, node.child.expect("joined children")],
+                argument_nodes: argument_nodes.into_boxed_slice(),
                 output_node: ordinal,
             });
             sites.push(OrdinaryCallSite::sql_native_batch(
@@ -350,11 +403,14 @@ pub(super) fn compile(
             reserve(&mut build, 1)?;
             build.push(BuildNode {
                 field: carrier,
-                kind: BuildKind::Host { slot, arity: 2 },
+                kind: BuildKind::Host {
+                    slot,
+                    arity: node.arity,
+                },
             });
             SourceKind::Call {
                 target: CallTarget::Host(operation),
-                arity: 2,
+                arity: node.arity,
             }
         } else {
             budget.array::<usize>(1)?;

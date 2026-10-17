@@ -28,6 +28,10 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_unary_window.rs"]
+mod unary_window;
+#[path = "batch_window_values.rs"]
+mod window_values;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum WindowArithmeticSource {
@@ -44,10 +48,31 @@ pub(super) struct WindowArithmeticMetadata {
     pub sources: [WindowArithmeticSource; 2],
 }
 
+struct WindowSourceFacts<'a> {
+    field: &'a FieldType,
+    owner: WindowArithmeticSource,
+    node: usize,
+    target: NativeEvalType,
+}
+struct WindowSourceValues {
+    values: Vec<Datum>,
+    retained_bytes: usize,
+}
+
 pub(super) enum NativeHostMetadata {
+    UnaryWindow {
+        operation: SqlBatchHostOperation,
+        result_type: FieldType,
+        source_type: FieldType,
+        source: WindowArithmeticSource,
+        argument_node: usize,
+        output_node: usize,
+        output_role: NativeValueRole,
+        overflow_expression: Option<Box<str>>,
+    },
     DecimalFast {
         operation: SqlBatchHostOperation,
-        argument_nodes: [usize; 2],
+        argument_nodes: Box<[usize]>,
         output_node: usize,
     },
     Plain,
@@ -125,6 +150,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    WindowUnary {
+        rows: Vec<usize>,
+    },
     WindowDecimalFast {
         next: usize,
         rows: Vec<usize>,
@@ -182,6 +210,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::WindowUnary { .. } => Ok(Some(0)),
             SqlDemand::WindowDecimalFast { next, .. }
             | SqlDemand::WindowArithmetic { next, .. }
             | SqlDemand::Arithmetic { next, .. } => Ok(Some(*next)),
@@ -200,7 +229,8 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::WindowDecimalFast { .. }
+            SqlDemand::WindowUnary { .. }
+            | SqlDemand::WindowDecimalFast { .. }
             | SqlDemand::WindowArithmetic { .. }
             | SqlDemand::Nullable { .. }
             | SqlDemand::Conditional { .. }
@@ -236,6 +266,11 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::WindowUnary { rows } = &self.demand {
+            return bytes
+                .checked_add(array_bytes::<usize>(rows.capacity())?)
+                .ok_or_else(|| resource("unary window retained bytes overflow"));
+        }
         if let SqlDemand::WindowDecimalFast { rows, left, .. } = &self.demand {
             return bytes
                 .checked_add(array_bytes::<usize>(rows.capacity())?)
@@ -1803,7 +1838,10 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             },
             SqlBatchHostOperation::AddWindowNative
             | SqlBatchHostOperation::SubtractWindowNative
-            | SqlBatchHostOperation::MultiplyWindowNative => {
+            | SqlBatchHostOperation::MultiplyWindowNative
+            | SqlBatchHostOperation::AbsIntWindowNative
+            | SqlBatchHostOperation::CastDecimalWindowNative
+            | SqlBatchHostOperation::CastJsonWindowNative => {
                 return Err(binding(
                     "window operation requires its explicit window callbacks",
                 ));
@@ -2062,6 +2100,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
     ) -> LocalResult<HostStart> {
         if matches!(
             self.metadata.get(invocation.slot.index()),
+            Some(NativeHostMetadata::UnaryWindow { .. })
+        ) {
+            self.start_unary_window(invocation)
+        } else if matches!(
+            self.metadata.get(invocation.slot.index()),
             Some(NativeHostMetadata::DecimalFast { .. })
         ) {
             self.start_decimal_fast_window(invocation)
@@ -2075,7 +2118,9 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         id: &HostTaskId,
         reply: HostWindowArgReply<'_>,
     ) -> LocalResult<HostStep> {
-        if matches!(self.task(id)?.demand, SqlDemand::WindowDecimalFast { .. }) {
+        if matches!(self.task(id)?.demand, SqlDemand::WindowUnary { .. }) {
+            self.resume_unary_window(id, reply)
+        } else if matches!(self.task(id)?.demand, SqlDemand::WindowDecimalFast { .. }) {
             self.resume_decimal_fast_window(id, reply)
         } else {
             self.resume_arithmetic_window(id, reply)

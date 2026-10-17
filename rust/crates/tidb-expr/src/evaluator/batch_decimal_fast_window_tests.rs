@@ -113,7 +113,7 @@ fn run_case(
     assert!(program.requires_whole_selection());
     let metadata = [NativeHostMetadata::DecimalFast {
         operation,
-        argument_nodes: [1, 2],
+        argument_nodes: vec![1, 2].into_boxed_slice(),
         output_node: 0,
     }];
     let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());

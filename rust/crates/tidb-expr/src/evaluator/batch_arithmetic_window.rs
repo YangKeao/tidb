@@ -120,6 +120,7 @@ impl NativeBatchHosts<'_> {
         id: &HostTaskId,
         reply: HostWindowArgReply<'_>,
     ) -> LocalResult<HostStep> {
+        let metadata = self.metadata;
         let task = self.task(id)?;
         let SqlDemand::WindowArithmetic { next, rows, .. } = &task.demand else {
             return Err(binding("window reply reached a row task"));
@@ -142,13 +143,10 @@ impl NativeBatchHosts<'_> {
             subjects,
             subject_format_failures,
             ..
-        }) = self.metadata.get(slot.index())
+        }) = metadata.get(slot.index())
         else {
             return Err(binding("window arithmetic metadata disappeared"));
         };
-        let store = self
-            .native_values
-            .ok_or_else(|| binding("window arithmetic store missing"))?;
         let field = &source_types[index];
         let source = crate::scalar_function::native_numeric_batch_source(
             field,
@@ -160,134 +158,18 @@ impl NativeBatchHosts<'_> {
         }
         let count = rows.len();
         let base = self.retained_bytes()?;
-        self.check_bytes(
-            base.checked_add(array_bytes::<Datum>(count)?)
-                .ok_or_else(|| resource("window source vector allowance overflow"))?,
-        )?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        // Capacity is fixed for this source phase; carry the payload charge
-        // incrementally rather than rescanning every prefix before each row.
-        let mut retained_values = array_bytes::<Datum>(values.capacity())?;
-        for position in 0..count {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(position) else {
-                return Err(binding("window arithmetic wire NULL is not a native value"));
-            };
-            let origin = NativeValueOrigin {
+        let WindowSourceValues {
+            mut values,
+            retained_bytes: mut retained_values,
+        } = self.collect_window_source(
+            &reply,
+            WindowSourceFacts {
+                field,
+                owner: batch.sources[index],
                 node: argument_nodes[index],
-                row: InputRow {
-                    occurrence: start + position,
-                    input_row: rows[position],
-                },
-            };
-            let raw_payload = native_payload_bytes(store.borrow().get(
-                token,
-                NativeValueRole::CharInput,
-                origin,
-            )?)?;
-            let payload = if matches!(batch.sources[index], WindowArithmeticSource::Literal)
-                && position != 0
-            {
-                native_payload_bytes(&values[0])?
-            } else {
-                raw_payload
-            };
-            self.check_bytes(
-                base.checked_add(retained_values)
-                    .and_then(|bytes| bytes.checked_add(payload.checked_mul(2)?))
-                    .ok_or_else(|| resource("window source clone allowance overflow"))?,
-            )?;
-            let value = if matches!(batch.sources[index], WindowArithmeticSource::Literal)
-                && position != 0
-            {
-                // Validate every capability, but perform literal typed conversion
-                // only once, exactly before the original broadcast.
-                values[0].clone()
-            } else {
-                let value =
-                    store
-                        .borrow()
-                        .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
-                let conversion = if matches!(batch.sources[index], WindowArithmeticSource::Literal)
-                    && source == NativeEvalType::String
-                    && !matches!(&value, Datum::String(_) | Datum::Bytes(_))
-                {
-                    payload
-                        .checked_mul(128)
-                        .and_then(|bytes| bytes.checked_add(1024))
-                } else {
-                    payload
-                        .checked_mul(2)
-                        .and_then(|bytes| bytes.checked_add(1024))
-                }
-                .ok_or_else(|| resource("window typed conversion bound overflow"))?;
-                self.check_bytes(
-                    base.checked_add(retained_values)
-                        .and_then(|bytes| bytes.checked_add(conversion))
-                        .ok_or_else(|| resource("window typed conversion allowance overflow"))?,
-                )?;
-                let value = match batch.sources[index] {
-                    WindowArithmeticSource::Literal => {
-                        crate::constant::typed_constant_value(field, self.context, source, value)
-                    }
-                    WindowArithmeticSource::Column => {
-                        crate::scalar_function::normalize_numeric_row_value(
-                            value,
-                            Some(field),
-                            source,
-                            self.context,
-                        )
-                    }
-                    WindowArithmeticSource::Computed if source == NativeEvalType::Int => {
-                        crate::scalar_function::normalize_numeric_row_value(
-                            value,
-                            Some(field),
-                            source,
-                            self.context,
-                        )
-                    }
-                    WindowArithmeticSource::Computed | WindowArithmeticSource::IntegerReady => {
-                        Ok(value)
-                    }
-                };
-                match value {
-                    Ok(value) => value,
-                    Err(error) => return self.native_failure(error),
-                }
-            };
-            let value = if source == NativeEvalType::Int {
-                match crate::scalar_function::native_batch_integer_bits(value) {
-                    Ok(bits) => crate::scalar_function::native_batch_integer_value(
-                        bits,
-                        field.is_unsigned(),
-                    ),
-                    Err(error) => return self.native_failure(error),
-                }
-            } else {
-                value
-            };
-            self.check_bytes(
-                base.checked_add(retained_values)
-                    .and_then(|bytes| {
-                        bytes.checked_add(native_payload_bytes(&value).ok()?.checked_mul(2)?)
-                    })
-                    .ok_or_else(|| resource("window normalized source allowance overflow"))?,
-            )?;
-            retained_values = retained_values
-                .checked_add(
-                    native_payload_bytes(&value)?
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("window normalized payload overflow"))?,
-                )
-                .ok_or_else(|| resource("window normalized ledger overflow"))?;
-            values.push(value);
-            self.check_bytes(
-                base.checked_add(retained_values)
-                    .ok_or_else(|| resource("window normalized source bytes overflow"))?,
-            )?;
-        }
+                target: source,
+            },
+        )?;
         // The complete typed source phase precedes every numeric argument cast.
         let diagnostic = subjects[index].as_ref().map_or(0, |text| text.len());
         for position in 0..count {

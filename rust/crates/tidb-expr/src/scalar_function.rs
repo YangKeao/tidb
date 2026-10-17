@@ -4640,22 +4640,13 @@ fn eval_batch_values(
             let target = function
                 .get_static_type()
                 .expect("preflight checked decimal cast");
-            let unsigned = target.is_unsigned()
-                || function.args[0]
-                    .static_type()
-                    .is_some_and(|field| field.is_unsigned());
+            let source_unsigned = function.args[0]
+                .static_type()
+                .is_some_and(|field| field.is_unsigned());
             values
                 .into_iter()
                 .map(|value| {
-                    let Some(value) = value else {
-                        return Ok(Datum::Null);
-                    };
-                    let decimal = if unsigned {
-                        tidb_datatype::Decimal::from_uint(value as u64)
-                    } else {
-                        tidb_datatype::Decimal::from_int(value)
-                    };
-                    convert_numeric_datum(Datum::Decimal(decimal), target, ctx)
+                    native_integer_batch_decimal_value(value, source_unsigned, target, ctx)
                 })
                 .collect()
         }
@@ -4666,6 +4657,25 @@ fn eval_batch_values(
             .map(|row| expression.eval(ctx, input.get_row(row)))
             .collect(),
     }
+}
+
+/// Native VecEvalDecimal's integer-source conversion, after the complete
+/// source bit-vector phase. Shared value-only owner; no expression callback.
+pub(crate) fn native_integer_batch_decimal_value(
+    value: Option<i64>,
+    source_unsigned: bool,
+    target: &FieldType,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let Some(value) = value else {
+        return Ok(Datum::Null);
+    };
+    let decimal = if target.is_unsigned() || source_unsigned {
+        tidb_datatype::Decimal::from_uint(value as u64)
+    } else {
+        tidb_datatype::Decimal::from_int(value)
+    };
+    convert_numeric_datum(Datum::Decimal(decimal), target, ctx)
 }
 
 fn eval_arithmetic_batch(
