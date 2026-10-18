@@ -14,154 +14,38 @@
 
 //! Vector SQL functions from `pkg/expression/builtin_vec.go`.
 
-use tidb_datatype::{ConversionFlags, FieldType, FieldTypeCode, VectorFloat32};
-
-use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesResult};
 use crate::{Columns, Datum, EvalError};
-
+use tidb_query_expr::NativeVectorOperation as O;
 #[cfg(test)]
-pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
-    dispatch_in(name, vals, &crate::NoColumns)
+pub(crate) fn dispatch(name: &str, values: &[Datum]) -> Option<Result<Datum, EvalError>> {
+    dispatch_in(name, values, &crate::NoColumns)
 }
-
 pub(crate) fn dispatch_in(
     name: &str,
-    vals: &[Datum],
-    ctx: &dyn Columns,
+    values: &[Datum],
+    _ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
-    match (name, vals) {
-        ("VEC_DIMS", [value]) => Some(dims(value, ctx)),
-        ("VEC_L1_DISTANCE", [left, right]) => Some(distance(
-            left,
-            right,
-            EvaluatedBytesOp::VecL1DistanceNative,
-            ctx,
-        )),
-        ("VEC_L2_DISTANCE", [left, right]) => Some(distance(
-            left,
-            right,
-            EvaluatedBytesOp::VecL2DistanceNative,
-            ctx,
-        )),
-        ("VEC_NEGATIVE_INNER_PRODUCT", [left, right]) => Some(distance(
-            left,
-            right,
-            EvaluatedBytesOp::VecNegativeInnerProductNative,
-            ctx,
-        )),
-        ("VEC_COSINE_DISTANCE", [left, right]) => Some(distance(
-            left,
-            right,
-            EvaluatedBytesOp::VecCosineDistanceNative,
-            ctx,
-        )),
-        ("VEC_L2_NORM", [value]) => Some(l2_norm(value, ctx)),
-        ("VEC_FROM_TEXT", [value]) => Some(from_text(value, ctx)),
-        ("VEC_AS_TEXT", [value]) => Some(as_text(value, ctx)),
-        _ => None,
-    }
-}
-
-fn vector(value: &Datum) -> Result<Option<VectorFloat32>, EvalError> {
-    if matches!(value, Datum::Null) {
-        return Ok(None);
-    }
-    let target = FieldType::new(FieldTypeCode::VectorFloat32);
-    match value
-        .convert_to(&target, ConversionFlags::default())
-        .map_err(|error| EvalError::Vector(error.to_string()))?
-        .value
-    {
-        Datum::VectorFloat32(value) => Ok(Some(value)),
-        _ => unreachable!("a VectorFloat32 conversion returns a vector datum"),
-    }
-}
-
-fn dims(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        EvaluatedBytesOp::VecDimsNative,
-        ctx,
-        || Ok(EvaluatedArgs::NativeVector(vector(value)?)),
-        EvaluatedBytesResult::into_int_datum,
-    )
-}
-
-fn distance(
-    left: &Datum,
-    right: &Datum,
-    operation: EvaluatedBytesOp,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    // Inspect only actual datum NULL tags to select the closed recipe. All
-    // conversions stay under its guard, in the original left-to-right order:
-    // a bad left still errors before a NULL right, and a NULL left skips right.
-    let operation = if matches!(left, Datum::Null) || matches!(right, Datum::Null) {
-        EvaluatedBytesOp::VecRealNullNative
-    } else {
-        operation
+    let op = match name {
+        "VEC_DIMS" => O::Dims,
+        "VEC_L1_DISTANCE" => O::L1Distance,
+        "VEC_L2_DISTANCE" => O::L2Distance,
+        "VEC_NEGATIVE_INNER_PRODUCT" => O::NegativeInnerProduct,
+        "VEC_COSINE_DISTANCE" => O::CosineDistance,
+        "VEC_L2_NORM" => O::L2Norm,
+        "VEC_FROM_TEXT" => O::FromText,
+        "VEC_AS_TEXT" => O::AsText,
+        _ => return None,
     };
-    crate::tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || {
-            let Some(left) = vector(left)? else {
-                return Ok(EvaluatedArgs::NullWitness(None));
-            };
-            let Some(right) = vector(right)? else {
-                return Ok(EvaluatedArgs::NullWitness(None));
-            };
-            Ok(EvaluatedArgs::NativeVector2(Some(left), Some(right)))
-        },
-        pack_real,
-    )
-}
-
-fn l2_norm(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        EvaluatedBytesOp::VecL2NormNative,
-        ctx,
-        || Ok(EvaluatedArgs::NativeVector(vector(value)?)),
-        pack_real,
-    )
-}
-
-fn pack_real(computed: EvaluatedBytesResult) -> Result<Datum, EvalError> {
-    // The worker has already applied the original NaN-to-NULL policy. Preserve
-    // every remaining result bit, including infinities, without host filtering.
-    Ok(computed
-        .into_ieee754_bits()?
-        .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
-}
-
-fn from_text(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        EvaluatedBytesOp::VecFromTextNative,
-        ctx,
-        || {
-            Ok(EvaluatedArgs::Bytes(crate::arg_eval_type::eval_string(
-                value,
-            )?))
-        },
-        EvaluatedBytesResult::into_native_vector_datum,
-    )
-}
-
-fn as_text(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        EvaluatedBytesOp::VecAsTextNative,
-        ctx,
-        || Ok(EvaluatedArgs::NativeVector(vector(value)?)),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
+    if values.len() != op.arity() {
+        return None;
+    }
+    Some(crate::tikv::vector_value::eval(op, values))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tidb_datatype::{FieldTypeCode, VectorFloat32};
 
     fn vector(values: Vec<f32>) -> Datum {
         Datum::new_vector_float32(VectorFloat32::must_create(values))

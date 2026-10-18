@@ -691,3 +691,8 @@ pub(crate) mod time_arithmetic_value_tests;
 
 #[cfg(test)]
 pub(crate) mod presentation_value_tests;
+
+#[cfg(test)]
+pub(crate) mod vector_value_tests;
+
+pub(crate) mod vector_value;

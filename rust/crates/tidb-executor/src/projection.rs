@@ -3523,6 +3523,54 @@ mod tests {
         let presentation_mix = std::iter::once(0)
             .chain(presentation_start..roots.len())
             .collect::<Vec<_>>();
+        let vector_start = roots.len();
+        for name in [
+            "vec_dims",
+            "vec_l1_distance",
+            "vec_l2_distance",
+            "vec_negative_inner_product",
+            "vec_cosine_distance",
+            "vec_l2_norm",
+            "vec_from_text",
+            "vec_as_text",
+        ] {
+            let field = match name {
+                "vec_dims" => integer.clone(),
+                "vec_from_text" => FieldType::new(FieldTypeCode::VectorFloat32),
+                "vec_as_text" => string.clone(),
+                _ => FieldType::new(FieldTypeCode::Double),
+            };
+            let first = call(
+                "if",
+                string.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::new_string("[3,4]"), string.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                ],
+            );
+            let mut args = vec![first];
+            if matches!(
+                name,
+                "vec_l1_distance"
+                    | "vec_l2_distance"
+                    | "vec_negative_inner_product"
+                    | "vec_cosine_distance"
+            ) {
+                args.push(Expression::Constant(Constant::new(
+                    Datum::new_string("[1,2]"),
+                    string.clone(),
+                )));
+            }
+            let root = call(name, field.clone(), args);
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let vector_mix = std::iter::once(0)
+            .chain(vector_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3546,6 +3594,10 @@ mod tests {
                     .iter()
                     .map(|&i| fields[i].clone())
                     .collect(),
+            ),
+            (
+                vector_mix.iter().map(|&i| roots[i].clone()).collect(),
+                vector_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
             (
                 presentation_mix.iter().map(|&i| roots[i].clone()).collect(),

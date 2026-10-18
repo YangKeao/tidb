@@ -52,6 +52,8 @@ mod str_to_date_source;
 mod timestamp_diff_source;
 #[path = "batch_tso.rs"]
 mod tso_source;
+#[path = "batch_vector.rs"]
+mod vector;
 pub(super) use charset_source::NativeCharsetMetadata;
 #[path = "batch_extremum.rs"]
 mod extremum_source;
@@ -139,6 +141,13 @@ pub(super) enum NativeHostMetadata {
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
+    },
+    Vector {
+        arguments: Box<[usize]>,
+        operation: tidb_query_expr::NativeVectorOperation,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
     },
     DurationConstruction {
         arguments: Box<[usize]>,
@@ -318,6 +327,7 @@ impl NativeHostMetadata {
             | Self::Clock { result_type, .. }
             | Self::Calendar { result_type, .. }
             | Self::DurationConstruction { result_type, .. }
+            | Self::Vector { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
@@ -344,6 +354,10 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Vector {
+        next: usize,
+        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
+    },
     DurationConstruction {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
@@ -452,7 +466,8 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::TimestampDiff { next, .. }
-            | SqlDemand::DurationConstruction { next, .. } => Ok(Some(*next)),
+            | SqlDemand::DurationConstruction { next, .. }
+            | SqlDemand::Vector { next, .. } => Ok(Some(*next)),
             SqlDemand::Calendar { first }
             | SqlDemand::Epoch { first }
             | SqlDemand::Extract { first }
@@ -488,7 +503,9 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::TimestampDiff { .. } | SqlDemand::DurationConstruction { .. } => {
+            SqlDemand::TimestampDiff { .. }
+            | SqlDemand::DurationConstruction { .. }
+            | SqlDemand::Vector { .. } => {
                 Err(binding("timestamp diff demand cannot retain byte prefix"))
             }
             SqlDemand::Calendar { .. }
@@ -2121,6 +2138,27 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::VectorNative(op) => {
+                let Some(NativeHostMetadata::Vector {
+                    arguments,
+                    operation,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("vector descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || op != *operation
+                    || arguments.len() != op.arity()
+                    || invocation.arg_types.len() != op.arity()
+                {
+                    return Err(binding("vector descriptor differs"));
+                }
+                SqlDemand::Vector {
+                    next: 0,
+                    tokens: [None; 2],
+                }
+            }
             SqlBatchHostOperation::DurationConstructionNative(op) => {
                 let Some(NativeHostMetadata::DurationConstruction {
                     arguments,
@@ -2708,6 +2746,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Vector { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("vector source cannot be wire NULL"));
+            };
+            return self.resume_vector(id, token);
         }
         if matches!(task.demand, SqlDemand::DurationConstruction { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

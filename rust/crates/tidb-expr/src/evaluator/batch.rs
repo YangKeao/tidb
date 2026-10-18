@@ -374,6 +374,7 @@ fn promoted_native_root_view(
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
+        || native_vector_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -926,6 +927,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
+        || native_vector_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1190,6 +1192,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
+        || native_vector_call(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1235,6 +1238,21 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_vector_call(function: &ScalarFunction) -> Option<tidb_query_expr::NativeVectorOperation> {
+    use tidb_query_expr::NativeVectorOperation as O;
+    let op = match function.func_name.lowercase() {
+        "vec_dims" => O::Dims,
+        "vec_l1_distance" => O::L1Distance,
+        "vec_l2_distance" => O::L2Distance,
+        "vec_negative_inner_product" => O::NegativeInnerProduct,
+        "vec_cosine_distance" => O::CosineDistance,
+        "vec_l2_norm" => O::L2Norm,
+        "vec_from_text" => O::FromText,
+        "vec_as_text" => O::AsText,
+        _ => return None,
+    };
+    (function.args.len() == op.arity()).then_some(op)
 }
 fn native_duration_construction_call(
     function: &ScalarFunction,
@@ -1421,6 +1439,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
+        || native_vector_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1436,6 +1455,20 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some(op) = native_vector_call(function) {
+        if view.value_role().is_none()
+            || function.get_static_type().is_none()
+            || function.args.iter().any(|v| v.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "vector requires original native declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::VectorNative(op)),
+            op.arity(),
+        ));
+    }
     if let Some(op) = native_duration_construction_call(function) {
         if view.value_role().is_none()
             || function.get_static_type().is_none()
@@ -2424,6 +2457,14 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if let Some(op) = native_vector_call(function) {
+                        budget.field(sql, 1)?;
+                        budget.add(
+                            op.arity()
+                                .checked_mul(std::mem::size_of::<usize>())
+                                .ok_or_else(|| resource("vector metadata overflow"))?,
+                        )?;
+                    }
                     if let Some(op) = native_duration_construction_call(function) {
                         budget.field(sql, 1)?;
                         for arg in &function.args {
@@ -3082,6 +3123,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::ClockNative { .. }
                                         | SqlBatchHostOperation::CalendarNative { .. }
                                         | SqlBatchHostOperation::DurationConstructionNative(_)
+                                        | SqlBatchHostOperation::VectorNative(_)
                                         | SqlBatchHostOperation::TsoNative(_)
                                         | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
@@ -3150,6 +3192,30 @@ fn lower_view(
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::VectorNative(op) => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, op.arity())?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("vector ordinal overflow"))?;
+                                for _ in 0..op.arity() {
+                                    arguments.push(child);
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("vector child missing"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::Vector {
+                                    arguments: arguments.into_boxed_slice(),
+                                    operation: op,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("vector result view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::DurationConstructionNative(op) => {

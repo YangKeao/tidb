@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7r: retire all eight native vector SQL Ready callers and integrate canonical vector sources through the existing SDK frame, with borrowed actual vectors and original conversion/dimension/IEEE/NaN/NULL/error semantics. Capture original outcomes and Ready/source REDs before candidate edits, independently pair before retirement, bound demanded conversion/work/output ownership, validate all provenance and callbacks/cleanup, source metadata/selection/returns and mixed serial/parallel Projection, full frontend/SDK/exact warning and failure lists/lint/dual format/immutable fixtures, then sign local DCO commits. Generic fallback and unistore remain global work.
+
 - [x] N7q: integrate DATE_FORMAT canonical sources over the existing actual N7j owner and retire FORMAT_BYTES/FORMAT_NANO_TIME Ready handoffs, exposing an actual nullable f64 formatter over the existing scaled primitive. Capture fresh original outcomes/context including thresholds/IEEE/native kinds and source/Ready REDs before edits; pair the candidate while old metric callers/workers remain, then delegate explicit wire workers to the shared actual formatter. Preserve first DATE_FORMAT ETDatetime source cast/full metadata before both eager strict text conversions, NULL/error order, numeric-prefix metric conversion/warnings and original return-family boundary. Borrow callback-free metric kinds so unsupported huge vectors do not copy; copy real string/bytes before their callbacks. Validate provenance, budget/demand/panic recovery, all source kinds, result declarations and mixed Projection, full frontend/SDK, exact warning/failure lists, lint/dual format/immutable fixtures and local DCO commits. Global generic/unistore/semantic/full-server work remains open.
 
 - [x] N7p: retire all remaining Ready controllers in time_fn/add_sub.rs (ADDTIME, SUBTIME, TIMESTAMP1/2 and TIMESTAMPADD) and integrate canonical sources. Before edits capture original fresh-cache results/errors/panics/context traces with all static kind pairs/row modes/runtime binary facts, numeric-first TIMESTAMP parsing and late RHS, and TIMESTAMPADD's full-float conversion/NULL prefix/invalid-date-before-unit order. Reproduce Ready/source REDs; add actual SDK owned reports and a consuming actual parsed timestamp base, independently compare while old controllers exist, then retire old controllers and delegate explicit wire codecs to the same actual kernels. Preserve original source casts, constant-only row classification, forced TIMESTAMP DateTime(None), typed ADDTIME return transform and ordinary return conversion. Validate demanded work/diagnostic allocation, ignored huge arguments, complete authentication/terminal invocation cleanup/exclusive callbacks, typed source matrices, full frontend/core/Projection, exact warning/failure lists, lint, both formatters and fixed fixtures; sign local DCO commits only. Global generic/unistore/full-server work remains open.
@@ -109,6 +111,18 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7r confirms that the eight vector functions already share native raw_ref
+algorithms through the actual datatype and the old explicit workers. The SQL
+wrappers were nevertheless cloning vectors and re-entering Ready solely to
+transport inputs/results. Actual vectors now borrow unchanged storage, including
+mutated nonfinite bits and uncapped dimensions. Dims and dimension mismatch need
+no payload scan, while NULL left suppresses RHS conversion only after all eager
+source capabilities authenticate. The sole ETString source cast belongs to
+VEC_FROM_TEXT; other signatures keep ordinary convert_to vector conversion. All
+207504 independent observations and actual Real bits matched before retirement,
+original checksum D0CDB9F6BB8FB5EB. Physical source/output comparisons retain NaN,
+infinity, contradictory declarations and the NewDate computed alias cases.
+
 N7q confirms that FORMAT_BYTES/FORMAT_NANO_TIME retain the original scientific
 formatter panic on infinities; NaN and negative zero also retain their original
 text. Source tests compare caught panic payloads, complete partial physical output
@@ -171,6 +185,16 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: add dedicated VectorNative catalog/metadata/demand through the
+  existing HostFrame, with actual NativeVectorValue outputs and pure borrowed
+  conversion. Keep explicit wire workers and actual APIs on the same native
+  datatype algorithms instead of encoding vectors for a second expression call.
+  Rationale: original conversion, eager child evaluation and capability validation
+  are distinct boundaries. Retain bad-left-before-NULL-right, NaN-to-NULL, infinity
+  and signed-zero bits, original dimension/text errors and one ordinary return
+  boundary. Bound only demanded parser/render/metric work and owned buffers.
+  Date/Author: 2026-10-19 / TiDBEngineer.
+
 - Decision: expose nullable actual f64 formatting over the existing scaled
   primitive, retire only the two metric Ready callers, and add three canonical
   sources through the existing time-family host. Keep original numeric conversion
@@ -227,6 +251,20 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7r retires all eight native vector SQL Ready callers and integrates their
+canonical sources. Independent proof matched207504 observations and Real bits
+before retirement, checksum D0CDB9F6BB8FB5EB unchanged. Final frontend1728/exact3
+inherited/95ignored has all263 batch tests green; SDK1125/exact1 inherited/1ignored
+and Projection26 retain prior failure lists. The new17-root Projection group
+covers all eight functions and CHAR parents plus an older arithmetic output under
+both flags/workers0/2. Provider checks cover8 policies and both roles; direct
+actual-value tests validate raw bits, finite work, NULL and mismatch priority.
+Frontend346 and clippy89 expression/171 all warning-title Counters match N7q.
+Lint, both pinned13-file formatters, immutable fixtures and both diffs pass. See
+rust/docs/evidence/no-fallback-n7r.md for commands and boundaries. This local DCO
+checkpoint does not complete generic fallback, unistore, unsupported/malformed
+sources, inherited failures, semantic audits or full-server SQL gates.
 
 N7q integrates DATE_FORMAT/FORMAT_BYTES/FORMAT_NANO_TIME canonical sources and
 retires both metric Ready callers. All56016 independent comparisons passed before
@@ -3222,3 +3260,59 @@ validity and full server SQL are not certified. Keep the global objective active
 Revision N7q: recorded completed presentation migration, independent original
 proof, preserved infinity panic and explicit demanded-prefix resource correction;
 updated all four living sections and continuation gates.
+
+
+## N7r milestone: actual vector SQL and canonical sources
+
+
+The eight frontend builtin_ext/vec.rs functions no longer construct Ready calls.
+SDK native_vector_value.rs supplies an operation enum with original spelling and
+arity, actual nullable dimension/text/metric outputs and strict text parsing.
+Both actual NativeVectorFloat32 methods and unchanged explicit wire workers share
+the same native raw_ref datatype primitives, formatter and parser. Original NaN
+becomes NULL after metrics; infinity and signed zero retain their bits. Existing
+raw vectors are borrowed, without validation, cloning or new dimension limits.
+String/Bytes vector conversion still uses original convert_to against an
+unspecified-dimension target; unsupported kinds retain original error messages.
+
+The dedicated VectorNative host uses the existing SDK frame and native capability
+ABI. batch.rs carries eager source node ids, the original result FieldType and
+output provenance; input FieldTypes impose no new cast policy. batch_vector.rs
+authenticates every eager source, closes demand before fallible body work and
+borrows actual inputs for the pure value layer. NULL left suppresses RHS body
+conversion, but a bad left still errors before NULL right. Only VEC_FROM_TEXT
+performs the original source ETString cast before strict parsing. Source borrows
+end before ordinary return-family conversion and output insertion; no generic
+temporal parse or Columns callback is introduced. Work and ownership are finite
+before actual parser/render/metric allocations/scans; Dims and mismatched sizes
+remain constant-time, and ignored RHS data is not copied.
+
+Original capture51952 and true independent75258 compared207504 fresh old-context/
+cache observations and actual Real bits before all eight callers retired, frozen
+hash D0CDB9F6BB8FB5EB. Ready and source guards both exposed all eight as RED. Original
+bodies and the executed pair/witness/logs live in persistent workspace
+evidence/no-fallback/n7r-*. The permanent fixed hash is a guard, not renewed
+independent proof; never regenerate it or rerun applied /tmp/n7r-host.py or
+/tmp/n7r-tests.py. Later private arity checks and removal of a tiny adapter Vec
+allocation do not change SQL policy. No resource RED is fabricated for this
+checkpoint: Ready/source REDs preceded implementation and finite-work tests are
+new contract checks.
+
+From TiDB root run RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test
+--manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib
+vector_ -- --nocapture, then the same command without the filter. Run
+-p tidb-executor --lib projection::tests for mixed output. From TiKV root run
+RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tikv test --release --locked --offline
+-j8 -p tidb_query_expr --lib and the receipt's scoped make-run clippy command.
+Run make lint and the receipt's two pinned13-file formatters, immutable fixture
+and diff checks. Expect frontend1728/3/95 and263 batch, SDK1125/1/1, Projection26;
+exact failures/title Counters match N7q. Source checks cover all eight functions,
+all argument positions,14 input declarations and9 result declarations, repeated/
+empty/reordered selections,4 flag transitions and dynamic context, CHAR parents,
+original errors and raw NaN/Inf vectors. NewDate remains computed over supported
+physical inputs. Full server/SQL, malformed-source validity and global fallback
+retirement remain open after signing this local checkpoint.
+
+Revision N7r: recorded complete eight-function vector source/caller migration,
+independent old observations and Real bits, borrowed payload/demand boundaries,
+finite-resource checks and final scoped gates across all four living sections.
