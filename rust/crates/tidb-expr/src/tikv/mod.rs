@@ -118,6 +118,8 @@ mod identity_value;
 mod if_control;
 mod if_null;
 mod in_list;
+#[cfg(test)]
+mod in_value_tests;
 pub(crate) use in_list::{
     eval_in_typed_values_in, in_control_datum, in_eq_observation, in_row_control_error,
 };

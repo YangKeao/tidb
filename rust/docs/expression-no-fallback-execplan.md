@@ -1508,3 +1508,83 @@ pass. All jobs closed. SDK production/datatype unchanged; N6q0 full1068/same6/
 one ignored/clippy89 reused, not rerun. Receipt:docs/evidence/no-fallback-n6u.md.
 Sign LOCAL, no push; remaining families/source/caller coverage, global alternate
 dispatch retirement and final inherited/SQL/server gates still remain.
+
+
+### N6v IN source closure and value migration (2026-10-18, actual RED)
+
+Three authentic SQL-source regressions (generic ABS operand, duration columns,
+computed JSON) each show one refusal and one fallback. They stay active until
+genuine IN host/source integration fixes them, not ignored or permanently
+refused. Ordinary generic IN compares every candidate, even after NULL/match;
+prepared strings use only the original stored dynamic indices and late
+coercion/collator resolution. Typed temporal/JSON IN retains ALL evaluation then
+ALL casting before membership, with distinct first/member JSON cast modes.
+Cast argument temporal helpers are already pure SDK value entries.
+
+Fresh source inspection corrects a prior design assumption: typed-IN wire
+validation checks complete identity framing, not domain membership. Wrong-domain
+non-NULL values are accepted and compare false; they must not gain a new error.
+Arity<2 is a distinct invalid-frame contract. Begin with genuine borrowed typed
+values and shared encapsulated membership/prepared-key state, preserving the
+old frame recipe as an independent oracle until comparison proof is captured.
+Then remove frontend typed frames and connect genuine vararg source demands in
+the canonical driver. Value/protocol availability alone cannot satisfy the three
+pending admission REDs. No global completion or push is authorized.
+
+
+N6v actual root cohort confirms three refusal1/fallback1 REDs, with matching
+SQL results before the route assertion. OLD typed value proof now spans45 raw
+native fixtures, all four typed domains, four list arrangements and three cache
+profiles, plus arity0/1 contract errors:97,752 cases. It includes wrong-domain
+values deliberately, because the old private interface accepts their frames
+and compares false. A separate actual worker-lookup trap remains RED until
+frontend typed frames are retired. Backend production has not changed yet.
+Proposed allocation-free typed view iterator must only view already-fetched,
+already-cast values; it cannot fetch expressions lazily or bypass the original
+source/cast barrier. Encapsulated membership/prepared-key probe state will let
+future canonical host tasks reuse the exact existing policy without callback
+expression evaluation or host-precomputed membership answers.
+
+
+N6v OLD97,752 typed value/arity results captured hash e128f6d8e515d162.
+Independent comparison of the still-active old frame recipe against the new
+borrowed value helper passed all cases with the exact same OLD hash before
+switching the wire body. Historical test-only reproduction patch is saved
+against0ab81038/SDK6a36ba0. The typed Ready-worker lookup trap fails old code.
+The borrowed API now serves frontend typed values without encoding, and the
+ordinary wire recipe delegates after its unchanged full-frame validation.
+Wrong-domain non-NULL values still compare false; arity errors retain the old
+opaque scope cause. Encapsulated membership/prepared-key state exposes existing
+SDK policy for future canonical host steps, not host-precomputed membership.
+Core tests and frontend value tests are running. One new low-level time test
+uses raw0/1 as unequal, but Time Ord clears packed FSP/type bits; after builds
+close correct only that test to assert equality and use1<<32 for a different
+core. This is a test assumption, not a production semantic change. Three actual
+source admission REDs remain explicitly pending canonical IN host integration.
+
+
+### N6v0 typed IN value checkpoint (2026-10-18)
+
+Corrected only the new time-test assumption: native Time Ord clears packed
+metadata, so raw0/1 compare equal; raw1<<32 supplies an actual different core.
+SDK final full1071 pass/exact inherited6/one ignored/zero filtered, clippy89
+warnings unchanged. Existing-consumer frontend1544 pass/exact inherited4/
+95 ignored with exactly the three UNCOMMITTED source admission REDs filtered
+for this value-only compatibility gate. Separate current-binary rerun confirms
+all three still refusal1/fallback1; they remain active, not ignored and not
+part of the value-only commit. The complete tracked frontend checkpoint will
+therefore have zero filtered tests when these pending source tests are absent.
+OLD97752 hash e128f6d8e515d162 remains fixed; exact private arity scope cause
+and retired Ready-worker lookup test pass. Original reproduction patch passes
+cached apply-check against0ab81038 using a separate temporary Git index.
+Production Projection/lint/fmt/diff and receipt are the remaining checkpoint
+gates. Then sign local commits and continue actual canonical IN source closure;
+legacy int/bytes loops and global fallback retirement are still outstanding.
+
+N6v0 final checkpoint: production Projection25 pass, mixed28-root matrix both
+flags/zero-two workers. make lint, pinned rustfmt9Rustfiles and both diff checks
+pass. All jobs closed; exact inherited failure comparisons saved. Receipt
+`docs/evidence/no-fallback-n6v0.md` records the filtered compatibility gate and
+separate still-RED source gate explicitly. Sign SDK value implementation/guide
+and frontend typed adapter/tests/receipt; leave batch_tests.rs source regressions
+unstaged for next actual integration. No push; overall goal remains active.

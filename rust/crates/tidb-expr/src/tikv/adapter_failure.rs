@@ -250,6 +250,28 @@ mod tests {
     }
 
     #[test]
+    fn typed_in_arity_keeps_original_private_scope_cause() {
+        use crate::{Datum, EvalError};
+        use tidb_query_expr::NativeInTypedDomain as D;
+        for domain in [D::Datetime, D::Timestamp, D::Duration, D::Json] {
+            for values in [vec![], vec![Datum::Null], vec![Datum::Int(1)]] {
+                let Err(EvalError::ExpressionAdapterFailure(failure)) =
+                    crate::tikv::eval_in_typed_values_in(&crate::NoColumns, domain, &values)
+                else {
+                    panic!("invalid typed-IN arity must retain its original contract")
+                };
+                assert_eq!(failure.class(), Class::ScopeContract);
+                assert_eq!(failure.origin(), Origin::Scope);
+                let AdapterFailureCause::Scope { kind, reason } = failure.cause.as_ref() else {
+                    panic!("original scope cause missing")
+                };
+                assert_eq!(*kind, ScopeFailureKind::Contract);
+                assert_eq!(*reason, "invalid native IN report");
+            }
+        }
+    }
+
+    #[test]
     fn scope_kinds_preserve_reason_without_parsing_it() {
         const REASON: &str = "private identical reason: poisoned reentry 1690 TiKV";
         for (kind, class, message) in [

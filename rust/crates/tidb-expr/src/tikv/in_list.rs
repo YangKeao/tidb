@@ -55,32 +55,28 @@ pub(crate) fn in_row_control_error(
 /// Only the already-evaluated, already-cast temporal/JSON IN branch enters here.
 /// The caller retains its all-evaluation then all-casting barrier.
 pub(crate) fn eval_in_typed_values_in(
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
     domain: tidb_query_expr::NativeInTypedDomain,
     values: &[Datum],
 ) -> Result<Datum, EvalError> {
-    evaluate_args_in(
-        Op::InTypedValuesNative,
-        ctx,
-        || {
-            let identities = values
-                .iter()
-                .map(identity_value::encode)
-                .collect::<Result<Vec<_>, _>>()?;
-            let views = identities.iter().map(Option::as_deref).collect::<Vec<_>>();
-            let packet = tidb_query_expr::encode_native_in_typed_values(domain, &views)
-                .map_err(frame_error)?;
-            Ok(EvaluatedArgs::Bytes(Some(packet)))
-        },
-        |computed| {
-            let report = computed.into_bytes()?.ok_or_else(invalid_report)?;
-            match tidb_query_expr::decode_native_in_result(&report).ok_or_else(invalid_report)? {
-                Report::Null => Ok(Datum::Null),
-                Report::Bool(value) => Ok(Datum::Int(i64::from(value))),
-                Report::Request { .. } => Err(invalid_report()),
-            }
-        },
+    use tidb_query_expr::NativeInTypedValue as Value;
+    tidb_query_expr::native_in_typed_values(
+        domain,
+        values.iter().map(|value| match value {
+            Datum::Null => None,
+            Datum::Time(value) => Some(Value::Time(value.core_time().raw())),
+            Datum::Duration(value) => Some(Value::Duration(value.nanoseconds())),
+            Datum::Json(value) => Some(Value::Json {
+                type_code: value.type_code(),
+                bytes: value.value(),
+            }),
+            // The old wire policy accepted non-domain identity tags and compared
+            // them false. Do not add a source-domain conversion or rejection here.
+            _ => Some(Value::Other),
+        }),
     )
+    .map(|value| value.map_or(Datum::Null, |value| Datum::Int(i64::from(value))))
+    .map_err(|_| invalid_report())
 }
 
 #[derive(Clone, Copy)]

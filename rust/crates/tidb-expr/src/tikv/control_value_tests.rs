@@ -81,7 +81,7 @@ impl Columns for Context {
         panic!("control selector must not redo coercion")
     }
 }
-fn fixtures() -> Vec<Datum> {
+pub(super) fn fixtures() -> Vec<Datum> {
     let mut values = crate::ops::arithmetic::tests::fixtures();
     let mut vector = VectorFloat32::must_create(vec![0.0, 0.0]);
     vector
