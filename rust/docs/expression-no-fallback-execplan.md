@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6j: every native-value-closed control/comparison root selects its genuine row program, independent of PLUS/MINUS/MUL descendants. Original EQ(ABS(...),ABS(...)) error-order/identity regression was RED before the fix.648 new root and96 SQL comparisons pass; full frontend1491same4/95ignored including132batch, ProductionProjection25 extended seven-root control matrix, lint/pinnedfmt/diff pass. SDK unchangedcff06c7. Receipt rust/docs/evidence/no-fallback-n6j.md. Typed outputs, other source domains and global retirement remain open.
+
 - [x] N6i: shared native static candidate fact and native-value row-root publication independent of function spelling/view label. Original RealABS and non-call budget regressions reproduced before final fixes. Full frontend1489same4/95ignored,130batch,122root+48SQL comparisons, ProductionProjection25 (extended five-root matrix), lint/pinnedfmt/diff pass. SDK unchangedcff06c7. Receipt rust/docs/evidence/no-fallback-n6i.md. Typed output/operand domains and global retirement remain open.
 
 - [x] N6h: control/comparison arithmetic row demand, bounded native batch publication staging and scoped typed controls below window roots. Both native demand/publication defects and the SDK restriction were reproduced before implementation.448 root comparisons,72 SQL additions,126 batch/full1485same4/95ignored, core14window/full1058same6/1ignored, Projection25, lint/scopedclippy89warnings/pinnedfmt/diff pass. SDK signed local cff06c7; receipt rust/docs/evidence/no-fallback-n6h.md. Other batch publication owners and global alternate-driver retirement remain open.
@@ -923,3 +925,29 @@ shared native candidate refactor, including the five-root unary matrix; lint,
 all four changed Rust files' pinned format checks and git diff checks pass.
 There are no active build/test handles. This checkpoint is ready for a local
 signed-off commit; no push is authorized and the overall goal remains active.
+
+### N6j control roots with non-arithmetic descendants (2026-10-18)
+
+The production control/comparison promotion still requires a PLUS/MINUS/MUL
+somewhere in the source tree. That does not prove row operand demand: ABS can
+also fail on a later left row before an earlier right-row failure in an eager
+typed graph. Compare EQ(ABS(column0),ABS(column1)) on rows(1,MIN_INT) and
+(MIN_INT,1) against the actual native owner before changing that predicate.
+If confirmed, native-value-closed control/comparison roots must select their
+actual row program regardless of descendant spelling. Explicit old strict
+test-consumer contracts stay separate, and unsupported source closures do not
+gain fake value callbacks. Validate selection controls, logical/boolean
+predicates and comparisons, then full frontend/production Projection/lint/fmt;
+SDK code need not change for this source-domain correction.
+
+
+### N6j verified outcome (2026-10-18)
+
+The original regression reproduced an SDK Evaluation/Invoke wrapper instead of
+native DataOutOfRange(BIGINT,abs(t.c1)). Selecting the actual native row control
+program preserves both demanded row/operand order and the original SQL error.
+The23-root matrix and actual SQL/Projection coverage pass, full frontend1491
+retains exactly the inherited four failures/95ignored, and all required gates
+for this frontend-only change pass. No SDK code changed and all build handles
+are terminal. Sign the local checkpoint and continue typed output publication
+and ordinary operand/source coverage; do not mark the overall goal complete.

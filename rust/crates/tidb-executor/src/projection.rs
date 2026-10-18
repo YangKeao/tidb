@@ -2581,6 +2581,30 @@ mod tests {
                 vec![literal(1), selected(), literal(0)],
             ),
             call("eq", integer.clone(), vec![selected(), column(0)]),
+            call(
+                "eq",
+                integer.clone(),
+                vec![
+                    call("abs", integer.clone(), vec![column(0)]),
+                    call("abs", integer.clone(), vec![column(1)]),
+                ],
+            ),
+            call(
+                "coalesce",
+                integer.clone(),
+                vec![
+                    call("abs", integer.clone(), vec![column(0)]),
+                    call("abs", integer.clone(), vec![column(1)]),
+                ],
+            ),
+            call(
+                "and",
+                integer.clone(),
+                vec![
+                    call("abs", integer.clone(), vec![column(0)]),
+                    call("abs", integer.clone(), vec![column(1)]),
+                ],
+            ),
         ];
         let fields = vec![integer.clone(); roots.len()];
         for enabled in [true, false] {

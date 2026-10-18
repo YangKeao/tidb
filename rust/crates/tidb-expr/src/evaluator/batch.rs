@@ -373,16 +373,13 @@ fn promoted_native_root_view(
     profile_shape(root, limits)?;
     if row_control {
         // Native controls/comparisons invoke their selected operands per row,
-        // even when the outer batch flag is enabled. An eager typed arithmetic
-        // child would evaluate a skipped RHS after NULL and can raise an error.
-        // Keep these subtrees in their genuine row domain in the same driver.
+        // even when the outer batch flag is enabled. Eager typed descendants
+        // can change demand and error identity without any arithmetic node.
+        // A closed native-value subtree therefore keeps its genuine row domain
+        // independently of the spelling or carrier types of its descendants.
         return Ok(
-            (contains_native_arithmetic(root, limits.tree.max_depth, &mut {
-                limits.tree.max_nodes
-            }) && native_value_tree_complete(root, limits.tree.max_depth, &mut {
-                limits.tree.max_nodes
-            }))
-            .then_some(NativeView::RootValue),
+            native_value_tree_complete(root, limits.tree.max_depth, &mut { limits.tree.max_nodes })
+                .then_some(NativeView::RootValue),
         );
     }
     let target = field.eval_type();

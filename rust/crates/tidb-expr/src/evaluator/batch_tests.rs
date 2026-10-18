@@ -8321,6 +8321,14 @@ fn rewritten_arithmetic_roots_use_canonical_priority_and_bulk_row_profiles() {
         "abs(r*r)",
         "abs(d*2)",
         "abs(d*d)",
+        "abs(i)=abs(i)",
+        "coalesce(abs(i),7)",
+        "ifnull(abs(i),7)",
+        "if(i,abs(i),7)",
+        "case when i then abs(i) else 7 end",
+        "abs(i) and abs(i)",
+        "abs(i) or abs(i)",
+        "isnull(abs(i))",
     ] {
         let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
             panic!("query")
@@ -8795,6 +8803,71 @@ fn native_noncall_roots_do_not_acquire_batch_publication_storage() {
                 output.column(0).get_raw(row).as_ref(),
                 expected_output.column(0).get_raw(row).as_ref()
             );
+        }
+    }
+}
+
+#[test]
+fn native_comparison_abs_descendants_keep_row_operand_error_order() {
+    let root = call("eq", ty(), vec![abs(column(0)), abs(column(1))]);
+    let schema = vec![ty(), ty()];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(i64::MIN)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1)],
+    ];
+    compare_arithmetic_profile(root, &schema, &rows, &[0, 1]);
+}
+
+#[test]
+fn native_closed_controls_without_arithmetic_keep_row_demand_and_error_identity() {
+    let a = || abs(column(0));
+    let b = || abs(column(1));
+    let mut roots = vec![
+        call("if", ty(), vec![column(2), a(), b()]),
+        call("ifnull", ty(), vec![a(), b()]),
+        call("coalesce", ty(), vec![a(), b(), int(7)]),
+        call("case", ty(), vec![column(2), a(), int(1), b(), int(7)]),
+        call("and", ty(), vec![a(), b()]),
+        call("or", ty(), vec![a(), b()]),
+    ];
+    for name in [
+        "not",
+        "isnull",
+        "istrue",
+        "isfalse",
+        "isnottrue",
+        "isnotfalse",
+        "isunknown",
+        "isnotunknown",
+        "istrue_with_null",
+    ] {
+        roots.push(call(name, ty(), vec![a()]));
+    }
+    for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq", "nullif"] {
+        roots.push(call(name, ty(), vec![a(), b()]));
+    }
+    let schema = vec![ty(); 3];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(i64::MIN), Datum::Int(1)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1), Datum::Int(0)],
+        vec![Datum::Null, Datum::Int(i64::MIN), Datum::Null],
+        vec![Datum::Int(0), Datum::Int(i64::MIN), Datum::Int(0)],
+        vec![Datum::Int(2), Datum::Int(3), Datum::Null],
+    ];
+    let mut late_error = vec![4; 2050];
+    late_error[2049] = 0;
+    let selections = [
+        vec![],
+        vec![0, 1],
+        vec![1, 0],
+        vec![2, 0, 2],
+        vec![3, 0, 3],
+        vec![4; 2050],
+        late_error,
+    ];
+    for root in roots {
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
         }
     }
 }
