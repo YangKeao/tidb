@@ -2505,7 +2505,7 @@ mod tests {
                 Expression::Constant(Constant::new(Datum::new_string("x"), string.clone())),
             ],
         ));
-        let fields = vec![
+        let mut fields = vec![
             integer.clone(),
             decimal.clone(),
             json,
@@ -2515,6 +2515,31 @@ mod tests {
             real,
             string,
         ];
+        let bits = integer.clone().with_unsigned(true);
+        for name in [
+            "bitand",
+            "bitor",
+            "bitxor",
+            "leftshift",
+            "rightshift",
+            "bitneg",
+        ] {
+            let mut args = vec![call("abs", integer.clone(), vec![column(0)])];
+            if name != "bitneg" {
+                args.push(call("cast_signed", integer.clone(), vec![column(1)]));
+            }
+            roots.push(call(name, bits.clone(), args));
+            fields.push(bits.clone());
+        }
+        roots.push(call(
+            "plus",
+            bits.clone(),
+            vec![
+                call("bitxor", bits.clone(), vec![column(0), column(1)]),
+                literal(1),
+            ],
+        ));
+        fields.push(bits);
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

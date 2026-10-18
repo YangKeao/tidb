@@ -356,7 +356,8 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = native_selection_operation(function).is_some()
+    let row_control = native_bitwise_operation(function.func_name.lowercase()).is_some()
+        || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some();
     if native_arithmetic_operation(function.func_name.lowercase()).is_none()
         && !matches!(
@@ -1104,8 +1105,21 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
         name => native_boolean_operation(name),
     }
 }
+fn native_bitwise_operation(name: &str) -> Option<SqlBatchHostOperation> {
+    use tidb_query_expr::impl_op::NativeBitwiseOp as B;
+    Some(SqlBatchHostOperation::BitwiseNative(match name {
+        "bitand" => B::And,
+        "bitor" => B::Or,
+        "bitxor" => B::Xor,
+        "leftshift" => B::LeftShift,
+        "rightshift" => B::RightShift,
+        "bitneg" => B::Neg,
+        _ => return None,
+    }))
+}
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
+        || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
         || native_math_operation(function).is_some()
@@ -1117,6 +1131,7 @@ fn resolve_call_in_view(
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
         if let Some(operation) = window_value_operation(function, view)
+            .or_else(|| native_bitwise_operation(function.func_name.lowercase()))
             .or_else(|| native_selection_operation(function))
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
             .or_else(|| native_math_operation(function))
@@ -1785,7 +1800,10 @@ fn preflight_view<'a>(
                     }
                     if matches!(
                         resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::AbsNative)
+                        CallTarget::Host(
+                            SqlBatchHostOperation::AbsNative
+                                | SqlBatchHostOperation::BitwiseNative(_)
+                        )
                     ) {
                         budget.field(sql, 1)?;
                     }
@@ -2267,6 +2285,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::NullSafeEqNative
                                         | SqlBatchHostOperation::NullIfNative
                                         | SqlBatchHostOperation::AbsNative
+                                        | SqlBatchHostOperation::BitwiseNative(_)
                                         | SqlBatchHostOperation::AddNative
                                         | SqlBatchHostOperation::SubtractNative
                                         | SqlBatchHostOperation::MultiplyNative
@@ -2386,6 +2405,37 @@ fn lower_view(
                                         .value_role()
                                         .ok_or_else(|| binding("unary result role missing"))?,
                                     overflow_expression: overflow.map(String::into_boxed_str),
+                                }
+                            }
+                            SqlBatchHostOperation::BitwiseNative(operation) => {
+                                let left = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("bitwise source ordinal overflow"))?;
+                                let right = if operation.arity() == 2 {
+                                    Some(
+                                        checked
+                                            .get(left)
+                                            .ok_or_else(|| binding("bitwise left source missing"))?
+                                            .subtree_end,
+                                    )
+                                } else {
+                                    None
+                                };
+                                NativeHostMetadata::Bitwise {
+                                    operation,
+                                    name: sql.func_name.lowercase().into(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    left_node: left,
+                                    right_node: right,
+                                    unsigned: [
+                                        checked[left].sql.is_unsigned(),
+                                        right.is_some_and(|right| checked[right].sql.is_unsigned()),
+                                    ],
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("bitwise result role missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::AbsNative => {

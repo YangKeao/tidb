@@ -9211,3 +9211,197 @@ fn typed_duration_single_binding_import_preserves_full_native_nanoseconds() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn native_bitwise_abs_operands_keep_original_row_demand_and_sql_errors() {
+    let root = call(
+        "bitxor",
+        ty().with_unsigned(true),
+        vec![abs(column(0)), abs(column(1))],
+    );
+    let schema = vec![ty(), ty()];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(i64::MIN)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1)],
+    ];
+    compare_typed_profile(root, &schema, &rows, &[0, 1]);
+}
+
+#[test]
+fn native_bitwise_roots_and_whole_parents_keep_original_operand_phases() {
+    let bits = ty().with_unsigned(true);
+    let schema = vec![ty(); 3];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(2), Datum::Int(i64::MIN)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1), Datum::Int(1)],
+        vec![Datum::Null, Datum::Int(i64::MIN), Datum::Int(1)],
+        vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)],
+    ];
+    let mut roots = Vec::new();
+    for name in ["bitand", "bitor", "bitxor", "leftshift", "rightshift"] {
+        let b = || call(name, bits.clone(), vec![abs(column(0)), abs(column(1))]);
+        roots.extend([
+            b(),
+            call("plus", bits.clone(), vec![b(), abs(column(2))]),
+            call("abs", bits.clone(), vec![b()]),
+            call("ifnull", bits.clone(), vec![b(), int(0)]),
+            call(
+                name,
+                bits.clone(),
+                vec![plus(column(0), column(1)), abs(column(2))],
+            ),
+        ]);
+    }
+    roots.push(call("bitneg", bits.clone(), vec![abs(column(0))]));
+    roots.push(call(
+        "abs",
+        bits.clone(),
+        vec![call("bitneg", bits, vec![plus(column(0), column(1))])],
+    ));
+    for selection in [
+        vec![],
+        vec![3],
+        vec![0, 1],
+        vec![1, 0],
+        vec![2, 3, 2],
+        vec![3; 2050],
+        (0..2050)
+            .map(|row| if row == 2049 { 1 } else { 0 })
+            .collect(),
+    ] {
+        for root in &roots {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_bitwise_values_keep_all_carriers_null_conversions_and_warnings() {
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(6);
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let values = vec![
+        (Datum::Null, ty()),
+        (Datum::Int(-1), ty()),
+        (Datum::Int(-1), ty().with_unsigned(true)),
+        (Datum::UInt(u64::MAX), ty().with_unsigned(true)),
+        (Datum::Real(-1.5), real_ty()),
+        (Datum::Real(f64::INFINITY), real_ty()),
+        (Datum::Real(f64::from_bits(0x7ff8000000000042)), real_ty()),
+        (Datum::Float32(2.5), FieldType::new(FieldTypeCode::Float)),
+        (
+            Datum::Decimal(Decimal::from_literal("-1.500")),
+            decimal.clone(),
+        ),
+        (
+            Datum::Decimal(Decimal::from_literal(
+                "99999999999999999999999999999999999999999999999999999999999999999",
+            )),
+            decimal.clone(),
+        ),
+        (Datum::new_string("-3.7tail"), string_ty()),
+        (Datum::Bytes(vec![b'2', 0xff]), string_ty()),
+        (
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![0xff; 8])),
+            string_ty(),
+        ),
+        (
+            Datum::Bit(BinaryLiteral::from(vec![0xa5])),
+            FieldType::new(FieldTypeCode::Bit),
+        ),
+        (
+            Datum::Enum(MysqlEnum::new("b", 2), Collation::GbkBin),
+            string_ty(),
+        ),
+        (
+            Datum::Set(MysqlSet::new("a,b", 3), Collation::GbkBin),
+            string_ty(),
+        ),
+        (
+            Datum::Duration(MySqlDuration::from_nanoseconds(-123456789012, 6).unwrap()),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        ),
+        (
+            Datum::Time(time),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        ),
+        (
+            Datum::Json(BinaryJSON::parse("{\"a\":[1,null]}").unwrap()),
+            FieldType::new(FieldTypeCode::Json),
+        ),
+        (
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0])),
+            FieldType::new(FieldTypeCode::VectorFloat32),
+        ),
+        (Datum::Raw(vec![0xff]), string_ty()),
+        (Datum::MinNotNull, ty()),
+        (Datum::MaxValue, ty()),
+    ];
+    let bits = ty().with_unsigned(true);
+    for (value, field) in &values {
+        let arg = || literal(value.clone(), field.clone());
+        let mut roots = vec![call("bitneg", bits.clone(), vec![arg()])];
+        for name in ["bitand", "bitor", "bitxor", "leftshift", "rightshift"] {
+            for partner in [
+                int(1),
+                literal(Datum::Real(2.5), real_ty()),
+                null(),
+                literal(
+                    Datum::Decimal(Decimal::from_literal(
+                        "99999999999999999999999999999999999999999999999999999999999999999",
+                    )),
+                    decimal.clone(),
+                ),
+            ] {
+                roots.push(call(name, bits.clone(), vec![arg(), partner.clone()]));
+                roots.push(call(name, bits.clone(), vec![partner, arg()]));
+            }
+        }
+        for root in roots {
+            for selection in [vec![], vec![0], vec![2, 0, 2]] {
+                compare_arithmetic_profile(root.clone(), &[], &vec![vec![]; 3], &selection);
+            }
+        }
+    }
+    // Column transport supplies the eight real scalar carriers, independent
+    // of the literal path. Retain NULL and repeated physical rows as well.
+    for (value, field) in values.into_iter().filter(|(value, _)| {
+        matches!(
+            value,
+            Datum::Int(_)
+                | Datum::UInt(_)
+                | Datum::Real(_)
+                | Datum::Float32(_)
+                | Datum::Decimal(_)
+                | Datum::String(_)
+                | Datum::Duration(_)
+                | Datum::Time(_)
+                | Datum::Json(_)
+        )
+    }) {
+        let schema = vec![field.clone()];
+        let rows = vec![vec![value], vec![Datum::Null]];
+        for name in [
+            "bitand",
+            "bitor",
+            "bitxor",
+            "leftshift",
+            "rightshift",
+            "bitneg",
+        ] {
+            let mut args = vec![typed_column(0, &field)];
+            if name != "bitneg" {
+                args.push(int(1));
+            }
+            let root = call(name, bits.clone(), args);
+            for selection in [vec![], vec![0], vec![1, 0, 1]] {
+                compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+            }
+        }
+    }
+}

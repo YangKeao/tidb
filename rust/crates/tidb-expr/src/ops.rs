@@ -33,38 +33,64 @@ use operand::{ComparisonOperand, ComparisonOperands};
 pub(crate) use operand::{Operand, OperandFacts, Operands};
 pub(crate) use real_coerce::*;
 
-/// Delegates already-coerced bit patterns without changing operand demand.
+/// Shared value kernel: no ready-argument program or expression callback.
 fn eval_bitwise_binary_in(
     op: BinaryOp,
     left: Option<i64>,
     right: Option<i64>,
-    ctx: &dyn crate::context::Columns,
+    _ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
+    use tidb_query_expr::impl_op::{native_bitwise_value, NativeBitwiseOp as B};
     let operation = match op {
-        BinaryOp::BitAnd => crate::tikv::EvaluatedBytesOp::BitAnd,
-        BinaryOp::BitOr => crate::tikv::EvaluatedBytesOp::BitOr,
-        BinaryOp::BitXor => crate::tikv::EvaluatedBytesOp::BitXor,
-        BinaryOp::LeftShift => crate::tikv::EvaluatedBytesOp::LeftShift,
-        BinaryOp::RightShift => crate::tikv::EvaluatedBytesOp::RightShift,
-        _ => unreachable!("caller restricts this helper to bitwise operators"),
+        BinaryOp::BitAnd => B::And,
+        BinaryOp::BitOr => B::Or,
+        BinaryOp::BitXor => B::Xor,
+        BinaryOp::LeftShift => B::LeftShift,
+        BinaryOp::RightShift => B::RightShift,
+        _ => unreachable!("bitwise kernel requires a bitwise operation"),
     };
-    crate::tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || Ok(crate::tikv::EvaluatedArgs::Int2(left, right)),
-        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
-    )
+    Ok(native_bitwise_value(operation, left, right)
+        .map_or(Datum::Null, |bits| Datum::UInt(bits as u64)))
 }
-
 fn eval_bit_neg_in(
     value: Option<i64>,
+    _ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    use tidb_query_expr::impl_op::{native_bitwise_value, NativeBitwiseOp};
+    Ok(native_bitwise_value(NativeBitwiseOp::Neg, value, None)
+        .map_or(Datum::Null, |bits| Datum::UInt(bits as u64)))
+}
+
+/// The bitwise value ladder needs only unsigned declaration flags. The other
+/// operand facts in the general dispatcher belong exclusively to non-bitwise
+/// signatures; no source tree or callable expression is retained here.
+pub(crate) fn eval_native_bitwise_values(
+    operation: tidb_query_expr::impl_op::NativeBitwiseOp,
+    left: Datum,
+    right: Option<Datum>,
+    unsigned: [bool; 2],
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::BitNeg,
+    use tidb_query_expr::impl_op::NativeBitwiseOp as B;
+    let op = match operation {
+        B::And => BinaryOp::BitAnd,
+        B::Or => BinaryOp::BitOr,
+        B::Xor => BinaryOp::BitXor,
+        B::LeftShift => BinaryOp::LeftShift,
+        B::RightShift => BinaryOp::RightShift,
+        B::Neg => return eval_unary(UnaryOp::BitNeg, left, Operand::Literal, ctx),
+    };
+    // The native binary caller reads this after both raw arguments, including
+    // NULL and conversion-error pairs. Keep that observation in this phase.
+    eval_binary_value_dispatch(
+        op,
+        left,
+        right.expect("binary bitwise has two demanded values"),
+        ctx.div_precision_increment(),
+        DERIVATION_FREE_COLLATION,
+        Operands::LITERALS,
+        unsigned,
         ctx,
-        || Ok(crate::tikv::EvaluatedArgs::Int(value)),
-        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
     )
 }
 
@@ -986,11 +1012,34 @@ fn prepare_comparison(
 
 pub(crate) fn eval_binary_full(
     op: BinaryOp,
+    l: Datum,
+    r: Datum,
+    div_precision_increment: u32,
+    collation: tidb_datatype::Collation,
+    operands: Operands<'_>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    eval_binary_value_dispatch(
+        op,
+        l,
+        r,
+        div_precision_increment,
+        collation,
+        operands,
+        [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
+        ctx,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_binary_value_dispatch(
+    op: BinaryOp,
     mut l: Datum,
     mut r: Datum,
     div_precision_increment: u32,
     collation: tidb_datatype::Collation,
     operands: Operands<'_>,
+    unsigned: [bool; 2],
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
@@ -1017,18 +1066,16 @@ pub(crate) fn eval_binary_full(
     // plain `Datum::Int`. Reinterpreting the bits HERE, once, is exactly Go's
     // `uval := uint64(val)` and leaves every operator below reading one fact
     // (`Integer::Unsigned`) instead of two.
-    let mut l = unsigned_operand(l, operands.lhs);
-    let mut r = unsigned_operand(r, operands.rhs);
+    let mut l = unsigned_operand_flag(l, unsigned[0]);
+    let mut r = unsigned_operand_flag(r, unsigned[1]);
     // Go's `intDivideFunctionClass` stamps its result `UnsignedFlag` when
     // EITHER argument carries it and `builtinArithmeticIntDivideDecimalSig`
     // then reads the quotient back through `ToUint`, which REJECTS a negative
     // quotient rather than wrapping it. A `DOUBLE UNSIGNED` or `DECIMAL
     // UNSIGNED` operand is not a `Datum::UInt`, so that flag has to travel
     // with the descriptor or the rejection never happens.
-    let unsigned_pair = matches!(l, Datum::UInt(_))
-        || matches!(r, Datum::UInt(_))
-        || operands.lhs.is_unsigned()
-        || operands.rhs.is_unsigned();
+    let unsigned_pair =
+        matches!(l, Datum::UInt(_)) || matches!(r, Datum::UInt(_)) || unsigned[0] || unsigned[1];
     // Go builds AND/OR/XOR with ETInt arguments, so each operand first takes
     // MySQL's numeric-prefix truthiness path. This must precede the ordinary
     // string comparison branch: string-vs-string is a binary collation
@@ -1071,13 +1118,14 @@ pub(crate) fn eval_binary_full(
     if matches!(l, Datum::Time(_) | Datum::Duration(_))
         || matches!(r, Datum::Time(_) | Datum::Duration(_))
     {
-        return eval_binary_full(
+        return eval_binary_value_dispatch(
             op,
             numeric_context_value(l),
             numeric_context_value(r),
             div_precision_increment,
             collation,
             operands,
+            unsigned,
             ctx,
         );
     }
@@ -1136,13 +1184,14 @@ pub(crate) fn eval_binary_full(
         // (+ warning 1292 `Truncated incorrect DOUBLE value: 'abc'`),
         // `'abc' DIV 2` INT:0 (+ the DECIMAL-worded 1292).
         // Neither converted operand is a string, so the recursion is one deep.
-        return eval_binary_full(
+        return eval_binary_value_dispatch(
             op,
             cast_binary_string_operand(op, l, ctx)?,
             cast_binary_string_operand(op, r, ctx)?,
             div_precision_increment,
             collation,
             operands,
+            unsigned,
             ctx,
         );
     }

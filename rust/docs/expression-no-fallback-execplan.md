@@ -988,3 +988,42 @@ core and datatype full suites remain non-green with exact known failure lists.
 All required scoped gates and305 new native comparisons pass. No build jobs
 remain. Sign the local checkpoint and continue ordinary typed operand demand,
 value bridges, dynamic sources and other callers; the goal is not complete.
+
+### N6l bitwise raw-operand bridge (2026-10-18, in progress)
+
+BITXOR(ABS(column0),ABS(column1)) reproduces the same ordinary-root gap:
+rows(1,MIN_INT),(MIN_INT,1) return an SDK Evaluation/Invoke wrapper instead
+of native DataOutOfRange(BIGINT,abs(t.c1)). Binary bitwise signatures demand
+both raw operands per row, even when the first is NULL; only then do they
+read div_precision_increment and perform the original value conversion ladder.
+The ladder includes observable Decimal pre-conversion warnings and JSON text
+conversion, so it must remain single-source rather than being rewritten.
+
+Add a closed bitwise host family for AND/OR/XOR/shifts/NOT, raw capability
+arguments and real output provenance. Preserve actual unsigned declaration
+flags throughout recursive value coercion. Replace the old final ready-value
+bitwise adapter with a direct shared SDK value kernel, also used by the
+existing RPN workers. Source promotion must close the native value subtree
+and preserve outer whole-child arithmetic/ABS/CAST scheduling. Bound payload,
+Decimal scale work and JSON expansion before copy/conversion/effects. Validate
+RED-to-green, all carrier/coercion kinds, row/whole compositions, terminal
+resource errors and clean reuse, then full scoped gates before a signed local
+checkpoint. The global migration remains active.
+
+
+### N6l verified outcome (2026-10-18)
+
+The original ABS/bitwise regression now returns the native SQL error from the
+correct demanded row/argument. All six bitwise operators share final SDK
+computation without ready-argument programs in the frontend value path.
+13,012 actual native-owner profile invocations and42 direct provider cases
+pass; whole-parent scheduling, original occurrence identity, actual context
+reads, warning/error conversion and terminal resource/provenance failures are
+covered. The full frontend has1500 passes and the exact inherited4 failures;
+SDK core has1059 passes and the exact inherited6 failures. All141 batch tests,
+15 window protocol tests,25 production Projection tests, lint, scoped clippy,
+both pinned formats and both diff checks pass. The production matrix has15
+output roots under both flags and serial/two-worker execution. All handles are
+closed. Sign this local checkpoint and continue remaining ordinary typed
+families/compositions, dynamic sources, multi-output effects and other callers;
+do not mark the overall goal complete.
