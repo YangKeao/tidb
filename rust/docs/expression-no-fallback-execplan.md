@@ -1766,3 +1766,103 @@ exact arity provenance, source capabilities and resource/reuse validation.
 Sign coherent local checkpoint without push. Goal/task4 stays ACTIVE; next
 inspect GREATEST/LEAST extremum value/caller/source closure together. Other
 families/global alternate dispatch and final inherited/SQL/server gates remain.
+
+### N6y GREATEST/LEAST actual values and canonical source closure (active)
+
+N6x signed checkpoint is progress (29fb79f7/aa69754); current trees otherwise
+clean except unrelated BUILD.bazel. Extremum retains eight Ready profiles and
+no same-driver source host. Preserve actual full NULL scan before domain choice,
+original signature/metadata/constant precision, numeric NoColumns comparison
+policy, first-winner ties, full signed/unsigned/NaN, datetime kind/precision,
+vector and direct-collation comparison, string-as-time text fallback and per-
+item modes/zone reads. First capture independent OLD value/context/representation
+witnesses and genuine source/worker REDs before implementation changes. Expose
+real borrowed values/typed reducer state in SDK (not transport reports or fake
+Exprs), independently compare before changing wire/controller, then retire
+caller programs and integrate eager-source collection+actual kernel phases in
+same SDK driver. Preserve terminal finite resource/error provenance, cancellation,
+return coercion/flags and multi-output/whole-parent demands; no permanent valid
+SQL Unsupported escape. Full relevant regression/Projection/lint/fmt/diffs,
+receipt+guide and signed coherent runnable checkpoint required; no push,
+subagents or final global-completion claim.
+
+N6y first OLD capture at29fb79f7/aa69754:331776 raw values/signatures/
+layouts/want/mode-cache cases fixedhash71134e1c9a2de957,802 caught original
+invariant panics;33696 arity/singleton/collation/time-text cases fixedhash
+5a25c52fc09e4be5,no panics. Both pass before implementation changes. Original
+snapshots and test-only n6y-original-extremum-baseline.patch cached-apply-check
+against29fb79f7 passed. Seven actual integer/real/decimal/string/time/string-as-
+time/vector sources each match SQL/context first and then fail route assertion
+with1refusal/1fallback. Actual cache lookup trap fails original code.
+
+SDK new typed actual sequence state and frontend independent bounded helper
+have been added alongside STILL ACTIVE old caller and wire implementation.
+Boundary33696 independently passes. Main independent comparison finds OLD cache
+poison contamination after a caught Rust invariant panic: next input
+[Real(-0),Bytes(-3.25tail),NULL] under reused Int signature returns ScopePoisoned
+instead of being evaluated; pure values return NULL. This is the retired mutex's
+state, not the following input's value semantics. Historical7113 digest and
+full original poisoned sequence remain immutable in baseline patch/snapshot.
+Do NOT regenerate that hash from new code or silently claim its exact equality.
+New distinct OLD-only fresh-authority cohort resets the OLD cache only after a
+caught invariant panic (not normal error/resource paths), so each next value
+is actually evaluated. Capture its own hash BEFORE independently comparing and
+before replacing old caller/wire. All historical cases remain in the artifacts;
+new native path must not recreate obsolete poison to emulate an unused mutex.
+Independent comparisons run in isolated single-test child processes: global
+panic-hook suppression belongs only to that child, and actual original panic
+messages are recorded as dispositions, never SQL NULL/error replacements.
+
+LIVE87719 captures the distinct fresh-authority cohort; production old extrema
+caller/wire remains active. No switch or green source claim yet. Need independent
+proof, raw representation/resource units, actual wire primitive sharing, caller
+retirement, genuine same-driver eager-source host+parent/Projection coverage,
+full gates and signed coherent checkpoint. Overall goal remains active.
+
+N6y distinct OLD fresh-authority capture:331776 actual value computations,
+2400 original invariant panics, fixedhash645bc94e1a54782d. The OLD cache is
+recreated ONLY after caught panic, not normal SQL/resource failures. Separate
+n6y-original-fresh-authority-extremum-baseline.patch applies at29fb79f7/aa69754;
+original snapshots preserve both historical poisoned and actual fresh cohorts.
+Do NOT overwrite/regenerate any hash. n6y-old-vs-fresh-authority-extremum-values.log
+(77759 closed0) independently matches ALL365472 actual cases, exact result
+identity bytes/cause/phase/context/warnings and2400 panic messages, BEFORE
+caller or wire replacement. Historical poisoned hash71134e1c9a2de957 remains
+an explicit retired-cache artifact, not claimed equal to new stateless values.
+
+After proof, old frontend Stage/identity/head/step/evaluate_args/scoped rebinding
+loop is removed. Explicit SDK wire profiles keep complete validation/protocol
+and share time/vector/collation/time-text comparison plus actual parse primitives.
+New helper uses genuine PreparedComparison with passed finite remaining bytes
+and NoColumns (not another worker). New SDK sequence units added. First frontend
+post-retirement build15150 failed only a missing FieldTypeCode import after old
+imports were deleted; corrected. LIVE13818 caller-value gate; LIVE96240 SDK
+native_extremum target gate, both actual processes confirmed, never restart on
+quiet output. New source host draft /tmp/n6y-batch-extremum.rs NOT APPLIED;
+7source REDs still pending integration. No sign before all coverage and gates.
+
+N6y FINAL:all seven original source REDs turn green (85685 closed0). Same SDK
+frame collects all arguments before kernel work, with detached signature/decimal/
+STRICT constness/collation/result metadata and authenticated eager source tokens.
+Source factory adds no Expr callbacks/alternative program or new eligibility
+whitelist. Native casts/context and SF RT/outer flags publication stay intact.
+Whole-parent/error/2050duplicate phases, actual storage-word packing/visible-text
+resource prechecks and provider stale/wrong-role/node/occurrence/clone/native-work/
+repeated-cancel/exact success+NULL reuse checks pass.
+
+Complete frontend1588 exact inherited4/95ignored/zero filtered, all185batch;
+SDK1079 exact inherited6/one ignored/zero filtered. Actual PreparedComparison
+receives remaining finite bytes; fresh actual OLD645b and boundary5a25 fixed
+witnesses/2400 invariant panics remain exact. Historical poisoned7113 artifact
+is retained and explicitly distinguished, not regenerated or falsely claimed.
+Projection25 passes all prior31-root and8-root matrices plus heterogeneous9 roots
+with eight extremum domains, both flags/zero-two workers. Lint/pinnedfmt13Rustfiles/
+bothdiffchecks pass; scoped clippy89 unchanged. Only unused Time import cleanup
+after full gates, compiled in final clippy lib/tests; no runtime changes after.
+All96240/15150/13818/85685/46354/82837/44387/51809/49495/32690 jobs CLOSED.
+Receipt docs/evidence/no-fallback-n6y.md and SDK guide record original evidence,
+cache-poison boundary, actual typed values and finite logical resources. Sign
+coherent local checkpoint, no push. Overall goal/task4 ACTIVE; other functions/
+sources/caller transports/alternate dispatch and final inherited/SQL/server
+closure remain unproven. Next inspect remaining native text/collection callers
+and their actual source coverage together; don't substitute performance work.

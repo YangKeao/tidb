@@ -11048,3 +11048,495 @@ fn native_interval_probe_capabilities_resources_cancel_and_reuse_are_terminal() 
     }
     provider.cancel(&task);
 }
+
+#[test]
+fn native_extremum_integer_abs_sources_require_canonical_driver() {
+    compare_typed_profile(
+        call(
+            "greatest",
+            ty(),
+            vec![abs(column(0)), int(1), abs(column(1))],
+        ),
+        &[ty(), ty()],
+        &[
+            vec![Datum::Int(2), Datum::Int(5)],
+            vec![Datum::Null, Datum::Int(i64::MIN)],
+        ],
+        &[0, 1],
+    );
+}
+#[test]
+fn native_extremum_decimal_cast_sources_require_canonical_driver() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(40)
+        .with_decimal(4);
+    compare_typed_profile(
+        call(
+            "least",
+            decimal.clone(),
+            vec![
+                call("cast_decimal", decimal.clone(), vec![column(0)]),
+                literal(
+                    Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5000")),
+                    decimal,
+                ),
+            ],
+        ),
+        &[ty()],
+        &[vec![Datum::Int(1)], vec![Datum::Int(7)], vec![Datum::Null]],
+        &[0, 1, 2, 0],
+    );
+}
+#[test]
+fn native_extremum_real_column_sources_require_canonical_driver() {
+    let real = real_ty();
+    compare_typed_profile(
+        call(
+            "greatest",
+            real.clone(),
+            vec![typed_column(0, &real), typed_column(1, &real)],
+        ),
+        &[real.clone(), real],
+        &[
+            vec![Datum::Real(-0.0), Datum::Real(0.0)],
+            vec![Datum::Real(f64::NAN), Datum::Real(1.0)],
+            vec![Datum::Null, Datum::Real(2.0)],
+        ],
+        &[0, 1, 2, 0],
+    );
+}
+#[test]
+fn native_extremum_string_sources_require_canonical_driver() {
+    compare_typed_profile(
+        call(
+            "greatest",
+            string_ty(),
+            vec![
+                call("cast_char", string_ty(), vec![abs(column(0))]),
+                typed_column(1, &string_ty()),
+            ],
+        ),
+        &[ty(), string_ty()],
+        &[
+            vec![Datum::Int(2), Datum::new_string("a")],
+            vec![Datum::Null, Datum::new_string("z")],
+        ],
+        &[0, 1, 0],
+    );
+}
+#[test]
+fn native_extremum_time_sources_require_canonical_driver() {
+    let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let time = |text| {
+        Datum::Time(
+            tidb_datatype::parse_datetime(text, &chrono_tz::UTC, true, false)
+                .unwrap()
+                .time,
+        )
+    };
+    compare_typed_profile(
+        call(
+            "greatest",
+            datetime.clone(),
+            vec![typed_column(0, &datetime), typed_column(1, &datetime)],
+        ),
+        &[datetime.clone(), datetime],
+        &[
+            vec![
+                time("2026-10-18 12:34:56.123456"),
+                time("2026-10-18 12:34:56.123457"),
+            ],
+            vec![Datum::Null, time("2020-01-01 00:00:00")],
+        ],
+        &[0, 1, 0],
+    );
+}
+#[test]
+fn native_extremum_string_as_time_sources_require_canonical_driver() {
+    let date = FieldType::new(FieldTypeCode::Date);
+    let time = tidb_datatype::parse_datetime("2020-01-01", &chrono_tz::UTC, true, false)
+        .unwrap()
+        .time;
+    compare_typed_profile(
+        call(
+            "least",
+            string_ty(),
+            vec![typed_column(0, &date), typed_column(1, &string_ty())],
+        ),
+        &[date, string_ty()],
+        &[
+            vec![Datum::Time(time), Datum::new_string("99-1-1")],
+            vec![Datum::Time(time), Datum::new_string("zzz")],
+        ],
+        &[0, 1, 0],
+    );
+}
+#[test]
+fn native_extremum_vector_sources_require_canonical_driver() {
+    let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+    let value =
+        |elements| Datum::VectorFloat32(tidb_datatype::VectorFloat32::must_create(elements));
+    compare_typed_profile(
+        call(
+            "greatest",
+            vector.clone(),
+            vec![typed_column(0, &vector), typed_column(1, &vector)],
+        ),
+        &[vector.clone(), vector],
+        &[
+            vec![value(vec![1.0, -0.0]), value(vec![2.0])],
+            vec![Datum::Null, value(vec![])],
+        ],
+        &[0, 1, 0],
+    );
+}
+
+#[test]
+fn native_extremum_eager_sources_and_parent_phases_preserve_null_errors_and_reuse() {
+    let inside = || call("greatest", ty(), vec![column(0), abs(column(1))]);
+    let roots = [
+        inside(),
+        plus(inside(), abs(column(1))),
+        plus(abs(column(1)), inside()),
+        call("if", ty(), vec![column(0), inside(), int(7)]),
+        call("least", ty(), vec![inside(), abs(column(1))]),
+    ];
+    let schema = [ty(), ty()];
+    let rows = vec![
+        vec![Datum::Null, Datum::Int(i64::MIN)],
+        vec![Datum::Int(100), Datum::Int(i64::MIN)],
+        vec![Datum::Int(3), Datum::Int(2)],
+        vec![Datum::Int(0), Datum::Int(1)],
+    ];
+    for root in roots {
+        for selection in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2, 3, 2],
+            vec![3; 2050],
+            {
+                let mut selection = vec![3; 2050];
+                selection[2049] = 0;
+                selection
+            },
+            vec![2, 0, 3],
+        ] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+#[test]
+fn native_extremum_source_decimal_precision_constantness_and_result_flags_match_original() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(40)
+        .with_decimal(4);
+    for name in ["greatest", "least"] {
+        for root in [
+            call(
+                name,
+                decimal.clone(),
+                vec![column(0), typed_column(1, &decimal)],
+            ),
+            call(
+                name,
+                decimal.clone(),
+                vec![
+                    int(1),
+                    literal(
+                        Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5000")),
+                        decimal.clone(),
+                    ),
+                ],
+            ),
+            call(
+                name,
+                ty().with_unsigned(true),
+                vec![
+                    literal(Datum::UInt(u64::MAX), ty().with_unsigned(true)),
+                    column(0),
+                ],
+            ),
+        ] {
+            compare_typed_profile(
+                root,
+                &[ty(), decimal.clone()],
+                &[
+                    vec![
+                        Datum::Int(1),
+                        Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5000")),
+                    ],
+                    vec![
+                        Datum::Int(-5),
+                        Datum::Decimal(tidb_datatype::Decimal::from_literal("-5.0000")),
+                    ],
+                    vec![
+                        Datum::Null,
+                        Datum::Decimal(tidb_datatype::Decimal::from_literal("1.2300")),
+                    ],
+                ],
+                &[0, 1, 2, 0],
+            );
+        }
+    }
+}
+
+#[test]
+fn native_extremum_source_capabilities_resources_cancel_and_reuse_are_terminal() {
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 3];
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::ExtremumNative,
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let metadata = [NativeHostMetadata::Extremum(
+        hosts::NativeExtremumMetadata {
+            arguments: Box::new([3, 8, 9]),
+            signature: Some(crate::builtin_ext::GlSignature {
+                arg_type: NativeEvalType::String,
+                cmp_string_mode: crate::builtin_ext::GlCmpStringMode::Directly,
+                ret_date: false,
+            }),
+            decimals: Box::new([0, 0, 0]),
+            all_constant: false,
+            collation: Collation::Binary,
+            greatest: true,
+            result_type: string_ty(),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        },
+    )];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 0,
+    };
+    let origin = NativeValueOrigin { node: 9, row };
+    let stale = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(3), NativeValueRole::CharInput, origin)
+        .unwrap();
+    store.borrow_mut().begin_window().unwrap();
+    let tokens = [3, 8, 9]
+        .into_iter()
+        .enumerate()
+        .map(|(i, node)| {
+            store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Int(i as i64 + 1),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node, row },
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let null = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Null,
+            NativeValueRole::CharInput,
+            NativeValueOrigin { node: 3, row },
+        )
+        .unwrap();
+    let wrong_role = store
+        .borrow_mut()
+        .insert_clone(&Datum::Int(3), NativeValueRole::Output, origin)
+        .unwrap();
+    let wrong_node = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Int(3),
+            NativeValueRole::CharInput,
+            NativeValueOrigin { node: 8, row },
+        )
+        .unwrap();
+    let wrong_row = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Int(3),
+            NativeValueRole::CharInput,
+            NativeValueOrigin {
+                node: 9,
+                row: InputRow {
+                    occurrence: 1,
+                    input_row: 0,
+                },
+            },
+        )
+        .unwrap();
+    let large = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Bytes(vec![b'X'; 16384]),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    let huge = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+                false,
+                vec![b'1'],
+                u32::MAX,
+                0,
+            )),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    let context = ArithmeticProfilesContext::default();
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context, 8192).with_native_values(Some(&store));
+    let mut ctx = EvalContext::default();
+    for nullable in [false, true] {
+        for (bad, kind) in [
+            (stale.clone(), 0),
+            (wrong_role.clone(), 0),
+            (wrong_node.clone(), 0),
+            (wrong_row.clone(), 0),
+            (large.clone(), 1),
+            (huge.clone(), 2),
+        ] {
+            // A NULL prepass must skip Decimal formatting; only the non-NULL
+            // case actually demands that work. Bad capability/clone errors still
+            // precede the kernel even after an already-fetched NULL.
+            if nullable && kind == 2 {
+                continue;
+            }
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("extremum pending")
+            };
+            for index in 0..2 {
+                let token = if nullable && index == 0 {
+                    null.clone()
+                } else {
+                    tokens[index].clone()
+                };
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                assert!(
+                    matches!(provider.resume(&mut ctx,&task,HostArgReply{index,field_type:&field,values:&values}).unwrap(),HostStep::NeedArg(request) if request.index==index+1)
+                );
+            }
+            let before = context.trace.borrow().clone();
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1);
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 2,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap_err();
+            match kind {
+                0 => assert!(matches!(error, LocalError::BindingContract(_)), "{error:?}"),
+                1 => assert!(matches!(error, LocalError::ResourceLimit(_)), "{error:?}"),
+                _ => {
+                    assert!(matches!(error, LocalError::HostContract(_)));
+                    let Some(EvalError::ExpressionRuntimeFailure(native)) =
+                        provider.take_native_error()
+                    else {
+                        panic!("native bounded work refusal")
+                    };
+                    assert_eq!(
+                        native.class(),
+                        crate::ExpressionRuntimeFailureClass::ResourceLimit
+                    );
+                    assert_eq!(native.phase(), None);
+                }
+            }
+            assert_eq!(*context.trace.borrow(), before);
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+            provider.cancel(&task);
+        }
+    }
+    for nullable in [false, true] {
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("extremum pending")
+        };
+        for index in 0..3 {
+            let token = if nullable && index == 0 {
+                null.clone()
+            } else {
+                tokens[index].clone()
+            };
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let step = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap();
+            if index < 2 {
+                assert!(matches!(step, HostStep::NeedArg(_)));
+            } else {
+                let HostStep::Ready(output) = step else {
+                    panic!("extremum incomplete")
+                };
+                use tidb_query_datatype::codec::data_type::ScalarValueRef;
+                let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                    panic!("output capability")
+                };
+                let value = store
+                    .borrow()
+                    .get(
+                        token,
+                        NativeValueRole::Output,
+                        NativeValueOrigin { node: 2, row },
+                    )
+                    .unwrap()
+                    .clone();
+                assert_eq!(
+                    value,
+                    if nullable {
+                        Datum::Null
+                    } else {
+                        Datum::new_string("3")
+                    }
+                );
+            }
+        }
+        provider.cancel(&task);
+    }
+}

@@ -28,6 +28,9 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_extremum.rs"]
+mod extremum_source;
+pub(super) use extremum_source::NativeExtremumMetadata;
 #[path = "batch_interval.rs"]
 mod interval_source;
 pub(super) use interval_source::{NativeIntervalArgument, NativeIntervalMetadata};
@@ -102,6 +105,7 @@ impl NativeRawValueOperation {
 pub(super) enum NativeHostMetadata {
     In(NativeInMetadata),
     Interval(NativeIntervalMetadata),
+    Extremum(NativeExtremumMetadata),
     RawValues {
         operation: NativeRawValueOperation,
         name: Box<str>,
@@ -197,6 +201,7 @@ impl NativeHostMetadata {
         match self {
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
+            Self::Extremum(metadata) => Some(&metadata.result_type),
             Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
             | Self::Selection { result_type, .. }
@@ -216,6 +221,10 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Extremum {
+        next: usize,
+        tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
+    },
     Interval {
         search: tidb_query_expr::NativeIntervalSearch,
     },
@@ -298,7 +307,8 @@ impl NativeTask {
             SqlDemand::RawValues { left_token } | SqlDemand::Comparison { left_token } => {
                 Ok(Some(usize::from(left_token.is_some())))
             }
-            SqlDemand::In { next, .. }
+            SqlDemand::Extremum { next, .. }
+            | SqlDemand::In { next, .. }
             | SqlDemand::Nullable { next }
             | SqlDemand::Conditional { next }
             | SqlDemand::Logical { next, .. } => Ok(Some(*next)),
@@ -313,7 +323,8 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::Interval { .. }
+            SqlDemand::Extremum { .. }
+            | SqlDemand::Interval { .. }
             | SqlDemand::In { .. }
             | SqlDemand::WindowUnary { .. }
             | SqlDemand::WindowDecimalFast { .. }
@@ -353,7 +364,7 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
-        if let SqlDemand::In { tokens, .. } = &self.demand {
+        if let SqlDemand::In { tokens, .. } | SqlDemand::Extremum { tokens, .. } = &self.demand {
             return bytes
                 .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
                     tokens.capacity(),
@@ -1909,6 +1920,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::IntervalNative => self.start_interval(&invocation)?,
+            SqlBatchHostOperation::ExtremumNative => self.start_extremum(&invocation)?,
             SqlBatchHostOperation::InNative => {
                 self.validate_in_start(&invocation)?;
                 SqlDemand::In {
@@ -2274,6 +2286,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Extremum { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("extremum source cannot be wire NULL"));
+            };
+            return self.resume_extremum(id, token);
         }
         if matches!(task.demand, SqlDemand::Interval { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

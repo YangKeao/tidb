@@ -366,7 +366,10 @@ fn promoted_native_root_view(
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
-        || matches!(function.func_name.lowercase(), "in" | "interval");
+        || matches!(
+            function.func_name.lowercase(),
+            "in" | "interval" | "greatest" | "least"
+        );
     if native_arithmetic_operation(function.func_name.lowercase()).is_none()
         && !matches!(
             function.func_name.lowercase(),
@@ -1186,8 +1189,10 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         )
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    matches!(function.func_name.lowercase(), "in" | "interval")
-        || native_unary_sign_operation(function.func_name.lowercase()).is_some()
+    matches!(
+        function.func_name.lowercase(),
+        "in" | "interval" | "greatest" | "least"
+    ) || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_arithmetic_operation(function.func_name.lowercase()).is_some()
         || native_character_value_argument(function)
 }
@@ -1209,6 +1214,10 @@ fn resolve_call_in_view(
             .or_else(|| {
                 (function.func_name.lowercase() == "interval")
                     .then_some(SqlBatchHostOperation::IntervalNative)
+            })
+            .or_else(|| {
+                matches!(function.func_name.lowercase(), "greatest" | "least")
+                    .then_some(SqlBatchHostOperation::ExtremumNative)
             })
         {
             if !operation.accepts_arity(function.args.len())
@@ -1954,6 +1963,14 @@ fn preflight_view<'a>(
                             budget.field(arg.static_type().expect("checked INTERVAL source"), 1)?;
                         }
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::ExtremumNative)
+                    ) {
+                        budget.array::<usize>(function.args.len())?;
+                        budget.array::<i64>(function.args.len())?;
+                        budget.field(sql, 1)?;
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -2456,6 +2473,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::NullIfNative
                                         | SqlBatchHostOperation::InNative
                                         | SqlBatchHostOperation::IntervalNative
+                                        | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
                                         | SqlBatchHostOperation::XorNative
@@ -2491,6 +2509,47 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::ExtremumNative => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, *arity)?;
+                                let mut decimals = Vec::new();
+                                reserve(&mut decimals, *arity)?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("extremum child ordinal overflow"))?;
+                                for _ in 0..*arity {
+                                    let source = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("extremum source absent"))?;
+                                    arguments.push(child);
+                                    decimals.push(
+                                        if source.sql.eval_type() == NativeEvalType::Int {
+                                            0
+                                        } else {
+                                            source.sql.decimal()
+                                        },
+                                    );
+                                    child = source.subtree_end;
+                                }
+                                NativeHostMetadata::Extremum(hosts::NativeExtremumMetadata {
+                                    arguments: arguments.into_boxed_slice(),
+                                    signature: crate::rewriter::result_type::gl_signature(
+                                        &sql.args,
+                                    ),
+                                    decimals: decimals.into_boxed_slice(),
+                                    all_constant: sql.args.iter().all(|arg| {
+                                        arg.const_level() == crate::expression::ConstLevel::STRICT
+                                    }),
+                                    collation: sql.derived_collation(),
+                                    greatest: sql.func_name.lowercase() == "greatest",
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("extremum result role missing"))?,
+                                })
+                            }
                             SqlBatchHostOperation::IntervalNative => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, *arity)?;

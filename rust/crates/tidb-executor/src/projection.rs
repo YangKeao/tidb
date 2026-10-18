@@ -2700,6 +2700,122 @@ mod tests {
             ],
         ));
         fields.push(integer.clone());
+        let extremum_start = roots.len();
+        roots.push(call(
+            "greatest",
+            integer.clone(),
+            vec![
+                call("abs", integer.clone(), vec![column(0)]),
+                literal(1),
+                column(1),
+            ],
+        ));
+        fields.push(integer.clone());
+        let gl_real = FieldType::new(FieldTypeCode::Double);
+        roots.push(call(
+            "least",
+            gl_real.clone(),
+            vec![
+                call("cast_double", gl_real.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(Datum::Real(2.5), gl_real.clone())),
+            ],
+        ));
+        fields.push(gl_real);
+        let gl_decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(40)
+            .with_decimal(4);
+        roots.push(call(
+            "greatest",
+            gl_decimal.clone(),
+            vec![
+                call("cast_decimal", gl_decimal.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(
+                    Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5000")),
+                    gl_decimal.clone(),
+                )),
+            ],
+        ));
+        fields.push(gl_decimal);
+        roots.push(call(
+            "least",
+            string.clone(),
+            vec![
+                call(
+                    "cast_char",
+                    string.clone(),
+                    vec![call("abs", integer.clone(), vec![column(0)])],
+                ),
+                Expression::Constant(Constant::new(Datum::new_string("a"), string.clone())),
+            ],
+        ));
+        fields.push(string.clone());
+        let gl_time = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+        let time = |text| {
+            tidb_datatype::parse_datetime(text, &chrono_tz::UTC, true, false)
+                .unwrap()
+                .time
+        };
+        roots.push(call(
+            "greatest",
+            gl_time.clone(),
+            vec![
+                Expression::Constant(Constant::new(
+                    Datum::Time(time("2020-01-01 01:02:03.123456")),
+                    gl_time.clone(),
+                )),
+                Expression::Constant(Constant::new(
+                    Datum::Time(time("2021-01-01 01:02:03.123456")),
+                    gl_time.clone(),
+                )),
+            ],
+        ));
+        fields.push(gl_time);
+        let mut date = time("2020-01-01 00:00:00");
+        date.set_kind(tidb_datatype::TimeType::Date);
+        roots.push(call(
+            "greatest",
+            string.clone(),
+            vec![
+                Expression::Constant(Constant::new(
+                    Datum::Time(date),
+                    FieldType::new(FieldTypeCode::Date),
+                )),
+                call("cast_char", string.clone(), vec![column(0)]),
+            ],
+        ));
+        fields.push(string.clone());
+        let vector = FieldType::new(FieldTypeCode::VectorFloat32);
+        roots.push(call(
+            "least",
+            vector.clone(),
+            vec![
+                Expression::Constant(Constant::new(
+                    Datum::VectorFloat32(tidb_datatype::VectorFloat32::must_create(vec![1.0, 2.0])),
+                    vector.clone(),
+                )),
+                Expression::Constant(Constant::new(
+                    Datum::VectorFloat32(tidb_datatype::VectorFloat32::must_create(vec![2.0, 1.0])),
+                    vector.clone(),
+                )),
+            ],
+        ));
+        fields.push(vector);
+        let gl_json = FieldType::new(FieldTypeCode::Json);
+        roots.push(call(
+            "greatest",
+            string.clone(),
+            vec![
+                call("cast_json", gl_json.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(
+                    Datum::Json(tidb_datatype::BinaryJSON::parse("1").unwrap()),
+                    gl_json,
+                )),
+            ],
+        ));
+        fields.push(string.clone());
+        let extremum_mix = std::iter::once(0)
+            .chain(extremum_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (roots[..31].to_vec(), fields[..31].to_vec()),
@@ -2713,9 +2829,19 @@ mod tests {
                     .map(|&index| fields[index].clone())
                     .collect(),
             ),
+            (
+                extremum_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                extremum_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
         ];
-        // Keep the prior mixed suite intact. A second heterogeneous suite adds
-        // all INTERVAL domains within the unchanged finite metadata allowance.
+        // Keep prior matrices intact. Each new heterogeneous suite adds a
+        // family within the unchanged finite metadata allowance.
         for (roots, fields) in configurations {
             for enabled in [true, false] {
                 let reference =

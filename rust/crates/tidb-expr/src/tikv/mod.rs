@@ -112,7 +112,7 @@ mod extract;
 mod ready_value;
 pub(crate) use extract::{eval_extract_composite_in, eval_extract_in, eval_extract_null_unit_in};
 mod extremum;
-pub(crate) use extremum::eval_extremum_in;
+pub(crate) use extremum::{eval_extremum_in, eval_extremum_values_bounded};
 mod from_unixtime;
 mod identity_value;
 mod if_control;
@@ -126,6 +126,8 @@ pub(crate) use in_list::{
     eval_in_typed_values_in, in_control_datum, in_eq_observation, in_row_control_error,
 };
 pub use in_list::{eval_legacy_in_bytes_in, eval_legacy_in_int_in};
+#[cfg(test)]
+mod extremum_value_tests;
 mod interval;
 #[cfg(test)]
 mod interval_value_tests;
