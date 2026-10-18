@@ -14,10 +14,8 @@
 //! Calendar arithmetic shared by the source-owned time family and the
 //! remaining generic date syntax in `crate::func`.
 
-use crate::cast::to_i64_signed;
-use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
-use tidb_datatype::{CoreTime, Time, TimeType};
+use tidb_datatype::CoreTime;
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
 
 /// The whole stored CoreTime supplied to a component date-part kernel.
@@ -286,32 +284,10 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// and therefore retained here before the zero-date fallback resumes beyond
 /// it.
 pub(crate) fn from_days_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::FromDaysNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::FromDays,
+        vals,
         ctx,
-        || {
-            if vals.len() != 1 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let value = match &vals[0] {
-                Datum::Null => None,
-                value => Some(to_i64_signed(value)),
-            };
-            Ok(crate::tikv::EvaluatedArgs::Int(value))
-        },
-        |computed| {
-            Ok(match computed.into_bytes()? {
-                None => Datum::Null,
-                Some(bytes) if bytes.as_slice() == b"0000-00-00" => {
-                    // Pack the provider's actual zero-date value as the original
-                    // typed Time, so the outer cast does not parse it into NULL.
-                    let zero = Time::new(CoreTime::default(), TimeType::Date, 0)
-                        .expect("the zero date is a valid Time");
-                    Datum::new_time(zero)
-                }
-                Some(bytes) => Datum::new_string(bytes),
-            })
-        },
     )
 }
 
@@ -322,22 +298,12 @@ pub(crate) fn from_days(vals: &[Datum]) -> Result<Datum, EvalError> {
 
 /// `DATEDIFF` retains both original text conversions in left-to-right order,
 /// even if the first produces NULL. Date parsing (which ignores time suffixes)
-/// and subtraction run in the worker; original casts and warnings stay upstream.
+/// and subtraction use the shared kernel; casts and warnings stay upstream.
 pub(crate) fn date_diff_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::DateDiffTextNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::DateDiff,
+        vals,
         ctx,
-        || {
-            if vals.len() != 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let (left, right) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?);
-            Ok(crate::tikv::EvaluatedArgs::Bytes2(
-                left.map(String::into_bytes),
-                right.map(String::into_bytes),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -348,22 +314,12 @@ pub(crate) fn date_diff_core_in(
     right: Option<CoreTime>,
     ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::DateDiffCoreNative,
-        ctx,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits2(
-                left.map(CoreTime::raw),
-                right.map(CoreTime::raw),
-            ))
-        },
-        |computed| match computed.into_int_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            _ => Err(EvalError::Unsupported(
-                "legacy DATEDIFF result kind mismatch",
-            )),
-        },
+    let _ = ctx;
+    crate::tikv::duration_construction_value::legacy(
+        0,
+        left.map(CoreTime::raw),
+        right.map(CoreTime::raw),
+        crate::tikv::duration_construction_value::default_budget(),
     )
 }
 

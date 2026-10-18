@@ -32,7 +32,6 @@ pub(crate) mod session_tz;
 
 #[cfg(test)]
 use self::calendar::week_of_year;
-use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 #[cfg(test)]
 use tidb_query_datatype::codec::mysql::Time as TikvTime;
@@ -206,18 +205,10 @@ fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
 /// returns NULL, unlike `TIME()` which reports the same truncation through the
 /// statement context.
 pub(crate) fn microsecond_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::Microsecond,
+        vals,
         cols,
-        || {
-            if vals.len() != 1 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            Ok((
-                crate::tikv::EvaluatedBytesOp::MicrosecondNative,
-                crate::tikv::EvaluatedArgs::Bytes(coerce_str(&vals[0])?.map(String::into_bytes)),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -225,41 +216,10 @@ pub(crate) fn microsecond_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum
 /// preserving its written FSP. `ErrTruncatedWrongVal` is a statement warning
 /// for a SELECT and leaves Go's zero-value duration as the result.
 fn time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let source = std::cell::RefCell::new(None);
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::Time,
+        vals,
         cols,
-        || {
-            if vals.len() != 1 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let text = coerce_str(&vals[0])?;
-            let bytes = text.as_ref().map(|value| value.as_bytes().to_vec());
-            // Keep the original text solely for the source diagnostic. Parsing
-            // and every result byte, including the error fallback, belong to C4.
-            *source.borrow_mut() = text;
-            Ok((
-                crate::tikv::EvaluatedBytesOp::TimeNative,
-                crate::tikv::EvaluatedArgs::Bytes(bytes),
-            ))
-        },
-        |computed| {
-            let Some(bytes) = computed.into_bytes()? else {
-                return Ok(Datum::Null);
-            };
-            let report = tidb_query_expr::decode_native_time_result(&bytes)
-                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-            if report.truncated {
-                let source = source.borrow();
-                let text = source
-                    .as_deref()
-                    .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-                cols.handle_truncate(&format!(
-                    "Truncated incorrect time value: '{}'",
-                    tidb_datatype::warning_subject_byte_cap(text)
-                ))?;
-            }
-            Ok(Datum::new_string(report.value))
-        },
     )
 }
 
@@ -457,59 +417,25 @@ pub(crate) fn get_format(format_type: &str, location: &str) -> String {
 
 /// Preserve the values signature's byte domain and first-NULL demand boundary.
 pub(crate) fn get_format_value_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    // Only Datum::Null makes eval_string return None. This structural choice
-    // does not coerce either argument or compute a lookup-table answer.
-    let operation = if matches!(vals.first(), Some(Datum::Null)) {
-        crate::tikv::EvaluatedBytesOp::GetFormatNullNative
-    } else {
-        crate::tikv::EvaluatedBytesOp::GetFormatNative
-    };
-    crate::tikv::evaluate_args_in(
-        operation,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::GetFormat,
+        vals,
         ctx,
-        || {
-            let [format_type, location] = vals else {
-                return Err(EvalError::Unsupported("bad function arity"));
-            };
-            let format_type = crate::arg_eval_type::eval_string(format_type)?;
-            if format_type.is_none() {
-                // This is the actually observed NULL, not a fabricated NULL
-                // for the unobserved location. The witness rejects Some.
-                return Ok(crate::tikv::EvaluatedArgs::Bytes(format_type));
-            }
-            let location = crate::arg_eval_type::eval_string(location)?;
-            Ok(crate::tikv::EvaluatedArgs::Bytes2(format_type, location))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
 /// The independent AST path retains strict text coercion of its observed child.
-/// The grammar selector is real input; only the worker selects the format.
+/// The grammar selector is real input; the shared kernel selects the format.
 pub(crate) fn get_format_ast_in(
     format_type: &str,
     location: &Datum,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::GetFormatNative,
-        ctx,
-        || {
-            let location = coerce_str(location)?.map(String::into_bytes);
-            Ok(crate::tikv::EvaluatedArgs::Bytes2(
-                Some(format_type.as_bytes().to_vec()),
-                location,
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
+    let _ = ctx;
+    crate::tikv::duration_construction_value::get_format_ast(
+        format_type,
+        location,
+        crate::tikv::duration_construction_value::default_budget(),
     )
 }
 
@@ -558,16 +484,6 @@ pub(crate) fn week_core_in(
     let _ = ctx;
     crate::tikv::calendar_value::core(tidb_query_expr::NativeCalendarOperation::Week, value)
         .map(|v| v.map_or(Datum::Null, Datum::Int))
-}
-
-/// Original single-argument text preparation, used only inside the guards.
-/// Parsing stays in the worker: resource refusal precedes bad-text results,
-/// while the original arity, UTF-8 and coercion errors precede admission.
-fn single_temporal_text(vals: &[Datum]) -> Result<Option<Vec<u8>>, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(coerce_str(value)?.map(String::into_bytes))
 }
 
 /// `builtinMonthNameSig` retains its existing upstream ETDatetime cast.
@@ -676,7 +592,7 @@ pub(crate) fn int_arg(value: &Datum) -> Result<Option<i64>, EvalError> {
     }
 }
 
-fn number_arg(value: &Datum, cols: &dyn Columns) -> Result<Option<f64>, EvalError> {
+pub(crate) fn number_arg(value: &Datum, cols: &dyn Columns) -> Result<Option<f64>, EvalError> {
     Ok(match value {
         Datum::Null => None,
         Datum::Int(v) => Some(*v as f64),
@@ -732,38 +648,13 @@ fn time_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
     time_diff_in(vals, &crate::NoColumns)
 }
 
-/// Prepare only demanded text coercions. The shared parser determines whether
-/// the original left operand permits right coercion; the worker independently
-/// parses the actual texts and owns subtraction, clamping, and formatting.
+/// A consuming actual parsed-left state preserves demanded right coercion,
+/// matching datetime/duration kinds, subtraction, clamping and formatting.
 fn time_diff_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::TimeDiff,
+        vals,
         cols,
-        || {
-            if vals.len() != 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let left = coerce_str(&vals[0])?;
-            let right = if tidb_query_expr::native_time_diff_needs_right(left.as_deref()) {
-                coerce_str(&vals[1])?
-            } else {
-                // An undemanded suffix, not a replacement for the real left
-                // operand: the worker still receives and parses invalid text.
-                None
-            };
-            Ok((
-                crate::tikv::EvaluatedBytesOp::TimeDiffTextNative,
-                crate::tikv::EvaluatedArgs::Bytes2(
-                    left.map(String::into_bytes),
-                    right.map(String::into_bytes),
-                ),
-            ))
-        },
-        |computed| {
-            Ok(match computed.into_bytes()? {
-                Some(bytes) => Datum::new_string(bytes),
-                None => Datum::Null,
-            })
-        },
     )
 }
 
@@ -776,11 +667,10 @@ fn format_time_diff(micros: i64, fsp: usize) -> String {
 /// `builtinTimeToSecSig` sends the original text, not precomputed seconds.
 /// Its complete duration parser remains distinct from the HMS clamp policy.
 pub(crate) fn time_to_sec_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::TimeToSecTextNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::TimeToSec,
+        vals,
         ctx,
-        || single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -789,34 +679,13 @@ fn time_to_sec(vals: &[Datum]) -> Result<Datum, EvalError> {
     time_to_sec_in(vals, &crate::NoColumns)
 }
 
-/// `builtinSecToTimeSig` keeps original numeric/FSP preparation in the guard.
-/// The worker owns clamping and formatting, including non-SQL raw FSP values.
+/// SEC_TO_TIME keeps original numeric conversion and demanded precision.
+/// The shared actual-seconds formatter preserves clamping and raw FSP values.
 fn sec_to_time_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::SecToTimeNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::SecToTime,
+        vals,
         cols,
-        || {
-            if vals.len() != 1 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let seconds = number_arg(&vals[0], cols)?;
-            let precision = match seconds {
-                // Successful FSP comes from nonnegative i64 metadata, u8, or
-                // at most six digits, so this transport is lossless, not a clamp.
-                Some(_) => Some(duration_precision(&vals[0])? as i64),
-                // NULL seconds never demand FSP; this is not a second SQL NULL.
-                None => None,
-            };
-            Ok(crate::tikv::EvaluatedArgs::Ieee754BitsInt {
-                value: seconds.map(f64::to_bits),
-                scale: precision,
-            })
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -828,7 +697,7 @@ fn sec_to_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
 /// The result FSP comes from TiDB's argument type. String coercion uses the
 /// duration parser's default FSP six; numeric literals preserve their own
 /// fractional scale; integers have no fractional component.
-fn duration_precision(value: &Datum) -> Result<usize, EvalError> {
+pub(crate) fn duration_precision(value: &Datum) -> Result<usize, EvalError> {
     Ok(match value {
         Datum::Int(_) | Datum::UInt(_) => 0,
         Datum::String(_) | Datum::Bytes(_) => 6,
@@ -861,23 +730,12 @@ fn duration_precision(value: &Datum) -> Result<usize, EvalError> {
 }
 
 /// `builtinMakeDateSig` retains both conversions, including after a left NULL.
-/// Year/day validation, arithmetic and date formatting belong to the worker.
+/// The shared actual-value kernel owns year/day arithmetic and formatting.
 fn makedate_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::MakeDateNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::MakeDate,
+        vals,
         ctx,
-        || {
-            if vals.len() != 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let (year, day) = (int_arg(&vals[0])?, int_arg(&vals[1])?);
-            Ok(crate::tikv::EvaluatedArgs::Int2(year, day))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -886,50 +744,14 @@ fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
     makedate_in(vals, &crate::NoColumns)
 }
 
-/// `builtinMakeTimeSig` first computes actual seconds in a worker. Only a
-/// successful result demands the original second datum's FSP in a second,
-/// sequential invocation; no callback reenters C4 and no host range test runs.
-/// This deliberately places the first admission before FSP preparation.
+/// MAKETIME converts every original part before validity, then computes actual
+/// signed seconds before demanding precision. Consuming states preserve that
+/// boundary without another argument program or callback-driven evaluator.
 fn maketime_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let seconds = crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::MakeTimePartsNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::MakeTime,
+        vals,
         cols,
-        || {
-            if vals.len() != 3 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let (hour, minute, second) = (
-                int_arg(&vals[0])?,
-                int_arg(&vals[1])?,
-                number_arg(&vals[2], cols)?,
-            );
-            let hour_unsigned = matches!(vals[0], Datum::UInt(_));
-            Ok(crate::tikv::EvaluatedArgs::MakeTimeParts {
-                hour: hour.map(|hour| (hour, hour_unsigned)),
-                minute,
-                second: second.map(f64::to_bits),
-            })
-        },
-        crate::tikv::EvaluatedBytesResult::into_ieee754_bits,
-    )?;
-    let Some(seconds) = seconds else {
-        return Ok(Datum::Null);
-    };
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::SecToTimeNative,
-        cols,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::Ieee754BitsInt {
-                value: Some(seconds),
-                // Same lossless FSP transport as SEC_TO_TIME, without a 0..=6 cap.
-                scale: Some(duration_precision(&vals[2])? as i64),
-            })
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -939,35 +761,30 @@ fn maketime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
 }
 
 /// Both original conversions run left-to-right even when the first is NULL.
-/// Validation and wrapping arithmetic belong to the worker, so admission now
-/// precedes invalid-period 1210 diagnostics; original coercion errors stay first.
+/// Shared validation and wrapping arithmetic preserve the original1210 cause;
+/// both original coercions still precede that kernel failure.
 fn period_in(
     vals: &[Datum],
-    operation: crate::tikv::EvaluatedBytesOp,
+    operation: tidb_query_expr::NativeDurationConstructionOperation,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || {
-            if vals.len() != 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            Ok(crate::tikv::EvaluatedArgs::Int2(
-                int_arg(&vals[0])?,
-                int_arg(&vals[1])?,
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
+    crate::tikv::duration_construction_value::eval(operation, vals, ctx)
 }
 
 pub(crate) fn period_add_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    period_in(vals, crate::tikv::EvaluatedBytesOp::PeriodAddNative, ctx)
+    period_in(
+        vals,
+        tidb_query_expr::NativeDurationConstructionOperation::PeriodAdd,
+        ctx,
+    )
 }
 
 pub(crate) fn period_diff_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    period_in(vals, crate::tikv::EvaluatedBytesOp::PeriodDiffNative, ctx)
+    period_in(
+        vals,
+        tidb_query_expr::NativeDurationConstructionOperation::PeriodDiff,
+        ctx,
+    )
 }
 
 #[cfg(test)]
@@ -980,40 +797,14 @@ fn period_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
     period_diff_in(vals, &crate::NoColumns)
 }
 
-/// `builtinTimeFormatSig` demands its mask only after duration parsing succeeds.
-/// Two complete sequential calls preserve that boundary without host parsing or
-/// callback reentry. First admission can precede mask coercion; successful calls
-/// pay for two parses, owned-text transport and two leases (two one-shot workers
-/// without a context capability). Formatting retains the native text policy.
+/// TIME_FORMAT retains actual elapsed text after its own validity parser and
+/// consumes the layout only afterward. This parser's zero-text policy differs
+/// from TIME and TIMEDIFF; the existing datatype formatter remains the owner.
 fn time_format_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let text = crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::DurationTextProbeNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::TimeFormat,
+        vals,
         ctx,
-        || {
-            if vals.len() != 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            Ok(crate::tikv::EvaluatedArgs::Bytes(
-                coerce_str(&vals[0])?.map(String::into_bytes),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_bytes,
-    )?;
-    let Some(text) = text else {
-        return Ok(Datum::Null);
-    };
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::TimeFormatTextNative,
-        ctx,
-        || {
-            let mask = coerce_str(&vals[1])?.map(String::into_bytes);
-            Ok(crate::tikv::EvaluatedArgs::Bytes2(Some(text), mask))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 

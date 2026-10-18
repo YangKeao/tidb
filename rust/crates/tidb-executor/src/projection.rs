@@ -3306,11 +3306,110 @@ mod tests {
         let calendar_mix = std::iter::once(0)
             .chain(calendar_start..roots.len())
             .collect::<Vec<_>>();
+
+        let duration_start = roots.len();
+        for name in [
+            "microsecond",
+            "time",
+            "timediff",
+            "time_to_sec",
+            "sec_to_time",
+            "time_format",
+            "makedate",
+            "maketime",
+            "from_days",
+            "period_add",
+            "period_diff",
+            "get_format",
+            "datediff",
+        ] {
+            let field = if matches!(name, "time" | "timediff" | "sec_to_time" | "maketime") {
+                FieldType::new(FieldTypeCode::Duration).with_decimal(6)
+            } else if matches!(name, "makedate" | "from_days") {
+                FieldType::new(FieldTypeCode::Date)
+            } else if matches!(name, "get_format" | "time_format") {
+                string.clone()
+            } else {
+                integer.clone()
+            };
+            let specs = match name {
+                "get_format" => vec![
+                    (Datum::new_string("DATE"), string.clone()),
+                    (Datum::new_string("USA"), string.clone()),
+                ],
+                "datediff" => vec![
+                    (Datum::new_string("2024-02-29"), string.clone()),
+                    (Datum::new_string("2024-02-28"), string.clone()),
+                ],
+                "time_format" => vec![
+                    (Datum::new_string("12:34:56.123456"), string.clone()),
+                    (Datum::new_string("%H:%i:%s.%f"), string.clone()),
+                ],
+                "makedate" => vec![
+                    (Datum::Int(2024), integer.clone()),
+                    (Datum::Int(60), integer.clone()),
+                ],
+                "maketime" => vec![
+                    (Datum::Int(12), integer.clone()),
+                    (Datum::Int(15), integer.clone()),
+                    (
+                        Datum::Real(30.0000005),
+                        FieldType::new(FieldTypeCode::Double),
+                    ),
+                ],
+                "from_days" => vec![(Datum::Int(3652424), integer.clone())],
+                "period_add" | "period_diff" => vec![
+                    (Datum::Int(202401), integer.clone()),
+                    (Datum::Int(1), integer.clone()),
+                ],
+                "sec_to_time" => vec![(
+                    Datum::Real(30.0000005),
+                    FieldType::new(FieldTypeCode::Double),
+                )],
+                "timediff" => vec![
+                    (Datum::new_string("12:34:56.123456"), string.clone()),
+                    (Datum::new_string("01:00:00"), string.clone()),
+                ],
+                _ => vec![(Datum::new_string("12:34:56.1234567"), string.clone())],
+            };
+            let args = specs
+                .into_iter()
+                .enumerate()
+                .map(|(index, (v, field))| {
+                    let value = Expression::Constant(Constant::new(v, field.clone()));
+                    if index == 0 {
+                        call(
+                            "if",
+                            field.clone(),
+                            vec![
+                                column(0),
+                                value,
+                                Expression::Constant(Constant::new(Datum::Null, field)),
+                            ],
+                        )
+                    } else {
+                        value
+                    }
+                })
+                .collect();
+            let root = call(name, field.clone(), args);
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let duration_mix = std::iter::once(0)
+            .chain(duration_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
                 clock_mix.iter().map(|&i| roots[i].clone()).collect(),
                 clock_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                duration_mix.iter().map(|&i| roots[i].clone()).collect(),
+                duration_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
             (
                 calendar_mix.iter().map(|&i| roots[i].clone()).collect(),

@@ -1832,38 +1832,28 @@ pub fn eval_legacy_json_merge_patch_in(
 }
 
 /// Project legacy MICROSECOND from the actual nullable nanoseconds. FSP and
-/// duration parsing remain with the caller; even NULL reaches this fixed worker.
+/// duration parsing remain with the caller; actual NULL reaches the shared kernel.
 pub fn eval_legacy_microsecond_in(
     value: Option<i64>,
     ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
-    evaluate_args_in(
-        EvaluatedBytesOp::MicrosecondLegacy,
-        ctx,
-        || Ok(EvaluatedArgs::Int(value)),
-        |computed| match computed.into_int_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            _ => Err(result_kind_error().into_eval_error()),
-        },
+    let _ = ctx;
+    super::duration_construction_value::legacy(
+        1,
+        value.map(|v| v as u64),
+        None,
+        super::control_value::default_budget(),
     )
 }
 
 /// Evaluate the legacy DATE predicate over the actual nullable temporal core.
 pub fn eval_legacy_date_in(core: Option<u64>, ctx: &dyn Columns) -> Result<Option<i64>, EvalError> {
-    evaluate_prepared_args_in(
-        ctx,
-        || {
-            Ok((
-                EvaluatedBytesOp::DateCorePredicateLegacy,
-                EvaluatedArgs::TimeCoreBits(core),
-            ))
-        },
-        |computed| match computed.into_boolean_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            _ => Err(result_kind_error().into_eval_error()),
-        },
+    let _ = ctx;
+    super::duration_construction_value::legacy(
+        2,
+        core,
+        None,
+        super::control_value::default_budget(),
     )
 }
 

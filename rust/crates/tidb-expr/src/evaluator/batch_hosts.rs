@@ -38,6 +38,8 @@ mod clock_source;
 mod date_arithmetic_source;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_duration_construction.rs"]
+mod duration_construction_source;
 #[path = "batch_epoch.rs"]
 mod epoch_source;
 #[path = "batch_extract.rs"]
@@ -137,6 +139,14 @@ pub(super) enum NativeHostMetadata {
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
+    },
+    DurationConstruction {
+        arguments: Box<[usize]>,
+        argument_types: Box<[FieldType]>,
+        operation: tidb_query_expr::NativeDurationConstructionOperation,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
     },
     Calendar {
         arguments: Box<[usize]>,
@@ -307,6 +317,7 @@ impl NativeHostMetadata {
             Self::TimestampDiff { result_type, .. }
             | Self::Clock { result_type, .. }
             | Self::Calendar { result_type, .. }
+            | Self::DurationConstruction { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
@@ -333,6 +344,10 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    DurationConstruction {
+        next: usize,
+        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
+    },
     TimestampDiff {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
@@ -436,7 +451,8 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
-            SqlDemand::TimestampDiff { next, .. } => Ok(Some(*next)),
+            SqlDemand::TimestampDiff { next, .. }
+            | SqlDemand::DurationConstruction { next, .. } => Ok(Some(*next)),
             SqlDemand::Calendar { first }
             | SqlDemand::Epoch { first }
             | SqlDemand::Extract { first }
@@ -472,7 +488,7 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::TimestampDiff { .. } => {
+            SqlDemand::TimestampDiff { .. } | SqlDemand::DurationConstruction { .. } => {
                 Err(binding("timestamp diff demand cannot retain byte prefix"))
             }
             SqlDemand::Calendar { .. }
@@ -2105,6 +2121,29 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::DurationConstructionNative(op) => {
+                let Some(NativeHostMetadata::DurationConstruction {
+                    arguments,
+                    argument_types,
+                    operation,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("duration descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || op != *operation
+                    || arguments.len() != op.arity()
+                    || argument_types.len() != op.arity()
+                    || invocation.arg_types.len() != op.arity()
+                {
+                    return Err(binding("duration descriptor differs"));
+                }
+                SqlDemand::DurationConstruction {
+                    next: 0,
+                    tokens: [None; 3],
+                }
+            }
             SqlBatchHostOperation::CalendarNative { operation, arity } => {
                 let Some(NativeHostMetadata::Calendar {
                     arguments,
@@ -2669,6 +2708,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::DurationConstruction { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("duration source cannot be wire NULL"));
+            };
+            return self.resume_duration_construction(id, token);
         }
         if matches!(task.demand, SqlDemand::Calendar { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

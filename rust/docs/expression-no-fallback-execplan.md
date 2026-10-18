@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7n: retire remaining native duration/construction/period/format/date-difference Ready families, preserve staged coercion/error/result contracts and integrate complete ordinary sources; independently pair before retirement, validate and sign local commits.
+
 - [x] N7m: retire DATE/core/text calendar components and week demand plus legacy MONTH/WEEK/HMS Ready seams; integrate complete canonical calendar sources with original casts/context/provenance/finite work and independent old comparisons.
 
 - [x] N7l: retire statement/live clock Ready callers and integrate the entire clock family and aliases as authenticated sources, preserving precision, original clock tuple, live SYSDATE sampling, callbacks and result boundaries.
@@ -2880,3 +2882,80 @@ diffs all pass. Only a clock documentation comment was relocated after runtime
 checks. Receipt rust/docs/evidence/no-fallback-n7m.md records exact commands and
 limits. Sign local paired commits without push; the overall task remains active
 for other time families, generic fallback, unistore and semantic/full-server gates.
+
+
+## N7n: remaining duration, constructors, format and date difference
+
+
+Retire native MICROSECOND, TIME, TIMEDIFF, TIME_TO_SEC, SEC_TO_TIME, TIME_FORMAT,
+MAKEDATE, MAKETIME, FROM_DAYS, PERIOD_ADD, PERIOD_DIFF, GET_FORMAT and DATEDIFF,
+plus legacy raw DATEDIFF, MICROSECOND and DATE predicate, and the grammar-selector
+GET_FORMAT adapter. CONVERT_TZ and other remaining dispatch/unistore work remain
+open beyond this coherent scope; do not substitute a smaller passing family.
+First capture immutable old results/raw identities/errors/context reads/panics,
+reproduce Ready/source REDs, add actual SDK kernels while old callers/workers
+remain independent, compare, then retire old controllers. Reuse existing parsers,
+formatters and original numeric conversion functions rather than recoding policy.
+
+Preserve eager child evaluation and original argument casts: DATEDIFF's two
+ETDatetime casts and GET_FORMAT's two ETString casts occur before signature
+coercion; other names retain their actual existing masks, not assumed Go types.
+Keep get_format values-byte versus grammar-selector strict-text domains distinct.
+TIME owns actual parse disposition and warning fallback; MICROSECOND suppresses
+parse errors. TIMEDIFF and TIME_FORMAT suppress late right conversion only after
+left parse validity. MAKETIME converts all parts left-to-right, computes actual
+seconds before precision, and preserves signed/unsigned hour and raw FSP rules.
+FROM_DAYS retains typed zero date, anomalous NULL band and original conversion.
+Period errors keep 1210 cause/message and NULL conversion order; raw legacy date/
+nanos policies remain distinct. Only the original temporal result names get
+that finishing policy, then every source has the ordinary return-family boundary.
+
+Use authenticated actual native capabilities in the existing one-frame SDK
+source protocol, release borrows over all callbacks, bound actual work/copies/
+output before demand without charging unused shape or ignored suffixes. Verify
+all original arities, data kinds, raw cores/nanos/FSP, dynamic context/error levels,
+parents, multiple outputs, selections/duplicates, provenance/cancellation/replay,
+resources and panic order. Run targeted and full frontend/SDK, mixed Projection,
+scoped clippy, root lint, both pinned formatters, immutable fixtures and diff/DCO
+gates. Keep existing failures explicit. No push or full Go-package/full-server
+completion claim. Persist evidence and receipt no-fallback-n7n.md before signing.
+
+
+N7n outcome and decision: old cached history5839272/AA540CDA49D3B88D is preserved.
+A real comparison failure exposed the retired Ready cache's poisoning after raw
+FROM_DAYS conversion panic. Do not copy that obsolete backend state into actual
+kernels. Final independent36113 compares every actual candidate to a fresh old
+SQL call:5839272/E07682675B3A9EFD matches, original historical hash stays unchanged,
+and exactly1282080 historical differences each require the exact ScopePoisoned/
+Scope cause and empty events. Original panic remains, closed invocations cannot
+replay, later calls recover. Only after that proof were17 entries and13 ordinary
+sources switched; wire workers now delegate shared actual kernels. Capture and
+combined comparison are archived; the permanent clean-old SQL witness is distinct
+from the immutable poisoned-cache history, never a silent hash rewrite.
+
+Source conversion preserves original DATEdiff two-time casts, GET_FORMAT two
+string casts even with first NULL, late TIMEDIFF/TIME_FORMAT right conversion,
+MAKETIME's eager numeric conversions and late FSP, typed FROM_DAYS zero, raw
+legacy domains and exact period causes. TIME has no original generic temporal
+result finishing; selected original names still do, followed by ordinary return
+coercion for all. Consuming states and eager capability counters close before
+error/panic. No store borrow spans callbacks. Direct/source/SDK real8KiB/1MiB
+GET_FORMAT lookup counterexample exposed a new unused length charge: fixed
+literal comparisons require only fixed work, identity byte inputs are borrowed,
+and needed casts still run. The regression is red before correction and green
+afterward; all original observations remain unchanged.
+
+Final frontend15293:1705PASS/exact3 inherited/95ignored/all254batch; SDK6267:
+1119PASS/exact1 inherited/1ignored; Projection54121:26PASS/new27rootgroup/typedIF
+NULL-first/bothflags/workers0/2. Focus55358:7PASS. Clippy78852:89expression/171all
+warning-title multiset exactly N7m, frontend warning titles also exactly N7m.
+Lint58803, both pinned17-file formatters, unchanged immutable fixture hashes and
+both diff checks pass. One helper signature was formatted after runtime checks
+without logic changes. Receipt rust/docs/evidence/no-fallback-n7n.md records
+commands, explicit scope-cache delta and limitations. Contradictory return
+metadata is compared as complete physical Column equality because old malformed
+fixed-width cells cannot safely be indexed; that is representation parity, not
+certification of malformed source validity. Sign paired local commits without
+push. No datatype/unistore production edit or rerun, no Go/Bazel edit. The whole
+goal remains active for remaining functions, generic fallback, unistore,
+unsupported/malformed sources, inherited failures and semantic/full-server gates.

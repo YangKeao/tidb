@@ -373,6 +373,7 @@ fn promoted_native_root_view(
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
+        || native_duration_construction_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -924,6 +925,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
+        || native_duration_construction_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1187,6 +1189,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
+        || native_duration_construction_call(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1232,6 +1235,28 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_duration_construction_call(
+    function: &ScalarFunction,
+) -> Option<tidb_query_expr::NativeDurationConstructionOperation> {
+    use tidb_query_expr::NativeDurationConstructionOperation as O;
+    let op = match function.func_name.lowercase() {
+        "microsecond" => O::Microsecond,
+        "time" => O::Time,
+        "timediff" => O::TimeDiff,
+        "time_to_sec" => O::TimeToSec,
+        "sec_to_time" => O::SecToTime,
+        "time_format" => O::TimeFormat,
+        "makedate" => O::MakeDate,
+        "maketime" => O::MakeTime,
+        "from_days" => O::FromDays,
+        "period_add" => O::PeriodAdd,
+        "period_diff" => O::PeriodDiff,
+        "get_format" => O::GetFormat,
+        "datediff" => O::DateDiff,
+        _ => return None,
+    };
+    (function.args.len() == op.arity()).then_some(op)
 }
 fn native_calendar_call(
     function: &ScalarFunction,
@@ -1373,6 +1398,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
+        || native_duration_construction_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1388,6 +1414,20 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some(op) = native_duration_construction_call(function) {
+        if view.value_role().is_none()
+            || function.get_static_type().is_none()
+            || function.args.iter().any(|v| v.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "duration/construction requires original native declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::DurationConstructionNative(op)),
+            op.arity(),
+        ));
+    }
     if let Some((operation, arity)) = native_calendar_call(function) {
         if view.value_role().is_none()
             || function.get_static_type().is_none()
@@ -2362,6 +2402,17 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if let Some(op) = native_duration_construction_call(function) {
+                        budget.field(sql, 1)?;
+                        for arg in &function.args {
+                            budget.field(arg.static_type().expect("checked duration source"), 1)?;
+                        }
+                        budget.add(
+                            op.arity()
+                                .checked_mul(std::mem::size_of::<usize>())
+                                .ok_or_else(|| resource("duration source metadata overflow"))?,
+                        )?;
+                    }
                     if let Some((_, arity)) = native_calendar_call(function) {
                         budget.field(sql, 1)?;
                         budget.field(
@@ -3008,6 +3059,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
                                         | SqlBatchHostOperation::ClockNative { .. }
                                         | SqlBatchHostOperation::CalendarNative { .. }
+                                        | SqlBatchHostOperation::DurationConstructionNative(_)
                                         | SqlBatchHostOperation::TsoNative(_)
                                         | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
@@ -3076,6 +3128,36 @@ fn lower_view(
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::DurationConstructionNative(op) => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, op.arity())?;
+                                let mut types = Vec::new();
+                                reserve(&mut types, op.arity())?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("duration ordinal overflow"))?;
+                                for arg in &sql.args {
+                                    arguments.push(child);
+                                    types.push(snapshot_field_type(
+                                        arg.static_type().expect("checked duration source"),
+                                    ));
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("duration source node missing"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::DurationConstruction {
+                                    arguments: arguments.into_boxed_slice(),
+                                    argument_types: types.into_boxed_slice(),
+                                    operation: op,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("duration result view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::CalendarNative { operation, arity } => {

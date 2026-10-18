@@ -677,3 +677,8 @@ pub(crate) use epoch_value::finish_temporal_values_bounded;
 pub(crate) mod calendar_value;
 #[cfg(test)]
 pub(crate) mod calendar_value_tests;
+
+#[cfg(test)]
+pub(crate) mod duration_construction_value_tests;
+
+pub(crate) mod duration_construction_value;
