@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7c: immutable392556 b4faecb69db19986;392535 actual paired comparisons+21 hash-guarded boundaries before native Ready retirement. Canonical generic/exact-PB sources, original endpoint casts, full metadata, resources and callback ownership integrated. Final frontend1634same4/all217batch, SDK1090same6, datatype564same2, Projection25/eightgroups, clippy89exacttitles/lint/pinnedfmt19/diff pass. Receipt evidence/no-fallback-n7c.md. Local signed checkpoint; no push; global retirement remains open.
+
 - [x] N6q0: explicit six MOD/div/DIV row/window catalog identities share the existing SDK frame; two protocol tests retain2050 occurrence Fresh/Reuse, primary errors, cancellation and reuse. Core1068same6, existing-consumer frontend1515same4/95ignored with exactly three pending admission REDs filtered, clippy89 inherited warnings, lint/pinnedformats/diff pass. Three root REDs rerun and still fail the same route assertions; actual source integration remains open and these new tests stay uncommitted until fixed. Receipt evidence/no-fallback-n6q0.md.
 
 - [x] N6p: native frontend MOD/division and integer/Decimal DIV ready-argument adapters retired, with one plain value layer and direct shared SDK calls.51388 exact old-adapter comparisons pass before retirement; independent captured witnesses retained afterward. Full frontend1515same4/95ignored(all151batch), Projection25, five new value/resource/cause checks, lint, pinned format and both diff gates pass. SDK production code unchanged; its guide updated. Native quotient root admission and global fallback retirement remain open. Receipt evidence/no-fallback-n6p.md.
@@ -2072,3 +2074,65 @@ workers0/2, oldmatrices/allowancesunchanged. Lint88401 closed0, pinnedfmt17Rust/
 bothdiffpass. Guide/receiptN7b final, coherentlocalDCOcheckpoint; noPush.
 Globalfallbackgoal remainsactive; inheritedpartial-formatmonth0bug andother
 families/source closure/remainingfailures areexplicitlypending, notignored.
+
+### N7c actual TIMESTAMPDIFF states and source demand (in progress)
+
+OLD392556 fixed b4faecb69db19986 at996b942d/611b076. The original test-only patch
+cached-applies to996b942d; snapshots/logs remain in workspace evidence/no-fallback.
+The independent actual SDK text/core comparison70960 passed392535 paired observations
+BEFORE native callers and wire-core delegation changed. The remaining21 arity/NULL-witness observations were guarded by the immutable
+whole392556 hash, not separate prototype comparisons. Three genuine source
+REDs and a Ready-lookup trap failed at that point; original fixed witness passed.
+
+Native text coercion still observes all three values in order even after NULL;
+PB exact TimestampDiff stops on its first actually observed NULL without coercing
+the prefix. Legacy coprocessor keeps its own unit-first/two-endpoint demand.
+The SDK now has opaque actual parsed endpoints and an actual computed delta,
+so parser scratch and late unit folding are bounded at their demanded stages.
+Shared bounded string coercion is extracted unchanged from the preceding date
+checkpoint; date resource diagnostics remain date-specific. Ordinary wire
+validation remains with its original owner. Source integration is unverified WIP.
+
+First source integration18021 passed PB-prefix and Ready-trap checks but generic
+sources failed context equality: original ScalarFunction applies endpoint
+datetime argument casts after ALL sources, before the text kernel. The provider
+now detaches bounded actual source ownership, drops store borrows, casts left
+then right with full source FieldTypes, then calls the actual text kernel. PB
+retains its distinct no-cast path. These casts share the existing plain SDK
+conversion owner; no Expr callback or secondary program is introduced.
+
+PB origins remain scoped to exact TimestampDiff and its descendants. Current and
+original effective FieldTypes are both admitted by byte budget BEFORE equality;
+all other PB function signatures remain outside this checkpoint's closure.
+The expanded test initially64589 failed only to compile because it tried to use
+the private runtime-cause accessor from outside tikv; corrected to public class
+and phase without widening the error API. Actual test results remain pending.
+
+Final pre-review frontend46659 closed1011633PASS exactinherited4/95ignored/0filtered,
+all217batch pass including Duration statement-clock and true decoded PB columns.
+Projection50168 closed0all25/eight bounded groups pass; SDK32044 1089same6 and
+datatype88482 564same2, lint68255pass, clippy80476 89exacttitlemultiset matchN7b.
+
+Self-review then found YEAR UInt outside i64 fell through the original SDK year
+route into formatting, while the new frontend work classifier assumed allUInt
+YEAR was allocation-free. Genuine regression48257 closed101 reproduced date_modes
+callback under zero work budget. Before changing code this was preserved as
+n7c-year-resource-red.log. The correction moves work classification into
+`native_cast_time::native_datetime_argument_cast_work`, sharing the actual private
+`year_source_value` decision instead of copying it into the frontend. UIntMAX is
+now metered, while NULL/Time and actual i64 YEAR construction/errors remain
+allocation-free. Tests include Known13 vs Unknown13, UIntMAX vs i64MAX, invalid
+UTF8 and negative year, plus a zero-budget native callback trap. Final complete
+frontend/SDK/Projection/clippy are being rerun after this runtime correction;
+the original datatype arithmetic has not changed since its complete sweep.
+
+N7c final YEAR regression GREEN in fullfrontend95104 closed1011634PASS exactsame4,
+95ignored/0filtered/all217batch. FinalProjection86279 closed0all25/eightgroups
+underunchangedlimits. SDK98646 closed1011090PASS exactsame6/1ignored/0filtered,
+newclassifiertest explicitlyregisteredandPASS. Initialtest accidentallynested
+insideexistingtest causedclippy91; onlytestplacementcorrected afterfinalfront/
+Projection, no productionbodychange. Finalclippy93873closed0 89EXACTtitlesmatch
+N7b;lint13889closed0/pinnedfmt19/bothdiffpass. Datatype88482 564same2 remains
+final because no laterdatatypebodychange. Allcheckpointjobsclosed; sourceReady
+retirement is coherent and verified, but globalfallback and inheritedsemantic/
+validation failures remain pending. Next audit remaining date semantics/callers.

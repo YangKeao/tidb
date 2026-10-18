@@ -32,6 +32,11 @@ pub(crate) struct PbOrigin {
 }
 
 impl PbOrigin {
+    /// Borrow for byte admission before comparing original/current metadata.
+    pub(crate) fn effective_type_ref(&self) -> Option<&FieldType> {
+        self.effective_type.as_ref()
+    }
+
     pub(crate) fn matches_effective_type(&self, sql: &FieldType) -> bool {
         self.effective_type.as_ref() == Some(sql)
     }

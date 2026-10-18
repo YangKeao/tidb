@@ -2964,8 +2964,56 @@ mod tests {
         let temporal_text_mix = std::iter::once(0)
             .chain(temporal_text_start..roots.len())
             .collect::<Vec<_>>();
+        let timestamp_diff_start = roots.len();
+        let difference = || {
+            call(
+                "timestampdiff",
+                integer.clone(),
+                vec![
+                    Expression::Constant(Constant::new(
+                        Datum::new_string("MICROSECOND"),
+                        string.clone(),
+                    )),
+                    call(
+                        "if",
+                        string.clone(),
+                        vec![
+                            column(0),
+                            Expression::Constant(Constant::new(
+                                Datum::new_string("2020-01-01 12:34:56.123456"),
+                                string.clone(),
+                            )),
+                            Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                        ],
+                    ),
+                    Expression::Constant(Constant::new(
+                        Datum::new_string("2020-01-02 12:34:56.123455"),
+                        string.clone(),
+                    )),
+                ],
+            )
+        };
+        roots.push(difference());
+        fields.push(integer.clone());
+        roots.push(call("plus", integer.clone(), vec![difference(), column(1)]));
+        fields.push(integer.clone());
+        roots.push(call("cast_char", string.clone(), vec![difference()]));
+        fields.push(string.clone());
+        let timestamp_diff_mix = std::iter::once(0)
+            .chain(timestamp_diff_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                timestamp_diff_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                timestamp_diff_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
             (roots[..31].to_vec(), fields[..31].to_vec()),
             (
                 interval_mix

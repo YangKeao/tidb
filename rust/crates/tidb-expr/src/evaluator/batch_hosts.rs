@@ -34,6 +34,8 @@ mod decimal_fast_window;
 mod json_sum_crc32_source;
 #[path = "batch_str_to_date.rs"]
 mod str_to_date_source;
+#[path = "batch_timestamp_diff.rs"]
+mod timestamp_diff_source;
 pub(super) use charset_source::NativeCharsetMetadata;
 #[path = "batch_extremum.rs"]
 mod extremum_source;
@@ -114,6 +116,14 @@ pub(super) enum NativeHostMetadata {
     Interval(NativeIntervalMetadata),
     Extremum(NativeExtremumMetadata),
     Charset(NativeCharsetMetadata),
+    TimestampDiff {
+        arguments: [usize; 3],
+        argument_types: [FieldType; 3],
+        stop_on_null: bool,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: Option<NativeValueRole>,
+    },
     StrToDate {
         arguments: [usize; 2],
         result_type: FieldType,
@@ -224,7 +234,8 @@ impl NativeHostMetadata {
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
             Self::Charset(metadata) => Some(&metadata.result_type),
-            Self::StrToDate { result_type, .. }
+            Self::TimestampDiff { result_type, .. }
+            | Self::StrToDate { result_type, .. }
             | Self::JsonSumCrc32 { result_type, .. }
             | Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
@@ -245,6 +256,10 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    TimestampDiff {
+        next: usize,
+        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
+    },
     StrToDate {
         first: Option<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -327,6 +342,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::TimestampDiff { next, .. } => Ok(Some(*next)),
             SqlDemand::StrToDate { first } => Ok(Some(usize::from(first.is_some()))),
             SqlDemand::JsonSumCrc32 => Ok(Some(0)),
             SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
@@ -357,6 +373,9 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::TimestampDiff { .. } => {
+                Err(binding("timestamp diff demand cannot retain byte prefix"))
+            }
             SqlDemand::StrToDate { .. } => Err(binding("date demand cannot retain byte prefix")),
             SqlDemand::JsonSumCrc32 => Err(binding("JSON checksum cannot retain byte prefix")),
             SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
@@ -1956,6 +1975,30 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             ));
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::TimestampDiffNative {
+                typed,
+                stop_on_null,
+            } => {
+                let Some(NativeHostMetadata::TimestampDiff {
+                    stop_on_null: declared,
+                    output_role,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("timestamp diff descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || invocation.arg_types.len() != 3
+                    || typed != output_role.is_none()
+                    || stop_on_null != *declared
+                {
+                    return Err(binding("timestamp diff descriptor differs"));
+                }
+                SqlDemand::TimestampDiff {
+                    next: 0,
+                    tokens: [None; 3],
+                }
+            }
             SqlBatchHostOperation::StrToDateNative { output } => {
                 let Some(NativeHostMetadata::StrToDate {
                     output: declared,
@@ -2357,6 +2400,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::TimestampDiff { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("timestamp diff source cannot be wire NULL"));
+            };
+            return self.resume_timestamp_diff(id, token);
         }
         if matches!(task.demand, SqlDemand::StrToDate { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

@@ -14,51 +14,18 @@
 
 use tidb_datatype::CoreTime;
 
-use super::{
-    evaluate_args_in, evaluate_prepared_args_in, native_time_result_contract_error, EvaluatedArgs,
-    EvaluatedBytesOp, EvaluatedBytesResult,
-};
+use super::native_time_result_contract_error;
 use crate::{Columns, Datum, EvalError};
 
 pub(crate) fn eval_timestamp_diff_in(
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
     vals: &[Datum],
 ) -> Result<Datum, EvalError> {
-    evaluate_args_in(
-        EvaluatedBytesOp::TimestampDiffTextNative,
-        ctx,
-        || {
-            let [unit, left, right] = vals else {
-                return Err(EvalError::Unsupported("bad function arity"));
-            };
-            // Keep all three coercions in their original order even when an
-            // earlier operand is NULL; a later coercion can still fail.
-            let (unit, left, right) = (
-                crate::coerce::coerce_str(unit)?,
-                crate::coerce::coerce_str(left)?,
-                crate::coerce::coerce_str(right)?,
-            );
-            Ok(EvaluatedArgs::Bytes3([
-                unit.map(String::into_bytes),
-                left.map(String::into_bytes),
-                right.map(String::into_bytes),
-            ]))
-        },
-        EvaluatedBytesResult::into_int_datum,
-    )
+    timestamp_diff_bounded(vals, super::control_value::default_budget())
 }
-
-/// Only for an actually observed early NULL in the PB argument prefix.
-pub(crate) fn eval_timestamp_diff_null_in(ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    evaluate_args_in(
-        EvaluatedBytesOp::DateDiffNullNative,
-        ctx,
-        || Ok(EvaluatedArgs::NullWitness(None)),
-        |computed| match computed.into_int_datum()? {
-            value @ Datum::Null => Ok(value),
-            _ => Err(native_time_result_contract_error()),
-        },
-    )
+/// Only an actually observed early NULL in the PB argument prefix.
+pub(crate) fn eval_timestamp_diff_null_in(_ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    Ok(Datum::Null)
 }
 
 /// Actual legacy TIMESTAMPDIFF inputs, without text-rendering typed time cores.
@@ -73,36 +40,84 @@ pub enum LegacyTimestampDiffArgs {
     },
 }
 
-/// Evaluates the legacy raw-core signature using the caller's current scope.
+/// Evaluates the legacy raw-core signature using shared value arithmetic.
 pub fn eval_legacy_timestamp_diff_in(
     args: LegacyTimestampDiffArgs,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
-    evaluate_prepared_args_in(
-        ctx,
-        || match args {
-            LegacyTimestampDiffArgs::NullWitness(value) => {
-                if value.is_some() {
-                    return Err(native_time_result_contract_error());
-                }
-                Ok((
-                    EvaluatedBytesOp::DateDiffNullNative,
-                    EvaluatedArgs::NullWitness(None),
-                ))
-            }
-            LegacyTimestampDiffArgs::Values { unit, left, right } => Ok((
-                EvaluatedBytesOp::TimestampDiffCoreNative,
-                EvaluatedArgs::Bytes3([
-                    Some(unit),
-                    left.map(|value| value.raw().to_le_bytes().to_vec()),
-                    right.map(|value| value.raw().to_le_bytes().to_vec()),
-                ]),
-            )),
-        },
-        |computed| match computed.into_int_datum()? {
-            Datum::Int(value) => Ok(Some(value)),
-            Datum::Null => Ok(None),
-            _ => Err(native_time_result_contract_error()),
-        },
+    match args {
+        LegacyTimestampDiffArgs::NullWitness(None) => Ok(None),
+        LegacyTimestampDiffArgs::NullWitness(Some(())) => Err(native_time_result_contract_error()),
+        LegacyTimestampDiffArgs::Values { unit, left, right } => {
+            Ok(tidb_query_expr::native_timestamp_diff_core_values(
+                &unit,
+                left.map(CoreTime::raw),
+                right.map(CoreTime::raw),
+            ))
+        }
+    }
+}
+
+pub(crate) fn timestamp_diff_bounded(vals: &[Datum], maximum: usize) -> Result<Datum, EvalError> {
+    let [unit, left, right] = vals else {
+        return Err(EvalError::Unsupported("bad function arity"));
+    };
+    timestamp_diff_values_bounded(unit, left, right, maximum)
+}
+pub(crate) fn timestamp_diff_cast_arguments_bounded(
+    ctx: &dyn Columns,
+    values: &mut [Datum; 3],
+    fields: &[tidb_datatype::FieldType; 3],
+    maximum: usize,
+) -> Result<(), EvalError> {
+    for i in 1..3 {
+        // The original argument-cast layer runs AFTER all three sources and
+        // BEFORE the text kernel, even when the unit itself is NULL/invalid.
+        let value = &values[i];
+        let work = tidb_query_expr::native_datetime_argument_cast_work(
+            value.as_shared_json_input(),
+            value.as_shared_numeric_input(),
+            Some(fields[i].code().as_shared_type_name_code()),
+        )
+        .map_err(string_error)?;
+        if maximum == usize::MAX || work > maximum {
+            return Err(string_error(
+                tidb_query_expr::NativeStringCoercionError::ResourceLimit,
+            ));
+        }
+        values[i] = crate::cast::cast_arg_as_datetime(value, Some(&fields[i]), ctx)?;
+    }
+    Ok(())
+}
+fn string_error(error: tidb_query_expr::NativeStringCoercionError) -> EvalError {
+    match error {
+        tidb_query_expr::NativeStringCoercionError::Unsupported(reason) => {
+            EvalError::Unsupported(reason)
+        }
+        tidb_query_expr::NativeStringCoercionError::ResourceLimit => {
+            EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
+                tidb_query_expr::local::LocalError::ResourceLimit(
+                    "TIMESTAMPDIFF actual text/work allowance exceeded".into(),
+                ),
+                None,
+            ))
+        }
+    }
+}
+pub(crate) fn timestamp_diff_values_bounded(
+    unit: &Datum,
+    left: &Datum,
+    right: &Datum,
+    maximum: usize,
+) -> Result<Datum, EvalError> {
+    tidb_query_expr::native_timestamp_diff_text_values(
+        [
+            unit.as_shared_json_input(),
+            left.as_shared_json_input(),
+            right.as_shared_json_input(),
+        ],
+        maximum,
     )
+    .map(|value| value.map_or(Datum::Null, Datum::Int))
+    .map_err(string_error)
 }

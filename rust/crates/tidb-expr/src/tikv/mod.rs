@@ -161,8 +161,13 @@ pub(crate) use str_to_date::{
     compute_str_to_date_value, eval_str_to_date_in, prepare_str_to_date_value,
 };
 mod timestamp_diff;
+#[cfg(test)]
+mod timestamp_diff_value_tests;
 pub use timestamp_diff::{eval_legacy_timestamp_diff_in, LegacyTimestampDiffArgs};
-pub(crate) use timestamp_diff::{eval_timestamp_diff_in, eval_timestamp_diff_null_in};
+pub(crate) use timestamp_diff::{
+    eval_timestamp_diff_in, eval_timestamp_diff_null_in, timestamp_diff_cast_arguments_bounded,
+    timestamp_diff_values_bounded,
+};
 mod unix_timestamp;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,

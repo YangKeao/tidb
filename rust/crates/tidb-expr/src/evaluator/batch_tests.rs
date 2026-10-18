@@ -12751,6 +12751,7 @@ fn native_str_to_date_duration_sources_require_canonical_driver() {
 
 #[derive(Default)]
 struct StrToDateSourceContext {
+    clock: Option<(i64, u32, i32)>,
     enabled: Cell<bool>,
     seed: usize,
     constant: bool,
@@ -12759,6 +12760,12 @@ struct StrToDateSourceContext {
     events: RefCell<Vec<String>>,
 }
 impl Columns for StrToDateSourceContext {
+    fn now(&self) -> Option<(i64, u32, i32)> {
+        if self.clock.is_some() {
+            self.events.borrow_mut().push("now".into());
+        }
+        self.clock
+    }
     fn get(&self, _: &[String]) -> Option<Datum> {
         panic!("date sources must use checked bindings")
     }
@@ -12803,16 +12810,28 @@ fn compare_str_to_date_context(
     selection: &[usize],
     seed: usize,
 ) {
+    compare_temporal_source_context(root, schema, rows, selection, seed, None)
+}
+fn compare_temporal_source_context(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    clock: Option<(i64, u32, i32)>,
+) {
     let field = snapshot_field_type(root.static_type().unwrap());
     let actual_suite = suite(root.clone());
     let reference_suite = suite(root);
     for enabled in [true, false, true, false] {
         let actual_ctx = StrToDateSourceContext {
             seed,
+            clock,
             ..StrToDateSourceContext::default()
         };
         let reference_ctx = StrToDateSourceContext {
             seed,
+            clock,
             ..StrToDateSourceContext::default()
         };
         actual_ctx.enabled.set(enabled);
@@ -13516,4 +13535,751 @@ fn native_str_to_date_providers_keep_capabilities_resources_callbacks_and_cancel
             provider.cancel(&task);
         }
     }
+}
+
+#[test]
+fn native_timestamp_diff_text_sources_require_canonical_driver() {
+    let s = string_ty();
+    compare_typed_profile(
+        call(
+            "timestampdiff",
+            ty(),
+            vec![
+                typed_column(0, &s),
+                typed_column(1, &s),
+                typed_column(2, &s),
+            ],
+        ),
+        &[s.clone(), s.clone(), s],
+        &[
+            vec![
+                Datum::new_string("DAY"),
+                Datum::new_string("0000-01-01"),
+                Datum::new_string("0000-03-01"),
+            ],
+            vec![
+                Datum::new_string("day"),
+                Datum::new_string("2020-01-01"),
+                Datum::new_string("2020-01-02"),
+            ],
+            vec![
+                Datum::Null,
+                Datum::new_string("bad"),
+                Datum::new_string("bad"),
+            ],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_timestamp_diff_actual_null_still_demands_generic_sources() {
+    compare_typed_profile(
+        call(
+            "timestampdiff",
+            ty(),
+            vec![
+                text(None),
+                call("abs", ty(), vec![column(0)]),
+                text(Some(b"bad")),
+            ],
+        ),
+        &[ty()],
+        &[vec![Datum::Int(1)], vec![Datum::Int(i64::MIN)]],
+        &[0, 1],
+    );
+}
+
+#[test]
+fn native_timestamp_diff_pb_prefix_null_sources_require_canonical_driver() {
+    let root = Expression::ScalarFunction(ScalarFunction::from_pb(
+        crate::scalar_function::PbBuiltin::new(db_pb::ScalarFuncSig::TimestampDiff).unwrap(),
+        ty(),
+        vec![
+            text(None),
+            call("abs", ty(), vec![column(0)]),
+            text(Some(b"bad")),
+        ],
+    ));
+    compare_typed_profile(root, &[ty()], &[vec![Datum::Int(i64::MIN)]], &[0]);
+}
+#[test]
+fn native_timestamp_diff_typed_parents_selection_and_partial_errors_match_original() {
+    let s = string_ty();
+    let t = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let sources = vec![
+        typed_column(0, &s),
+        typed_column(1, &s),
+        typed_column(2, &s),
+    ];
+    for unsigned in [false, true] {
+        let n = ty().with_unsigned(unsigned);
+        let root = call("timestampdiff", n.clone(), sources.clone());
+        let parents = [
+            root.clone(),
+            call("cast_char", s.clone(), vec![root.clone()]),
+            call(
+                "ifnull",
+                n.clone(),
+                vec![root.clone(), literal(Datum::Int(7), n.clone())],
+            ),
+            call("eq", ty(), vec![root.clone(), int(1)]),
+            plus(root.clone(), int(1)),
+            call(
+                "concat",
+                s.clone(),
+                vec![call("cast_char", s.clone(), vec![root]), text(Some(b"x"))],
+            ),
+        ];
+        let rows = vec![
+            vec![
+                Datum::new_string("DAY"),
+                Datum::new_string("2020-01-01"),
+                Datum::new_string("2020-01-02"),
+            ],
+            vec![
+                Datum::Null,
+                Datum::new_string("bad"),
+                Datum::new_string("bad"),
+            ],
+            vec![
+                Datum::new_string("MONTH"),
+                Datum::new_string("2020-01-31"),
+                Datum::new_string("2020-02-29"),
+            ],
+            vec![
+                Datum::new_string("DAY"),
+                Datum::Bytes(vec![255]),
+                Datum::new_string("2020-01-01"),
+            ],
+        ];
+        for root in parents {
+            for sel in [
+                vec![],
+                vec![0, 2, 1, 0],
+                (0..2050).map(|i| [2, 0, 1][i % 3]).collect(),
+                vec![3, 0],
+                vec![0, 1, 3],
+            ] {
+                compare_typed_profile(
+                    root.clone(),
+                    &[s.clone(), s.clone(), s.clone()],
+                    &rows,
+                    &sel,
+                );
+            }
+        }
+    }
+    let first =
+        tidb_datatype::parse_datetime("2020-01-01 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let second =
+        tidb_datatype::parse_datetime("2020-01-02 12:34:56.123455", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    compare_typed_profile(
+        call(
+            "timestampdiff",
+            ty(),
+            vec![
+                typed_column(0, &s),
+                typed_column(1, &t),
+                typed_column(2, &t),
+            ],
+        ),
+        &[s, t.clone(), t],
+        &[
+            vec![
+                Datum::new_string("MICROSECOND"),
+                Datum::Time(first),
+                Datum::Time(second),
+            ],
+            vec![Datum::new_string("day"), Datum::Null, Datum::Time(second)],
+        ],
+        &[0, 1, 0],
+    );
+}
+
+fn decoded_timestamp_diff(children: Vec<db_pb::Expr>, unsigned: bool) -> Expression {
+    pb_to_expr(
+        &db_pb::Expr {
+            tp: Some(db_pb::ExprType::ScalarFunc as i32),
+            sig: Some(db_pb::ScalarFuncSig::TimestampDiff as i32),
+            children,
+            field_type: Some(db_pb::FieldType {
+                tp: Some(8),
+                flag: Some(if unsigned { 32 } else { 0 }),
+                flen: Some(20),
+                decimal: Some(0),
+                charset: Some("binary".into()),
+                collate: Some(-63),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        &[],
+    )
+    .unwrap()
+}
+fn decoded_diff_text(value: Option<&[u8]>) -> db_pb::Expr {
+    db_pb::Expr {
+        tp: Some(if value.is_some() {
+            db_pb::ExprType::String
+        } else {
+            db_pb::ExprType::Null
+        } as i32),
+        val: value.map(<[u8]>::to_vec),
+        field_type: Some(db_pb::FieldType {
+            tp: Some(253),
+            flen: Some(128),
+            decimal: Some(-1),
+            charset: Some("utf8mb4".into()),
+            collate: Some(-46),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+#[test]
+fn native_timestamp_diff_actual_decoded_pb_null_unsigned_and_stale_origin() {
+    for unsigned in [false, true] {
+        for values in [
+            [
+                Some(b"DAY".as_slice()),
+                Some(b"2020-01-02".as_slice()),
+                Some(b"2020-01-01".as_slice()),
+            ],
+            [Some(b"day"), Some(b"0000-01-01"), Some(b"0000-03-01")],
+            [None, Some(b"\xff"), Some(b"\xff")],
+            [Some(b"\xff"), None, Some(b"\xff")],
+            [Some(b"\xff"), Some(b"\xff"), None],
+            [Some(b"DAY"), Some(b"\xff"), Some(b"2020-01-01")],
+        ] {
+            let root = decoded_timestamp_diff(
+                values.into_iter().map(decoded_diff_text).collect(),
+                unsigned,
+            );
+            for selection in [vec![], vec![0], vec![0; 2050]] {
+                compare_typed_profile(root.clone(), &[], &[vec![]], &selection);
+            }
+        }
+    }
+    let mut root = decoded_timestamp_diff(
+        [
+            Some(b"DAY".as_slice()),
+            Some(b"2020-01-01".as_slice()),
+            Some(b"2020-01-02".as_slice()),
+        ]
+        .into_iter()
+        .map(decoded_diff_text)
+        .collect(),
+        false,
+    );
+    let Expression::ScalarFunction(f) = &mut root else {
+        panic!()
+    };
+    let Expression::Constant(c) = &mut f.args[1] else {
+        panic!()
+    };
+    c.ret_type = Some(ty()); // Snapshot and effective declaration no longer agree.
+    assert!(preflight(&root, &[], limits()).is_err());
+    // The former closure still refuses every unrelated PB signature.
+    let other = Expression::ScalarFunction(ScalarFunction::from_pb(
+        crate::scalar_function::PbBuiltin::new(db_pb::ScalarFuncSig::Month).unwrap(),
+        ty(),
+        vec![int(1)],
+    ));
+    assert!(preflight(&other, &[], limits()).is_err());
+}
+
+#[test]
+fn native_timestamp_diff_providers_authenticate_all_prefixes_bound_work_and_reuse() {
+    use std::cell::RefCell;
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        BatchCallSignature, HostArgReply, HostCatalog, HostInvocation, HostSignature, HostStart,
+        HostStep, LocalHostServices, SqlBatchHostOperation,
+    };
+    struct NoCallbacks<'a> {
+        store: &'a RefCell<NativeValueStore>,
+    }
+    impl Columns for NoCallbacks<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented source")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready lookup")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            drop(self.store.borrow_mut());
+            tidb_datatype::DateModes {
+                no_zero_date: false,
+                no_zero_in_date: false,
+                allow_invalid_dates: false,
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            SessionTimeZone::utc()
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            drop(self.store.borrow_mut());
+        }
+    }
+    for typed in [false, true] {
+        for stop_on_null in [false, true] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); 3];
+            let result_type = ty();
+            let ret = if typed {
+                projected(&result_type, true).unwrap()
+            } else {
+                field.clone()
+            };
+            let op = SqlBatchHostOperation::TimestampDiffNative {
+                typed,
+                stop_on_null,
+            };
+            assert!(BatchCallSignature::for_host(op, 3)
+                .unwrap()
+                .uses_native_value_inputs());
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                op,
+                HostSignature {
+                    arg_types: args.clone().into_boxed_slice(),
+                    return_type: ret.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::TimestampDiff {
+                arguments: [3, 8, 13],
+                argument_types: [string_ty(), string_ty(), string_ty()],
+                stop_on_null,
+                result_type,
+                output_node: 2,
+                output_role: (!typed).then_some(NativeValueRole::Output),
+            }];
+            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let callbacks = NoCallbacks { store: &store };
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &callbacks, 8192)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            let good = [
+                Datum::new_string("DAY"),
+                Datum::new_string("2020-01-01"),
+                Datum::new_string("2020-01-02"),
+            ];
+            let huge = Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 0));
+            for bad_index in 0..3 {
+                for bad in [
+                    stale.clone(),
+                    insert(&huge, NativeValueRole::Output, [3, 8, 13][bad_index], row),
+                    insert(&huge, NativeValueRole::CharInput, 99, row),
+                    insert(
+                        &huge,
+                        NativeValueRole::CharInput,
+                        [3, 8, 13][bad_index],
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    ),
+                ] {
+                    let HostStart::Pending { task, .. } = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    for index in 0..bad_index {
+                        let t = insert(
+                            &good[index],
+                            NativeValueRole::CharInput,
+                            [3, 8, 13][index],
+                            row,
+                        );
+                        let v = VectorValue::from_scalar(&ScalarValue::Bytes(Some(t)), 1);
+                        assert!(matches!(
+                            provider
+                                .resume(
+                                    &mut ctx,
+                                    &task,
+                                    HostArgReply {
+                                        index,
+                                        field_type: &field,
+                                        values: &v
+                                    }
+                                )
+                                .unwrap(),
+                            HostStep::NeedArg(_)
+                        ));
+                    }
+                    let v = VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1);
+                    assert!(matches!(
+                        provider.resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index: bad_index,
+                                field_type: &field,
+                                values: &v
+                            }
+                        ),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+            }
+            // Changing the epoch between replies invalidates the retained prefix
+            // before the newly supplied huge Decimal can be formatted.
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &ret,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let t = insert(&good[0], NativeValueRole::CharInput, 3, row);
+            let v = VectorValue::from_scalar(&ScalarValue::Bytes(Some(t)), 1);
+            provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &v,
+                    },
+                )
+                .unwrap();
+            store.borrow_mut().begin_window().unwrap();
+            let t = insert(&huge, NativeValueRole::CharInput, 8, row);
+            let v = VectorValue::from_scalar(&ScalarValue::Bytes(Some(t)), 1);
+            assert!(matches!(
+                provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &v
+                    }
+                ),
+                Err(LocalError::BindingContract(_))
+            ));
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+            for (values, error) in [
+                (good.clone(), None),
+                (
+                    [Datum::Null, huge.clone(), good[2].clone()],
+                    Some("resource"),
+                ),
+                (
+                    [good[0].clone(), Datum::Bytes(vec![255]), huge.clone()],
+                    Some("invalid UTF-8 byte datum"),
+                ),
+                (
+                    [huge.clone(), good[1].clone(), good[2].clone()],
+                    Some("resource"),
+                ),
+                (good.clone(), None),
+            ] {
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                let mut ready = None;
+                for index in 0..3 {
+                    let t = insert(
+                        &values[index],
+                        NativeValueRole::CharInput,
+                        [3, 8, 13][index],
+                        row,
+                    );
+                    let v = VectorValue::from_scalar(&ScalarValue::Bytes(Some(t)), 1);
+                    let step = provider.resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &v,
+                        },
+                    );
+                    match step {
+                        Ok(HostStep::NeedArg(request)) => assert_eq!(request.index, index + 1),
+                        Ok(HostStep::Ready(v)) => {
+                            ready = Some(v);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if stop_on_null && values[0].is_null() {
+                    assert!(provider.take_native_error().is_none());
+                    assert!(ready.is_some());
+                } else if let Some(error) = error {
+                    let e = provider.take_native_error().expect("native error retained");
+                    if error == "resource" {
+                        let EvalError::ExpressionRuntimeFailure(e) = e else {
+                            panic!("{e:?}")
+                        };
+                        assert!(matches!(
+                            e.class(),
+                            crate::ExpressionRuntimeFailureClass::ResourceLimit
+                        ));
+                        assert_eq!(e.phase(), None);
+                    } else {
+                        assert_eq!(e, EvalError::Unsupported("invalid UTF-8 byte datum"));
+                    }
+                    assert!(ready.is_none());
+                } else {
+                    let ready = ready.unwrap();
+                    if typed {
+                        assert!(matches!(
+                            ready.get_scalar_ref(0),
+                            ScalarValueRef::Int(Some(1))
+                        ));
+                    } else {
+                        let ScalarValueRef::Bytes(Some(t)) = ready.get_scalar_ref(0) else {
+                            panic!()
+                        };
+                        assert_eq!(
+                            *store
+                                .borrow()
+                                .get(
+                                    t,
+                                    NativeValueRole::Output,
+                                    NativeValueOrigin { node: 2, row }
+                                )
+                                .unwrap(),
+                            Datum::Int(1)
+                        );
+                    }
+                }
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+        }
+    }
+}
+
+#[test]
+fn native_timestamp_diff_dynamic_cast_modes_and_year_metadata_match_original() {
+    let string = string_ty();
+    let root = call(
+        "timestampdiff",
+        ty(),
+        vec![
+            typed_column(0, &string),
+            typed_column(1, &string),
+            typed_column(2, &string),
+        ],
+    );
+    let schema = [string.clone(), string.clone(), string.clone()];
+    let rows = vec![
+        vec![
+            Datum::new_string("DAY"),
+            Datum::new_string("2020-02-29"),
+            Datum::new_string("2020-03-01"),
+        ],
+        vec![
+            Datum::new_string("MONTH"),
+            Datum::new_string("2021-02-29"),
+            Datum::new_string("2021-03-01"),
+        ],
+        vec![
+            Datum::Null,
+            Datum::new_string("bad"),
+            Datum::new_string("2020-01-00"),
+        ],
+        vec![
+            Datum::new_string("DAY"),
+            Datum::new_string("0000-00-00"),
+            Datum::new_string("0000-01-01"),
+        ],
+        vec![
+            Datum::new_string("DAY"),
+            Datum::Bytes(vec![255]),
+            Datum::new_string("bad"),
+        ],
+    ];
+    for seed in 0..8 {
+        for selection in [
+            vec![],
+            vec![0, 1, 2, 3],
+            (0..2050).map(|i| [3, 1, 0, 2][i % 4]).collect(),
+            vec![0, 1, 4],
+        ] {
+            compare_str_to_date_context(root.clone(), &schema, &rows, &selection, seed);
+        }
+    }
+    let year = FieldType::new(FieldTypeCode::Year);
+    let root = call(
+        "timestampdiff",
+        ty(),
+        vec![
+            typed_column(0, &string),
+            typed_column(1, &year),
+            typed_column(2, &year),
+        ],
+    );
+    compare_typed_profile(
+        root,
+        &[string.clone(), year.clone(), year],
+        &[
+            vec![Datum::new_string("YEAR"), Datum::Int(69), Datum::Int(70)],
+            vec![Datum::new_string("DAY"), Datum::Int(0), Datum::Int(1)],
+            vec![Datum::Null, Datum::Int(10000), Datum::Null],
+        ],
+        &[0, 1, 2],
+    );
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let right =
+        tidb_datatype::parse_datetime("2020-01-01 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    compare_typed_profile(
+        call(
+            "timestampdiff",
+            ty(),
+            vec![
+                typed_column(0, &string),
+                typed_column(1, &duration),
+                typed_column(2, &datetime),
+            ],
+        ),
+        &[string, duration, datetime],
+        &[vec![
+            Datum::new_string("SECOND"),
+            Datum::Duration(MySqlDuration::from_nanoseconds(1_000_000_000, 6).unwrap()),
+            Datum::Time(right),
+        ]],
+        &[0],
+    );
+}
+
+#[test]
+fn native_timestamp_diff_duration_clock_and_decoded_columns_preserve_demand() {
+    let string = string_ty();
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let root = call(
+        "timestampdiff",
+        ty(),
+        vec![
+            typed_column(0, &string),
+            typed_column(1, &duration),
+            typed_column(2, &duration),
+        ],
+    );
+    let rows = [
+        vec![
+            Datum::new_string("MICROSECOND"),
+            Datum::Duration(MySqlDuration::from_nanoseconds(11_000_123_456_000, 6).unwrap()),
+            Datum::Duration(MySqlDuration::from_nanoseconds(12_000_123_455_000, 6).unwrap()),
+        ],
+        vec![
+            Datum::Null,
+            Datum::Null,
+            Datum::Duration(MySqlDuration::from_nanoseconds(-1_000_000_000, 0).unwrap()),
+        ],
+    ];
+    for seed in 0..8 {
+        compare_temporal_source_context(
+            root.clone(),
+            &[string.clone(), duration.clone(), duration.clone()],
+            &rows,
+            &[0, 1, 0],
+            seed,
+            Some((1_792_281_600, 123_456_789, 28_800)),
+        );
+    }
+    let mut children = Vec::new();
+    for index in 0..3 {
+        let mut val = Vec::new();
+        tidb_codec::encode_int(&mut val, index);
+        children.push(db_pb::Expr {
+            tp: Some(db_pb::ExprType::ColumnRef as i32),
+            val: Some(val),
+            field_type: Some(db_pb::FieldType {
+                tp: Some(253),
+                flen: Some(128),
+                decimal: Some(-1),
+                charset: Some("utf8mb4".into()),
+                collate: Some(-46),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+    let root = decoded_timestamp_diff(children, false);
+    let Expression::ScalarFunction(function) = &root else {
+        panic!()
+    };
+    let schema: Vec<_> = function
+        .args
+        .iter()
+        .map(|a| snapshot_field_type(a.static_type().unwrap()))
+        .collect();
+    let rows = [
+        vec![
+            Datum::new_string("DAY"),
+            Datum::new_string("2020-01-02"),
+            Datum::new_string("2020-01-01"),
+        ],
+        vec![
+            Datum::Null,
+            Datum::Bytes(vec![255]),
+            Datum::Bytes(vec![255]),
+        ],
+        vec![
+            Datum::Bytes(vec![255]),
+            Datum::Null,
+            Datum::Bytes(vec![255]),
+        ],
+    ];
+    compare_typed_profile(root, &schema, &rows, &[0, 1, 2, 0]);
 }

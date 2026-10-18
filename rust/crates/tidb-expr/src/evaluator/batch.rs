@@ -364,7 +364,7 @@ fn promoted_native_root_view(
     };
     let row_control = matches!(
         function.func_name.lowercase(),
-        "json_sum_crc32" | "str_to_date"
+        "json_sum_crc32" | "str_to_date" | "timestampdiff" | "sig_timestampdiff"
     ) || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
@@ -506,7 +506,7 @@ fn typed_source_tree_complete(
         return native_value_tree_complete(node, depth, remaining);
     }
     *remaining -= 1;
-    let Ok((field, _)) = parts(node) else {
+    let Ok((field, _)) = parts(node, false) else {
         return false;
     };
     if check_type(field).is_err() {
@@ -905,7 +905,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
     }
     if matches!(
         function.func_name.lowercase(),
-        "json_sum_crc32" | "str_to_date"
+        "json_sum_crc32" | "str_to_date" | "timestampdiff" | "sig_timestampdiff"
     ) || native_charset_operation(function.func_name.lowercase()).is_some()
     {
         // Native producers always consume authentic native source values;
@@ -999,7 +999,7 @@ fn native_vector_from_tikv(value: TikvVectorFloat32) -> LocalResult<VectorFloat3
     debug_assert!(suffix.is_empty());
     Ok(value)
 }
-fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
+fn parts(node: &Expression, allow_pb: bool) -> Result<(&FieldType, &CollationInfo)> {
     let (field, collation, pb) = match node {
         Expression::Constant(value) => (
             value.ret_type.as_ref(),
@@ -1021,7 +1021,9 @@ fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
         }
     };
     if pb {
-        return Err(BatchFailure::admission("PB state inside batch source"));
+        if !allow_pb {
+            return Err(BatchFailure::admission("PB state inside batch source"));
+        }
     }
     Ok((
         field.ok_or_else(|| BatchFailure::admission("missing batch declaration"))?,
@@ -1031,8 +1033,8 @@ fn parts(node: &Expression) -> Result<(&FieldType, &CollationInfo)> {
 fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     let expected_arity = resolve_call_in_view(function, view)?.1;
     if function.args.len() != expected_arity
-        || function.pb_signature().is_some()
-        || function.pb_origin().is_some()
+        || (function.pb_signature().is_some() && !pb_timestamp_diff(function))
+        || (function.pb_origin().is_some() && !pb_timestamp_diff(function))
         || function.has_values_offset()
         || function.has_grouping_metadata()
     {
@@ -1201,6 +1203,12 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
                 | "mul"
         )
 }
+fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
+    function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::TimestampDiff)
+}
+fn timestamp_diff_call(function: &ScalarFunction) -> bool {
+    function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
 fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharsetOperation> {
     use tidb_query_expr::NativeCharsetOperation as Op;
     Some(match name {
@@ -1213,7 +1221,7 @@ fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharset
 fn native_value_call(function: &ScalarFunction) -> bool {
     matches!(
         function.func_name.lowercase(),
-        "json_sum_crc32" | "str_to_date"
+        "json_sum_crc32" | "str_to_date" | "timestampdiff" | "sig_timestampdiff"
     ) || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
@@ -1227,6 +1235,25 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if timestamp_diff_call(function) {
+        if function.args.len() != 3
+            || function.args.iter().any(|arg| arg.static_type().is_none())
+            || !function.get_static_type().is_some_and(|field| {
+                view.value_role().is_some() || field.eval_type() == NativeEvalType::Int
+            })
+        {
+            return Err(BatchFailure::admission(
+                "TIMESTAMPDIFF requires complete declarations and exact arity",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::TimestampDiffNative {
+                typed: view.value_role().is_none(),
+                stop_on_null: pb_timestamp_diff(function),
+            }),
+            3,
+        ));
+    }
     if function.func_name.lowercase() == "str_to_date" {
         use tidb_query_expr::local::SqlTemporalOutput as Output;
         if function.args.len() != 2
@@ -1857,16 +1884,19 @@ fn preflight_view<'a>(
     }
     let mut pending = Vec::new();
     let mut checked = Vec::new();
-    budget.array::<(&Expression, usize, NativeView)>(1)?;
+    budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
     reserve(&mut pending, 1)?;
     pending.push((
         root,
         1usize,
         view.unwrap_or_else(|| root_source_view(root, limits.tree)),
+        matches!(root, Expression::ScalarFunction(function) if pb_timestamp_diff(function)),
     ));
     let mut scheduled = 1usize;
-    while let Some((node, depth, view)) = pending.pop() {
-        let (sql, collation) = parts(node)?;
+    while let Some((node, depth, view, allow_pb)) = pending.pop() {
+        let allow_pb = allow_pb
+            || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function));
+        let (sql, collation) = parts(node, allow_pb)?;
         if view.value_role().is_none() {
             check_type(sql)?;
         } else if !matches!(node, Expression::Constant(_) | Expression::Column(_))
@@ -1881,6 +1911,24 @@ fn preflight_view<'a>(
             ));
         }
         budget.field(sql, 3)?; // native source, projected declaration, C snapshot
+        if allow_pb {
+            let origin = match node {
+                Expression::Constant(v) => v.pb_origin(),
+                Expression::Column(v) => v.pb_origin(),
+                Expression::ScalarFunction(v) => v.pb_origin(),
+                _ => None,
+            };
+            if let Some(origin) = origin {
+                if let Some(original) = origin.effective_type_ref() {
+                    budget.field(original, 1)?;
+                }
+                if !origin.matches_effective_type(sql) {
+                    return Err(BatchFailure::admission(
+                        "PB effective declaration differs from its original snapshot",
+                    ));
+                }
+            }
+        }
         if view != NativeView::Typed {
             budget.field(&native_bytes_type(), 3)?;
         }
@@ -1934,7 +1982,7 @@ fn preflight_view<'a>(
                     .checked_add(arity.saturating_add(policy_nodes))
                     .filter(|nodes| *nodes <= limits.tree.max_nodes)
                     .ok_or_else(|| resource("batch source node policy exceeded"))?;
-                budget.array::<(&Expression, usize, NativeView)>(arity)?;
+                budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
                 check_batch_call(function, view)?;
                 budget.add(function.func_name.original().len())?;
                 budget.add(function.func_name.lowercase().len())?;
@@ -2105,7 +2153,12 @@ fn preflight_view<'a>(
                     .ok_or_else(|| resource("batch source depth policy exceeded"))?;
                 reserve(&mut pending, arity)?;
                 for (index, child) in function.args.iter().enumerate().rev() {
-                    pending.push((child, child_depth, argument_view(function, view, index)));
+                    pending.push((
+                        child,
+                        child_depth,
+                        argument_view(function, view, index),
+                        allow_pb,
+                    ));
                 }
             }
             Expression::CorrelatedColumn(_) => unreachable!(),
@@ -2591,6 +2644,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::InNative
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
+                                        | SqlBatchHostOperation::TimestampDiffNative { .. }
                                         | SqlBatchHostOperation::StrToDateNative { .. }
                                         | SqlBatchHostOperation::JsonSumCrc32Native { .. }
                                         | SqlBatchHostOperation::CharsetNative(_)
@@ -2629,6 +2683,33 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::TimestampDiffNative { stop_on_null, .. } => {
+                                let mut arguments = [0; 3];
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("timestamp diff ordinal overflow"))?;
+                                for argument in &mut arguments {
+                                    *argument = child;
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("timestamp diff child absent"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::TimestampDiff {
+                                    arguments,
+                                    argument_types: std::array::from_fn(|i| {
+                                        snapshot_field_type(
+                                            sql.args[i]
+                                                .static_type()
+                                                .expect("checked timestamp argument"),
+                                        )
+                                    }),
+                                    stop_on_null,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                }
+                            }
                             SqlBatchHostOperation::StrToDateNative { output } => {
                                 let first = ordinal
                                     .checked_add(1)
