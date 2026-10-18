@@ -221,6 +221,35 @@ mod tests {
     }
 
     #[test]
+    fn invalid_nullif_comparison_keeps_original_private_scope_cause() {
+        use crate::{Datum, EvalError};
+        for value in [
+            Datum::Int(2),
+            Datum::Int(-1),
+            Datum::UInt(0),
+            Datum::Real(0.0),
+            Datum::Bytes(vec![]),
+            Datum::MinNotNull,
+        ] {
+            let Err(EvalError::ExpressionAdapterFailure(failure)) =
+                crate::tikv::eval_null_if_in(&crate::NoColumns, &Datum::Int(7), |_| Ok(value))
+            else {
+                panic!("invalid comparison must retain scope failure")
+            };
+            assert_eq!(failure.class(), Class::ScopeContract);
+            assert_eq!(failure.origin(), Origin::Scope);
+            let AdapterFailureCause::Scope { kind, reason } = failure.cause.as_ref() else {
+                panic!("original scope cause missing")
+            };
+            assert_eq!(*kind, ScopeFailureKind::Contract);
+            assert_eq!(
+                *reason,
+                "NULLIF comparison did not return NULL or a signed boolean"
+            );
+        }
+    }
+
+    #[test]
     fn scope_kinds_preserve_reason_without_parsing_it() {
         const REASON: &str = "private identical reason: poisoned reentry 1690 TiKV";
         for (kind, class, message) in [

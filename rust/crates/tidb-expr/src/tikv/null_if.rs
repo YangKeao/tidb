@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::{
-    evaluate_args_in, identity_value, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesResult,
-};
+use super::control_value::{copy, default_budget};
 use crate::{Columns, Datum, EvalError};
 
 fn invalid_comparison() -> EvalError {
@@ -30,26 +28,15 @@ pub(crate) fn eval_null_if_in(
     first: &Datum,
     comparison: impl FnOnce(&dyn Columns) -> Result<Datum, EvalError>,
 ) -> Result<Datum, EvalError> {
-    evaluate_args_in(
-        EvaluatedBytesOp::NullIfNative,
-        ctx,
-        || {
-            // Complete the real comparison first, under existing preparation
-            // authority. With no capability this still precedes the one-shot
-            // owner; do not claim that it already has the selector's scope.
-            let comparison = match comparison(ctx)? {
-                Datum::Null => None,
-                Datum::Int(0) => Some(0),
-                Datum::Int(1) => Some(1),
-                _ => return Err(invalid_comparison()),
-            };
-            // Even an equal result submits the actual left identity. Selection
-            // and the returned value belong exclusively to the worker.
-            Ok(EvaluatedArgs::BytesInt(
-                identity_value::encode(first)?,
-                comparison,
-            ))
-        },
-        EvaluatedBytesResult::into_identity_datum,
-    )
+    // The actual comparison remains eager, even when the first value is NULL.
+    let comparison = match comparison(ctx)? {
+        Datum::Null => None,
+        Datum::Int(0) => Some(false),
+        Datum::Int(1) => Some(true),
+        _ => return Err(invalid_comparison()),
+    };
+    match tidb_query_expr::native_if_choose_branch(comparison) {
+        tidb_query_expr::NativeIfBranch::Then => Ok(Datum::Null),
+        tidb_query_expr::NativeIfBranch::Else => copy(first, default_budget()),
+    }
 }

@@ -30,6 +30,9 @@ mod bounded_staleness;
 pub(crate) use bounded_staleness::eval_bounded_staleness_in;
 mod case_control;
 mod cast_arg_string;
+mod control_value;
+#[cfg(test)]
+mod control_value_tests;
 pub(crate) use cast_arg_string::{eval_cast_arg_as_string, eval_cast_arg_as_string_type};
 pub use cast_arg_string::{eval_legacy_cast_string_datum, eval_legacy_cast_string_integer};
 #[cfg(test)]

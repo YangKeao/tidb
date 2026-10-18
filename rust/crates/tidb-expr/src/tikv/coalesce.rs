@@ -12,61 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::borrow::Borrow;
-
-use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::if_null::{eval_if_null_head_scoped_in, IfNullHeadOutcome};
-use super::{evaluate_args_in, EvaluatedArgs, EvaluatedBytesOp};
+use super::control_value::{copy, default_budget, exhausted};
 use crate::{Columns, Datum, EvalError};
-
-fn end_in(ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    evaluate_args_in(
-        EvaluatedBytesOp::CoalesceEndNative,
-        ctx,
-        || Ok(EvaluatedArgs::NoArgs),
-        |computed| match computed.into_identity_datum()? {
-            value @ Datum::Null => Ok(value),
-            _ => Err(EvalError::ExpressionAdapterFailure(
-                ExpressionAdapterFailure::from_scope(
-                    ScopeFailureKind::Contract,
-                    "COALESCE end returned a non-NULL identity",
-                ),
-            )),
-        },
-    )
-}
+use std::borrow::Borrow;
 
 pub(crate) fn eval_coalesce_in<V: Borrow<Datum>>(
     ctx: &dyn Columns,
     arity: usize,
     argument: impl Fn(usize, &dyn Columns) -> Result<V, EvalError>,
 ) -> Result<Datum, EvalError> {
-    if arity == 0 {
-        return end_in(ctx);
-    }
-    eval_if_null_head_scoped_in(
-        ctx,
-        |original| argument(0, original),
-        |mut outcome, selected| {
-            let mut next = 1;
-            loop {
-                match outcome {
-                    IfNullHeadOutcome::Done(value) => return Ok(value),
-                    IfNullHeadOutcome::NeedSecond(report) => drop(report),
-                }
-                if next == arity {
-                    return end_in(selected);
-                }
-                // Each nested head returns its outcome immediately. Keep only the
-                // first head's outer guard, never a growing continuation stack or
-                // a chain of newly bound contexts across iterations.
-                outcome = eval_if_null_head_scoped_in(
-                    selected,
-                    |original| argument(next, original),
-                    |outcome, _nested| Ok(outcome),
-                )?;
-                next += 1;
+    for index in 0..arity {
+        let value = argument(index, ctx)?;
+        let value = value.borrow();
+        match tidb_query_expr::native_if_null_choose_first((!value.is_null()).then_some(value)) {
+            tidb_query_expr::NativeIfNullChoice::Done(value) => {
+                return copy(value, default_budget())
             }
-        },
-    )
+            tidb_query_expr::NativeIfNullChoice::NeedSecond => {}
+        }
+    }
+    exhausted("COALESCE end returned a non-NULL identity")
 }

@@ -260,7 +260,7 @@ impl PreparedArithmetic {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
     use tidb_datatype::{

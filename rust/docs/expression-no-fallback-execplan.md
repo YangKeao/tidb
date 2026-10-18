@@ -1432,3 +1432,79 @@ for eight changed Rust files and both diff checks pass; all jobs closed. SDK
 production/datatype unchanged, so N6q0 full1068/same6/one ignored/clippy89 reused,
 not rerun. Receipt:docs/evidence/no-fallback-n6t.md. Sign LOCAL, no push; other
 adapters and broader source/caller/global dispatch/final SQL gates remain.
+
+
+### N6u control identity argument-program retirement (2026-10-18, in progress)
+
+IF/CASE/IFNULL/COALESCE/NULLIF still encode selected native values as identity
+frames and execute secondary Ready programs. Canonical providers already use
+shared pure branch/nullable selectors and native owned values. Before switching,
+capture OLD selected representations and exact source/config/warning traces:
+40 native Datum fixtures (including raw Decimal shapes, full Float32 f64 bits,
+nonfinite vectors, opaque names), all five control families, no/fresh/reused
+cache profiles, zero-pair CASE/base initialization, empty/all-NULL/2050-prefix
+COALESCE and eager nullable NULLIF comparisons. Planned7680 result/demand cases.
+Add actual source SQL/resource error identity/no-replay and invalid-comparison
+scope-cause checks, plus worker lookup REDs, before deleting old stages.
+
+Use genuine existing native_if_choose_branch/native_if_null_choose_first
+selectors. The original coalesce_end_native recipe calls public
+impl_compare::coalesce_bytes(&[]), so genuine exhaustion can use that same
+empty-remaining-list value entry without a fabricated NULL input or new SDK
+logic. Owned selected values should move; borrowed selected values need a
+bounded owned copy. Retained output/copy allowances must account actual payload
+without formatting visible Decimal padding or preserving obsolete packet work.
+Source/resource errors stay terminal and are never retried through another
+engine. Preserve actual original context properties and conversion locations;
+no Expr callback/fake ready-child tree is added to the compiled provider.
+Fullfrontend/Projection/lint/format gates and signed LOCAL commits remain
+required; no global completion follows from this adapter checkpoint.
+
+
+N6u initial fixture import failed Rust visibility (E0603), corrected only the
+cfg(test) module visibility to reuse the actual32-case existing fixtures.
+Snapshots now spell all raw representation fields, avoiding invalid Decimal or
+duration formatting in the oracle. Source-fault matrix adds78 SQL/resource
+error cases with original opaque capture identity, no source replay, exact
+warning/config prefix and successful later reuse. Five actual worker-lookup
+regressions and private invalid NULLIF scope-cause checks are compiled alongside
+but remain separate from OLD proof filters. Production is still unchanged.
+
+
+N6u OLD proof passed7680 full-representation/demand/context cases, fixed trace
+8addb0a0f0899f79, and78 source SQL/resource error identity/no-replay/warning/
+reuse cases, fixed trace4576b55725e08f88. All five worker-lookup traps fail old
+code; private invalid NULLIF comparator causes match exact Scope/Contract kind
+and reason. Reproduction test-only patch saved against734d3745/SDK6a36ba0.
+
+Five frontend control wrappers now use genuine shared selectors and direct
+owned values; old head reports, identity codecs, Ready programs, scoped context
+rebinding and CASE OnceCell protocol are removed from those callers. Empty
+candidate lists use existing coalesce_bytes(&[]) kernel policy. Selected owned
+outputs are checked then moved; borrowed outputs check logical source-plus-copy
+payload before clone, under the existing finite default64MiB allowance. No
+Decimal display padding, frame header or obsolete packet work is charged.
+Original contexts and source conversions remain authoritative. No SDK source
+change was needed; old compatibility recipes/identity codecs used by other
+families remain.
+
+The initial post-switch complete frontend passes1540 with exactly inherited4/
+95 ignored; all159 batch, fixed OLD witnesses and five route regressions pass.
+Additional selected-owner budget/raw-metadata tests are running with the final
+frontend/Projection/lint gates before signing. Logical retained allowances do
+not promise recovery of allocator failure or whole-statement peak bounds.
+
+
+### N6u verified outcome (2026-10-18)
+
+Five control identity argument-program wrappers retired. Fixed OLD7680-value/
+demand and78-source-failure traces pass; all five actual worker-lookup REDs are
+green, exact private invalid NULLIF scope cause retained. Complete frontend1541
+pass, exact inherited4/95 ignored/zero filtered; all159 batch and earlier fixed
+witnesses pass. Selected payload/finite budget/raw metadata/no-format checks
+pass. Production Projection25 pass(mixed28 roots, both flags, serial/two workers),
+make lint, pinned formatting for ten changed Rust files and both diff checks
+pass. All jobs closed. SDK production/datatype unchanged; N6q0 full1068/same6/
+one ignored/clippy89 reused, not rerun. Receipt:docs/evidence/no-fallback-n6u.md.
+Sign LOCAL, no push; remaining families/source/caller coverage, global alternate
+dispatch retirement and final inherited/SQL/server gates still remain.
