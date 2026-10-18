@@ -371,6 +371,7 @@ fn promoted_native_root_view(
             | "tidb_bounded_staleness"
     ) || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
+        || native_clock_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -920,6 +921,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             | "tidb_bounded_staleness"
     ) || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
+        || native_clock_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1181,6 +1183,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
         || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
+        || native_clock_call(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1226,6 +1229,24 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_clock_call(
+    function: &ScalarFunction,
+) -> Option<(tidb_query_expr::NativeClockOperation, usize)> {
+    use tidb_query_expr::NativeClockOperation as Op;
+    let op = match function.func_name.lowercase() {
+        "now" | "current_timestamp" | "localtime" | "localtimestamp" => Op::Now,
+        "utc_timestamp" => Op::UtcTimestamp,
+        "curdate" | "current_date" => Op::CurrentDate,
+        "utc_date" => Op::UtcDate,
+        "curtime" => Op::Curtime,
+        "current_time" => Op::CurrentTime,
+        "utc_time" => Op::UtcTime,
+        "sysdate" => Op::Sysdate,
+        _ => return None,
+    };
+    let arity = function.args.len();
+    op.accepts_arity(arity).then_some((op, arity))
 }
 fn native_tso_call(function: &ScalarFunction) -> Option<tidb_query_expr::NativeTsoOperation> {
     use tidb_query_expr::NativeTsoOperation as Op;
@@ -1317,6 +1338,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
             | "tidb_bounded_staleness"
     ) || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
+        || native_clock_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1332,6 +1354,23 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some((operation, arity)) = native_clock_call(function) {
+        if view.value_role().is_none()
+            || function.get_static_type().is_none()
+            || function.args.iter().any(|v| v.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "clock requires original native value declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::ClockNative {
+                operation,
+                arity: arity as u8,
+            }),
+            arity,
+        ));
+    }
     if let Some(op) = native_tso_call(function) {
         if view.value_role().is_none()
             || function.get_static_type().is_none()
@@ -2272,6 +2311,9 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if native_clock_call(function).is_some() {
+                        budget.field(sql, 1)?;
+                    }
                     if native_tso_call(function).is_some() {
                         budget.field(sql, 1)?;
                         if let Some(arg) = function.args.first() {
@@ -2899,6 +2941,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                        | SqlBatchHostOperation::ClockNative { .. }
                                         | SqlBatchHostOperation::TsoNative(_)
                                         | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
@@ -2967,6 +3010,22 @@ fn lower_view(
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::ClockNative { operation, arity } => {
+                                NativeHostMetadata::Clock {
+                                    argument: (arity != 0).then_some(
+                                        ordinal
+                                            .checked_add(1)
+                                            .ok_or_else(|| resource("clock ordinal overflow"))?,
+                                    ),
+                                    operation,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("clock result view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::TsoNative(op) => NativeHostMetadata::Tso {

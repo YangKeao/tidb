@@ -270,9 +270,9 @@ pub(crate) fn legacy_format_in(
     date_format_legacy_values_bounded(value, super::control_value::default_budget())
 }
 
-/// The same original scalar FROM_UNIXTIME result policy, with parser/diagnostic
+/// The original scalar temporal result policy, with parser/diagnostic
 /// work checked before its original temporal context callbacks.
-pub(crate) fn finish_from_values_bounded(
+pub(crate) fn finish_temporal_values_bounded(
     ctx: &dyn Columns,
     result: Datum,
     field: &tidb_datatype::FieldType,

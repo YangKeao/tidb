@@ -181,95 +181,32 @@ pub(crate) fn date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalErro
 /// (`time_zone`-adjusted) statement time, always truncating fractional
 /// seconds. `CURRENT_TIMESTAMP` is the same function class.
 fn now(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        cols,
-        || prepare_now_args(vals, cols),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
-}
-
-/// Nonexecuting preparation shared with SYSDATE's statement-clock alias.
-/// The caller owns the single guard; precision errors precede clock demand.
-pub(super) fn prepare_now_args(
-    vals: &[Datum],
-    cols: &dyn Columns,
-) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
-    let fsp = parse_fsp_with_null_as_zero(vals, "now")?.unwrap_or(0);
-    let clock = cols.now().ok_or(no_clock_err())?;
-    Ok((
-        crate::tikv::EvaluatedBytesOp::NowNative,
-        crate::tikv::prepare_clock_args(clock, Some(fsp))?,
-    ))
+    crate::tikv::clock_value::eval(tidb_query_expr::NativeClockOperation::Now, vals, cols)
 }
 
 /// `builtinUTCTimestampWithArgSig` / `builtinUTCTimestampWithoutArgSig`:
 /// raw UTC statement time, always rounding fractional seconds half-up.
 fn utc_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::clock_value::eval(
+        tidb_query_expr::NativeClockOperation::UtcTimestamp,
+        vals,
         cols,
-        || {
-            let fsp = parse_fsp_with_null_as_zero(vals, "utc_timestamp")?.unwrap_or(0);
-            let clock = cols.now().ok_or(no_clock_err())?;
-            Ok((
-                crate::tikv::EvaluatedBytesOp::UtcTimestampNative,
-                crate::tikv::prepare_clock_args(clock, Some(fsp))?,
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
 /// `builtinCurrentDateSig`: local statement date. `CURDATE` and
 /// `CURRENT_DATE` share this signature and accept no argument.
 fn current_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::clock_value::eval(
+        tidb_query_expr::NativeClockOperation::CurrentDate,
+        vals,
         cols,
-        || {
-            if !vals.is_empty() {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let clock = cols.now().ok_or(no_clock_err())?;
-            Ok((
-                crate::tikv::EvaluatedBytesOp::CurrentDateNative,
-                crate::tikv::prepare_clock_args(clock, None)?,
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
 /// `builtinUTCDateSig`: raw UTC statement date with no arguments.
 fn utc_date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        cols,
-        || {
-            if !vals.is_empty() {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let clock = cols.now().ok_or(no_clock_err())?;
-            Ok((
-                crate::tikv::EvaluatedBytesOp::UtcDateNative,
-                crate::tikv::prepare_clock_args(clock, None)?,
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
+    crate::tikv::clock_value::eval(tidb_query_expr::NativeClockOperation::UtcDate, vals, cols)
 }
 
 /// `builtinCurrentTime0ArgSig` / `builtinCurrentTime1ArgSig`: local
@@ -280,56 +217,19 @@ fn current_time(
     function: &'static str,
     cols: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        cols,
-        || {
-            let fsp = parse_fsp_with_null_as_zero(vals, function)?;
-            let clock = cols.now().ok_or(no_clock_err())?;
-            let operation = if fsp.is_some() {
-                crate::tikv::EvaluatedBytesOp::CurrentTimeWithFspNative
-            } else {
-                crate::tikv::EvaluatedBytesOp::CurrentTimeWithoutFspNative
-            };
-            // Preserve the original instant and offset. The worker owns local
-            // adjustment and the explicit-FSP microsecond-then-round policy.
-            Ok((operation, crate::tikv::prepare_clock_args(clock, fsp)?))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
+    let operation = if function == "curtime" {
+        tidb_query_expr::NativeClockOperation::Curtime
+    } else {
+        tidb_query_expr::NativeClockOperation::CurrentTime
+    };
+    crate::tikv::clock_value::eval(operation, vals, cols)
 }
 
 /// `builtinUTCTimeWithoutArgSig` / `builtinUTCTimeWithArgSig`: raw UTC
 /// statement time with the same zero-argument-truncate / explicit-FSP-round
 /// split as [`current_time`].
 fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        cols,
-        || {
-            if matches!(vals, [Datum::Null]) {
-                return Ok((
-                    crate::tikv::EvaluatedBytesOp::UtcTimeNullNative,
-                    crate::tikv::EvaluatedArgs::NullWitness(None),
-                ));
-            }
-            let fsp = parse_fsp_for(vals, "utc_time")?;
-            let clock = cols.now().ok_or(no_clock_err())?;
-            let operation = if fsp.is_some() {
-                crate::tikv::EvaluatedBytesOp::UtcTimeWithFspNative
-            } else {
-                crate::tikv::EvaluatedBytesOp::UtcTimeWithoutFspNative
-            };
-            Ok((operation, crate::tikv::prepare_clock_args(clock, fsp)?))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
+    crate::tikv::clock_value::eval(tidb_query_expr::NativeClockOperation::UtcTime, vals, cols)
 }
 
 /// `builtinMicroSecondSig.evalInt`: read the fractional component of the
@@ -394,12 +294,11 @@ fn time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
     )
 }
 
-fn no_clock_err() -> EvalError {
-    EvalError::Unsupported("no session clock (SET timestamp)")
-}
-
 /// Parses the source family's optional 0-6 fractional-seconds precision.
-fn parse_fsp_for(vals: &[Datum], function: &'static str) -> Result<Option<u32>, EvalError> {
+pub(crate) fn parse_fsp_for(
+    vals: &[Datum],
+    function: &'static str,
+) -> Result<Option<u32>, EvalError> {
     match vals {
         [] => Ok(None),
         [Datum::Int(i)] if (0..=6).contains(i) => Ok(Some(*i as u32)),
@@ -418,7 +317,7 @@ fn parse_fsp_for(vals: &[Datum], function: &'static str) -> Result<Option<u32>, 
     }
 }
 
-fn parse_fsp_with_null_as_zero(
+pub(crate) fn parse_fsp_with_null_as_zero(
     vals: &[Datum],
     function: &'static str,
 ) -> Result<Option<u32>, EvalError> {

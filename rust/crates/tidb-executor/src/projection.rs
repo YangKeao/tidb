@@ -3223,8 +3223,49 @@ mod tests {
         let tso_mix = std::iter::once(0)
             .chain(tso_start..roots.len())
             .collect::<Vec<_>>();
+        let clock_start = roots.len();
+        for name in [
+            "now",
+            "current_timestamp",
+            "localtime",
+            "localtimestamp",
+            "utc_timestamp",
+            "curdate",
+            "current_date",
+            "utc_date",
+            "curtime",
+            "current_time",
+            "utc_time",
+            "sysdate",
+        ] {
+            let date = matches!(name, "curdate" | "current_date" | "utc_date");
+            let time = matches!(name, "curtime" | "current_time" | "utc_time");
+            let field = if date {
+                FieldType::new(FieldTypeCode::Date)
+            } else if time {
+                FieldType::new(FieldTypeCode::Duration).with_decimal(3)
+            } else {
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(3)
+            };
+            let root = call(
+                name,
+                field.clone(),
+                if date { vec![] } else { vec![column(0)] },
+            );
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let clock_mix = std::iter::once(0)
+            .chain(clock_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                clock_mix.iter().map(|&i| roots[i].clone()).collect(),
+                clock_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
             (
                 tso_mix.iter().map(|&i| roots[i].clone()).collect(),
                 tso_mix.iter().map(|&i| fields[i].clone()).collect(),
@@ -3325,10 +3366,23 @@ mod tests {
         ];
         // Keep prior matrices intact. Each new heterogeneous suite adds a
         // family within the unchanged finite metadata allowance.
-        for (roots, fields) in configurations {
+        for (configuration, (roots, fields)) in configurations.into_iter().enumerate() {
             for enabled in [true, false] {
                 let reference =
                     crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                let reference = if configuration == 0 {
+                    reference
+                        .with_clock(
+                            (1700000000, 654320955, 28800),
+                            tidb_expr::SessionTimeZone::Fixed {
+                                name: "+08".into(),
+                                offset_secs: 28800,
+                            },
+                        )
+                        .with_sysdate_is_now(true)
+                } else {
+                    reference
+                };
                 let suite = EvaluatorSuite::new(roots.clone(), false);
                 let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
                 for row in 0..3 {
@@ -3341,6 +3395,19 @@ mod tests {
                 for workers in [0, 2] {
                     let context =
                         crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                    let context = if configuration == 0 {
+                        context
+                            .with_clock(
+                                (1700000000, 654320955, 28800),
+                                tidb_expr::SessionTimeZone::Fixed {
+                                    name: "+08".into(),
+                                    offset_secs: 28800,
+                                },
+                            )
+                            .with_sysdate_is_now(true)
+                    } else {
+                        context
+                    };
                     let (source, _) = NumberSource::new(3, 3);
                     let schema = Schema::new(
                         fields

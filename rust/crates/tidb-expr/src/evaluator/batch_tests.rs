@@ -17597,3 +17597,657 @@ fn native_tso_sources_keep_typed_integer_casts_and_original_effects() {
         }
     }
 }
+
+#[test]
+fn native_clock_sources_do_not_fallback() {
+    let mut failed = vec![];
+    for name in crate::tikv::clock_value_tests::NAMES {
+        let suite = suite(call(&name.to_lowercase(), string_ty(), vec![]));
+        let ctx = crate::tikv::clock_value_tests::context(1, 1, true, 0);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        suite
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        let route = suite.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failed.push((name, route));
+        }
+    }
+    assert!(failed.is_empty(), "clock sources refused: {failed:?}");
+}
+
+fn compare_clock_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    alias: bool,
+    level: usize,
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let label = format!(
+        "{root:?} source={schema:?} seed={seed} alias={alias} level={level} selection={}",
+        selection.len()
+    );
+    let actual = suite(root.clone());
+    let reference = suite(root);
+    for enabled in [false, true, false, true] {
+        let mut ctx = crate::tikv::clock_value_tests::context(1, seed, alias, level);
+        ctx.reject = true;
+        ctx.enabled.set(enabled);
+        let oldctx = crate::tikv::clock_value_tests::context(1, seed, alias, level);
+        oldctx.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut old = chunk(schema, rows);
+        old.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected = output_for(&field);
+        assert_eq!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, schema),
+            reference.run(&oldctx, &mut old, &mut expected),
+            "{label} flag={enabled}"
+        );
+        assert_eq!(*ctx.events.borrow(), *oldctx.events.borrow(), "{label}");
+        assert_eq!(output.num_rows(), expected.num_rows(), "{label}");
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(row).is_null(0),
+                expected.get_row(row).is_null(0),
+                "{label}"
+            );
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected.column(0).get_raw(row).as_ref(),
+                "{label}"
+            );
+        }
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0), "{label}");
+    }
+}
+#[test]
+fn native_clock_sources_preserve_precision_temporal_finish_aliases_context_and_parents() {
+    let sources = vec![
+        (
+            ty(),
+            vec![
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(3),
+                Datum::Int(6),
+                Datum::Int(7),
+                Datum::Int(-1),
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::UInt(0),
+                Datum::UInt(6),
+                Datum::UInt(u64::MAX),
+                Datum::Null,
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::new_string("3"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+                Datum::Null,
+            ],
+        ),
+        (
+            real_ty(),
+            vec![Datum::Real(2.5), Datum::Real(f64::NAN), Datum::Null],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(30)
+                .with_decimal(1),
+            vec![Datum::Decimal(Decimal::from_literal("2.5")), Datum::Null],
+        ),
+    ];
+    let returns = vec![
+        string_ty(),
+        ty(),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(30)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(0),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+    ];
+    for seed in 0..12 {
+        for level in 0..3 {
+            for name in crate::tikv::clock_value_tests::NAMES {
+                let op = crate::tikv::clock_value_tests::operation(name);
+                for field in &returns {
+                    let zero = call(&name.to_lowercase(), field.clone(), vec![]);
+                    for root in [zero.clone(), call("cast_char", string_ty(), vec![zero])] {
+                        compare_clock_source(root, &[], &[vec![]], &[0, 0], seed, true, level);
+                    }
+                    if op.accepts_arity(1) {
+                        for (source, values) in &sources {
+                            let root = call(
+                                &name.to_lowercase(),
+                                field.clone(),
+                                vec![typed_column(0, source)],
+                            );
+                            let rows = values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>();
+                            for root in [root.clone(), call("cast_char", string_ty(), vec![root])] {
+                                for selection in [
+                                    vec![],
+                                    (0..rows.len()).collect(),
+                                    vec![rows.len() - 1, 0, rows.len() - 1],
+                                ] {
+                                    compare_clock_source(
+                                        root.clone(),
+                                        std::slice::from_ref(source),
+                                        &rows,
+                                        &selection,
+                                        seed,
+                                        true,
+                                        level,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for name in crate::tikv::clock_value_tests::NAMES {
+        let op = crate::tikv::clock_value_tests::operation(name);
+        let args = if op.accepts_arity(1) {
+            vec![literal(Datum::Int(3), ty())]
+        } else {
+            vec![]
+        };
+        compare_clock_source(
+            call(&name.to_lowercase(), string_ty(), args),
+            &[],
+            &[vec![]],
+            &vec![0; 2050],
+            12,
+            true,
+            0,
+        );
+    }
+    // Live error cases are deterministic and must precede any host sampling.
+    for seed in 0..12 {
+        for value in [Datum::Int(-1), Datum::Int(7), Datum::Bytes(vec![0xff])] {
+            compare_clock_source(
+                call(
+                    "sysdate",
+                    FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+                    vec![literal(value, ty())],
+                ),
+                &[],
+                &[vec![]],
+                &[0, 0],
+                seed,
+                false,
+                0,
+            );
+        }
+    }
+    let skipped = call(
+        "if",
+        string_ty(),
+        vec![
+            literal(Datum::Int(0), ty()),
+            call("sysdate", string_ty(), vec![]),
+            literal(Datum::new_string("skip"), string_ty()),
+        ],
+    );
+    compare_clock_source(skipped, &[], &[vec![]], &[0, 0], 1, false, 0);
+    let eager = call(
+        "now",
+        string_ty(),
+        vec![call("abs", ty(), vec![literal(Datum::Int(i64::MIN), ty())])],
+    );
+    compare_clock_source(eager, &[], &[vec![]], &[0], 1, true, 0);
+}
+
+#[test]
+fn native_live_sysdate_sources_sample_actual_instants_and_keep_result_precision() {
+    struct Live {
+        enabled: bool,
+        flags: Cell<usize>,
+        clocks: Cell<usize>,
+    }
+    impl Columns for Live {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!()
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready")
+        }
+        fn enable_vectorized_expression(&self) -> bool {
+            self.enabled
+        }
+        fn sysdate_is_now(&self) -> bool {
+            self.flags.set(self.flags.get() + 1);
+            false
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            self.clocks.set(self.clocks.get() + 1);
+            Some((0, 0, 0))
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            SessionTimeZone::utc()
+        }
+    }
+    fn host(fsp: u32) -> String {
+        let d = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        tidb_query_expr::native_format_clock_datetime(
+            d.as_secs() as i64,
+            d.subsec_nanos(),
+            fsp,
+            true,
+        )
+    }
+    for enabled in [false, true] {
+        for parent in [false, true] {
+            for (arg, fsp) in [
+                (None, 0),
+                (Some(Datum::Null), 0),
+                (Some(Datum::Int(0)), 0),
+                (Some(Datum::Int(3)), 3),
+                (Some(Datum::Int(6)), 6),
+                (Some(Datum::Decimal(Decimal::from_literal("2.5"))), 3),
+                (Some(Datum::Real(2.5)), 2),
+                (Some(Datum::new_string("3")), 3),
+            ] {
+                let field = FieldType::new(FieldTypeCode::Datetime).with_decimal(i64::from(fsp));
+                let root = call(
+                    "sysdate",
+                    field.clone(),
+                    arg.map(|v| {
+                        let source = match &v {
+                            Datum::Decimal(_) => FieldType::new(FieldTypeCode::NewDecimal)
+                                .with_flen(30)
+                                .with_decimal(1),
+                            Datum::Real(_) => real_ty(),
+                            Datum::String(_) | Datum::Bytes(_) => string_ty(),
+                            _ => ty(),
+                        };
+                        literal(v, source)
+                    })
+                    .into_iter()
+                    .collect(),
+                );
+                let (root, field) = if parent {
+                    (call("cast_char", string_ty(), vec![root]), string_ty())
+                } else {
+                    (root, field)
+                };
+                let suite = suite(root);
+                let ctx = Live {
+                    enabled,
+                    flags: Cell::new(0),
+                    clocks: Cell::new(0),
+                };
+                let mut input = chunk(&[], &[vec![]]);
+                input.set_sel(Some(vec![0; 5]));
+                let mut output = output_for(&field);
+                let before = host(fsp);
+                suite
+                    .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+                    .unwrap();
+                let after = host(fsp);
+                assert_eq!(output.num_rows(), 5);
+                assert_eq!((ctx.flags.get(), ctx.clocks.get()), (5, 5));
+                for row in 0..5 {
+                    let value = match output.get_row(row).get_datum(0, &field) {
+                        Datum::Time(t) => t.to_string(),
+                        Datum::String(s) => s.as_utf8().unwrap().to_owned(),
+                        v => panic!("unexpected live result {v:?}"),
+                    };
+                    assert!(
+                        before <= value && value <= after,
+                        "before={before} value={value} after={after}"
+                    );
+                }
+                let route = suite.batch_route_snapshot();
+                assert_eq!((route.refusals, route.fallback), (0, 0));
+            }
+        }
+    }
+}
+
+#[test]
+fn native_clock_capabilities_precision_without_copy_resources_cleanup_and_exclusive_callbacks() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use super::native_values::{NativeValueOrigin, NativeValueRole, NativeValueStore};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostCatalog, HostInvocation, HostSignature, HostStart, HostStep,
+            LocalHostServices,
+        },
+        NativeClockOperation as Op,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<&'static str>>,
+        clock: Cell<bool>,
+        alias: Cell<bool>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!()
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready")
+        }
+        fn sysdate_is_now(&self) -> bool {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("alias");
+            self.alias.get()
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("now");
+            self.clock.get().then_some((1, 654320955, 0))
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("modes");
+            tidb_datatype::DateModes::default()
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("zone");
+            SessionTimeZone::utc()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("level");
+            crate::ErrorLevel::Warn
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("warning");
+        }
+    }
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for op in [
+            Op::Now,
+            Op::UtcTimestamp,
+            Op::CurrentDate,
+            Op::UtcDate,
+            Op::Curtime,
+            Op::CurrentTime,
+            Op::UtcTime,
+            Op::Sysdate,
+        ] {
+            for arity in 0..=1 {
+                if !op.accepts_arity(arity) {
+                    continue;
+                }
+                let field = projected(&native_bytes_type(), true).unwrap();
+                let args = vec![field.clone(); arity];
+                let ret = field.clone();
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::ClockNative {
+                        operation: op,
+                        arity: arity as u8,
+                    },
+                    HostSignature {
+                        arg_types: args.clone().into_boxed_slice(),
+                        return_type: ret.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::Clock {
+                    argument: (arity != 0).then_some(3),
+                    operation: op,
+                    result_type: if matches!(op, Op::Curtime | Op::CurrentTime | Op::UtcTime) {
+                        FieldType::new(FieldTypeCode::Duration).with_decimal(6)
+                    } else {
+                        FieldType::new(FieldTypeCode::Datetime).with_decimal(6)
+                    },
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(16 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let row = InputRow {
+                    occurrence: 0,
+                    input_row: 0,
+                };
+                let insert = |v: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(v, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                store.borrow_mut().begin_window().unwrap();
+                let context = C {
+                    store: &store,
+                    events: RefCell::new(vec![]),
+                    clock: Cell::new(true),
+                    alias: Cell::new(true),
+                };
+                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 16384)
+                    .with_native_values(Some(&store));
+                let mut ctx = EvalContext::default();
+                let check = |output: &VectorValue, is_null: bool| {
+                    let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                        panic!()
+                    };
+                    assert_eq!(
+                        store
+                            .borrow()
+                            .get(token, role, NativeValueOrigin { node: 2, row })
+                            .unwrap()
+                            .is_null(),
+                        is_null
+                    );
+                };
+                if arity == 0 {
+                    context.clock.set(false);
+                    assert!(matches!(
+                        provider.start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret
+                            }
+                        ),
+                        Err(LocalError::HostContract(_))
+                    ));
+                    assert_eq!(
+                        provider.take_native_error(),
+                        Some(EvalError::Unsupported("no session clock (SET timestamp)"))
+                    );
+                    context.clock.set(true);
+                    context.events.borrow_mut().clear();
+                    let HostStart::Ready(output) = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    check(&output, false);
+                    assert!(context.events.borrow().contains(&"now"));
+                    continue;
+                }
+                let mut corrupt = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                corrupt[0] ^= 1;
+                let forgeries = vec![
+                    None,
+                    Some(corrupt),
+                    Some(stale),
+                    Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    )),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 0,
+                            input_row: 1,
+                        },
+                    )),
+                ];
+                for bad in forgeries {
+                    let HostStart::Pending { task, .. } = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    assert!(matches!(
+                        provider.resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index: 0,
+                                field_type: &field,
+                                values: &VectorValue::from_scalar(&ScalarValue::Bytes(bad), 1)
+                            }
+                        ),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(context.events.borrow().is_empty());
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+                for (value, alias, kind) in [
+                    (Datum::Bytes(vec![b'1'; 1 << 20]), true, 0),
+                    (Datum::Int(7), true, 1),
+                    (Datum::Null, true, 2),
+                    (Datum::Int(3), true, 3),
+                    (
+                        Datum::Decimal(Decimal::from_raw_parts(false, vec![b'3'], 1_000_000, 0)),
+                        false,
+                        4,
+                    ),
+                    (Datum::Bytes(vec![b'1'; 4096]), false, 5),
+                ] {
+                    if kind >= 4 && op != Op::Sysdate {
+                        continue;
+                    }
+                    context.alias.set(alias);
+                    context.events.borrow_mut().clear();
+                    let token = insert(&value, NativeValueRole::CharInput, 3, row);
+                    let HostStart::Pending { task, .. } = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    let result = provider.resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1),
+                        },
+                    );
+                    match kind {
+                        0 => {
+                            assert!(matches!(result, Err(LocalError::HostContract(_))));
+                            assert_eq!(
+                                provider.take_native_error(),
+                                Some(EvalError::Unsupported(
+                                    "bad fractional-seconds-precision argument"
+                                ))
+                            );
+                        }
+                        1 => {
+                            assert!(matches!(result, Err(LocalError::HostContract(_))));
+                            assert_eq!(
+                                provider.take_native_error(),
+                                Some(EvalError::TooBigFsp {
+                                    fsp: 7,
+                                    function: if op == Op::Sysdate { "now" } else { op.name() }
+                                })
+                            );
+                        }
+                        5 => {
+                            assert!(matches!(result, Err(LocalError::HostContract(_))));
+                            assert!(matches!(
+                                provider.take_native_error(),
+                                Some(EvalError::ExpressionRuntimeFailure(_))
+                            ));
+                        }
+                        _ => {
+                            let HostStep::Ready(output) = result.unwrap() else {
+                                panic!()
+                            };
+                            check(&output, kind == 2 && op == Op::UtcTime);
+                        }
+                    }
+                    assert_eq!(
+                        context.events.borrow().contains(&"now"),
+                        !matches!(kind, 0 | 1 | 5) && !(kind == 2 && op == Op::UtcTime)
+                    );
+                    if matches!(kind, 0 | 1 | 5) {
+                        assert_eq!(
+                            *context.events.borrow(),
+                            if op == Op::Sysdate {
+                                vec!["alias"]
+                            } else {
+                                vec![]
+                            }
+                        );
+                    }
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+            }
+        }
+    }
+}

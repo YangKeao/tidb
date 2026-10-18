@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7l: retire statement/live clock Ready callers and integrate the entire clock family and aliases as authenticated sources, preserving precision, original clock tuple, live SYSDATE sampling, callbacks and result boundaries.
+
 - [x] N7k: retire physical/logical TSO Ready calls and integrate transaction timestamp canonical sources with independent old observations, finite resource/provenance and original return-family validation.
 
 - [x] N7j: replace native/legacy UNIX_TIMESTAMP and FROM_UNIXTIME Ready handoffs with actual SDK values and canonical sources, including DATE_FORMAT handoff, preserving distinct native/legacy conversion, dynamic context demand, raw numeric identity, finite resources and exact original comparison before retirement.
@@ -2742,3 +2744,78 @@ mutation. No production body, actual Local input or historical digest changes.
 Final35991 full frontend under parent TZ=UTC again passes1685/exact3/95ignored/
 0filtered, all244batch and warning-title multiset EXACT N7j. Both pinned15-file
 formatters pass after this test-only wrapper. All jobs are now closed.
+
+
+## N7l: statement and live clock values
+
+
+Retire NOW/CURRENT_TIMESTAMP/LOCALTIME/LOCALTIMESTAMP, UTC_TIMESTAMP,
+CURDATE/CURRENT_DATE, UTC_DATE, CURTIME/CURRENT_TIME, UTC_TIME and SYSDATE native
+Ready callers, adding their valid zero/one-argument sources to the same frame.
+The SDK already owns all pure clock policies in native_clock.rs. Keep those
+kernels and wire validators unchanged; add a closed operation identity and finite
+actual-clock renderer instead of copying calendar/rounding math.
+
+First capture untouched caller outputs/errors/getter sequences across cache,
+precision, raw clock fields, alias mode and missing context. Reproduce Ready and
+canonical-source refusals. A test-only observer in prepare_clock_args records the
+actual tuple after the old live SYSDATE sampling. Compare additive candidates
+against old callers while both remain independent; for live success replay that
+same real sample into the candidate's clock service. Live outcomes are separately
+paired, never hashed as deterministic timestamps. Preserve deterministic corpus
+hashes and actual live-pair counts before caller retirement. Archive old callers
+and observer proof; remove the temporary wire observer after promotion.
+
+SYSDATE reads its alias flag before arity/FSP validation; alias NOW keeps NOW's
+error labels and truncation. Live mode obtains the statement offset before the
+actual SystemTime sample. It must never substitute statement seconds. Empty
+CURTIME truncates whereas explicit zero rounds after microsecond truncation;
+UTC_TIME(NULL) returns NULL without a clock. Ordinary precision helpers reject
+noninteger values without cloning/formatting them. Host sources authenticate
+before callbacks, resolve the alias flag with no value-store borrow, then borrow
+only for original precision validation, release that borrow, and finally demand
+clock/rendering. Budget only actual numeric diagnostics/formatting work, not
+unused large argument payload or declared widths.
+
+Source finishing preserves existing temporal-result policy and ordinary return
+coercion once. SYSDATE has a distinct unconditional DateTime parse even with a
+string/other declaration. Validate dynamic contexts, all result declarations,
+parents, eager child errors, empty/full/duplicate selections, provenance/resource/
+cancel/reuse and exclusive callbacks; validate live results against independently
+sampled before/after instants as well as actual-tuple old/new pairs.
+
+Run locked/offline release frontend/SDK lib suites, scoped clippy, Projection,
+root lint, both pinned formatters, immutable fixture guards and diff review. Keep
+the exact N7k inherited failure lists visible. Sign paired local checkpoints;
+no push. Receipt rust/docs/evidence/no-fallback-n7l.md. Calendar/component callers,
+generic fallback, old unistore walker, semantic failures and full-server gates
+remain global work, not evidence this clock scope is complete transcreation.
+
+
+N7l independent10292 matches all134784 observations before caller retirement:
+132408 deterministic/0CD20F17C50A8D2B and2376 actual old live samples replayed into
+candidate clock service. Original91277 proves all12 Ready/source refusals. The
+observer and paired test retire only afterward, preserving archived evidence;
+frozen hash/live count unchanged. There was no production semantic mismatch.
+
+Actual clock sources now borrow only precision inputs after capability
+validation/flag resolution, release before all clock/result callbacks, preserve
+raw tuple/precision and both original result boundaries, including forced
+SysdateDateTime parsing. Unsupported huge ordinary precision never copies data;
+actual live ToInt64 work ignores unused visible Decimal shape. Original MAX_FSP
+is reused; uncalled frontend clock encoder and prepare_now_args are removed.
+New-test enum exhaustiveness/Display compile mistakes and matching literal
+static-type corrections are test/integration fixes, not semantic RED evidence.
+
+Final73602 full1692/exact3/95ignored/0filtered/all248batch, SDK37631
+1114/exact1/1ignored/0filtered, Projection43046 26PASS with new25-root fixedclock/
+Sysdate-is-now group under bothflags/workers0/2. Actual live source bounds,
+eightprecision types/5duplicates/root+CHAR/exactgettercounts separately pass.
+Provider and dynamic context/metadata matrices pass. Clippy38891 retains
+89expression/171all titles EXACT N7k, frontend titles also EXACT; lint56689,
+pinned15-file double-format/immutable fixtures/diffs PASS. All jobs closed.
+Receipt evidence/no-fallback-n7l.md records commands/evidence/limits. This local
+signed checkpoint does not close generic fallback, calendar/component callers,
+unistore walker, inherited semantic failures or full-server gates.
+
+Paired signed local SDK checkpoint 52cfb464e31bd14ab1f3e7babf7e8ecdd6849909 accompanies this frontend checkpoint; no push.

@@ -372,28 +372,6 @@ pub(crate) fn prepare_date_args(
     Ok(EvaluatedArgs::BytesInt(Some(bytes), Some(flags)))
 }
 
-/// Transport the actual UTC seconds, nanoseconds and offset without clock math.
-/// Fractional precision is a separate operand; validation belongs to the recipe.
-pub(crate) fn prepare_clock_args(
-    clock: (i64, u32, i32),
-    fsp: Option<u32>,
-) -> Result<EvaluatedArgs, crate::EvalError> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(16).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
-            LocalError::ResourceLimit(format!("clock input allocation failed: {error}").into()),
-            None,
-        ))
-    })?;
-    bytes.extend_from_slice(&clock.0.to_le_bytes());
-    bytes.extend_from_slice(&clock.1.to_le_bytes());
-    bytes.extend_from_slice(&clock.2.to_le_bytes());
-    Ok(match fsp {
-        None => EvaluatedArgs::Bytes(Some(bytes)),
-        Some(fsp) => EvaluatedArgs::BytesInt(Some(bytes), Some(i64::from(fsp))),
-    })
-}
-
 /// Serialize already-coerced serde documents and the actual optional path.
 /// This transports data only; SQL validation and worker evaluation remain separate.
 pub(crate) fn prepare_json_serde_args(
@@ -694,7 +672,7 @@ pub(crate) use epoch_value::{
 
 pub(crate) use epoch_value::{
     date_format_values_bounded as eval_date_format_values_bounded,
-    finish_from_values_bounded as finish_from_unixtime_values_bounded,
+    finish_temporal_values_bounded as finish_from_unixtime_values_bounded,
     from_head_values_bounded as eval_from_unixtime_head_values_bounded,
     unix_values_bounded as eval_unix_timestamp_values_bounded,
 };
@@ -707,3 +685,10 @@ pub(crate) use control_value::coerce_result_bounded;
 pub(crate) mod tso_value_tests;
 
 pub(crate) mod tso_value;
+
+#[cfg(test)]
+pub(crate) mod clock_value_tests;
+
+pub(crate) mod clock_value;
+
+pub(crate) use epoch_value::finish_temporal_values_bounded;
