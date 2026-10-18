@@ -9275,8 +9275,7 @@ fn native_bitwise_roots_and_whole_parents_keep_original_operand_phases() {
     }
 }
 
-#[test]
-fn native_bitwise_values_keep_all_carriers_null_conversions_and_warnings() {
+fn native_operator_value_cases() -> Vec<(Datum, FieldType)> {
     use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
     let decimal = FieldType::new(FieldTypeCode::NewDecimal)
         .with_flen(65)
@@ -9342,6 +9341,15 @@ fn native_bitwise_values_keep_all_carriers_null_conversions_and_warnings() {
         (Datum::MinNotNull, ty()),
         (Datum::MaxValue, ty()),
     ];
+    values
+}
+
+#[test]
+fn native_bitwise_values_keep_all_carriers_null_conversions_and_warnings() {
+    let values = native_operator_value_cases();
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(6);
     let bits = ty().with_unsigned(true);
     for (value, field) in &values {
         let arg = || literal(value.clone(), field.clone());
@@ -9402,6 +9410,181 @@ fn native_bitwise_values_keep_all_carriers_null_conversions_and_warnings() {
             for selection in [vec![], vec![0], vec![1, 0, 1]] {
                 compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
             }
+        }
+    }
+}
+
+#[test]
+fn native_logical_xor_abs_operands_keep_original_row_demand_and_sql_errors() {
+    let root = call("xor", ty(), vec![abs(column(0)), abs(column(1))]);
+    let schema = vec![ty(), ty()];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(i64::MIN)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1)],
+    ];
+    compare_typed_profile(root, &schema, &rows, &[0, 1]);
+}
+
+#[test]
+fn native_logical_xor_roots_and_parents_keep_native_operand_phases() {
+    let schema = vec![ty(); 3];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(2), Datum::Int(i64::MIN)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1), Datum::Int(1)],
+        vec![Datum::Null, Datum::Int(i64::MIN), Datum::Int(1)],
+        vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)],
+    ];
+    let x = || call("xor", ty(), vec![abs(column(0)), abs(column(1))]);
+    let roots = [
+        x(),
+        plus(x(), abs(column(2))),
+        abs(x()),
+        call("if", ty(), vec![x(), abs(column(2)), int(0)]),
+        call(
+            "xor",
+            ty(),
+            vec![plus(column(0), column(1)), abs(column(2))],
+        ),
+        call("xor", ty(), vec![null(), abs(column(1))]),
+        call("ifnull", ty(), vec![x(), int(0)]),
+        call("xor", ty(), vec![x(), abs(column(2))]),
+    ];
+    for selection in [
+        vec![],
+        vec![3],
+        vec![0, 1],
+        vec![1, 0],
+        vec![2, 3, 2],
+        vec![3; 2050],
+        (0..2050)
+            .map(|row| if row == 2049 { 1 } else { 0 })
+            .collect(),
+    ] {
+        for root in &roots {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_logical_xor_values_keep_all_carriers_and_both_warning_probes() {
+    let values = native_operator_value_cases();
+    for (value, field) in &values {
+        let arg = || literal(value.clone(), field.clone());
+        for partner in [
+            int(1),
+            int(0),
+            null(),
+            text(Some(b"2tail")),
+            literal(
+                Datum::Decimal(Decimal::from_literal(
+                    "99999999999999999999999999999999999999999999999999999999999999999",
+                )),
+                FieldType::new(FieldTypeCode::NewDecimal).with_flen(65),
+            ),
+        ] {
+            for args in [vec![arg(), partner.clone()], vec![partner, arg()]] {
+                let root = call("xor", ty(), args);
+                for selection in [vec![], vec![0], vec![2, 0, 2]] {
+                    compare_arithmetic_profile(root.clone(), &[], &vec![vec![]; 3], &selection);
+                }
+            }
+        }
+    }
+    for (value, field) in values.into_iter().filter(|(value, _)| {
+        matches!(
+            value,
+            Datum::Int(_)
+                | Datum::UInt(_)
+                | Datum::Real(_)
+                | Datum::Float32(_)
+                | Datum::Decimal(_)
+                | Datum::String(_)
+                | Datum::Duration(_)
+                | Datum::Time(_)
+                | Datum::Json(_)
+        )
+    }) {
+        let rows = vec![vec![value], vec![Datum::Null]];
+        for args in [
+            vec![typed_column(0, &field), int(1)],
+            vec![int(1), typed_column(0, &field)],
+        ] {
+            let root = call("xor", ty(), args);
+            for selection in [vec![], vec![0], vec![1, 0, 1]] {
+                compare_arithmetic_profile(
+                    root.clone(),
+                    std::slice::from_ref(&field),
+                    &rows,
+                    &selection,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_logical_xor_strict_warning_probe_errors_are_ignored_before_truth_conversion() {
+    struct Strict {
+        enabled: bool,
+        trace: RefCell<Vec<String>>,
+    }
+    impl Columns for Strict {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn enable_vectorized_expression(&self) -> bool {
+            self.trace.borrow_mut().push("enable".into());
+            self.enabled
+        }
+        fn div_precision_increment(&self) -> u32 {
+            self.trace.borrow_mut().push("div".into());
+            4
+        }
+        fn handle_truncate(&self, message: &str) -> std::result::Result<(), EvalError> {
+            self.trace.borrow_mut().push(message.into());
+            Err(EvalError::Unsupported("rejected XOR warning probe"))
+        }
+    }
+    let warn = || text(Some(b"2tail"));
+    let raw = || literal(Datum::Raw(vec![0xff]), string_ty());
+    let roots = [
+        call("xor", ty(), vec![warn(), text(Some(b"0tail"))]),
+        call("xor", ty(), vec![null(), warn()]),
+        call("xor", ty(), vec![raw(), warn()]),
+        call("xor", ty(), vec![warn(), raw()]),
+        call("xor", ty(), vec![literal(Datum::MinNotNull, ty()), warn()]),
+        call(
+            "xor",
+            ty(),
+            vec![call("cast_signed", ty(), vec![warn()]), abs(int(i64::MIN))],
+        ),
+    ];
+    for root in roots {
+        let actual_suite = suite(root.clone());
+        let reference = suite(root);
+        for enabled in [true, false, true, false] {
+            let context = Strict {
+                enabled,
+                trace: RefCell::default(),
+            };
+            let native = Strict {
+                enabled,
+                trace: RefCell::default(),
+            };
+            let mut input = Chunk::new_with_capacity(&[], 1);
+            input.set_num_virtual_rows(1);
+            let mut expected_input = Chunk::new_with_capacity(&[], 1);
+            expected_input.set_num_virtual_rows(1);
+            let mut output = output_for(&ty());
+            let mut expected = output_for(&ty());
+            let result = actual_suite.run_with_tikv_batch(&context, &mut input, &mut output, &[]);
+            let native_result = reference.run(&native, &mut expected_input, &mut expected);
+            assert_eq!(result, native_result);
+            assert_eq!(context.trace.take(), native.trace.take());
+            assert_eq!(values_for(&output, &ty()), values_for(&expected, &ty()));
+            let route = actual_suite.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0));
         }
     }
 }

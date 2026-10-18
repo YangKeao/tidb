@@ -2513,7 +2513,7 @@ mod tests {
             decimal,
             integer.clone(),
             real,
-            string,
+            string.clone(),
         ];
         let bits = integer.clone().with_unsigned(true);
         for name in [
@@ -2540,6 +2540,30 @@ mod tests {
             ],
         ));
         fields.push(bits);
+        roots.push(call(
+            "xor",
+            integer.clone(),
+            vec![call("abs", integer.clone(), vec![column(0)]), literal(1)],
+        ));
+        fields.push(integer.clone());
+        roots.push(call(
+            "plus",
+            integer.clone(),
+            vec![
+                call("xor", integer.clone(), vec![column(0), column(1)]),
+                literal(1),
+            ],
+        ));
+        fields.push(integer.clone());
+        roots.push(call(
+            "xor",
+            integer.clone(),
+            vec![
+                Expression::Constant(Constant::new(Datum::Null, integer.clone())),
+                Expression::Constant(Constant::new(Datum::new_string("2tail"), string.clone())),
+            ],
+        ));
+        fields.push(integer.clone());
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

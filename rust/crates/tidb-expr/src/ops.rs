@@ -1676,12 +1676,26 @@ fn logic_or(l: Datum, r: Datum, ctx: &dyn crate::context::Columns) -> Result<Dat
     )
 }
 
+/// Original binary XOR entry after both raw values have been demanded.
+/// Unsigned reinterpreting cannot change integer truth; no other argument
+/// declaration facts participate. Warning probes remain before truth errors.
+pub(crate) fn eval_native_logical_xor_values(
+    l: Datum,
+    r: Datum,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    let _ = ctx.div_precision_increment();
+    if l.is_range_sentinel() || r.is_range_sentinel() {
+        return Err(EvalError::Unsupported("range sentinel expression operand"));
+    }
+    logic_xor(l, r, ctx)
+}
+
 fn logic_xor(l: Datum, r: Datum, ctx: &dyn crate::context::Columns) -> Result<Datum, EvalError> {
     warn_string_double_truncation(&[&l, &r], ctx);
-    crate::eval_logical_ready_in(
-        crate::LogicalFunction::Xor,
-        crate::LogicalArgs::Both(truthy_of(&l)?, truthy_of(&r)?),
-        ctx,
+    Ok(
+        tidb_query_expr::impl_op::native_logical_xor_value(truthy_of(&l)?, truthy_of(&r)?)
+            .map_or(Datum::Null, Datum::Int),
     )
 }
 

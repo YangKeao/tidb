@@ -1027,3 +1027,36 @@ output roots under both flags and serial/two-worker execution. All handles are
 closed. Sign this local checkpoint and continue remaining ordinary typed
 families/compositions, dynamic sources, multi-output effects and other callers;
 do not mark the overall goal complete.
+
+### N6m logical XOR coverage (2026-10-18, actual RED)
+
+The actual XOR(ABS(column0),ABS(column1)) comparison does not reproduce an
+error mismatch: admission refuses the root and fallback evaluates it correctly.
+The new regression fails specifically on route counters(refusals=1,fallback=1),
+which is a direct remaining gap in the active no-fallback goal. Both raw values
+must be demanded even after a left NULL. After the binary div-precision getter,
+range sentinels are rejected; both string numeric-warning probes run before
+left then right truth conversion. The warning probes intentionally ignore their
+conversion errors in the original helper. Preserve that contract and terminal
+truth-conversion errors, and use a genuine closed XorNative operation with the
+existing shared logical XOR computation. Do not use the AND/OR short-circuit
+provider or identify logical XOR as a bitwise operation.
+
+
+### N6m verified outcome (2026-10-18)
+
+The actual XOR admission/fallback RED is now zero-fallback. The canonical raw
+value host shares transport with bitwise operations while preserving separate
+SQL operation identity, warning/truth rules and actual source declaration
+facts. Original static native eligibility and configuration reads stay
+unchanged; successful unified admission does not authorize vectorization.
+3324 new native-owner comparisons and49 direct provider cases pass, including
+strict warning-probe errors, original truth errors and low-budget million-scale
+Decimal truth without unperformed formatting. All145 batch tests pass. Full
+frontend1504 passes retain exactly the inherited4 failures; SDK1060 passes
+retain exactly the inherited6 failures. All16 protocol/catalog tests,25
+production Projection tests with18 mixed output roots, lint, scoped clippy89
+inherited warnings, both pinned formats and both diff checks pass. Datatype
+code is unchanged and was not rerun. All jobs are closed. Sign local commits
+and continue ordinary source families/compositions, dynamic/deferred sources,
+multi-output effects and other callers. The overall goal is not complete.

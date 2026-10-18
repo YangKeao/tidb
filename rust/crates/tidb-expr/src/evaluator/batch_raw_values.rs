@@ -17,32 +17,31 @@
 use super::*;
 
 impl NativeBatchHosts<'_> {
-    pub(super) fn resume_bitwise(
+    pub(super) fn resume_raw_values(
         &mut self,
         id: &HostTaskId,
         token: &[u8],
     ) -> LocalResult<HostStep> {
         let task = self.task(id)?;
-        let SqlDemand::Bitwise { left_token } = task.demand else {
-            return Err(binding("bitwise resume has another task kind"));
+        let SqlDemand::RawValues { left_token } = task.demand else {
+            return Err(binding("raw value resume has another task kind"));
         };
-        let Some(NativeHostMetadata::Bitwise {
+        let Some(NativeHostMetadata::RawValues {
             operation,
             name,
             result_type,
             left_node,
             right_node,
-            unsigned,
             output_node,
             output_role,
         }) = self.metadata.get(task.slot.index())
         else {
-            return Err(binding("bitwise descriptor missing"));
+            return Err(binding("raw value descriptor missing"));
         };
         let row = task.row;
         let store = self
             .native_values
-            .ok_or_else(|| binding("bitwise value store missing"))?;
+            .ok_or_else(|| binding("raw value store missing"))?;
         let left_origin = NativeValueOrigin {
             node: *left_node,
             row,
@@ -53,11 +52,11 @@ impl NativeBatchHosts<'_> {
                 .get(token, NativeValueRole::CharInput, left_origin)?;
             let left = token
                 .try_into()
-                .map_err(|_| binding("bitwise token width differs"))?;
-            let SqlDemand::Bitwise { left_token } = &mut self.slots[id.slot]
+                .map_err(|_| binding("raw value token width differs"))?;
+            let SqlDemand::RawValues { left_token } = &mut self.slots[id.slot]
                 .task
                 .as_mut()
-                .expect("validated bitwise task")
+                .expect("validated raw value task")
                 .demand
             else {
                 unreachable!()
@@ -77,26 +76,36 @@ impl NativeBatchHosts<'_> {
             let store = store.borrow();
             let bound = |token: &[u8], origin| -> LocalResult<usize> {
                 let value = store.get(token, NativeValueRole::CharInput, origin)?;
-                window_values::conversion_work_bound(
-                    value,
-                    if matches!(value, Datum::Json(_)) {
-                        128
-                    } else {
-                        16
-                    },
-                )
+                match operation {
+                    NativeRawValueOperation::Bitwise { .. } => {
+                        window_values::conversion_work_bound(
+                            value,
+                            if matches!(value, Datum::Json(_)) {
+                                128
+                            } else {
+                                16
+                            },
+                        )
+                    }
+                    // XOR tests Decimal coefficient zero directly. It does not
+                    // render scale padding or stringify JSON for a cast.
+                    NativeRawValueOperation::LogicalXor => native_payload_bytes(value)?
+                        .checked_mul(16)
+                        .and_then(|bytes| bytes.checked_add(1024))
+                        .ok_or_else(|| resource("XOR truth work allowance overflow")),
+                }
             };
             let left = bound(left_token, left_origin)?;
             left.checked_add(match right_origin {
                 Some(origin) => bound(token, origin)?,
                 None => 0,
             })
-            .ok_or_else(|| resource("bitwise conversion allowance overflow"))?
+            .ok_or_else(|| resource("raw value conversion allowance overflow"))?
         };
         let base = self
             .retained_bytes()?
             .checked_add(work)
-            .ok_or_else(|| resource("bitwise retained size overflow"))?;
+            .ok_or_else(|| resource("raw value retained size overflow"))?;
         self.check_bytes(base)?;
         let (left, right) = {
             let store = store.borrow();
@@ -110,13 +119,24 @@ impl NativeBatchHosts<'_> {
                 },
             )
         };
-        let result = match crate::ops::eval_native_bitwise_values(
-            *operation,
-            left,
-            right,
-            *unsigned,
-            self.context,
-        ) {
+        let computed = match *operation {
+            NativeRawValueOperation::Bitwise {
+                operation,
+                unsigned,
+            } => crate::ops::eval_native_bitwise_values(
+                operation,
+                left,
+                right,
+                unsigned,
+                self.context,
+            ),
+            NativeRawValueOperation::LogicalXor => crate::ops::eval_native_logical_xor_values(
+                left,
+                right.expect("XOR has both demanded raw values"),
+                self.context,
+            ),
+        };
+        let result = match computed {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
@@ -161,12 +181,19 @@ mod tests {
         }
     }
     #[test]
-    fn native_bitwise_provider_keeps_resources_provenance_errors_and_reuse_terminal() {
-        for operation in [B::And, B::Or, B::Xor, B::LeftShift, B::RightShift, B::Neg] {
+    fn native_raw_value_provider_keeps_resources_provenance_errors_and_reuse_terminal() {
+        for operation in [B::And, B::Or, B::Xor, B::LeftShift, B::RightShift, B::Neg]
+            .into_iter()
+            .map(|operation| NativeRawValueOperation::Bitwise {
+                operation,
+                unsigned: [false; 2],
+            })
+            .chain(std::iter::once(NativeRawValueOperation::LogicalXor))
+        {
             let field: tipb::FieldType = tidb_query_datatype::FieldTypeTp::Blob.into();
             let args = vec![field.clone(); operation.arity()];
             let catalog = HostCatalog::for_sql_batch(vec![(
-                SqlBatchHostOperation::BitwiseNative(operation),
+                operation.sql_operation(),
                 HostSignature {
                     arg_types: args.clone().into_boxed_slice(),
                     return_type: field.clone(),
@@ -174,21 +201,23 @@ mod tests {
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let name = match operation {
-                B::And => "bitand",
-                B::Or => "bitor",
-                B::Xor => "bitxor",
-                B::LeftShift => "leftshift",
-                B::RightShift => "rightshift",
-                B::Neg => "bitneg",
+            let name = match operation.sql_operation() {
+                SqlBatchHostOperation::BitwiseNative(B::And) => "bitand",
+                SqlBatchHostOperation::BitwiseNative(B::Or) => "bitor",
+                SqlBatchHostOperation::BitwiseNative(B::Xor) => "bitxor",
+                SqlBatchHostOperation::BitwiseNative(B::LeftShift) => "leftshift",
+                SqlBatchHostOperation::BitwiseNative(B::RightShift) => "rightshift",
+                SqlBatchHostOperation::BitwiseNative(B::Neg) => "bitneg",
+                SqlBatchHostOperation::XorNative => "xor",
+                _ => unreachable!(),
             };
-            let metadata = [NativeHostMetadata::Bitwise {
+            let metadata = [NativeHostMetadata::RawValues {
                 operation,
                 name: name.into(),
-                result_type: FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+                result_type: FieldType::new(FieldTypeCode::LongLong)
+                    .with_unsigned(!matches!(operation, NativeRawValueOperation::LogicalXor)),
                 left_node: 3,
                 right_node: (operation.arity() == 2).then_some(8),
-                unsigned: [false; 2],
                 output_node: 2,
                 output_role: NativeValueRole::Output,
             }];
@@ -299,6 +328,32 @@ mod tests {
                     );
                 }
                 match case {
+                    1 | 5 if matches!(operation, NativeRawValueOperation::LogicalXor) => {
+                        let HostStep::Ready(values) = result.unwrap() else {
+                            panic!(
+                                "XOR must ignore warning probe errors and avoid Decimal rendering"
+                            )
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                            panic!("expected native result")
+                        };
+                        assert_eq!(
+                            *store
+                                .borrow()
+                                .get(
+                                    token,
+                                    NativeValueRole::Output,
+                                    NativeValueOrigin { node: 2, row }
+                                )
+                                .unwrap(),
+                            Datum::Int(0)
+                        );
+                        assert_eq!(
+                            (context.reads.get(), context.warnings.get()),
+                            (1, usize::from(case == 5))
+                        );
+                        assert!(provider.take_native_error().is_none());
+                    }
                     0 | 1 => {
                         assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
                         assert_eq!((context.reads.get(), context.warnings.get()), (0, 0));
@@ -317,7 +372,7 @@ mod tests {
                         );
                         assert_eq!(
                             (context.reads.get(), context.warnings.get()),
-                            (usize::from(operation != B::Neg), 1)
+                            (usize::from(operation.arity() == 2), 1)
                         );
                     }
                     6 => {
@@ -340,7 +395,7 @@ mod tests {
                         );
                         assert_eq!(
                             (context.reads.get(), context.warnings.get()),
-                            (usize::from(operation != B::Neg), 0)
+                            (usize::from(operation.arity() == 2), 0)
                         );
                     }
                     _ => unreachable!(),

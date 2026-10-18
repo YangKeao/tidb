@@ -62,7 +62,8 @@ mod hosts;
 #[path = "batch_values.rs"]
 mod native_values;
 use hosts::{
-    NativeBatchHosts, NativeHostMetadata, WindowArithmeticMetadata, WindowArithmeticSource,
+    NativeBatchHosts, NativeHostMetadata, NativeRawValueOperation, WindowArithmeticMetadata,
+    WindowArithmeticSource,
 };
 use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
 use std::cell::RefCell;
@@ -1102,6 +1103,7 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
         "case" => Some(SqlBatchHostOperation::CaseNative),
         "and" | "logicand" => Some(SqlBatchHostOperation::AndNative),
         "or" | "logicor" => Some(SqlBatchHostOperation::OrNative),
+        "xor" => Some(SqlBatchHostOperation::XorNative),
         name => native_boolean_operation(name),
     }
 }
@@ -1803,6 +1805,7 @@ fn preflight_view<'a>(
                         CallTarget::Host(
                             SqlBatchHostOperation::AbsNative
                                 | SqlBatchHostOperation::BitwiseNative(_)
+                                | SqlBatchHostOperation::XorNative
                         )
                     ) {
                         budget.field(sql, 1)?;
@@ -2286,6 +2289,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::NullIfNative
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
+                                        | SqlBatchHostOperation::XorNative
                                         | SqlBatchHostOperation::AddNative
                                         | SqlBatchHostOperation::SubtractNative
                                         | SqlBatchHostOperation::MultiplyNative
@@ -2407,11 +2411,12 @@ fn lower_view(
                                     overflow_expression: overflow.map(String::into_boxed_str),
                                 }
                             }
-                            SqlBatchHostOperation::BitwiseNative(operation) => {
+                            operation @ (SqlBatchHostOperation::BitwiseNative(_)
+                            | SqlBatchHostOperation::XorNative) => {
                                 let left = ordinal
                                     .checked_add(1)
                                     .ok_or_else(|| resource("bitwise source ordinal overflow"))?;
-                                let right = if operation.arity() == 2 {
+                                let right = if operation.accepts_arity(2) {
                                     Some(
                                         checked
                                             .get(left)
@@ -2421,16 +2426,29 @@ fn lower_view(
                                 } else {
                                     None
                                 };
-                                NativeHostMetadata::Bitwise {
+                                let operation = match operation {
+                                    SqlBatchHostOperation::BitwiseNative(operation) => {
+                                        NativeRawValueOperation::Bitwise {
+                                            operation,
+                                            unsigned: [
+                                                checked[left].sql.is_unsigned(),
+                                                right.is_some_and(|right| {
+                                                    checked[right].sql.is_unsigned()
+                                                }),
+                                            ],
+                                        }
+                                    }
+                                    SqlBatchHostOperation::XorNative => {
+                                        NativeRawValueOperation::LogicalXor
+                                    }
+                                    _ => unreachable!("closed raw value operations"),
+                                };
+                                NativeHostMetadata::RawValues {
                                     operation,
                                     name: sql.func_name.lowercase().into(),
                                     result_type: snapshot_field_type(item.sql),
                                     left_node: left,
                                     right_node: right,
-                                    unsigned: [
-                                        checked[left].sql.is_unsigned(),
-                                        right.is_some_and(|right| checked[right].sql.is_unsigned()),
-                                    ],
                                     output_node: ordinal,
                                     output_role: item
                                         .view

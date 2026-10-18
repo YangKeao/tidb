@@ -26,10 +26,10 @@ use tidb_query_expr::local::{
 
 #[path = "batch_arithmetic_window.rs"]
 mod arithmetic_window;
-#[path = "batch_bitwise.rs"]
-mod bitwise;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_raw_values.rs"]
+mod raw_values;
 #[path = "batch_unary_window.rs"]
 mod unary_window;
 #[path = "batch_window_values.rs"]
@@ -61,14 +61,36 @@ struct WindowSourceValues {
     retained_bytes: usize,
 }
 
-pub(super) enum NativeHostMetadata {
+#[derive(Clone, Copy)]
+pub(super) enum NativeRawValueOperation {
     Bitwise {
         operation: tidb_query_expr::impl_op::NativeBitwiseOp,
+        unsigned: [bool; 2],
+    },
+    LogicalXor,
+}
+impl NativeRawValueOperation {
+    fn sql_operation(self) -> SqlBatchHostOperation {
+        match self {
+            Self::Bitwise { operation, .. } => SqlBatchHostOperation::BitwiseNative(operation),
+            Self::LogicalXor => SqlBatchHostOperation::XorNative,
+        }
+    }
+    fn arity(self) -> usize {
+        match self {
+            Self::Bitwise { operation, .. } => operation.arity(),
+            Self::LogicalXor => 2,
+        }
+    }
+}
+
+pub(super) enum NativeHostMetadata {
+    RawValues {
+        operation: NativeRawValueOperation,
         name: Box<str>,
         result_type: FieldType,
         left_node: usize,
         right_node: Option<usize>,
-        unsigned: [bool; 2],
         output_node: usize,
         output_role: NativeValueRole,
     },
@@ -162,7 +184,7 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
-    Bitwise {
+    RawValues {
         left_token: Option<[u8; native_values::HANDLE_BYTES]>,
     },
     WindowUnary {
@@ -229,7 +251,7 @@ impl NativeTask {
             SqlDemand::WindowDecimalFast { next, .. }
             | SqlDemand::WindowArithmetic { next, .. }
             | SqlDemand::Arithmetic { next, .. } => Ok(Some(*next)),
-            SqlDemand::Bitwise { left_token } | SqlDemand::Comparison { left_token } => {
+            SqlDemand::RawValues { left_token } | SqlDemand::Comparison { left_token } => {
                 Ok(Some(usize::from(left_token.is_some())))
             }
             SqlDemand::Nullable { next }
@@ -254,7 +276,7 @@ impl NativeTask {
             | SqlDemand::Logical { .. }
             | SqlDemand::Truth
             | SqlDemand::Comparison { .. }
-            | SqlDemand::Bitwise { .. }
+            | SqlDemand::RawValues { .. }
             | SqlDemand::Arithmetic { .. }
             | SqlDemand::Math => Err(LocalError::HostContract(
                 "native nullable control does not buffer a prefix".into(),
@@ -1890,26 +1912,29 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     left: None,
                 }
             }
-            SqlBatchHostOperation::BitwiseNative(operation) => {
-                let Some(NativeHostMetadata::Bitwise {
+            operation @ (SqlBatchHostOperation::BitwiseNative(_)
+            | SqlBatchHostOperation::XorNative) => {
+                let Some(NativeHostMetadata::RawValues {
                     operation: declared,
                     name,
                     right_node,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
                 else {
-                    return Err(binding("bitwise source descriptor missing"));
+                    return Err(binding("raw value source descriptor missing"));
                 };
+                let named = native_bitwise_operation(name).or_else(|| {
+                    (name.as_ref() == "xor").then_some(SqlBatchHostOperation::XorNative)
+                });
                 if self.native_values.is_none()
-                    || *declared != operation
-                    || native_bitwise_operation(name)
-                        != Some(SqlBatchHostOperation::BitwiseNative(operation))
-                    || invocation.arg_types.len() != operation.arity()
-                    || right_node.is_some() != (operation.arity() == 2)
+                    || declared.sql_operation() != operation
+                    || named != Some(operation)
+                    || invocation.arg_types.len() != declared.arity()
+                    || right_node.is_some() != (declared.arity() == 2)
                 {
-                    return Err(binding("bitwise descriptor differs"));
+                    return Err(binding("raw value descriptor differs"));
                 }
-                SqlDemand::Bitwise { left_token: None }
+                SqlDemand::RawValues { left_token: None }
             }
             SqlBatchHostOperation::AbsNative => {
                 let Some(NativeHostMetadata::Math { name, .. }) =
@@ -2196,11 +2221,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             };
             return self.resume_arithmetic(id, token);
         }
-        if matches!(task.demand, SqlDemand::Bitwise { .. }) {
+        if matches!(task.demand, SqlDemand::RawValues { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
                 return Err(binding("bitwise argument cannot be wire NULL"));
             };
-            return self.resume_bitwise(id, token);
+            return self.resume_raw_values(id, token);
         }
         if matches!(task.demand, SqlDemand::Math) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
