@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7e: five actual inherited identity REDs fixed with generated construction snapshots, preserving same-instance pointer identity across codegen units. Focus25pass/0fail/1ignored, codegen20, fullSDK1096remaining1, frontend1637same3/all218batch, Projection26, isolatedbodyorigin1, clippy89expression/171all exacttitles, lint/pinnedformats/diff/fixturehashes pass. Receipt evidence/no-fallback-n7e.md. Local signed checkpoint only, no push; calendar/scanner and global retirement remain open.
+
 - [x] N7d: remove unconditional zero-month/fullzero rejection under relaxed NO_ZERO_DATE; original Go calendar/probe authority and ten parser fixtures. Original844344 d7dd9f9ee5b55431 captured BEFORE fix;826200 unchanged+18144 explicit Go-calendar deltas verified. Real value/source/SDK REDs green. Front1637remaining3/all218batch, SDK1091same6, Projection26, clippy89exacttitles/lint/pinnedfmt5/diff pass. Receipt evidence/no-fallback-n7d.md. Local signed checkpoint, no push; scanner/global retirement remain open.
 
 - [x] N7c: immutable392556 b4faecb69db19986;392535 actual paired comparisons+21 hash-guarded boundaries before native Ready retirement. Canonical generic/exact-PB sources, original endpoint casts, full metadata, resources and callback ownership integrated. Final frontend1634same4/all217batch, SDK1090same6, datatype564same2, Projection25/eightgroups, clippy89exacttitles/lint/pinnedfmt19/diff pass. Receipt evidence/no-fallback-n7c.md. Local signed checkpoint; no push; global retirement remains open.
@@ -84,6 +86,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7e fresh RED enters a substituted ASCII panic kernel despite the official name. Fresh-factory pointer comparison cannot fix this safely across codegen units; a saved pointer from the same construction instance avoids that ambiguity.
+
 
 The system compiler is Rust1.97.1 while the full repository pins
 nightly-2026-08-22 (Rust1.100). Expression/Chunk-only tests also run on the system
@@ -107,6 +111,10 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: Snapshot generated RpnFnMeta name and all three pointers once in a private field, and check unchanged dispatch only at closed evaluated-recipe admission. Preserve checked FunctionRef selection, generic const macro construction, canonical shape checks and original raw/wire execution.
+  Rationale: Reject mutated or renamed-other-factory calls before witness/kernel effects without executing a validator as a probe, adding a second dispatcher, or comparing independently emitted function addresses. Actual metadata sizes remain included in existing resource budgets.
+  Date/Author: 2026-10-18 / TiDBEngineer.
+
 - Decision: Keep native row operand demand separate from native batch output publication. A control/comparison root can require both. Stage final owned results only for the eligible promoted batch owner; global row mode retains its native prefix behavior. SDK/resource/SQL errors stay terminal and discard pending batch output.
   Rationale: The real native comparison demonstrated successful NULL short-circuiting and a different late-error output prefix; neither changing only the arithmetic kernel nor removing the structural guard preserves both contracts.
   Date/Author: 2026-10-18 / TiDBEngineer.
@@ -125,6 +133,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7e removes five real SDK dispatch-integrity failures without comparing independent factory pointers. All existing positive worker, resource, source and Projection checks retain their limits and behavior. SDK has1096pass/one inherited STR_TO_DATE worker failure; frontend1637pass/same3fail, datatype baseline564pass/same2fail. Full migration is unfinished, and parser differences remain explicit.
 
 
 N1 regression reproduced the bug before implementation: the oversized metadata gate returned successful generic evaluation instead of a resource error. Cached typed errors now pass batch35 and full1387 with exactly the same4 inherited failures. The first candidate exposed the existing JSON-to-String catalog conversion gap; explicit carrier admission fixed its classification without swallowing InvalidSpec. TiKV is unchanged. N2 now also passes batch40, Chunk275 and the pinned-nightly production Projection caller tests9. Multiple pure outputs, literals, direct selected columns and vector-off one-row execution no longer trigger an alternate evaluator. Ordinary unsupported-function/context routing is still present; next is N3/N4, and the goal remains incomplete. STRCMP is now prepared in all25 benchmark size/selection combinations, with matching native checksums. The other five workload families still require migration. Native-only STRCMP is outside the old131-wire-signature denominator; do not inflate that count. Each self-contained code milestone must have targeted regression
@@ -2199,3 +2209,52 @@ remainfinal: onlySDKcfgtest expectationchangedafterthem, no productionbodychange
 Allcheckpointjobsclosed; record newremaining3 frontend failures and stillreal6SDK/
 2datatype gaps, native%j/scanner audit andglobalalternate-dispatch work. Coherent
 localDCOcheckpointonly; goal/task4 remainsactive.
+
+
+### N7e reject mutated ready-value dispatch before entering a kernel
+
+
+The five inherited `test_evaluated_*` identity tests reproduce on N7d: the
+ASCII case actually enters the substituted panic kernel; four other tests
+accept a changed kernel under the original display name. RED log
+`n7e-identity-red.log` has20pass/5fail/1ignored, all five exact inherited names.
+The common compiler already resolves the checked FunctionRef. However, comparing
+its function address against a separately instantiated official factory is
+unsound across codegen units: Rust can duplicate the same function. Restore
+integrity without that comparison. Generated RpnFnMeta construction will keep
+an immutable copy of its original name and three function pointers. The closed
+recipe guard compares each current pointer with its own construction-time copy,
+plus the existing official name, arity, types and typed metadata checks. It
+executes no function to validate identity and adds no alternate dispatcher.
+This is a contract for generated metadata and the checked compiler, not an
+adversarial authentication API for arbitrary Rust code calling its constructor.
+
+Update the macro source and its exact token expectations rather than generated
+outputs. Preserve const generic constructors and unannotated raw/wire execution.
+Extend the composite negative case to a whole wrong factory with a forged name,
+and check validator/metadata-constructor drift as well as the actual run pointer.
+Run focused RED/GREEN, codegen tests, full SDK tests, complete frontend and
+Projection because metadata size and monomorphization affect their actual
+retained-storage checks, then scoped clippy, lint and pinned formatting. Do not
+raise resource limits or remove inherited failures. Expect five SDK failures
+removed and the original STR_TO_DATE worker failure retained. Record exact
+remaining names, update the maintenance guide and sign a local commit pair.
+
+Read-only calendar audit confirms original Go ignores the `%j` context entry,
+while native stores wide day999; its invalid-calendar diagnostic preserves
+parsed fields. Do not hide either difference by changing the worker oracle.
+A scanner-semantic change needs separate independent fixtures and explicit
+deltas against the immutable N7b history, beyond N7d calendar validation.
+Global migration, frontend3, datatype2 and remaining old callers stay open.
+
+
+N7e final: focused85034CLOSED0 25pass/0fail/1ignored; codegen49394CLOSED0
+20pass; SDK82401CLOSED1011096pass/1fail/1ignored/0filtered, machine-proven removal
+of exactly five inherited identity failures. Front36571CLOSED1011637same3/all218
+batch; Projection20373CLOSED0all26; isolatedbodyoriginCLOSED0onepass; lint22784
+CLOSED0; clippy90817CLOSED0 89expressionwarnings and171all diagnostic titles
+EXACTN7d. Pinnedfmt3files/bothcompilers/diffs/unchangedfixturehashes pass. All jobs
+closed. No calendar production or test expectations changed, no limits raised,
+no new dispatcher or evaluator. Receipt evidence/no-fallback-n7e.md records
+commands and limitations. SDK local DCO commit940f123; finalize the paired TiDB receipt commit, no push; global task4
+and remaining SDK1/frontend3/datatype2/scanner/source/oldcaller work stay open.
