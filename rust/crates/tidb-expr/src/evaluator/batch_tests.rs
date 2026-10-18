@@ -17058,3 +17058,542 @@ fn native_date_arithmetic_existing_source_keeps_original_return_family_boundary(
         &[0, 1, 0],
     );
 }
+
+#[test]
+fn native_tso_sources_do_not_fallback() {
+    for (name, args, result) in [
+        ("tidb_current_tso", vec![], ty()),
+        (
+            "tidb_parse_tso",
+            vec![literal(Datum::Int(424_930_234_047_906_595), ty())],
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(0),
+        ),
+        (
+            "tidb_parse_tso_logical",
+            vec![literal(Datum::Int(424_930_234_047_906_595), ty())],
+            ty(),
+        ),
+    ] {
+        let suite = suite(call(name, result.clone(), args));
+        let ctx = crate::tikv::tso_value_tests::context(1, 1);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&result);
+        suite
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        let route = suite.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0), "{name}");
+    }
+}
+
+fn compare_tso_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let actual = suite(root.clone());
+    let label = format!("{root:?} source={schema:?} selection={}", selection.len());
+    let reference = suite(root);
+    for enabled in [false, true, false, true] {
+        let mut ctx = crate::tikv::tso_value_tests::context(1, seed);
+        ctx.reject = true;
+        ctx.enabled.set(enabled);
+        let original = crate::tikv::tso_value_tests::context(1, seed);
+        original.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut old = chunk(schema, rows);
+        old.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected = output_for(&field);
+        assert_eq!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, schema),
+            reference.run(&original, &mut old, &mut expected),
+            "{label} seed={seed} flag={enabled}"
+        );
+        assert_eq!(*ctx.events.borrow(), *original.events.borrow());
+        assert_eq!(output.num_rows(), expected.num_rows());
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(row).is_null(0),
+                expected.get_row(row).is_null(0)
+            );
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected.column(0).get_raw(row).as_ref()
+            );
+        }
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+    }
+}
+#[test]
+fn native_tso_sources_keep_dynamic_context_return_families_parents_and_occurrences() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(30)
+        .with_decimal(6);
+    let inputs = vec![
+        (
+            ty(),
+            vec![
+                Datum::Int(i64::MIN),
+                Datum::Int(-1),
+                Datum::Int(0),
+                Datum::Int(1),
+                Datum::Int((1 << 18) + 1),
+                Datum::Int(424_930_234_047_906_595),
+                Datum::Int(i64::MAX),
+                Datum::Null,
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::UInt(u64::MAX),
+                Datum::UInt(1 << 63),
+                Datum::UInt(1),
+                Datum::Null,
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::new_string(" 1e2 "),
+                Datum::new_string("bad"),
+                Datum::new_string("424930234047906595"),
+                Datum::Bytes(vec![0xff]),
+                Datum::Null,
+            ],
+        ),
+        (
+            decimal.clone(),
+            vec![
+                Datum::Decimal(Decimal::from_literal("1.5")),
+                Datum::Decimal(Decimal::from_literal("-1.5")),
+                Datum::Decimal(Decimal::from_literal("9223372036854775808")),
+                Datum::Null,
+            ],
+        ),
+        (
+            real_ty(),
+            vec![
+                Datum::Real(1.5),
+                Datum::Real(f64::INFINITY),
+                Datum::Real(f64::NAN),
+                Datum::Null,
+            ],
+        ),
+    ];
+    for seed in 0..18 {
+        for name in ["tidb_parse_tso", "tidb_parse_tso_logical"] {
+            for field in [
+                ty(),
+                real_ty(),
+                decimal.clone(),
+                string_ty(),
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(0),
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            ] {
+                for (source, values) in &inputs {
+                    let rows = values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>();
+                    let expr = call(name, field.clone(), vec![typed_column(0, source)]);
+                    for root in [expr.clone(), call("cast_char", string_ty(), vec![expr])] {
+                        for sel in [
+                            vec![],
+                            (0..rows.len()).collect(),
+                            (0..2050).map(|i| i % rows.len()).collect(),
+                        ] {
+                            compare_tso_source(
+                                root.clone(),
+                                std::slice::from_ref(source),
+                                &rows,
+                                &sel,
+                                seed,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for field in [ty(), real_ty(), decimal.clone(), string_ty()] {
+            let root = call("tidb_current_tso", field, vec![]);
+            compare_tso_source(root.clone(), &[], &[vec![]], &[0, 0, 0], seed);
+            compare_tso_source(
+                call("cast_char", string_ty(), vec![root]),
+                &[],
+                &[vec![]],
+                &[0, 0],
+                seed,
+            );
+        }
+        let skipped = call(
+            "if",
+            ty(),
+            vec![
+                literal(Datum::Int(0), ty()),
+                call("tidb_current_tso", ty(), vec![]),
+                literal(Datum::Int(42), ty()),
+            ],
+        );
+        compare_tso_source(skipped, &[], &[vec![]], &[0, 0], seed);
+    }
+}
+
+#[test]
+fn native_tso_capabilities_budget_error_cancel_reuse_and_exclusive_callbacks() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use super::native_values::{NativeValueOrigin, NativeValueRole, NativeValueStore};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostCatalog, HostInvocation, HostSignature, HostStart, HostStep,
+            LocalHostServices,
+        },
+        NativeTsoOperation as Op,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!()
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready")
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            panic!("no statement clock")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("level");
+            crate::ErrorLevel::Warn
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("warning");
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("zone");
+            SessionTimeZone::Fixed {
+                name: "rawMAX".into(),
+                offset_secs: i32::MAX,
+            }
+        }
+        fn current_tso(&self) -> i64 {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("transaction");
+            424_930_234_047_906_595
+        }
+    }
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for op in [Op::Current, Op::Physical, Op::Logical] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); op.arity()];
+            let ret = field.clone();
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::TsoNative(op),
+                HostSignature {
+                    arg_types: args.clone().into_boxed_slice(),
+                    return_type: ret.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::Tso {
+                argument_type: (op.arity() != 0).then(ty),
+                argument: (op.arity() != 0).then_some(3),
+                operation: op,
+                result_type: if op == Op::Physical {
+                    FieldType::new(FieldTypeCode::Datetime).with_decimal(0)
+                } else {
+                    ty()
+                },
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(16 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let context = C {
+                store: &store,
+                events: RefCell::new(vec![]),
+            };
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 16384)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            let check = |out: &VectorValue, expected: &Datum| {
+                let ScalarValueRef::Bytes(Some(token)) = out.get_scalar_ref(0) else {
+                    panic!()
+                };
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(token, role, NativeValueOrigin { node: 2, row })
+                        .unwrap(),
+                    expected
+                );
+            };
+            if op == Op::Current {
+                for _ in 0..3 {
+                    let HostStart::Ready(out) = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    check(&out, &Datum::Int(424_930_234_047_906_595));
+                }
+                assert_eq!(*context.events.borrow(), vec!["transaction"; 3]);
+                continue;
+            }
+            for bad in [
+                stale,
+                insert(&Datum::Null, NativeValueRole::Output, 3, row),
+                insert(&Datum::Null, NativeValueRole::CharInput, 99, row),
+                insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                ),
+                insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 0,
+                        input_row: 1,
+                    },
+                ),
+            ] {
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert!(matches!(
+                    provider.resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1)
+                        }
+                    ),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert!(context.events.borrow().is_empty());
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+            for (source, kind) in [
+                (Datum::Bytes(vec![b'1'; 1 << 20]), 0),
+                (Datum::Bytes(vec![b'1'; 4096]), 1),
+                (Datum::MinNotNull, 2),
+                (Datum::new_string("bad"), 5),
+                (Datum::Null, 3),
+                (Datum::Int(-1), 3),
+                (Datum::Int(424_930_234_047_906_595), 4),
+            ] {
+                context.events.borrow_mut().clear();
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                let token = insert(&source, NativeValueRole::CharInput, 3, row);
+                let result = provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1),
+                    },
+                );
+                match kind {
+                    0 => {
+                        assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
+                        assert!(provider.take_native_error().is_none());
+                    }
+                    1 => {
+                        assert!(matches!(result, Err(LocalError::HostContract(_))));
+                        assert!(matches!(
+                            provider.take_native_error(),
+                            Some(EvalError::ExpressionRuntimeFailure(_))
+                        ));
+                    }
+                    2 => {
+                        assert!(matches!(result, Err(LocalError::HostContract(_))));
+                        assert_eq!(
+                            provider.take_native_error(),
+                            Some(EvalError::Unsupported("range sentinel cast operand"))
+                        );
+                    }
+                    _ => {
+                        let HostStep::Ready(out) = result.unwrap() else {
+                            panic!()
+                        };
+                        let expected = if kind == 3 || kind == 5 {
+                            Datum::Null
+                        } else if op == Op::Logical {
+                            Datum::Int(246563)
+                        } else {
+                            Datum::Time(tidb_datatype::Time::from_raw_parts(
+                                tidb_datatype::CoreTime::from_raw(
+                                    tidb_query_expr::native_tso_core(
+                                        424_930_234_047_906_595,
+                                        i32::MAX,
+                                    )
+                                    .unwrap(),
+                                ),
+                                tidb_datatype::TimeType::DateTime,
+                                6,
+                            ))
+                        };
+                        check(&out, &expected);
+                    }
+                }
+                assert_eq!(
+                    *context.events.borrow(),
+                    if kind == 5 {
+                        vec!["level", "warning", "zone"]
+                    } else if kind == 4 && op == Op::Physical {
+                        vec!["zone"]
+                    } else {
+                        vec![]
+                    }
+                );
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+        }
+    }
+}
+
+#[test]
+fn native_tso_sources_keep_typed_integer_casts_and_original_effects() {
+    use tidb_datatype::{BinaryLiteral, MysqlEnum, MysqlSet};
+    let time =
+        tidb_datatype::parse_datetime("2020-01-02 03:04:05.123456", &chrono_tz::UTC, true, true)
+            .unwrap()
+            .time;
+    let inputs = vec![
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![Datum::Time(time), Datum::Null],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            vec![
+                Datum::Time(tidb_datatype::Time::from_raw_parts(
+                    time.core_time(),
+                    tidb_datatype::TimeType::Timestamp,
+                    6,
+                )),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Duration(MySqlDuration::from_raw_parts(-12_345_678_000, 6)),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Json(BinaryJSON::parse("null").unwrap()),
+                Datum::Json(BinaryJSON::parse(r#"{"n":1}"#).unwrap()),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Enum).with_elems(["a", "b"]),
+            vec![
+                Datum::Enum(MysqlEnum::new("b", 2), Collation::Binary),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Set).with_elems(["a", "b"]),
+            vec![
+                Datum::Set(MysqlSet::new("a,b", 3), Collation::Binary),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(8),
+            vec![Datum::Bit(BinaryLiteral::from(vec![0xa5])), Datum::Null],
+        ),
+        (
+            real_ty().with_unsigned(true),
+            vec![Datum::Real(-1.5), Datum::Real(f64::INFINITY), Datum::Null],
+        ),
+    ];
+    for seed in 0..9 {
+        for (source, values) in &inputs {
+            for name in ["tidb_parse_tso", "tidb_parse_tso_logical"] {
+                let field = if name == "tidb_parse_tso" {
+                    FieldType::new(FieldTypeCode::Datetime).with_decimal(0)
+                } else {
+                    ty()
+                };
+                let expr = call(name, field, vec![typed_column(0, source)]);
+                let rows = values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>();
+                for root in [expr.clone(), call("cast_char", string_ty(), vec![expr])] {
+                    compare_tso_source(root, std::slice::from_ref(source), &rows, &[0, 1, 0], seed);
+                }
+            }
+        }
+    }
+}

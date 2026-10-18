@@ -370,6 +370,7 @@ fn promoted_native_root_view(
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
     ) || native_epoch_call(function).is_some()
+        || native_tso_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -918,6 +919,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
     ) || native_epoch_call(function).is_some()
+        || native_tso_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1178,6 +1180,7 @@ fn native_bitwise_operation(name: &str) -> Option<SqlBatchHostOperation> {
 fn native_character_value_argument(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
         || native_epoch_call(function).is_some()
+        || native_tso_call(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1223,6 +1226,16 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_tso_call(function: &ScalarFunction) -> Option<tidb_query_expr::NativeTsoOperation> {
+    use tidb_query_expr::NativeTsoOperation as Op;
+    let op = match function.func_name.lowercase() {
+        "tidb_current_tso" => Op::Current,
+        "tidb_parse_tso" => Op::Physical,
+        "tidb_parse_tso_logical" => Op::Logical,
+        _ => return None,
+    };
+    (function.args.len() == op.arity()).then_some(op)
 }
 fn native_epoch_call(function: &ScalarFunction) -> Option<(bool, usize)> {
     let from = match function.func_name.lowercase() {
@@ -1303,6 +1316,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
     ) || native_epoch_call(function).is_some()
+        || native_tso_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1318,6 +1332,20 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some(op) = native_tso_call(function) {
+        if view.value_role().is_none()
+            || function.get_static_type().is_none()
+            || function.args.iter().any(|v| v.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "TSO requires original native value declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::TsoNative(op)),
+            op.arity(),
+        ));
+    }
     if let Some((from, arity)) = native_epoch_call(function) {
         if view.value_role().is_none()
             || function.args.iter().any(|v| v.static_type().is_none())
@@ -2244,6 +2272,12 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if native_tso_call(function).is_some() {
+                        budget.field(sql, 1)?;
+                        if let Some(arg) = function.args.first() {
+                            budget.field(arg.static_type().expect("checked TSO source"), 1)?;
+                        }
+                    }
                     if let Some((_, arity)) = native_epoch_call(function) {
                         budget.add(
                             arity
@@ -2865,6 +2899,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                        | SqlBatchHostOperation::TsoNative(_)
                                         | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
                                         | SqlBatchHostOperation::DateArithmeticNative { .. }
@@ -2934,6 +2969,25 @@ fn lower_view(
                                     output_role: item.view.value_role(),
                                 }
                             }
+                            SqlBatchHostOperation::TsoNative(op) => NativeHostMetadata::Tso {
+                                argument_type: sql.args.first().map(|arg| {
+                                    snapshot_field_type(
+                                        arg.static_type().expect("checked TSO source"),
+                                    )
+                                }),
+                                argument: (op.arity() != 0).then_some(
+                                    ordinal
+                                        .checked_add(1)
+                                        .ok_or_else(|| resource("TSO ordinal overflow"))?,
+                                ),
+                                operation: op,
+                                result_type: snapshot_field_type(item.sql),
+                                output_node: ordinal,
+                                output_role: item
+                                    .view
+                                    .value_role()
+                                    .ok_or_else(|| binding("TSO result view missing"))?,
+                            },
                             SqlBatchHostOperation::EpochNative { from, arity } => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, usize::from(arity))?;

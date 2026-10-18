@@ -44,6 +44,8 @@ mod json_sum_crc32_source;
 mod str_to_date_source;
 #[path = "batch_timestamp_diff.rs"]
 mod timestamp_diff_source;
+#[path = "batch_tso.rs"]
+mod tso_source;
 pub(super) use charset_source::NativeCharsetMetadata;
 #[path = "batch_extremum.rs"]
 mod extremum_source;
@@ -131,6 +133,14 @@ pub(super) enum NativeHostMetadata {
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
+    },
+    Tso {
+        argument_type: Option<FieldType>,
+        argument: Option<usize>,
+        operation: tidb_query_expr::NativeTsoOperation,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
     },
     Epoch {
         arguments: Box<[usize]>,
@@ -276,6 +286,7 @@ impl NativeHostMetadata {
             Self::Extremum(metadata) => Some(&metadata.result_type),
             Self::Charset(metadata) => Some(&metadata.result_type),
             Self::TimestampDiff { result_type, .. }
+            | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
             | Self::DateArithmetic { result_type, .. }
@@ -305,6 +316,7 @@ enum SqlDemand {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
     },
+    Tso,
     Epoch {
         first: Option<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -405,7 +417,7 @@ impl NativeTask {
             | SqlDemand::DateArithmetic { first }
             | SqlDemand::BoundedStaleness { first }
             | SqlDemand::StrToDate { first } => Ok(Some(usize::from(first.is_some()))),
-            SqlDemand::JsonSumCrc32 => Ok(Some(0)),
+            SqlDemand::Tso | SqlDemand::JsonSumCrc32 => Ok(Some(0)),
             SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
             SqlDemand::Interval { search } => Ok(match search.step() {
                 tidb_query_expr::NativeIntervalValueStep::Probe { index, .. } => Some(index),
@@ -437,7 +449,8 @@ impl NativeTask {
             SqlDemand::TimestampDiff { .. } => {
                 Err(binding("timestamp diff demand cannot retain byte prefix"))
             }
-            SqlDemand::Epoch { .. }
+            SqlDemand::Tso
+            | SqlDemand::Epoch { .. }
             | SqlDemand::Extract { .. }
             | SqlDemand::DateArithmetic { .. }
             | SqlDemand::BoundedStaleness { .. }
@@ -2064,6 +2077,26 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::TsoNative(op) => {
+                let Some(NativeHostMetadata::Tso {
+                    argument,
+                    argument_type,
+                    operation,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("TSO descriptor missing"));
+                };
+                if self.native_values.is_none()
+                    || op != *operation
+                    || argument.is_some() != (op.arity() != 0)
+                    || argument_type.is_some() != argument.is_some()
+                    || invocation.arg_types.len() != op.arity()
+                {
+                    return Err(binding("TSO descriptor differs"));
+                }
+                SqlDemand::Tso
+            }
             SqlBatchHostOperation::EpochNative { from, arity } => {
                 let Some(NativeHostMetadata::Epoch {
                     arguments,
@@ -2472,8 +2505,8 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate =
-            matches!(demand, SqlDemand::Epoch { .. }) && invocation.arg_types.is_empty();
+        let immediate = matches!(demand, SqlDemand::Tso | SqlDemand::Epoch { .. })
+            && invocation.arg_types.is_empty();
         let start = self.install_task(
             invocation.slot,
             invocation.row,
@@ -2484,7 +2517,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             let HostStart::Pending { task, .. } = start else {
                 unreachable!()
             };
-            return match self.resume_epoch(&task, None) {
+            let result = if matches!(self.task(&task)?.demand, SqlDemand::Tso) {
+                self.resume_tso(&task, None)
+            } else {
+                self.resume_epoch(&task, None)
+            };
+            return match result {
                 Ok(HostStep::Ready(value)) => Ok(HostStart::Ready(value)),
                 Ok(HostStep::NeedArg(_)) => {
                     self.cancel(&task);
@@ -2561,6 +2599,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Tso) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("TSO source cannot be wire NULL"));
+            };
+            return self.resume_tso(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Epoch { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

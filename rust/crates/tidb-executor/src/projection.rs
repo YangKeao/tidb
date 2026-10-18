@@ -3204,8 +3204,31 @@ mod tests {
         let epoch_mix = std::iter::once(0)
             .chain(epoch_start..roots.len())
             .collect::<Vec<_>>();
+        let tso_start = roots.len();
+        for (name, field, args) in [
+            ("tidb_current_tso", integer.clone(), vec![]),
+            (
+                "tidb_parse_tso",
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(0),
+                vec![column(0)],
+            ),
+            ("tidb_parse_tso_logical", integer.clone(), vec![column(0)]),
+        ] {
+            let root = call(name, field.clone(), args);
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let tso_mix = std::iter::once(0)
+            .chain(tso_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                tso_mix.iter().map(|&i| roots[i].clone()).collect(),
+                tso_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
             (
                 epoch_mix.iter().map(|&i| roots[i].clone()).collect(),
                 epoch_mix.iter().map(|&i| fields[i].clone()).collect(),

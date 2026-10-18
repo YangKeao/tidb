@@ -120,10 +120,7 @@ pub(crate) fn dispatch(
 /// `TIDB_CURRENT_TSO()`: the active transaction's start timestamp, or zero
 /// when the session is not inside a transaction.
 fn current_tso(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !vals.is_empty() {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(Datum::Int(cols.current_tso()))
+    crate::tikv::tso_value::eval(tidb_query_expr::NativeTsoOperation::Current, vals, cols)
 }
 
 /// Go `builtinTiDBBoundedStalenessSig.evalTime`: choose a read timestamp from
@@ -584,17 +581,7 @@ pub(crate) fn tidb_parse_tso_logical_in(
     vals: &[Datum],
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::TsoLogicalNative,
-        ctx,
-        || {
-            if vals.len() != 1 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            Ok(crate::tikv::EvaluatedArgs::Int(int_arg(&vals[0])?))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
+    crate::tikv::tso_value::eval(tidb_query_expr::NativeTsoOperation::Logical, vals, ctx)
 }
 
 #[cfg(test)]
@@ -843,7 +830,7 @@ fn round_float_to_i64(value: f64) -> i64 {
     }
 }
 
-fn int_arg(value: &Datum) -> Result<Option<i64>, EvalError> {
+pub(crate) fn int_arg(value: &Datum) -> Result<Option<i64>, EvalError> {
     match value {
         Datum::Null => Ok(None),
         Datum::Int(v) => Ok(Some(*v)),

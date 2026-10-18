@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7k: retire physical/logical TSO Ready calls and integrate transaction timestamp canonical sources with independent old observations, finite resource/provenance and original return-family validation.
+
 - [x] N7j: replace native/legacy UNIX_TIMESTAMP and FROM_UNIXTIME Ready handoffs with actual SDK values and canonical sources, including DATE_FORMAT handoff, preserving distinct native/legacy conversion, dynamic context demand, raw numeric identity, finite resources and exact original comparison before retirement.
 - [x] N7i: retire EXTRACT selector/cast/mixed/composite/NULL Ready paths and integrate canonical scalar EXTRACT plus named composite sources, preserving original source metadata, both eager operands, casts, separately demanded mode reads, warning/error distinctions and broad composite arithmetic. Freeze independent old observations and actual Ready/source REDs before edits; pair old/new before wire/controller retirement; validate finite work, provenance, late errors, dynamic modes, duplicates and mixed Projection before signed local commits.
 
@@ -2652,3 +2654,91 @@ Receipt evidence/no-fallback-n7j.md records commands/proof; signed local SDK
 baea038 is paired with this frontend checkpoint, with no push. TSO/other Ready callers, generic fallback, unistore old
 walker, %j/other semantic audits, inherited failures and full server gates remain
 open; this is not complete package transcreation or broad PB-source coverage.
+
+## N7k: transaction timestamp values and canonical sources
+
+
+This next checkpoint removes the remaining physical/logical TSO Ready calls and
+adds TIDB_CURRENT_TSO, TIDB_PARSE_TSO and TIDB_PARSE_TSO_LOGICAL to authenticated
+native value sources. Freeze original results, raw temporal identity, errors and
+context getter order before production edits; compare additive candidates with
+unchanged callers before retirement. Reuse native_tso_core/native_tso_utc and
+extract the existing logical mask into one shared value primitive, keeping wire
+validation and identity codecs unchanged. Positive physical values alone demand
+the actual session zone, with raw fixed offsets and named DST resolution.
+Nonpositive values suppress zone reads; current TSO demands the transaction
+getter, not a statement clock. Source publication preserves the original ordinary
+ScalarFunction return-family boundary, finite work, provenance, cancellation,
+per-occurrence selection and context borrow ownership. No clock-family migration
+or full package completion is claimed by this checkpoint.
+
+Run release locked/offline tidb-expr and tidb_query_expr tests, source/projection
+checks, scoped clippy, lint, pinned formatters and immutable fixture guards.
+Full suites must preserve the exact inherited failures recorded in N7j; new
+failures are blockers. Keep original observation hashes independent of new code.
+Review explicit diffs, then sign local paired commits without pushing. Receipt
+will be rust/docs/evidence/no-fallback-n7k.md. Global clock/calendar, generic
+fallback, unistore walker, semantic failures and full server gates remain open.
+
+N7k pre-edit observations reproduce actual physical Ready lookup and current-TSO
+source refusal. Original8586/05FEB3EE0578F58D is frozen; additive candidate51563
+matches every observation before caller/logical-worker retirement. Earlier new
+fixture compilation mistakes (literal argument order, Time kind method and
+Duration signed FSP conversion) were corrected before executable comparisons;
+they are not semantic RED evidence. Actual integer conversion remains the
+original time_fn::int_arg. Sources use one closed operation enum, original
+return-family coercion, immediate current-TSO without dummy children, and release
+store borrows before actual transaction/zone getters. Validation is in progress.
+
+Source matrix43303 supplies a true RED: invalid textual input returned an error
+where the original ScalarFunction succeeded, because the candidate had omitted
+its earlier ETInt argument cast. Sources now snapshot/charge the original source
+FieldType and call the exact cast_arg_as_int before the unchanged signature;
+direct time_fn calls retain their distinct int_arg conversion. This also retains
+cast-owned zone/warning/truncate reads for logical TSO and independently demanded
+physical-zone reads. Bounded work includes Decimal visible/storage scale and
+JSON/text diagnostic expansion before casts; original return conversion still
+runs once afterward. Fixed20363 passes all10 TSO tests and the complete source
+matrix; the new provider's mistaken logical literal35 was corrected to246563
+(test-only), not reported as a semantic repair. Additional typed cast/effect and
+finite-budget cases are now included in the final full-suite run.
+
+Final review40023 independently proves a second real RED: a one-byte Decimal
+with million-digit visible scale and integer storage1 was rejected at16KiB even
+though the original signed integer cast returns1 without rendering. N7k now
+charges visible Decimal scale only when the original cast actually demands its
+signed-overflow or unsigned-negative diagnostic. Direct signature int_arg never
+uses visible precision for that conversion. Added positive signed/unsigned,
+negative-zero and genuinely demanded huge-diagnostic tests distinguish the
+cases. The earlier new test that expected every huge visible shape to fail was
+incorrect and has been replaced; no historical fixture/hash was changed.
+
+Decision (2026-10-19): preserve both the raw signature input contract and the
+ScalarFunction's earlier declared ETInt cast instead of merging these entry
+policies. Both delegate to existing value primitives and keep original argument
+metadata/return coercion. Only demanded diagnostic display shape enters work
+planning. This prevents unused display metadata from manufacturing a resource
+failure, while still refusing large actual formatting before callbacks.
+
+
+N7k final89683 passes1685/exact3/95ignored/0filtered, all244 batch tests. SDK14527
+passes1112/exact1/1ignored/0filtered; Projection18448 passes26 including all3 TSO
+outputs/CHAR parents in a seven-root mixed group with bothflags/workers0/2.
+Clippy22863 retains89expression/171all titles EXACT N7j. Final dual pinned15-file
+format/immutable fixture guards and both diff checks pass; root lint passes.
+All new source/callback/resource/unused-display tests pass and the original8586
+digest is unchanged. Receipt evidence/no-fallback-n7k.md preserves commands,
+original proof, true repairs, test-only corrections and exact inherited failures.
+No datatype or unistore production change/rerun is claimed. All jobs are closed;
+paired local signed commits follow without push. Global clock/calendar, generic
+fallback, old unistore walker, semantic failures and full-server gates stay open.
+
+Paired signed local SDK checkpoint is 86d8cf1d842f7e1ebaf57ac0e3bfa98beea90d7b; this frontend checkpoint remains local with no push.
+
+
+Final portability review isolates the frozen Local capture in an exact-test
+child process with original TZ=Asia/Shanghai, never a concurrent global TZ
+mutation. No production body, actual Local input or historical digest changes.
+Final35991 full frontend under parent TZ=UTC again passes1685/exact3/95ignored/
+0filtered, all244batch and warning-title multiset EXACT N7j. Both pinned15-file
+formatters pass after this test-only wrapper. All jobs are now closed.

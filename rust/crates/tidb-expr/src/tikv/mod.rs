@@ -702,3 +702,8 @@ pub(crate) use epoch_value::{
 pub(crate) use epoch_value::finish_epoch_result_bounded;
 
 pub(crate) use control_value::coerce_result_bounded;
+
+#[cfg(test)]
+pub(crate) mod tso_value_tests;
+
+pub(crate) mod tso_value;

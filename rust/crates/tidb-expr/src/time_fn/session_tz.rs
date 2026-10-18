@@ -39,6 +39,7 @@
 #[cfg(test)]
 use chrono::{Datelike, NaiveDate, Timelike};
 
+#[cfg(test)]
 use crate::context::SessionTimeZone;
 #[cfg(test)]
 use crate::Decimal;
@@ -64,41 +65,7 @@ pub(crate) fn unix_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum
 /// `TIDB_PARSE_TSO(tso)`: the physical half as a full-precision native
 /// DATETIME in the session zone.
 pub(super) fn tidb_parse_tso(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        cols,
-        || {
-            use chrono::{Offset, TimeZone};
-            if vals.len() != 1 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let tso = super::int_arg(&vals[0])?;
-            let offset = match tso {
-                Some(value) if value > 0 => {
-                    // Preserve the getter before UTC preparation. Fixed zones
-                    // retain their raw SDK offset, not TimeZone's clamped view.
-                    let zone = cols.time_zone();
-                    Some(match &zone {
-                        SessionTimeZone::Fixed { offset_secs, .. } => i64::from(*offset_secs),
-                        SessionTimeZone::Named(_) | SessionTimeZone::Local => {
-                            let instant = tidb_query_expr::native_tso_utc(value)
-                                .expect("a positive signed TSO is within Chrono's timestamp range");
-                            i64::from(
-                                zone.offset_from_utc_datetime(&instant.naive_utc())
-                                    .fix()
-                                    .local_minus_utc(),
-                            )
-                        }
-                    })
-                }
-                _ => None,
-            };
-            Ok((
-                crate::tikv::EvaluatedBytesOp::TidbParseTsoNative,
-                crate::tikv::EvaluatedArgs::Int2(tso, offset),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_identity_datum,
-    )
+    crate::tikv::tso_value::eval(tidb_query_expr::NativeTsoOperation::Physical, vals, cols)
 }
 
 #[cfg(test)]
