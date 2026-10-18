@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7d: remove unconditional zero-month/fullzero rejection under relaxed NO_ZERO_DATE; original Go calendar/probe authority and ten parser fixtures. Original844344 d7dd9f9ee5b55431 captured BEFORE fix;826200 unchanged+18144 explicit Go-calendar deltas verified. Real value/source/SDK REDs green. Front1637remaining3/all218batch, SDK1091same6, Projection26, clippy89exacttitles/lint/pinnedfmt5/diff pass. Receipt evidence/no-fallback-n7d.md. Local signed checkpoint, no push; scanner/global retirement remain open.
+
 - [x] N7c: immutable392556 b4faecb69db19986;392535 actual paired comparisons+21 hash-guarded boundaries before native Ready retirement. Canonical generic/exact-PB sources, original endpoint casts, full metadata, resources and callback ownership integrated. Final frontend1634same4/all217batch, SDK1090same6, datatype564same2, Projection25/eightgroups, clippy89exacttitles/lint/pinnedfmt19/diff pass. Receipt evidence/no-fallback-n7c.md. Local signed checkpoint; no push; global retirement remains open.
 
 - [x] N6q0: explicit six MOD/div/DIV row/window catalog identities share the existing SDK frame; two protocol tests retain2050 occurrence Fresh/Reuse, primary errors, cancellation and reuse. Core1068same6, existing-consumer frontend1515same4/95ignored with exactly three pending admission REDs filtered, clippy89 inherited warnings, lint/pinnedformats/diff pass. Three root REDs rerun and still fail the same route assertions; actual source integration remains open and these new tests stay uncommitted until fixed. Receipt evidence/no-fallback-n6q0.md.
@@ -2136,3 +2138,64 @@ N7b;lint13889closed0/pinnedfmt19/bothdiffpass. Datatype88482 564same2 remains
 final because no laterdatatypebodychange. Allcheckpointjobsclosed; sourceReady
 retirement is coherent and verified, but globalfallback and inheritedsemantic/
 validation failures remain pending. Next audit remaining date semantics/callers.
+
+### N7d partial-calendar validation and historical evidence
+
+The next intentional semantic correction addresses the inherited relaxed-mode
+partial-date failure. Local Go SELECT sets IgnoreZeroInDate(true); Time.Check
+allows month0/day0, and the builtin separately applies NO_ZERO_DATE. Original
+integration issues.result354–400 provides six concrete outputs. The current
+SDK unconditional month0/fullzero checks contradict that behavior. Its invalid
+wide-day branch and scanner remain separate from this validation correction.
+
+Before changing production code, capture the entire original844344 observation
+stream as a compressed deduplicated first-profile fixture, verify all three
+profiles agree and retain d7dd9f9ee5b55431. Also capture original actual calendar
+fields from the WHOLE officially validated SDK head report, only in a temporary
+test generator; this adapter never enters production. A standalone Go probe
+using original types.Time.Check will independently validate representable zero-
+month calendar fields and render expected accepted text. Full original parser
+parity is not implied by a calendar-validator oracle; six direct StrToDate
+fixtures provide independent parser/builtin boundary evidence. Final tests will
+compare every unchanged observation to original data, and changed observations
+to explicit Go-validated expectations; the old hash remains historical and is
+never regenerated from new code. Remove the temporary capture generator before
+committing. Current production trees remain unchanged at this stage.
+
+N7d original capture39668 closed0 ALL844344 d7dd9f9ee5b55431, three profiles
+independently identical. Frozen15188byte gzip SHA256
+fd9ed6080649e8987dd86b64bd761998c7db2bf66cd8aff52fdbd4a9a9464571;534observation
+strings/281448profileindices/3906originalcalendarstates. Temporarycapture
+generator removed; test-only patch cached-applies64bce47f. Go standalone oracle
+build80601 succeeded and independently verified168 actualzero-monthcalendar
+states plus six partial/four fullzero StrToDate fixtures. Original Go %j999
+parser behavior differs from native wide-day storage and remains REAL separate
+work; this fixes calendar validation, not the entire scanner or Go package.
+
+Genuine RED5998 old history+Go fixtures+inheritedpartial; source67817 typedGo
+values;SDK1502 actualvalidator. Production two-check removal only after REDs.
+Focus30841 all18date tests pass; fullfront18207 closed1011637PASS, EXACT only
+remaining3 failures/95ignored/0filtered/all218batch. Previous partial-format
+failure is removed and original history is explicitly replayed from captured
+data, with826200 unchanged observations+18144 Go-validated deltas. Source tests
+cover8modes/fourflags/empty,10row,2050duplicate selections/String,Date,Datetime
+FSP0/3/6/CHAR/MONTHparents/explicitGoNULL/rawvalues/noWarningwhenrelaxed, plus
+original scalar effects and0fallback/refusal. Projection45395closed0all26;new
+serial/parallel0/2workers validatesfourpartial/fullzeromixedoutputs with
+NO_ZERO_IN_DATE retained andbothNO_ZERO_DATE values, underunchangedlimits.
+
+Initial SDK89821 hadsevenfailures: inheritedsix plus the ordinary stages test's
+old relaxed2020/%Y warning expectation. That assertion now requires exact Go
+Value2020-00-00 and a separate strictNO_ZERO_DATE1411control. Onlythiscfgtest
+expectationchangedafterfinalfront/Projection; productionbodyunchanged. Final
+SDK/clippy rerunning before signing. Earlier test-only &String/FSPtype compile
+mistakes were fixed before genuine REDs; they are not behavioral evidence.
+
+N7d final SDK48699closed1011091PASS EXACTinherited6/1ignored/0filtered; both
+newcalendarvalidator andupdatedordinarywire relaxed-value/strict-warningcontrol
+explicitlypresentPASS. Clippy25766closed0 89EXACTtitlesmatchN7c. Lint99982closed0,
+pinnedfmt5/fixtureJSONgzipfingerprints/bothdiffpass. Front18207 andProjection45395
+remainfinal: onlySDKcfgtest expectationchangedafterthem, no productionbodychange.
+Allcheckpointjobsclosed; record newremaining3 frontend failures and stillreal6SDK/
+2datatype gaps, native%j/scanner audit andglobalalternate-dispatch work. Coherent
+localDCOcheckpointonly; goal/task4 remainsactive.

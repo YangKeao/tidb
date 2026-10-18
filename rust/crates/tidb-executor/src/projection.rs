@@ -3137,6 +3137,130 @@ mod tests {
         }
     }
     #[test]
+    fn partial_date_go_values_reach_serial_parallel_projection_with_no_zero_in_date() {
+        let integer = longlong();
+        let string = FieldType::new(FieldTypeCode::Varchar)
+            .with_flen(128)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+        let column = || {
+            let mut c = Column::new(1, integer.clone());
+            c.index = 0;
+            Expression::Column(c)
+        };
+        let text =
+            |v: &str| Expression::Constant(Constant::new(Datum::new_string(v), string.clone()));
+        let call = |name: &str, field, args| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let parsed = |field: &FieldType| {
+            call(
+                "str_to_date",
+                field.clone(),
+                vec![
+                    call("if", string.clone(), vec![column(), text("01"), text("0")]),
+                    text("%d"),
+                ],
+            )
+        };
+        let roots = vec![
+            parsed(&string),
+            parsed(&datetime),
+            call("month", integer.clone(), vec![parsed(&datetime)]),
+            call("cast_char", string.clone(), vec![parsed(&datetime)]),
+        ];
+        let fields = vec![
+            string.clone(),
+            datetime.clone(),
+            integer.clone(),
+            string.clone(),
+        ];
+        for no_zero_date in [false, true] {
+            for enabled in [true, false] {
+                let modes = tidb_datatype::DateModes {
+                    no_zero_date,
+                    no_zero_in_date: true,
+                    allow_invalid_dates: false,
+                };
+                let reference = crate::StmtContext::for_query()
+                    .with_date_modes(modes)
+                    .with_enable_vectorized_expression(enabled);
+                let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+                for row in 0..3 {
+                    input.append_int64(0, row);
+                    input.append_int64(1, row * 2);
+                }
+                let mut expected = Chunk::new_with_capacity(&fields, 0);
+                EvaluatorSuite::new(roots.clone(), false)
+                    .run(&reference, &mut input, &mut expected)
+                    .unwrap();
+                for row in 0..3 {
+                    for col in 0..4 {
+                        assert_eq!(expected.get_row(row).is_null(col), no_zero_date);
+                    }
+                    if !no_zero_date {
+                        let day = usize::from(row != 0);
+                        assert_eq!(
+                            expected.get_row(row).get_string(0).as_bytes(),
+                            format!("0000-00-{day:02}").as_bytes()
+                        );
+                        assert_eq!(expected.get_row(row).get_int64(2), 0);
+                        assert_eq!(
+                            expected.get_row(row).get_string(3).as_bytes(),
+                            format!("0000-00-{day:02} 00:00:00.000").as_bytes()
+                        );
+                    }
+                }
+                let warnings = reference.take_warnings();
+                if !no_zero_date {
+                    assert!(warnings.is_empty());
+                }
+                for workers in [0, 2] {
+                    let context = crate::StmtContext::for_query()
+                        .with_date_modes(modes)
+                        .with_enable_vectorized_expression(enabled);
+                    let (source, _) = NumberSource::new(3, 3);
+                    let schema = Schema::new(
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
+                            .collect(),
+                    );
+                    let mut projection = ProjectionExec::new(
+                        ExecutorMeta::new(schema, 1, 3, 1024),
+                        roots.clone(),
+                        source,
+                        context.clone(),
+                    )
+                    .with_workers(workers);
+                    projection.open().unwrap();
+                    let mut actual = projection.new_chunk();
+                    projection.next(&mut actual).unwrap();
+                    assert_eq!(actual.num_rows(), 3);
+                    for row in 0..3 {
+                        for col in 0..4 {
+                            assert_eq!(
+                                actual.get_row(row).is_null(col),
+                                expected.get_row(row).is_null(col)
+                            );
+                            assert_eq!(
+                                actual.column(col).get_raw(row).as_ref(),
+                                expected.column(col).get_raw(row).as_ref()
+                            );
+                        }
+                    }
+                    assert_eq!(context.take_warnings(), warnings);
+                    if workers == 0 {
+                        let route = projection.evaluator_suite.batch_route_snapshot();
+                        assert_eq!((route.refusals, route.fallback), (0, 0));
+                    }
+                    projection.close().unwrap();
+                }
+            }
+        }
+    }
+    #[test]
     fn control_roots_keep_null_arithmetic_demand_in_serial_parallel_projection() {
         let integer = longlong();
         let column = |index: usize| {

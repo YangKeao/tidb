@@ -14283,3 +14283,167 @@ fn native_timestamp_diff_duration_clock_and_decoded_columns_preserve_demand() {
     ];
     compare_typed_profile(root, &schema, &rows, &[0, 1, 2, 0]);
 }
+#[test]
+fn native_str_to_date_partial_calendar_matches_go_typed_values_and_parents() {
+    let go: serde_json::Value = serde_json::from_str(include_str!(
+        "../tikv/testdata/str_to_date_go_partial_calendar_n7d.json"
+    ))
+    .unwrap();
+    let cases: Vec<_> = go["parser"].as_array().unwrap().iter().take(10).collect();
+    let string = string_ty();
+    let schema = [string.clone(), string.clone()];
+    let rows: Vec<_> = cases
+        .iter()
+        .map(|case| {
+            vec![
+                Datum::new_string(case["input"].as_str().unwrap()),
+                Datum::new_string(case["format"].as_str().unwrap()),
+            ]
+        })
+        .collect();
+    let mut results = vec![string.clone(), FieldType::new(FieldTypeCode::Date)];
+    results.extend([0, 3, 6].map(|fsp| FieldType::new(FieldTypeCode::Datetime).with_decimal(fsp)));
+    for result in results {
+        let parsed = call(
+            "str_to_date",
+            result.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        );
+        for parent in
+            0..if result.code() == FieldTypeCode::Date || result.code() == FieldTypeCode::Datetime {
+                3
+            } else {
+                2
+            }
+        {
+            let (root, output_field) = match parent {
+                0 => (parsed.clone(), result.clone()),
+                1 => (
+                    call("cast_char", string.clone(), vec![parsed.clone()]),
+                    string.clone(),
+                ),
+                _ => (call("month", ty(), vec![parsed.clone()]), ty()),
+            };
+            let actual_suite = suite(root.clone());
+            let original_suite = suite(root);
+            for bits in 0..8 {
+                for enabled in [true, false, true, false] {
+                    let actual_ctx = StrToDateSourceContext {
+                        seed: bits,
+                        constant: true,
+                        ..Default::default()
+                    };
+                    actual_ctx.enabled.set(enabled);
+                    let original_ctx = StrToDateSourceContext {
+                        seed: bits,
+                        constant: true,
+                        ..Default::default()
+                    };
+                    original_ctx.enabled.set(enabled);
+                    for selection in [
+                        vec![],
+                        (0..10).collect(),
+                        (0..2050).map(|i| [9, 1, 6, 0, 3][i % 5]).collect(),
+                    ] {
+                        let mut input = chunk(&schema, &rows);
+                        input.set_sel(Some(selection.clone()));
+                        let mut reference_input = chunk(&schema, &rows);
+                        reference_input.set_sel(Some(selection.clone()));
+                        let mut actual = output_for(&output_field);
+                        let mut reference = output_for(&output_field);
+                        let got = actual_suite.run_with_tikv_batch(
+                            &actual_ctx,
+                            &mut input,
+                            &mut actual,
+                            &schema,
+                        );
+                        let old =
+                            original_suite.run(&original_ctx, &mut reference_input, &mut reference);
+                        assert_eq!(got, old);
+                        got.unwrap();
+                        assert_eq!(*actual_ctx.events.borrow(), *original_ctx.events.borrow());
+                        if bits & 1 == 0 {
+                            assert!(actual_ctx
+                                .events
+                                .borrow()
+                                .iter()
+                                .all(|event| !event.starts_with("warn:")));
+                        }
+                        assert_eq!(actual.num_rows(), selection.len());
+                        let mut expected = output_for(&output_field);
+                        for &index in &selection {
+                            let text = cases[index]["text"].as_str().unwrap();
+                            let fields: Vec<u16> =
+                                text.split('-').map(|part| part.parse().unwrap()).collect();
+                            let value = if bits & 1 != 0 {
+                                Datum::Null
+                            } else if parent == 2 {
+                                Datum::Int(i64::from(fields[1]))
+                            } else if parent == 1 {
+                                let suffix = if result.code() == FieldTypeCode::Datetime {
+                                    format!(
+                                        " 00:00:00{}",
+                                        if result.decimal() > 0 {
+                                            format!(".{}", "0".repeat(result.decimal() as usize))
+                                        } else {
+                                            String::new()
+                                        }
+                                    )
+                                } else {
+                                    String::new()
+                                };
+                                Datum::new_string(format!("{text}{suffix}"))
+                            } else if result.code() == FieldTypeCode::Date
+                                || result.code() == FieldTypeCode::Datetime
+                            {
+                                Datum::Time(Time::from_raw_parts(
+                                    tidb_datatype::CoreTime::from_date(
+                                        fields[0],
+                                        fields[1] as u8,
+                                        fields[2] as u8,
+                                        0,
+                                        0,
+                                        0,
+                                        0,
+                                    ),
+                                    if result.code() == FieldTypeCode::Date {
+                                        tidb_datatype::TimeType::Date
+                                    } else {
+                                        tidb_datatype::TimeType::DateTime
+                                    },
+                                    if result.code() == FieldTypeCode::Date {
+                                        0
+                                    } else {
+                                        u8::try_from(result.decimal()).unwrap()
+                                    },
+                                ))
+                            } else {
+                                Datum::new_string(text)
+                            };
+                            expected.append_datum(0, &value);
+                        }
+                        for row in 0..actual.num_rows() {
+                            assert_eq!(
+                                actual.get_row(row).is_null(0),
+                                expected.get_row(row).is_null(0),
+                                "Go calendar bits={bits} result={:?} parent={parent} case={}",
+                                result.code(),
+                                selection[row]
+                            );
+                            assert_eq!(
+                                actual.column(0).get_raw(row).as_ref(),
+                                expected.column(0).get_raw(row).as_ref()
+                            );
+                            assert_eq!(
+                                actual.column(0).get_raw(row).as_ref(),
+                                reference.column(0).get_raw(row).as_ref()
+                            );
+                        }
+                        let route = actual_suite.batch_route_snapshot();
+                        assert_eq!((route.refusals, route.fallback), (0, 0));
+                    }
+                }
+            }
+        }
+    }
+}

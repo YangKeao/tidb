@@ -183,71 +183,156 @@ fn observation(result: &Result<Datum, EvalError>, ctx: &Context) -> String {
         ctx.events.borrow()
     )
 }
+fn frozen_partial_calendar_evidence() -> (
+    Vec<String>,
+    Vec<usize>,
+    Vec<Option<String>>,
+    serde_json::Value,
+) {
+    use std::io::Read;
+    fn fingerprint(data: &[u8]) -> u64 {
+        data.iter().fold(0xcbf29ce484222325, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
+        })
+    }
+    let original = include_bytes!("testdata/str_to_date_original_n7b.json.gz");
+    let oracle = include_bytes!("testdata/str_to_date_go_partial_calendar_n7d.json");
+    assert_eq!(fingerprint(original), 0x11c5df8ddf89f73);
+    assert_eq!(fingerprint(oracle), 0x86209b6ea68469e9);
+    let mut decoded = String::new();
+    flate2::read::GzDecoder::new(original.as_slice())
+        .read_to_string(&mut decoded)
+        .unwrap();
+    let original: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+    assert_eq!(original["historical_hash"], "d7dd9f9ee5b55431");
+    assert_eq!(original["count"], 844344);
+    let dictionary = original["dictionary"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    let indices: Vec<_> = original["indices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as usize)
+        .collect();
+    assert_eq!(indices.len(), 281448);
+    let go: serde_json::Value = serde_json::from_slice(oracle).unwrap();
+    let calendars = original["calendars"].as_array().unwrap();
+    assert_eq!(calendars.len(), 3906);
+    let mut accepted = vec![None; 3906];
+    for answer in go["calendars"].as_array().unwrap() {
+        let pair = answer["pair"].as_u64().unwrap() as usize;
+        assert_eq!(answer["fields"], calendars[pair]["fields"]);
+        assert_eq!(answer["flags"], calendars[pair]["flags"]);
+        assert!(accepted[pair].is_none());
+        accepted[pair] = Some(answer["text"].as_str().unwrap().to_owned());
+    }
+    for (pair, calendar) in calendars.iter().enumerate() {
+        let expected = !calendar.is_null()
+            && calendar["fields"][1] == 0
+            && calendar["fields"][2].as_i64().unwrap() <= 31;
+        assert_eq!(
+            accepted[pair].is_some(),
+            expected,
+            "complete original zero-month calendar domain"
+        );
+    }
+    assert_eq!(accepted.iter().flatten().count(), 168);
+    (dictionary, indices, accepted, go)
+}
 #[test]
-fn original_str_to_date_values_warning_modes_and_target_identity_witness() {
+fn original_str_to_date_recorded_history_and_explicit_go_partial_calendar_deltas() {
+    let (dictionary, indices, accepted, _) = frozen_partial_calendar_evidence();
     let inputs = inputs();
     let formats = formats();
-    let mut hash = 0xcbf29ce484222325;
+    assert_eq!((inputs.len(), formats.len()), (62, 63));
+    let mut historical_hash = 0xcbf29ce484222325u64;
     let mut count = 0;
+    let mut deltas = 0;
     for profile in 0..3 {
         for bits in 0..8 {
             let mut ctx = Context::new(profile != 0, bits);
             for target in targets() {
-                for input in &inputs {
-                    for format in &formats {
+                for (i, input) in inputs.iter().enumerate() {
+                    for (j, format) in formats.iter().enumerate() {
                         if profile == 2 {
                             ctx = Context::new(true, bits)
                         }
                         ctx.reset();
                         let result =
                             eval_str_to_date_in(&ctx, &[input.clone(), format.clone()], target);
-                        let independent_ctx = Context::new(false, bits);
-                        let independent = super::str_to_date::str_to_date_bounded(
-                            &independent_ctx,
-                            &[input.clone(), format.clone()],
-                            target,
-                            64 << 20,
-                        );
-                        assert_eq!(observation(&result,&ctx),observation(&independent,&independent_ctx),"OLD date program vs actual SDK state: input={input:?} format={format:?} target={target:?}");
-                        for byte in observation(&result, &ctx).bytes() {
-                            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                        let actual = observation(&result, &ctx);
+                        let original = &dictionary[indices[count % indices.len()]];
+                        if bits & 1 == 0 && accepted[i * formats.len() + j].is_some() {
+                            let expected = Ok(Datum::new_string(
+                                accepted[i * formats.len() + j].as_ref().unwrap().as_str(),
+                            ));
+                            let expected_ctx = Context::new(false, bits);
+                            expected_ctx.date_modes();
+                            assert_eq!(actual,observation(&expected,&expected_ctx),"Go-validated partial-calendar delta input={input:?} format={format:?} target={target:?} bits={bits}");
+                            assert_ne!(&actual, original);
+                            assert!(original.starts_with("Ok(Null)|"));
+                            deltas += 1;
+                        } else {
+                            assert_eq!(&actual,original,"UNCHANGED original record input={input:?} format={format:?} target={target:?} bits={bits}");
+                        }
+                        // HISTORICAL replay: hash captured OLD observations, never pretend
+                        // the intentionally corrected producer still generates this digest.
+                        for byte in original.bytes() {
+                            historical_hash =
+                                (historical_hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
                         }
                         count += 1;
                     }
                 }
             }
             for target in targets() {
-                for args in [
-                    vec![],
-                    vec![Datum::Null],
-                    vec![Datum::Null, Datum::Null, Datum::Null],
-                ] {
+                for args in [vec![], vec![Datum::Null], vec![Datum::Null; 3]] {
                     ctx.reset();
                     let result = eval_str_to_date_in(&ctx, &args, target);
-                    let independent_ctx = Context::new(false, bits);
-                    let independent = super::str_to_date::str_to_date_bounded(
-                        &independent_ctx,
-                        &args,
-                        target,
-                        64 << 20,
-                    );
-                    assert_eq!(
-                        observation(&result, &ctx),
-                        observation(&independent, &independent_ctx)
-                    );
-
-                    for byte in observation(&result, &ctx).bytes() {
-                        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                    let original = &dictionary[indices[count % indices.len()]];
+                    assert_eq!(&observation(&result, &ctx), original);
+                    for byte in original.bytes() {
+                        historical_hash =
+                            (historical_hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
                     }
                     count += 1;
                 }
             }
         }
     }
-    eprintln!("OLD STR_TO_DATE count={count} hash={hash:016x}");
     assert_eq!(count, 844344);
-    assert_eq!(hash, 0xd7dd9f9ee5b55431);
+    assert_eq!(deltas, 18144);
+    assert_eq!(historical_hash, 0xd7dd9f9ee5b55431);
+    eprintln!("Original844344 d7dd9f9ee5b55431 replayed;826200 unchanged observations and18144 explicit Go-calendar deltas verified");
 }
+#[test]
+fn str_to_date_original_go_parser_partial_and_full_zero_fixtures() {
+    let (_, _, _, go) = frozen_partial_calendar_evidence();
+    for case in go["parser"].as_array().unwrap().iter().take(10) {
+        assert_eq!(case["success"], true);
+        let ctx = Context::new(false, 2); // NO_ZERO_IN_DATE remains on.
+        let result = eval_str_to_date_in(
+            &ctx,
+            &[
+                Datum::new_string(case["input"].as_str().unwrap()),
+                Datum::new_string(case["format"].as_str().unwrap()),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            Datum::new_string(case["text"].as_str().unwrap()),
+            "original Go parser fixture {case}"
+        );
+        assert_eq!(*ctx.events.borrow(), vec!["modes:0:2"]);
+    }
+}
+
 #[test]
 fn str_to_date_actual_value_does_not_lookup_retired_worker() {
     let mut ctx = Context::new(true, 0);
