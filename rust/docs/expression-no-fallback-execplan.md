@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6q0: explicit six MOD/div/DIV row/window catalog identities share the existing SDK frame; two protocol tests retain2050 occurrence Fresh/Reuse, primary errors, cancellation and reuse. Core1068same6, existing-consumer frontend1515same4/95ignored with exactly three pending admission REDs filtered, clippy89 inherited warnings, lint/pinnedformats/diff pass. Three root REDs rerun and still fail the same route assertions; actual source integration remains open and these new tests stay uncommitted until fixed. Receipt evidence/no-fallback-n6q0.md.
+
 - [x] N6p: native frontend MOD/division and integer/Decimal DIV ready-argument adapters retired, with one plain value layer and direct shared SDK calls.51388 exact old-adapter comparisons pass before retirement; independent captured witnesses retained afterward. Full frontend1515same4/95ignored(all151batch), Projection25, five new value/resource/cause checks, lint, pinned format and both diff gates pass. SDK production code unchanged; its guide updated. Native quotient root admission and global fallback retirement remain open. Receipt evidence/no-fallback-n6p.md.
 
 - [x] N6n: canonical native unary signs share11 old RPN value kernels, constant promotion and typed overflow. Exact public result coercion and ENUM/SET integer views preserved; CHAR native qualification stays independent of compiled closure.2176 root comparisons+16 valid SET flag comparisons+63 provider cases,151 batch/full frontend1510same4, SDK1062same6,18 protocol/catalog, Projection25/22roots, lint/clippy89/pinnedformats/diff pass. Signed local TiDB66b3323e/TiKVd6f07d4; receipt evidence/no-fallback-n6n.md. Global retirement remains open.
@@ -1196,3 +1198,32 @@ pass. Both lint runs, pinned seven-file format checks and both diff checks
 pass. SDK/datatype production code unchanged and not rerun. All jobs closed.
 Sign local commits, then continue authentic quotient source/root demand
 integration and remaining global coverage; the overall goal is not complete.
+
+### N6q native quotient source integration (2026-10-18, in progress)
+
+Add independent MOD, / and DIV root regressions over ABS(column0), rows7,MIN,
+to prove the remaining admission/fallback defect before source integration.
+Extend authentic row and whole-argument descriptors through the same SDK
+frame protocol, preserving source types, original quotient domain selection,
+conditional Decimal DIV precision reads and original SQL diagnostic rendering.
+The generic signature mode must not invent the additive-only typed fast probe
+for quotient operators. Native batch eligibility remains a separate immutable
+fact; growing compiled closure does not authorize native CHAR vectorization.
+Whole left and right input phases must remain whole when the original owner
+uses them; row callbacks keep their own NULL/argument demand. Resource/SQL
+errors remain terminal, without a second evaluator or fake ready operands.
+
+
+### N6q0 protocol outcome
+
+The six quotient row/window operation identities and frontend exhaustive enum
+consumer bridge are validated. SDK1068 passes retain exactly the inherited6
+failures/one ignored; two new protocol fixtures pass. Existing-consumer frontend
+1515 passes retain the inherited4 failures/95 ignored with exactly the three
+new pending admission REDs filtered out. Those three tests were separately
+rerun and still show the original refusal1/fallback1. This is protocol-only
+compatibility evidence, not quotient SQL coverage. Clippy89 inherited warnings,
+lint, both pinned formats and both diff checks pass; all jobs closed. Sign the
+self-contained protocol checkpoint, keep the actual root regressions as local
+TDD work, and continue genuine quotient factory/host metadata and value phases.
+Neither the source-integration milestone nor the global goal is complete.

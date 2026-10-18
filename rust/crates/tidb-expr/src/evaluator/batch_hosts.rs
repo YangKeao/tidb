@@ -1908,6 +1908,9 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             SqlBatchHostOperation::AddWindowNative
             | SqlBatchHostOperation::SubtractWindowNative
             | SqlBatchHostOperation::MultiplyWindowNative
+            | SqlBatchHostOperation::ModuloWindowNative
+            | SqlBatchHostOperation::DivideWindowNative
+            | SqlBatchHostOperation::IntegerDivideWindowNative
             | SqlBatchHostOperation::AbsIntWindowNative
             | SqlBatchHostOperation::CastDecimalWindowNative
             | SqlBatchHostOperation::CastJsonWindowNative => {
@@ -1917,7 +1920,10 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             }
             operation @ (SqlBatchHostOperation::AddNative
             | SqlBatchHostOperation::SubtractNative
-            | SqlBatchHostOperation::MultiplyNative) => {
+            | SqlBatchHostOperation::MultiplyNative
+            | SqlBatchHostOperation::ModuloNative
+            | SqlBatchHostOperation::DivideNative
+            | SqlBatchHostOperation::IntegerDivideNative) => {
                 let Some(NativeHostMetadata::Arithmetic {
                     operation: descriptor_operation,
                     batch: None,
