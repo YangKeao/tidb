@@ -7655,6 +7655,147 @@ mod tests {
     }
 
     #[test]
+    fn date_add_actual_domains_presence_and_original_zone_do_not_prepare_ready_programs() {
+        use tidb_datatype::{Datum, Decimal, MySqlDuration};
+        struct Context;
+        impl tidb_expr::Columns for Context {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("legacy row bindings only")
+            }
+            fn date_modes(&self) -> tidb_datatype::DateModes {
+                panic!("legacy parse flags stay fixed")
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                panic!("explicit legacy zone wins")
+            }
+        }
+        let time = tidb_datatype::parse_datetime("2020-01-31", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+        let row = [
+            Datum::Time(time),
+            Datum::new_duration(MySqlDuration::from_raw_parts(0, 6)),
+        ];
+        let explicit = tidb_datatype::SessionTimeZone::Named(chrono_tz::America::Los_Angeles);
+        let mut evaluator = LegacyEvaluator::new(&row, 4, &explicit);
+        evaluator.raw_columns = &Context;
+        for subtract in [false, true] {
+            for date in [
+                DateArithArg::String,
+                DateArithArg::Int,
+                DateArithArg::Real,
+                DateArithArg::Decimal,
+                DateArithArg::Datetime,
+                DateArithArg::Duration,
+            ] {
+                for interval in [
+                    IntervalArg::String,
+                    IntervalArg::Int,
+                    IntervalArg::Real,
+                    IntervalArg::Decimal,
+                ] {
+                    let duration = matches!(date, DateArithArg::Duration);
+                    let left = match date {
+                        DateArithArg::String => SimpleExpr::Bytes(b"2020-01-31".to_vec()),
+                        DateArithArg::Int => SimpleExpr::Int(20200131),
+                        DateArithArg::Real => SimpleExpr::Real(20200131.0),
+                        DateArithArg::Decimal => {
+                            SimpleExpr::Decimal(Decimal::parse_mysql("20200131").0)
+                        }
+                        DateArithArg::Datetime => SimpleExpr::Column(0),
+                        DateArithArg::Duration => SimpleExpr::Column(1),
+                    };
+                    let right = match interval {
+                        IntervalArg::String => SimpleExpr::Bytes(b"1".to_vec()),
+                        IntervalArg::Int => SimpleExpr::Int(1),
+                        IntervalArg::Real => SimpleExpr::Real(1.0),
+                        IntervalArg::Decimal => SimpleExpr::Decimal(Decimal::parse_mysql("1.0").0),
+                    };
+                    let root = SimpleExpr::Func(
+                        SimpleSig::AddSubDate {
+                            subtract,
+                            date,
+                            interval,
+                            datetime_result: false,
+                        },
+                        vec![
+                            left,
+                            right,
+                            SimpleExpr::Bytes(if duration {
+                                b"SECOND".to_vec()
+                            } else {
+                                b"MONTH".to_vec()
+                            }),
+                        ],
+                    );
+                    assert_eq!(evaluator.eval_expr(&root).unwrap(), Some(1));
+                    match date {
+                        DateArithArg::Duration => assert_eq!(
+                            evaluator
+                                .eval_duration(Some(&root))
+                                .unwrap()
+                                .unwrap()
+                                .nanoseconds(),
+                            if subtract {
+                                -1_000_000_000
+                            } else {
+                                1_000_000_000
+                            }
+                        ),
+                        DateArithArg::Datetime => {
+                            let value = evaluator.eval_time(Some(&root)).unwrap().unwrap();
+                            let expected = tidb_datatype::parse_datetime(
+                                if subtract { "2019-12-31" } else { "2020-02-29" },
+                                &chrono_tz::UTC,
+                                true,
+                                false,
+                            )
+                            .unwrap()
+                            .time;
+                            assert_eq!(value.core_time(), expected.core_time());
+                        }
+                        _ => assert!(evaluator
+                            .eval_bytes(Some(&root))
+                            .unwrap()
+                            .unwrap()
+                            .starts_with(if subtract {
+                                b"2019-12-31"
+                            } else {
+                                b"2020-02-29"
+                            })),
+                    }
+                    // eval_expr still binds its existing lane scope; this checks
+                    // actual prepared programs, not that legitimate scope query.
+                    assert_eq!(evaluator.ready_values.prepared_worker_count(), 0);
+                }
+            }
+        }
+        let zero = SimpleExpr::Func(
+            SimpleSig::AddSubDate {
+                subtract: false,
+                date: DateArithArg::Duration,
+                interval: IntervalArg::Int,
+                datetime_result: false,
+            },
+            vec![
+                SimpleExpr::Column(1),
+                SimpleExpr::Int(0),
+                SimpleExpr::Bytes(b"SECOND".to_vec()),
+            ],
+        );
+        assert_eq!(
+            evaluator
+                .eval_duration(Some(&zero))
+                .unwrap()
+                .unwrap()
+                .nanoseconds(),
+            0
+        );
+        assert_eq!(evaluator.eval_expr(&zero).unwrap(), Some(1));
+        assert_eq!(evaluator.ready_values.prepared_worker_count(), 0);
+    }
+
+    #[test]
     fn date_add_follows_mysql_calendar_over_a_column() {
         use tidb_datatype::{Datum, Time, TimeType};
         let time = Time::from_date_checked(2024, 3, 5, 14, 30, 45, 0, TimeType::DateTime, 0)

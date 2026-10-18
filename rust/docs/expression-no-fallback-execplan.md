@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7h: retire legacy DATE_ADD/SUB text/time/duration Ready head/step/parse controllers in favor of actual SDK state, keeping exact requested source channels, folded i128, original explicit zone, generic MyDecimal parse/round/render and separate presence. Capture independent old observations and forbidden Ready REDs before edits, pair old/new before retiring old controller bodies, bound demanded work and validate public/unistore consumers with signed local commits. The broader unistore SimpleExpr walker and its other unsupported source families remain explicit global work; this checkpoint must not claim their canonical source migration.
+
 - [x] N7g: remove ordinary DATE_ADD/SUB calendar, AST-default and typed-duration Ready controllers; preserve composite-amount-first versus duration-date-first demand, exact coercion/rounding, unconditional warnings and late overflow disposition. Capture original observations and source/Ready REDs before production edits, then shared actual-value SDK controller, generic date_add_/date_sub_ source integration, finite work/ownership and full validation with signed local commits. Legacy PB date arithmetic is separate and remains explicit pending work.
 
 - [x] N7f:468099 original58044483da932cf4;467856actual old/new paired+243hash arity boundaries before bounded-staleness Ready caller retirement/wire delegation. Canonical generic sources, both original casts, statement SafeTS, capability/resource/callback/selection closure integrated. Fullfront1644same3/all222batch, SDK1096same1, Projection26/extra mixed group, focus8, clippy89expr/171allEXACTN7e/lint/fmt12/diffs/unchangedSTRfixtureSHA pass. Receipt evidence/no-fallback-n7f.md. Local signed checkpoint only; no push; global retirement remains open.
@@ -2405,3 +2407,76 @@ unchanged original calendar fixture SHA256/lengths pass. No datatype source
 changed or datatype rerun claimed. Receipt `evidence/no-fallback-n7g.md` records
 proof, commands and exact open failures; signed SDK3e94811 is paired with this
 TiDB implementation, without push. Legacy PB arithmetic and the global goal remain pending.
+
+### N7h legacy date arithmetic actual demand and values
+
+
+The remaining `tikv/legacy_date_arithmetic.rs` frontend encodes every original
+requested child channel and runs Ready head/step/zone-bound parse programs.
+Its consumers in `tidb-unistore/src/cophandler.rs` use a legacy SimpleExpr seam;
+this is distinct from ordinary scalar date_add_<unit> and its canonical source
+host introduced by N7g. Do not substitute ordinary scalar semantics for legacy
+folded i128, typed-channel filtering, MyDecimal behavior or presence conditions.
+A new actual SDK continuation must retain demand, zone parsing and arithmetic
+without an expression tree, fake child response or encoded report. It may request
+original source channels from its owner and the original generic MyDecimal
+primitive. The explicit wire adapter must delegate to the same actual controller
+after independent comparison; do not keep a second production algorithm.
+
+Text domains request unit first, then date, then zone-bound parsing before the
+interval. Typed Time/Duration request date first, then unit and interval; zero
+Time still demands both later sources. NULL stops at the actual requested
+source. Folded i128 dates outside i64 become NULL before zone parse; intervals
+retain full i128 display. String SECOND requests MyDecimal parse/render without
+rounding; Decimal non-composite intervals request MyDecimal HalfUp to zero.
+Presence is a distinct SDK output from one execution, not host ToBool. The
+explicit legacy evaluator timezone is authoritative, with parse flags fixed at
+zero; never replace it with statement date modes or a fresh timezone getter.
+
+First freeze public text/time/duration outcomes, raw identity/presence, requested
+channel/index/authority and original callback errors across all date/interval
+metadata, signs, nullable values, units, zones and cache profiles. Reproduce
+prohibited Ready lookup for each entry. Add the actual continuation beside the
+independent original wire controller and temporary native driver beside the
+original public caller; compare every recorded old/new case before retirement.
+Then replace native encoding/Ready calls and wire control bodies, check demanded
+text/decimal formatting/parsing/math/output work before allocation, poison failed
+advances and preserve original callback E without sentinels. Run consumer-level
+unistore date arithmetic tests, full frontend/SDK, clippy/lint/pinned formatting,
+immutable fixtures and exact inherited failure checks before signing locally.
+Global unistore walker/source retirement and its child-free unsupported ids stay
+open; removing this Ready layer is a verifiable step toward that same full goal.
+
+N7h implementation progress: the old public caller at dc69eb6f/3e94811 produced
+1188864/F0099F79736B34C1 (69542) and all3 no-Ready REDs. New actual state/caller
+were kept beside independent old control until98843 matched all1188864. A second
+12-unit matrix (10524) matched another1188864 before its capture-only zero-count
+assertion, yielding1F5BF8B3E75AD934. Both fixed digests are now checked against the
+actual producer after retirement; no new/new pairing is represented as old proof.
+Combined2377728 independent observations cover all20 valid units. Old Ready calls
+and SDK arithmetic/controller bodies are removed; explicit wire adapters preserve
+the original raw date identity bytes at pending parse boundaries.
+
+Focused frontend81306 passes all3; SDK51234 passes all5; unistore98991 passes all4
+original/new consumers, including6 date x4 interval x2 signs and zero-duration
+presence1 with no prepared Ready program. Initial full front1656/core1102 preserve
+exact3/1 failures; clippy89 expression and exact171 all-crate titles, lint76769,
+six whole-file plus one added consumer block under both pinned format parsers,
+diff checks and immutable STR fixtures pass. Unrelated existing unistore format
+hunks were restored, leaving only141 added lines. No batch/executor/datatype
+production changed, so prior Projection/datatype results are prior baselines.
+
+Self-review found a new actual-state affinity gap: Err closed phase254, but a
+caught raw Decimal ASCII-invariant unwind left phase3 awaiting another source.
+68787 reproduces the original invariant panic followed by an incorrectly accepted
+Decimal(None) SQL NULL. All public advances now set liveness false BEFORE running
+and reopen only on Ok, leaving unwind closed without catching or replacing its
+panic. Pure decimal-text access rejects a closed state; its internal accessor
+still works during the active attempt. Final frontend3640 has1656 passes/exact3
+inherited failures/95ignored/all226batch; SDK87869 has1103 passes/exact1 inherited
+failure/1ignored, with the invariant-unwind regression green. Consumer60787 passes
+all4; clippy4787 retains89 expression warnings and exact171 all-crate titles.
+Final pinned source/hunk formatting, both diffs and immutable fixture hashes pass.
+Receipt `evidence/no-fallback-n7h.md` records proof/commands; signed SDKcba2532
+is paired with this implementation without push. Broader unistore walker/source retirement and all
+global gaps remain open.

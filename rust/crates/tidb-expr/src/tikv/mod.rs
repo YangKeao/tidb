@@ -672,3 +672,6 @@ mod bounded_staleness_value_tests;
 
 #[cfg(test)]
 mod date_arithmetic_value_tests;
+
+#[cfg(test)]
+mod legacy_date_arithmetic_value_tests;

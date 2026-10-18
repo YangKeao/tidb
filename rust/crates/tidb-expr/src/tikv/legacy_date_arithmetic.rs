@@ -12,15 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use tidb_datatype::{Decimal, MySqlDuration, SessionTimeZone, Time};
-
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::{
-    evaluate_args_in, evaluate_prepared_args_scoped_in, identity_value, EvaluatedArgs,
-    EvaluatedBytesOp as Op, EvaluatedBytesResult, ExpressionRuntimeFailure, LocalError,
-};
+use super::{ExpressionRuntimeFailure, LocalError};
 use crate::{Columns, Datum, EvalError};
-
+use tidb_datatype::{Decimal, MySqlDuration, SessionTimeZone, Time};
 pub use tidb_query_expr::{
     NativeLegacyDateArithmeticChannel as LegacyDateArithmeticChannel,
     NativeLegacyDateArithmeticDateKind as LegacyDateArithmeticDateKind,
@@ -40,204 +35,6 @@ enum Output {
     Text(Vec<u8>),
     Time(Time),
     Duration(MySqlDuration),
-}
-
-#[derive(Clone, Copy)]
-enum Stage {
-    Head,
-    Step,
-    Parse,
-}
-
-fn child_bytes(
-    channel: LegacyDateArithmeticChannel,
-    value: LegacyDateArithmeticValue,
-) -> Result<Option<Vec<u8>>, EvalError> {
-    use LegacyDateArithmeticChannel as C;
-    use LegacyDateArithmeticValue as V;
-    match (channel, value) {
-        (C::Bytes, V::Bytes(value)) => Ok(value),
-        (C::FoldedInt, V::Int(value)) => Ok(value.map(|value| value.to_le_bytes().to_vec())),
-        (C::Real, V::Real(value)) => Ok(value.map(|value| value.to_le_bytes().to_vec())),
-        (C::Decimal, V::Decimal(value)) => value.map_or(Ok(None), |value| {
-            identity_value::encode(&Datum::Decimal(value))
-        }),
-        (C::Time, V::Time(value)) => value.map_or(Ok(None), |value| {
-            identity_value::encode(&Datum::Time(value))
-        }),
-        (C::Duration, V::Duration(value)) => value.map_or(Ok(None), |value| {
-            identity_value::encode(&Datum::new_duration(value))
-        }),
-        _ => Err(invalid_report()),
-    }
-}
-
-fn drive<E: From<EvalError>>(
-    computed: EvaluatedBytesResult,
-    selected: &dyn Columns,
-    entry: Entry,
-    zone: &SessionTimeZone,
-    eval: &mut impl FnMut(
-        usize,
-        LegacyDateArithmeticChannel,
-        &dyn Columns,
-    ) -> Result<LegacyDateArithmeticValue, E>,
-) -> Result<(Output, i128), E> {
-    use tidb_query_expr::NativeLegacyDateArithmeticOutcome as O;
-    use LegacyDateArithmeticChannel as C;
-    let mut state = computed
-        .into_bytes()
-        .map_err(E::from)?
-        .ok_or_else(|| E::from(invalid_report()))?;
-    let mut stage = Stage::Head;
-    loop {
-        let report = tidb_query_expr::decode_native_legacy_date_arithmetic_result(&state)
-            .ok_or_else(|| E::from(invalid_report()))?;
-        let allowed = match stage {
-            Stage::Head => match (entry, &report.outcome) {
-                (
-                    Entry::Text,
-                    O::Request {
-                        index: 2,
-                        channel: C::Bytes,
-                        ..
-                    },
-                )
-                | (
-                    Entry::Time,
-                    O::Request {
-                        index: 0,
-                        channel: C::Time,
-                        ..
-                    },
-                )
-                | (
-                    Entry::Duration,
-                    O::Request {
-                        index: 0,
-                        channel: C::Duration,
-                        ..
-                    },
-                ) => true,
-                _ => false,
-            },
-            Stage::Parse => matches!(&report.outcome, O::Null | O::Request { index: 1, .. }),
-            Stage::Step => true,
-        };
-        if !allowed {
-            return Err(E::from(invalid_report()));
-        }
-        let (operation, next_stage, actual) = match (report.outcome, report.presence) {
-            (O::Null, Some(presence @ 0)) => return Ok((Output::Null, presence)),
-            (O::Text(value), Some(presence @ 1)) if matches!(entry, Entry::Text) => {
-                return Ok((Output::Text(value.to_vec()), presence));
-            }
-            (O::Time(value), Some(presence @ 1)) if matches!(entry, Entry::Time) => {
-                let value = identity_value::decode(Some(value.to_vec())).map_err(E::from)?;
-                let Datum::Time(value) = value else {
-                    return Err(E::from(invalid_report()));
-                };
-                return Ok((Output::Time(value), presence));
-            }
-            (O::Duration(value), Some(presence @ 1)) if matches!(entry, Entry::Duration) => {
-                let value = identity_value::decode(Some(value.to_vec())).map_err(E::from)?;
-                let Datum::Duration(value) = value else {
-                    return Err(E::from(invalid_report()));
-                };
-                return Ok((Output::Duration(value), presence));
-            }
-            (O::Request { index, channel, .. }, None) => {
-                if index > 2 || (index == 2 && !matches!(channel, C::Bytes)) {
-                    return Err(E::from(invalid_report()));
-                }
-                // The head's pack guard covers this original-E callback. The
-                // child receives the same authority, with all other Columns
-                // observations still forwarded to the original caller.
-                let value = eval(index, channel, selected)?;
-                let actual = child_bytes(channel, value).map_err(E::from)?;
-                (Op::LegacyDateArithmeticStepNative, Stage::Step, actual)
-            }
-            (O::Parse { .. }, None) if matches!(entry, Entry::Text) => {
-                state = evaluate_args_in(
-                    Op::LegacyDateArithmeticParseNative,
-                    selected,
-                    || {
-                        Ok(EvaluatedArgs::TemporalText {
-                            value: state,
-                            modes: 0,
-                            // This is the legacy evaluator's actual zone, not a
-                            // new statement getter or an EvalContext default.
-                            zone: zone.clone(),
-                        })
-                    },
-                    |computed| computed.into_bytes()?.ok_or_else(invalid_report),
-                )
-                .map_err(E::from)?;
-                stage = Stage::Parse;
-                continue;
-            }
-            (
-                O::DecimalText {
-                    round_to_zero,
-                    text,
-                    ..
-                },
-                None,
-            ) => {
-                let (mut decimal, _) = tidb_datatype::MyDecimal::from_string(text.as_ref());
-                if round_to_zero {
-                    decimal.round_in_place(0, tidb_datatype::RoundMode::HalfUp);
-                }
-                (
-                    Op::LegacyDateArithmeticStepNative,
-                    Stage::Step,
-                    Some(decimal.to_string_bytes()),
-                )
-            }
-            _ => return Err(E::from(invalid_report())),
-        };
-        state = evaluate_args_in(
-            operation,
-            selected,
-            || Ok(EvaluatedArgs::Bytes2(Some(state), actual)),
-            |computed| computed.into_bytes()?.ok_or_else(invalid_report),
-        )
-        .map_err(E::from)?;
-        stage = next_stage;
-    }
-}
-
-fn evaluate<E: From<EvalError>>(
-    ctx: &dyn Columns,
-    entry: Entry,
-    metadata: LegacyDateArithmeticMetadata,
-    zone: &SessionTimeZone,
-    mut eval: impl FnMut(
-        usize,
-        LegacyDateArithmeticChannel,
-        &dyn Columns,
-    ) -> Result<LegacyDateArithmeticValue, E>,
-) -> Result<(Output, i128), E> {
-    evaluate_prepared_args_scoped_in(
-        ctx,
-        || {
-            let operation = match entry {
-                Entry::Text => Op::LegacyDateArithmeticTextHeadNative,
-                Entry::Time => Op::LegacyDateArithmeticTimeHeadNative,
-                Entry::Duration => Op::LegacyDateArithmeticDurationHeadNative,
-            };
-            let metadata = tidb_query_expr::encode_native_legacy_date_arithmetic_metadata(metadata)
-                .map_err(frame_error)?;
-            Ok((operation, EvaluatedArgs::Bytes(Some(metadata))))
-        },
-        |computed, selected| {
-            // The selected owner and pack guard remain live after the head worker
-            // is released. An original callback E remains an E, never a sentinel
-            // EvalError; its unwind is still covered by that outer guard.
-            Ok(drive(computed, selected, entry, zone, &mut eval))
-        },
-    )
-    .map_err(E::from)?
 }
 
 /// Runs the legacy text-returning signature and its SDK presence projection.
@@ -326,16 +123,211 @@ fn invalid_report() -> EvalError {
     ))
 }
 
-fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
+fn actual_error(error: tidb_query_expr::NativeLegacyDateArithmeticValueError) -> EvalError {
     match error {
-        tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
-        tidb_query_expr::NativeIdentityFrameError::Capacity => {
+        tidb_query_expr::NativeLegacyDateArithmeticValueError::InvalidResponse => invalid_report(),
+        tidb_query_expr::NativeLegacyDateArithmeticValueError::ResourceLimit => {
             EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit(
-                    "native legacy date arithmetic frame allocation or size failed".into(),
+                    "native legacy date arithmetic actual work allowance exceeded".into(),
                 ),
                 None,
             ))
         }
+    }
+}
+fn evaluate_values<E: From<EvalError>>(
+    ctx: &dyn Columns,
+    entry: Entry,
+    metadata: LegacyDateArithmeticMetadata,
+    zone: &SessionTimeZone,
+    mut eval: impl FnMut(
+        usize,
+        LegacyDateArithmeticChannel,
+        &dyn Columns,
+    ) -> Result<LegacyDateArithmeticValue, E>,
+    maximum: usize,
+) -> Result<(Output, i128), E> {
+    use tidb_query_expr::{
+        NativeLegacyDateArithmeticInput as Input, NativeLegacyDateArithmeticValue as Value,
+        NativeLegacyDateArithmeticValueStep as Step, NativeLegacyDateArithmeticValues as State,
+    };
+    let valid = match entry {
+        Entry::Text => !matches!(
+            metadata.date,
+            LegacyDateArithmeticDateKind::Datetime | LegacyDateArithmeticDateKind::Duration
+        ),
+        Entry::Time => metadata.date == LegacyDateArithmeticDateKind::Datetime,
+        Entry::Duration => metadata.date == LegacyDateArithmeticDateKind::Duration,
+    };
+    if !valid {
+        return Err(E::from(invalid_report()));
+    }
+    let mut state = State::new(metadata, maximum).map_err(|e| E::from(actual_error(e)))?;
+    let mut step = state.begin().map_err(|e| E::from(actual_error(e)))?;
+    loop {
+        step = match step {
+            Step::Source { index, channel } => {
+                // The source owner alone evaluates this exact original channel;
+                // no alternate evaluator or report program runs in this layer.
+                let value = eval(index, channel, ctx)?;
+                let input = match &value {
+                    LegacyDateArithmeticValue::Bytes(v) => Input::Bytes(v.as_deref()),
+                    LegacyDateArithmeticValue::Int(v) => Input::FoldedInt(*v),
+                    LegacyDateArithmeticValue::Real(v) => Input::Real(*v),
+                    LegacyDateArithmeticValue::Decimal(v) => {
+                        Input::Decimal(v.as_ref().map(Decimal::as_shared_parse))
+                    }
+                    LegacyDateArithmeticValue::Time(v) => Input::Time(v.map(|v| {
+                        tidb_query_datatype::codec::mysql::time::NativeTemporalValue {
+                            raw: v.core_time().raw(),
+                            kind: v.kind(),
+                            fsp: v.fsp(),
+                        }
+                    })),
+                    LegacyDateArithmeticValue::Duration(v) => {
+                        Input::Duration(v.map(|v| (v.nanoseconds(), v.fsp())))
+                    }
+                };
+                state
+                    .resume_source(input)
+                    .map_err(|e| E::from(actual_error(e)))?
+            }
+            Step::ParseDate => state
+                .parse_date(zone)
+                .map_err(|e| E::from(actual_error(e)))?,
+            Step::DecimalText { .. } => state
+                .finish_decimal()
+                .map_err(|e| E::from(actual_error(e)))?,
+            Step::Ready { value, presence } => {
+                let value = match value {
+                    Value::Null => Output::Null,
+                    Value::Text(v) => Output::Text(v),
+                    Value::Time(v) => Output::Time(Time::from_raw_parts(
+                        tidb_datatype::CoreTime::from_raw(v.raw),
+                        v.kind,
+                        v.fsp,
+                    )),
+                    Value::Duration { nanos, fsp } => {
+                        Output::Duration(MySqlDuration::from_raw_parts(nanos, fsp))
+                    }
+                };
+                return Ok((value, presence));
+            }
+        };
+    }
+}
+
+fn evaluate<E: From<EvalError>>(
+    ctx: &dyn Columns,
+    entry: Entry,
+    metadata: LegacyDateArithmeticMetadata,
+    zone: &SessionTimeZone,
+    eval: impl FnMut(
+        usize,
+        LegacyDateArithmeticChannel,
+        &dyn Columns,
+    ) -> Result<LegacyDateArithmeticValue, E>,
+) -> Result<(Output, i128), E> {
+    evaluate_values(
+        ctx,
+        entry,
+        metadata,
+        zone,
+        eval,
+        super::control_value::default_budget(),
+    )
+}
+
+#[cfg(test)]
+mod actual_tests {
+    use super::*;
+    use std::cell::RefCell;
+    #[derive(Debug)]
+    enum Error {
+        Eval(EvalError),
+        Child(usize),
+    }
+    impl From<EvalError> for Error {
+        fn from(e: EvalError) -> Self {
+            Self::Eval(e)
+        }
+    }
+    struct Context;
+    impl Columns for Context {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no fabricated sources")
+        }
+        fn ready_value_cache(&self) -> Option<&super::super::ReadyValueCache> {
+            panic!("no Ready lookup")
+        }
+    }
+    #[test]
+    fn legacy_date_arithmetic_resource_contract_and_callback_error_remain_terminal() {
+        let meta = LegacyDateArithmeticMetadata {
+            date: LegacyDateArithmeticDateKind::String,
+            interval: LegacyDateArithmeticIntervalKind::Int,
+            subtract: false,
+        };
+        let read = RefCell::new(vec![]);
+        let value = evaluate_values::<Error>(
+            &Context,
+            Entry::Text,
+            meta,
+            &SessionTimeZone::utc(),
+            |index, _, _| {
+                read.borrow_mut().push(index);
+                Ok(match index {
+                    2 => LegacyDateArithmeticValue::Bytes(Some(b"DAY".to_vec())),
+                    0 => LegacyDateArithmeticValue::Bytes(Some(b"2020-01-31".to_vec())),
+                    _ => panic!("interval must not run after parse work refusal"),
+                })
+            },
+            2048,
+        );
+        assert!(matches!(
+            value,
+            Err(Error::Eval(EvalError::ExpressionRuntimeFailure(_)))
+        ));
+        assert_eq!(*read.borrow(), [2, 0]);
+        read.borrow_mut().clear();
+        let value = evaluate_values::<Error>(
+            &Context,
+            Entry::Text,
+            meta,
+            &SessionTimeZone::utc(),
+            |index, _, _| {
+                read.borrow_mut().push(index);
+                Err(Error::Child(index))
+            },
+            0,
+        );
+        assert!(matches!(value, Err(Error::Child(2))));
+        assert_eq!(*read.borrow(), [2]);
+        let value = evaluate_values::<Error>(
+            &Context,
+            Entry::Text,
+            meta,
+            &SessionTimeZone::utc(),
+            |_, _, _| Ok(LegacyDateArithmeticValue::Bytes(None)),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(value, (Output::Null, 0)));
+        let wrong = LegacyDateArithmeticMetadata {
+            date: LegacyDateArithmeticDateKind::Duration,
+            ..meta
+        };
+        assert!(matches!(
+            evaluate_values::<Error>(
+                &Context,
+                Entry::Text,
+                wrong,
+                &SessionTimeZone::utc(),
+                |_, _, _| panic!("invalid domain must not read sources"),
+                8192
+            ),
+            Err(Error::Eval(EvalError::ExpressionAdapterFailure(_)))
+        ));
     }
 }
