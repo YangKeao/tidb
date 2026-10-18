@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6k: typed final-output ownership now shares actual native batch eligibility, preserves output position/prefix/aliases, and checks retained/copy/conversion ownership before further demand. CONCAT late-error publication RED fixed. Eight-carrier tests exposed Duration rounding; a dedicated native transport constructor preserves full nanoseconds at all three frontend import seams while SQL constructors remain unchanged.305 native comparisons, resource/empty/reuse guards, full frontend1496same4/95ignored(137batch), core1058same6/1ignored(14window), datatype564same2(parent563same2 proven in isolated checkout), ProductionProjection25 extended eight-root matrix, lint/scopedclippy89warnings/pinnedfmt/diff pass. SDK local20f6608; receipt rust/docs/evidence/no-fallback-n6k.md. Operand/source coverage and global retirement remain open.
+
 - [x] N6j: every native-value-closed control/comparison root selects its genuine row program, independent of PLUS/MINUS/MUL descendants. Original EQ(ABS(...),ABS(...)) error-order/identity regression was RED before the fix.648 new root and96 SQL comparisons pass; full frontend1491same4/95ignored including132batch, ProductionProjection25 extended seven-root control matrix, lint/pinnedfmt/diff pass. SDK unchangedcff06c7. Receipt rust/docs/evidence/no-fallback-n6j.md. Typed outputs, other source domains and global retirement remain open.
 
 - [x] N6i: shared native static candidate fact and native-value row-root publication independent of function spelling/view label. Original RealABS and non-call budget regressions reproduced before final fixes. Full frontend1489same4/95ignored,130batch,122root+48SQL comparisons, ProductionProjection25 (extended five-root matrix), lint/pinnedfmt/diff pass. SDK unchangedcff06c7. Receipt rust/docs/evidence/no-fallback-n6i.md. Typed output/operand domains and global retirement remain open.
@@ -951,3 +953,38 @@ retains exactly the inherited four failures/95ignored, and all required gates
 for this frontend-only change pass. No SDK code changed and all build handles
 are terminal. Sign the local checkpoint and continue typed output publication
 and ordinary operand/source coverage; do not mark the overall goal complete.
+
+### N6k typed final-output ownership (2026-10-18)
+
+The actual CONCAT(CAST_CHAR(ABS(column)),"x") comparison reproduced a successful
+prefix before a later error, while native eligible batch output remained empty.
+Its children already use native row demand; the root publishes a typed Bytes
+carrier, so the native-value Output-role staging predicate excluded it.
+Generalize publication eligibility using the same static native candidate fact,
+then capture typed carriers in one private single-column Chunk using the
+existing output materializer. Check layout, retained owners and conservative
+copy/conversion allowance before copying; measure actual buffer capacities
+before further demand. Final range append must preserve preexisting output,
+column alias/COW behavior and output position. Global row mode keeps streaming
+and non-call leaf roots keep their original broadcast/row policy. All errors
+remain terminal; there is no second expression evaluator or delayed conversion
+after publication begins. SDK code does not need to change.
+
+
+### N6k verified outcome (2026-10-18)
+
+Typed batch output is captured by the existing materializer in a private
+one-column owner and appended to the actual destination only after all windows
+and conversions succeed. Existing-output aliases/prefixes and row error
+prefixes match native. Shape and budget errors remain terminal. The capture
+accounts actual retained buffers plus an explicit wrapper/copy allowance;
+it does not claim a hard allocator peak.
+
+The cross-carrier RED also proved an existing12ns Duration transport loss.
+Native raw parts now preserve all signed nanoseconds while validating FSP;
+SQL from_nanos still rounds. Datatype's two unchanged panic assertions were
+reproduced at clean parent cff06c7, not merely presumed inherited. Frontend,
+core and datatype full suites remain non-green with exact known failure lists.
+All required scoped gates and305 new native comparisons pass. No build jobs
+remain. Sign the local checkpoint and continue ordinary typed operand demand,
+value bridges, dynamic sources and other callers; the goal is not complete.

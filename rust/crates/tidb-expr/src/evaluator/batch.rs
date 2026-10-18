@@ -942,7 +942,7 @@ fn strict_literal(value: &Datum, sql: &FieldType) -> Result<ScalarValue> {
             ScalarValue::DateTime(Some(TikvDateTime::from_go_raw_like_go(value.go_raw()))),
         ),
         (NativeEvalType::Duration, Datum::Null) => Ok(ScalarValue::Duration(None)),
-        (NativeEvalType::Duration, Datum::Duration(value)) => TikvDuration::from_nanos(
+        (NativeEvalType::Duration, Datum::Duration(value)) => TikvDuration::from_native_raw_parts(
             value.nanoseconds(),
             i8::try_from(value.fsp())
                 .map_err(|_| BatchFailure::admission("batch Duration FSP is out of range"))?,
@@ -2663,6 +2663,37 @@ struct PendingNativeOutput {
     payload_bytes: usize,
 }
 
+// A private, unaliased one-column owner. Only the existing typed materializer
+// writes it; no expression work occurs here. Keep actual buffer capacities and
+// an opaque column-slot/header allowance, not Go's public struct-size constant.
+struct PendingTypedOutput {
+    chunk: Chunk,
+}
+impl PendingTypedOutput {
+    fn header_bytes() -> usize {
+        size_of::<Chunk>() + 2 * size_of::<tidb_chunk::ColumnHandle>()
+    }
+    fn initial_bytes(field: &FieldType) -> LocalResult<usize> {
+        Self::header_bytes()
+            .checked_add(usize::try_from(get_fixed_len(field)).unwrap_or(size_of::<i64>()))
+            .ok_or_else(|| resource("pending typed header size overflow"))
+    }
+    fn retained_bytes(&self) -> LocalResult<usize> {
+        let column = self.chunk.column(0);
+        Self::header_bytes()
+            .checked_add(column.data_capacity())
+            .and_then(|bytes| bytes.checked_add(column.null_bitmap_capacity()))
+            .and_then(|bytes| {
+                column
+                    .offset_capacity()
+                    .checked_mul(size_of::<i64>())
+                    .and_then(|offsets| bytes.checked_add(offsets))
+            })
+            .and_then(|bytes| bytes.checked_add(usize::try_from(column.type_size()).unwrap_or(0)))
+            .ok_or_else(|| resource("pending typed retained size overflow"))
+    }
+}
+
 pub(crate) struct PreparedBatch {
     defer_batch_publication: bool,
     fast_profile: Option<decimal_fast_source::PreparedFast>,
@@ -2812,11 +2843,10 @@ impl PreparedBatch {
         let window_size = program.max_batch_size();
         Ok(Self {
             // Eligibility selects the native publication boundary, while the
-            // compiled program independently selects operand demand. A native
-            // value row root may carry either RootValue or BulkRoot metadata;
-            // neither its spelling nor that annotation changes batch atomicity.
+            // compiled program independently selects operand demand. Both
+            // typed carriers and native-value capabilities need the same native
+            // publication boundary when their root is not already whole.
             defer_batch_publication: promote
-                && source.nodes[0].view.value_role() == Some(NativeValueRole::Output)
                 && !program.requires_whole_selection()
                 && crate::scalar_function::static_batch_target(root).is_some(),
             fast_profile,
@@ -3055,18 +3085,8 @@ impl PreparedBatch {
         Ok(())
     }
 
-    fn write_output(
-        &self,
-        values: VectorValue,
-        selection: &[usize],
-        output: &mut Chunk,
-        output_index: usize,
-    ) -> Result<()> {
-        let expected = batch_eval_type(self.source.nodes[0].sql.eval_type());
-        if values.eval_type() != expected || values.len() != selection.len() {
-            return Err(binding("batch result shape differs from computed boundary").into());
-        }
-        let carrier_bytes = match &values {
+    fn typed_carrier_bytes(values: &VectorValue) -> LocalResult<usize> {
+        let carrier_bytes = match values {
             VectorValue::Int(ints) => array_bytes::<i64>(ints.capacity())?.checked_add(
                 ints.get_bit_vec()
                     .retained_heap_bytes()
@@ -3110,6 +3130,65 @@ impl PreparedBatch {
             VectorValue::Enum(_) | VectorValue::Set(_) => None,
         }
         .ok_or_else(|| resource("batch carrier retained size overflow"))?;
+        Ok(carrier_bytes)
+    }
+
+    fn capture_typed_output(
+        &self,
+        values: VectorValue,
+        selection: &[usize],
+        pending: &mut PendingTypedOutput,
+    ) -> Result<()> {
+        // Preserve shape/error priority before any copy or resource-based refusal.
+        let expected = batch_eval_type(self.source.nodes[0].sql.eval_type());
+        if values.eval_type() != expected || values.len() != selection.len() {
+            return Err(binding("batch result shape differs from computed boundary").into());
+        }
+        let carrier = Self::typed_carrier_bytes(&values)?;
+        let count = values.len();
+        let width = usize::try_from(get_fixed_len(&self.source.nodes[0].sql)).unwrap_or(0);
+        // Two encoded layouts plus two carrier payloads cover known conversion
+        // scratch and the pending destination. Post-copy capacities are checked
+        // separately; this is not a hard allocator-peak guarantee.
+        let layouts = width
+            .checked_add(size_of::<i64>() + 1)
+            .and_then(|per_row| per_row.checked_mul(count))
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or_else(|| resource("pending typed copy layout overflow"))?;
+        let before = pending
+            .retained_bytes()?
+            .checked_add(array_bytes::<usize>(self.selection.capacity())?)
+            .and_then(|bytes| bytes.checked_add(carrier))
+            .and_then(|bytes| {
+                carrier
+                    .checked_mul(2)
+                    .and_then(|copy| bytes.checked_add(copy))
+            })
+            .and_then(|bytes| bytes.checked_add(layouts))
+            .ok_or_else(|| resource("pending typed copy allowance overflow"))?;
+        self.accept_retained(before)?;
+        self.write_output(values, selection, &mut pending.chunk, 0)?;
+        self.accept_retained(
+            pending
+                .retained_bytes()?
+                .checked_add(array_bytes::<usize>(self.selection.capacity())?)
+                .ok_or_else(|| resource("pending typed/selection size overflow"))?,
+        )?;
+        Ok(())
+    }
+
+    fn write_output(
+        &self,
+        values: VectorValue,
+        selection: &[usize],
+        output: &mut Chunk,
+        output_index: usize,
+    ) -> Result<()> {
+        let expected = batch_eval_type(self.source.nodes[0].sql.eval_type());
+        if values.eval_type() != expected || values.len() != selection.len() {
+            return Err(binding("batch result shape differs from computed boundary").into());
+        }
+        let carrier_bytes = Self::typed_carrier_bytes(&values)?;
         let source_bytes = carrier_bytes
             .checked_add(array_bytes::<usize>(self.selection.capacity())?)
             .ok_or_else(|| resource("batch source/selection retained size overflow"))?;
@@ -3526,7 +3605,7 @@ impl NativeDatumSource for NativeChunk<'_> {
                     } else {
                         let value = column.get_duration(row, fsp);
                         Some(
-                            TikvDuration::from_nanos(
+                            TikvDuration::from_native_raw_parts(
                                 value.nanoseconds(),
                                 i8::try_from(value.fsp())
                                     .map_err(|_| binding("batch Duration FSP is out of range"))?,
@@ -3684,7 +3763,7 @@ impl LocalRuntimeServices for CheckedInputs<'_> {
             TikvEvalType::Duration => match value {
                 Datum::Null => ScalarValue::Duration(None),
                 Datum::Duration(value) => ScalarValue::Duration(Some(
-                    TikvDuration::from_nanos(
+                    TikvDuration::from_native_raw_parts(
                         value.nanoseconds(),
                         i8::try_from(value.fsp())
                             .map_err(|_| binding("batch Duration FSP is out of range"))?,
@@ -3846,8 +3925,6 @@ impl PreparedBatch {
         row_domain: bool,
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
-        let mut pending =
-            (!row_domain && self.defer_batch_publication).then(PendingNativeOutput::default);
         let use_row = row_domain && self.row_profile.is_some();
         let source = Arc::clone(if use_row {
             &self
@@ -3868,6 +3945,28 @@ impl PreparedBatch {
             self.program.requires_whole_selection()
         };
         let window_size = if row_domain { 1 } else { self.window_size };
+        let defer = !row_domain && self.defer_batch_publication;
+        let native_output = source.nodes[0].view.value_role() == Some(NativeValueRole::Output);
+        let mut pending = (defer && native_output).then(PendingNativeOutput::default);
+        let mut typed_pending = if defer && !native_output && !self.selection.is_empty() {
+            self.accept_retained(
+                PendingTypedOutput::initial_bytes(&source.nodes[0].sql)?
+                    .checked_add(array_bytes::<usize>(self.selection.capacity())?)
+                    .ok_or_else(|| resource("pending typed initialization size overflow"))?,
+            )?;
+            let pending = PendingTypedOutput {
+                chunk: Chunk::new_empty(std::slice::from_ref(&source.nodes[0].sql)),
+            };
+            self.accept_retained(
+                pending
+                    .retained_bytes()?
+                    .checked_add(array_bytes::<usize>(self.selection.capacity())?)
+                    .ok_or_else(|| resource("pending typed initial owner size overflow"))?,
+            )?;
+            Some(pending)
+        } else {
+            None
+        };
         let native_values = if source.needs_native_values {
             Some(RefCell::new(NativeValueStore::new(
                 self.max_materialization_retained_bytes,
@@ -3884,11 +3983,10 @@ impl PreparedBatch {
             )
             .with_native_values(native_values.as_ref())
         });
-        // TiKV deliberately bounds one driver invocation. A TiDB Chunk may be
-        // wider than that boundary, so keep one canonical prepared route and
-        // stream it through consecutive whole-selection windows. Every window
-        // uses the same sealed program and preserves occurrence order, repeats,
-        // NULLs and failure propagation without entering another evaluator.
+        // Explicit whole programs receive the complete selection. Other
+        // programs use bounded driver windows in the same canonical route;
+        // eligible batch results are staged across those windows. No error
+        // selects a different evaluator or retries an expression.
         let mut start = 0;
         while start < self.selection.len() {
             let end = if whole {
@@ -3954,10 +4052,22 @@ impl PreparedBatch {
                         .ok_or_else(|| binding("native output has no store"))?,
                     pending.as_mut(),
                 )?;
+            } else if let Some(pending) = typed_pending.as_mut() {
+                self.capture_typed_output(values, selection, pending)?;
             } else {
                 self.write_output(values, selection, output, self.source.output_index)?;
             }
             start = end;
+        }
+        if let Some(pending) = typed_pending {
+            let rows = pending.chunk.num_rows();
+            if rows != self.selection.len()
+                || pending.chunk.column(0).type_size()
+                    != output.column(self.source.output_index).type_size()
+            {
+                return Err(binding("pending typed output layout/length changed").into());
+            }
+            output.append_column_range_from(self.source.output_index, &pending.chunk, 0, 0, rows);
         }
         if let Some(pending) = pending {
             for value in &pending.values {

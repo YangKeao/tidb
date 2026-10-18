@@ -2488,7 +2488,33 @@ mod tests {
                 ],
             )],
         ));
-        let fields = vec![integer.clone(), decimal.clone(), json, real, decimal];
+        let string = FieldType::new(FieldTypeCode::Varchar)
+            .with_flen(128)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        roots.push(call("any_value", integer.clone(), vec![column(0)]));
+        roots.push(call("pi", real.clone(), vec![]));
+        roots.push(call(
+            "concat",
+            string.clone(),
+            vec![
+                call(
+                    "cast_char",
+                    string.clone(),
+                    vec![call("abs", integer.clone(), vec![column(0)])],
+                ),
+                Expression::Constant(Constant::new(Datum::new_string("x"), string.clone())),
+            ],
+        ));
+        let fields = vec![
+            integer.clone(),
+            decimal.clone(),
+            json,
+            real.clone(),
+            decimal,
+            integer.clone(),
+            real,
+            string,
+        ];
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

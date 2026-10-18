@@ -8871,3 +8871,343 @@ fn native_closed_controls_without_arithmetic_keep_row_demand_and_error_identity(
         }
     }
 }
+
+fn compare_typed_profile(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    for enabled in [true, false, true, false] {
+        let actual_ctx = ArithmeticProfilesContext::default();
+        let reference_ctx = ArithmeticProfilesContext::default();
+        actual_ctx.enabled.set(enabled);
+        reference_ctx.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        let mut reference_input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        reference_input.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected_output = output_for(&field);
+        let actual = actual_suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, schema);
+        let expected =
+            reference_suite.run(&reference_ctx, &mut reference_input, &mut expected_output);
+        assert_eq!(actual, expected, "flag={enabled}, selection={selection:?}");
+        assert_eq!(actual_ctx.trace.take(), reference_ctx.trace.take());
+        assert_eq!(
+            output.num_rows(),
+            expected_output.num_rows(),
+            "flag={enabled}"
+        );
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(row).is_null(0),
+                expected_output.get_row(row).is_null(0)
+            );
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected_output.column(0).get_raw(row).as_ref()
+            );
+        }
+        let route = actual_suite.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+    }
+}
+#[test]
+fn typed_concat_output_is_published_only_after_eligible_batch_succeeds() {
+    let root = call(
+        "concat",
+        string_ty(),
+        vec![
+            call("cast_char", string_ty(), vec![abs(column(0))]),
+            text(Some(b"x")),
+        ],
+    );
+    let schema = vec![ty()];
+    let rows = vec![vec![Datum::Int(1)], vec![Datum::Int(i64::MIN)]];
+    compare_typed_profile(root, &schema, &rows, &[0, 1]);
+}
+
+#[test]
+fn typed_pending_outputs_keep_all_carriers_and_native_null_layouts() {
+    let time =
+        tidb_datatype::parse_datetime("2026-10-17 12:34:56.123456", &chrono_tz::UTC, true, false)
+            .unwrap()
+            .time;
+    let cases = [
+        (ty(), Datum::Int(-17)),
+        (ty().with_unsigned(true), Datum::UInt(u64::MAX)),
+        (real_ty(), Datum::Real(-0.0)),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(4),
+            Datum::Decimal(Decimal::from_literal("-1.2300")),
+        ),
+        (string_ty(), Datum::new_string("A\0ß")),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            Datum::Time(time),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            Datum::Duration(MySqlDuration::from_nanoseconds(-123456789012, 6).unwrap()),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            Datum::Json(BinaryJSON::parse("{\"a\":[1,null]}").unwrap()),
+        ),
+        (
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![-0.0, 1.25])),
+        ),
+    ];
+    for (field, value) in cases {
+        let roots = [
+            call("any_value", field.clone(), vec![typed_column(0, &field)]),
+            call(
+                "any_value",
+                field.clone(),
+                vec![literal(value.clone(), field.clone())],
+            ),
+        ];
+        let rows = vec![vec![value.clone()], vec![Datum::Null], vec![value]];
+        for selection in [
+            vec![],
+            vec![0],
+            vec![2, 1, 2],
+            (0..2050).map(|row| [2, 1, 2][row % 3]).collect(),
+        ] {
+            for root in &roots {
+                compare_typed_profile(
+                    root.clone(),
+                    std::slice::from_ref(&field),
+                    &rows,
+                    &selection,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_concat_pending_success_and_errors_preserve_output_aliases_and_prefix() {
+    let field = string_ty();
+    let root = call(
+        "concat",
+        field.clone(),
+        vec![
+            call("cast_char", field.clone(), vec![abs(column(0))]),
+            text(Some(b"x")),
+        ],
+    );
+    let owner = suite(root.clone());
+    let reference = suite(root);
+    let schema = vec![ty()];
+    let rows = vec![
+        vec![Datum::Int(1)],
+        vec![Datum::Int(i64::MIN)],
+        vec![Datum::Int(2)],
+    ];
+    for enabled in [true, false, true, false] {
+        for selection in [vec![], vec![0, 2, 0], vec![0, 1]] {
+            let ctx = ArithmeticProfilesContext::default();
+            let reference_ctx = ArithmeticProfilesContext::default();
+            ctx.enabled.set(enabled);
+            reference_ctx.enabled.set(enabled);
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(selection.clone()));
+            let mut reference_input = chunk(&schema, &rows);
+            reference_input.set_sel(Some(selection));
+            let mut output = output_for(&field);
+            let mut expected = output_for(&field);
+            output.append_datum(0, &Datum::new_string("seed"));
+            expected.append_datum(0, &Datum::new_string("seed"));
+            let mut alias = output_for(&field);
+            let mut reference_alias = output_for(&field);
+            alias.make_ref_to(0, &mut output, 0).unwrap();
+            reference_alias.make_ref_to(0, &mut expected, 0).unwrap();
+            let actual = owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema);
+            let native = reference.run(&reference_ctx, &mut reference_input, &mut expected);
+            assert_eq!(actual, native);
+            assert_eq!(ctx.trace.take(), reference_ctx.trace.take());
+            assert!(output.columns_share_identity(0, &alias, 0));
+            assert_eq!(alias.num_rows(), reference_alias.num_rows());
+            for row in 0..alias.num_rows() {
+                assert_eq!(
+                    alias.column(0).get_raw(row).as_ref(),
+                    reference_alias.column(0).get_raw(row).as_ref()
+                );
+            }
+            assert_eq!(output.num_rows(), expected.num_rows());
+            let routes = owner.batch_route_snapshot();
+            assert_eq!((routes.fallback, routes.refusals), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn typed_pending_materialization_budget_is_terminal_and_reusable() {
+    let field = string_ty();
+    let suffix = vec![b'x'; 1024];
+    let root = call(
+        "concat",
+        field.clone(),
+        vec![
+            call("cast_char", field.clone(), vec![abs(column(0))]),
+            text(Some(&suffix)),
+        ],
+    );
+    let owner = suite(root);
+    let schema = vec![ty()];
+    let mut prepared = PreparedBatchSuite::compile(
+        &owner,
+        &schema,
+        true,
+        994,
+        limits(),
+        ExecutionLimits::default(),
+        32 * 1024,
+    )
+    .unwrap();
+    let ctx = ArithmeticProfilesContext::default();
+    ctx.enabled.set(true);
+    let mut input = chunk(&schema, &[vec![Datum::Int(1)]]);
+    input.set_sel(Some(vec![0; 2050]));
+    let mut output = output_for(&field);
+    output.append_datum(0, &Datum::new_string("seed"));
+    let error = prepared
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(output.num_rows(), 1);
+    assert_eq!(values_for(&output, &field), vec![Datum::new_string("seed")]);
+    assert!(prepared.workers[0].windows > 0);
+    assert_eq!(
+        ctx.trace
+            .borrow()
+            .iter()
+            .filter(|event| event.as_str() == "enable")
+            .count(),
+        1
+    );
+    prepared.workers[0].max_materialization_retained_bytes = 8 << 20;
+    ctx.trace.borrow_mut().clear();
+    prepared
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(output.num_rows(), 2051);
+    assert_eq!(output.column(0).get_raw(1).len(), 1025);
+    assert_eq!(
+        ctx.trace
+            .borrow()
+            .iter()
+            .filter(|event| event.as_str() == "enable")
+            .count(),
+        1
+    );
+    // Generic empty input has no result owner, even under a zero runtime
+    // materialization budget; the native per-output getter still occurs.
+    let mut empty = PreparedBatchSuite::compile(
+        &owner,
+        &schema,
+        true,
+        995,
+        limits(),
+        ExecutionLimits::default(),
+        0,
+    )
+    .unwrap();
+    let mut input = chunk(&schema, &[]);
+    let mut output = output_for(&field);
+    ctx.trace.borrow_mut().clear();
+    empty
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(output.num_rows(), 0);
+    assert_eq!(ctx.trace.take(), vec!["enable"]);
+}
+
+#[test]
+fn typed_duration_single_binding_import_preserves_full_native_nanoseconds() {
+    let field = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let owner = suite(call(
+        "any_value",
+        field.clone(),
+        vec![typed_column(0, &field)],
+    ));
+    let schema = vec![field.clone()];
+    let rows: Vec<_> = [-123_456_789_012, 123_456_789_012, i64::MIN, i64::MAX]
+        .into_iter()
+        .map(|nanos| vec![Datum::Duration(MySqlDuration::from_raw_parts(nanos, 6))])
+        .collect();
+    let mut worker = prepare(&owner, &schema);
+    let mut source = Raw::new(&worker, rows.clone());
+    let mut input = chunk(&schema, &rows);
+    input.set_sel(Some(vec![1, 0, 1, 3, 2]));
+    let mut output = output_for(&field);
+    run_provider(
+        &owner,
+        &mut worker,
+        &mut EvalContext::default(),
+        &mut input,
+        &mut output,
+        &schema,
+        &mut source,
+    )
+    .unwrap();
+    let mut reference_input = chunk(&schema, &rows);
+    reference_input.set_sel(Some(vec![1, 0, 1, 3, 2]));
+    let mut expected = output_for(&field);
+    owner
+        .run(&Context::new(true), &mut reference_input, &mut expected)
+        .unwrap();
+    assert_eq!(output.num_rows(), expected.num_rows());
+    for row in 0..output.num_rows() {
+        assert_eq!(
+            output.column(0).get_raw(row).as_ref(),
+            expected.column(0).get_raw(row).as_ref()
+        );
+    }
+    assert_eq!(
+        source.reads,
+        [1, 0, 1, 3, 2]
+            .into_iter()
+            .enumerate()
+            .map(|(occurrence, input_row)| (
+                0,
+                InputRow {
+                    occurrence,
+                    input_row
+                }
+            ))
+            .collect::<Vec<_>>()
+    );
+}
