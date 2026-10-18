@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6n: canonical native unary signs share11 old RPN value kernels, constant promotion and typed overflow. Exact public result coercion and ENUM/SET integer views preserved; CHAR native qualification stays independent of compiled closure.2176 root comparisons+16 valid SET flag comparisons+63 provider cases,151 batch/full frontend1510same4, SDK1062same6,18 protocol/catalog, Projection25/22roots, lint/clippy89/pinnedformats/diff pass. Signed local TiDB66b3323e/TiKVd6f07d4; receipt evidence/no-fallback-n6n.md. Global retirement remains open.
+- [x] N6o: shared quotient value kernels and borrowed Decimal DIV computed outcomes. Core1066same6/frontend1510same4, four new direct expected tests and original wrapper tables, scoped clippy89 inherited warnings, lint, pinned format and both diff checks pass. Source integration remains next.
+
 - [x] N6k: typed final-output ownership now shares actual native batch eligibility, preserves output position/prefix/aliases, and checks retained/copy/conversion ownership before further demand. CONCAT late-error publication RED fixed. Eight-carrier tests exposed Duration rounding; a dedicated native transport constructor preserves full nanoseconds at all three frontend import seams while SQL constructors remain unchanged.305 native comparisons, resource/empty/reuse guards, full frontend1496same4/95ignored(137batch), core1058same6/1ignored(14window), datatype564same2(parent563same2 proven in isolated checkout), ProductionProjection25 extended eight-root matrix, lint/scopedclippy89warnings/pinnedfmt/diff pass. SDK local20f6608; receipt rust/docs/evidence/no-fallback-n6k.md. Operand/source coverage and global retirement remain open.
 
 - [x] N6j: every native-value-closed control/comparison root selects its genuine row program, independent of PLUS/MINUS/MUL descendants. Original EQ(ABS(...),ABS(...)) error-order/identity regression was RED before the fix.648 new root and96 SQL comparisons pass; full frontend1491same4/95ignored including132batch, ProductionProjection25 extended seven-root control matrix, lint/pinnedfmt/diff pass. SDK unchangedcff06c7. Receipt rust/docs/evidence/no-fallback-n6j.md. Typed outputs, other source domains and global retirement remain open.
@@ -1129,3 +1132,29 @@ tests pass. SDK source stayed unchanged after1062 passes/exact inherited6 and
 clippy89 inherited warnings. Frontend Projection25, make lint, pinned format and diff gates pass again
 after the generic boundary correction. See evidence/no-fallback-n6n.md.
 The overall goal remains active.
+
+### N6o quotient value kernels (2026-10-18, in progress)
+
+Before admitting MOD, / and DIV to native source programs, expose the original
+SDK arithmetic as value-only entries shared by existing RPN workers. Keep all
+four integer signedness policies, full-f64 outcomes, Decimal '/' disposition,
+and Decimal DIV's separately demanded probe/fallback precision reads. The
+borrowed Decimal DIV entry returns only its computed owned warning and outcome;
+its existing wire adapter handles frame validation and report encoding. Do not
+make the native source provider encode ready-child expressions or run another
+RPN program. This preparatory checkpoint does not admit new SQL roots yet.
+Validate independent boundary expectations and existing wrapper tables, exact
+inherited full-suite failures, scoped clippy, frontend consumers and format.
+
+
+N6o direct value validation now passes: SDK1066 tests with exactly the six
+inherited failures/one ignored, frontend1510 with exactly the four inherited
+failures/95 ignored. Lists mechanically match N6n. The initial added DIV test
+used a malformed scale4 raw coefficient; corrected to actual1.0000/3.0000
+without relaxing warning/demand assertions. Four direct value tests and the
+original quotient recipe tests pass. Preserve the existing wire adapter's
+wrong-kind frame rejection before borrowed core dispatch. SDK source changes
+are limited to kernel extraction and adapters; no new frontend roots are
+admitted. Final scoped clippy passes with89 inherited warnings; make lint, pinned SDK
+format and both diff checks pass. All jobs are closed before signing local
+commits and continuing source integration. The global goal remains active.
