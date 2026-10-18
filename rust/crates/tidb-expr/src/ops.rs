@@ -544,158 +544,60 @@ pub(crate) fn prepare_native_null_safe_comparison(
     )
 }
 
-fn comparison_into_evaluated(
-    value: comparison::PreparedComparison,
-) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
-    use comparison::PreparedComparison as Value;
-    match value {
-        Value::Null => comparison_null_args(),
-        Value::Integer(op, left, right) => prepare_comparison_int(op, left, right),
-        Value::Decimal(op, left, right) => (
-            Op::CompareDecimalNative(op),
-            EvaluatedArgs::Decimal2 {
-                left: Some(left),
-                right: Some(right),
-            },
-        ),
-        Value::Real(op, left, right) => prepare_comparison_real(op, left, right),
-        Value::Bytes(op, left, right, collation) => (
-            Op::CompareBytesNative(op),
-            EvaluatedArgs::CollatedBytes2 {
-                left: Some(left),
-                right: Some(right),
-                collation,
-            },
-        ),
-        Value::Json(op, left, right) => (
-            Op::CompareJsonNative(op),
-            EvaluatedArgs::Bytes2(Some(left), Some(right)),
-        ),
-        Value::Vector(op, left, right) => (
-            Op::CompareVectorNative(op),
-            EvaluatedArgs::NativeVector2(Some(left), Some(right)),
-        ),
-        Value::Time(op, left, right) => (
-            Op::CompareTimeCoreNative(op),
-            EvaluatedArgs::TimeCoreBits2(Some(left), Some(right)),
-        ),
-        Value::Duration(op, left, right) => (
-            Op::CompareDurationNative(op),
-            EvaluatedArgs::Int2(Some(left), Some(right)),
-        ),
-    }
+/// Publish only an actual computed predicate and retain its original SDK error.
+fn comparison_value_result(
+    value: tidb_query_expr::local::LocalResult<Option<i64>>,
+) -> Result<Datum, EvalError> {
+    value
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(|error| {
+            EvalError::ExpressionRuntimeFailure(
+                crate::tikv::ExpressionRuntimeFailure::from_local_eval(error, None),
+            )
+        })
 }
 
-fn comparison_null_args() -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
-    (
-        crate::tikv::EvaluatedBytesOp::CompareNullNative,
-        crate::tikv::EvaluatedArgs::NullWitness(None),
-    )
-}
-
-fn prepare_comparison_int(
-    op: tidb_query_expr::ComparisonOp,
-    left: Integer,
-    right: Integer,
-) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
-    let operation = match (left, right) {
-        (Integer::Signed(_), Integer::Signed(_)) => Op::CompareIntSsNative(op),
-        (Integer::Signed(_), Integer::Unsigned(_)) => Op::CompareIntSuNative(op),
-        (Integer::Unsigned(_), Integer::Signed(_)) => Op::CompareIntUsNative(op),
-        (Integer::Unsigned(_), Integer::Unsigned(_)) => Op::CompareIntUuNative(op),
-    };
-    (
-        operation,
-        EvaluatedArgs::Int2(
-            Some(integer_bits(left) as i64),
-            Some(integer_bits(right) as i64),
-        ),
-    )
-}
-
-fn prepare_comparison_decimal(
-    op: tidb_query_expr::ComparisonOp,
-    left: &Decimal,
-    right: &Decimal,
-) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
-    Ok((
-        crate::tikv::EvaluatedBytesOp::CompareDecimalNative(op),
-        crate::tikv::EvaluatedArgs::Decimal2 {
-            left: Some(crate::tikv::prepare_math_decimal(left)?),
-            right: Some(crate::tikv::prepare_math_decimal(right)?),
-        },
-    ))
-}
-
-fn prepare_comparison_real(
-    op: tidb_query_expr::ComparisonOp,
-    left: f64,
-    right: f64,
-) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
-    (
-        crate::tikv::EvaluatedBytesOp::CompareRealNative(op),
-        crate::tikv::EvaluatedArgs::Ieee754Bits2 {
-            left: crate::tikv::ReadyIeee754Arg::Value(Some(left.to_bits())),
-            right: crate::tikv::ReadyIeee754Arg::Value(Some(right.to_bits())),
-        },
-    )
-}
-
-/// Compare actual integer operands; signedness selects a recipe, never an answer.
+/// Compare actual integer operands using the original signedness policy.
 pub(crate) fn eval_comparison_int_in(
     op: BinaryOp,
     left: Integer,
     right: Integer,
-    ctx: &dyn crate::context::Columns,
+    _ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            let op =
-                comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
-            Ok(prepare_comparison_int(op, left, right))
-        },
-        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    let op = comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+    comparison_value_result(
+        comparison::prepare_int(op, left, right)
+            .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes),
     )
 }
 
-/// The fallible decimal bridge is preparation under the caller's scope guard.
+/// Preserve the original fallible Decimal representation bridge before compute.
 pub(crate) fn eval_comparison_decimal_in(
     op: BinaryOp,
     left: &Decimal,
     right: &Decimal,
-    ctx: &dyn crate::context::Columns,
+    _ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            let op =
-                comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
-            prepare_comparison_decimal(op, left, right)
-        },
-        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    let op = comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+    comparison_value_result(
+        comparison::prepare_decimal(op, left, right)?
+            .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes),
     )
 }
 
 /// An actual input or coercion NULL, without fabricating an undemanded operand.
 pub(crate) fn eval_comparison_null_in(
     op: BinaryOp,
-    ctx: &dyn crate::context::Columns,
+    _ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
-            Ok(comparison_null_args())
-        },
-        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
+    comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+    comparison_value_result(
+        comparison::PreparedComparison::Null
+            .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes),
     )
 }
 
-/// Preserve native comparison domain selection and coercion demand, while the
-/// shared worker alone computes the selected predicate's boolean result.
+/// Preserve native domain selection/coercion, then compute its actual predicate.
 pub(crate) fn eval_comparison_values_in(
     op: BinaryOp,
     l: Datum,
@@ -704,31 +606,10 @@ pub(crate) fn eval_comparison_values_in(
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            let op =
-                comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
-            prepare_comparison(op, l, r, collation, operands, ctx)
-        },
-        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
-    )
-}
-
-/// NULL-safe equality composes existing presence/equality workers. Only the
-/// duration-column/constant-text signature normalizes a failed conversion to
-/// false; the legacy Time/text NULL result deliberately remains NULL.
-pub(crate) fn eval_null_safe_eq_values_in(
-    l: Datum,
-    r: Datum,
-    collation: tidb_datatype::Collation,
-    operands: Operands<'_>,
-    ctx: &dyn crate::context::Columns,
-) -> Result<Datum, EvalError> {
-    let mut duration_text = false;
-    let computed = crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || match comparison::prepare_null_safe(
+    let op = comparison_operation(op).ok_or(EvalError::Unsupported("comparison operator"))?;
+    comparison_value_result(
+        comparison::prepare(
+            op,
             l,
             r,
             collation,
@@ -737,50 +618,33 @@ pub(crate) fn eval_null_safe_eq_values_in(
                 rhs: operands.rhs,
             },
             ctx,
-        )? {
-            comparison::PreparedNullSafeComparison::Presence(other) => Ok((
-                crate::tikv::EvaluatedBytesOp::IsNull,
-                crate::tikv::EvaluatedArgs::Int(other),
-            )),
-            comparison::PreparedNullSafeComparison::Comparison {
-                value,
-                normalize_duration,
-            } => {
-                duration_text = normalize_duration;
-                Ok(comparison_into_evaluated(value))
-            }
-        },
-        crate::tikv::EvaluatedBytesResult::into_boolean_datum,
-    )?;
-    if duration_text {
-        // The input is the actual computed Eq value (including its genuine
-        // conversion NULL), not a host-precomputed NULL-safe answer.
-        crate::eval_boolean_ready_in(crate::BooleanFunction::IsTrue, truthy_of(&computed)?, ctx)
-    } else {
-        Ok(computed)
-    }
+        )?
+        .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes),
+    )
 }
 
-fn prepare_comparison(
-    op: tidb_query_expr::ComparisonOp,
+/// Duration-column/constant-text still normalizes failed equality to false;
+/// the original Time/text conversion NULL remains NULL.
+pub(crate) fn eval_null_safe_eq_values_in(
     l: Datum,
     r: Datum,
     collation: tidb_datatype::Collation,
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
-) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
-    comparison::prepare(
-        op,
-        l,
-        r,
-        collation,
-        ComparisonOperands {
-            lhs: operands.lhs,
-            rhs: operands.rhs,
-        },
-        ctx,
+) -> Result<Datum, EvalError> {
+    comparison_value_result(
+        comparison::prepare_null_safe(
+            l,
+            r,
+            collation,
+            ComparisonOperands {
+                lhs: operands.lhs,
+                rhs: operands.rhs,
+            },
+            ctx,
+        )?
+        .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes),
     )
-    .map(comparison_into_evaluated)
 }
 
 pub(crate) fn eval_binary_full(

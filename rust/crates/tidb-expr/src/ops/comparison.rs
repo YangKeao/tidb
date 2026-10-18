@@ -442,10 +442,22 @@ mod tests {
     };
 
     #[derive(Default)]
-    struct Context(RefCell<Vec<(u16, String)>>);
+    struct Context(
+        RefCell<Vec<(u16, String)>>,
+        Option<crate::ErrorLevel>,
+        RefCell<Vec<&'static str>>,
+    );
     impl crate::Columns for Context {
         fn get(&self, _: &[String]) -> Option<Datum> {
             None
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.2.borrow_mut().push("truncate_level");
+            self.1.unwrap_or(crate::ErrorLevel::Warn)
+        }
+        fn div_precision_increment(&self) -> u32 {
+            self.2.borrow_mut().push("precision");
+            4
         }
         fn append_warning(&self, code: u16, text: &str) {
             self.0.borrow_mut().push((code, text.to_owned()));
@@ -467,8 +479,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn prepared_values_and_owned_facts_match_original_comparison_domains_and_warnings() {
+    fn comparison_fixtures() -> Vec<(Datum, FieldType)> {
         let integer = FieldType::new(FieldTypeCode::LongLong);
         let string = FieldType::new(FieldTypeCode::VarString);
         let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
@@ -484,7 +495,7 @@ mod tests {
         nonfinite_vector
             .elements_mut()
             .copy_from_slice(&[f32::NAN, f32::INFINITY]);
-        let fixtures = [
+        let mut fixtures = vec![
             (Datum::Null, integer.clone()),
             (Datum::Int(-1), integer.clone()),
             (Datum::Int(-1), integer.clone().with_unsigned(true)),
@@ -527,22 +538,154 @@ mod tests {
             (Datum::MinNotNull, integer.clone()),
             (Datum::Raw(b"1".to_vec()), string),
         ];
-        for op in [
-            ComparisonOp::Eq,
-            ComparisonOp::Ne,
-            ComparisonOp::Lt,
-            ComparisonOp::Le,
-            ComparisonOp::Gt,
-            ComparisonOp::Ge,
+        fixtures.extend([
+            (Datum::Real(f64::MAX), FieldType::new(FieldTypeCode::Double)),
+            (Datum::Real(-0.0), FieldType::new(FieldTypeCode::Double)),
+            (
+                Datum::Decimal(Decimal::from_literal("-1.2300")),
+                FieldType::new(FieldTypeCode::NewDecimal),
+            ),
+            (Datum::UInt(0), integer.clone().with_unsigned(true)),
+            (
+                Datum::new_string("A"),
+                FieldType::new(FieldTypeCode::VarString),
+            ),
+            (
+                Datum::new_string("a"),
+                FieldType::new(FieldTypeCode::VarString),
+            ),
+            (
+                Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0xff; 8])),
+                FieldType::new(FieldTypeCode::VarString),
+            ),
+            (
+                Datum::Enum(tidb_datatype::MysqlEnum::new("b", 2), Collation::GbkBin),
+                FieldType::new(FieldTypeCode::Enum),
+            ),
+            (
+                Datum::Set(tidb_datatype::MysqlSet::new("a,b", 3), Collation::GbkBin),
+                FieldType::new(FieldTypeCode::Set),
+            ),
+        ]);
+        fixtures
+    }
+    // Captured from independently active old argument-program callers before
+    // retirement (185,274 cases). Reproduce with the N6s baseline patch at
+    // TiDB7e76f620/SDK6a36ba0; never regenerate constants from the new callers.
+    fn comparison_witness(hash: &mut u64, result: &Result<Datum, EvalError>, ctx: &Context) {
+        for byte in format!("{result:?}|{:?}|{:?}\n", ctx.0.borrow(), ctx.2.borrow()).bytes() {
+            *hash = (*hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+    #[test]
+    fn comparison_callers_match_original_recipe_witness() {
+        let fixtures = comparison_fixtures();
+        let mut hash = 0xcbf29ce484222325;
+        let mut cases = 0;
+        for level in [
+            crate::ErrorLevel::Warn,
+            crate::ErrorLevel::Error,
+            crate::ErrorLevel::Ignore,
         ] {
-            let binary = match op {
-                ComparisonOp::Eq => BinaryOp::Eq,
-                ComparisonOp::Ne => BinaryOp::Ne,
-                ComparisonOp::Lt => BinaryOp::Lt,
-                ComparisonOp::Le => BinaryOp::Le,
-                ComparisonOp::Gt => BinaryOp::Gt,
-                ComparisonOp::Ge => BinaryOp::Ge,
-            };
+            for op in [
+                ComparisonOp::Eq,
+                ComparisonOp::Ne,
+                ComparisonOp::Lt,
+                ComparisonOp::Le,
+                ComparisonOp::Gt,
+                ComparisonOp::Ge,
+            ] {
+                let binary = match op {
+                    ComparisonOp::Eq => BinaryOp::Eq,
+                    ComparisonOp::Ne => BinaryOp::Ne,
+                    ComparisonOp::Lt => BinaryOp::Lt,
+                    ComparisonOp::Le => BinaryOp::Le,
+                    ComparisonOp::Gt => BinaryOp::Gt,
+                    ComparisonOp::Ge => BinaryOp::Ge,
+                };
+                for collation in [
+                    Collation::Binary,
+                    Collation::Utf8Mb4GeneralCi,
+                    Collation::GbkBin,
+                ] {
+                    for (left, left_type) in &fixtures {
+                        for (right, right_type) in &fixtures {
+                            for (lc, rc) in
+                                [(false, false), (false, true), (true, false), (true, true)]
+                            {
+                                let original =
+                                    Context(Default::default(), Some(level), Default::default());
+                                let unified =
+                                    Context(Default::default(), Some(level), Default::default());
+                                let lhs = expression(left, left_type, lc);
+                                let rhs = expression(right, right_type, rc);
+                                let expected = eval_comparison_values_in(
+                                    binary,
+                                    left.clone(),
+                                    right.clone(),
+                                    collation,
+                                    Operands::of(&lhs, &rhs),
+                                    &original,
+                                );
+                                comparison_witness(&mut hash, &expected, &original);
+                                cases += 1;
+                                let prepared = prepare(
+                                    op,
+                                    left.clone(),
+                                    right.clone(),
+                                    collation,
+                                    ComparisonOperands {
+                                        lhs: facts(left_type, lc),
+                                        rhs: facts(right_type, rc),
+                                    },
+                                    &unified,
+                                );
+                                match prepared {
+                                    Err(error) => assert_eq!(
+                                        expected.unwrap_err(),
+                                        error,
+                                        "{op:?} {left:?} {right:?}"
+                                    ),
+                                    Ok(prepared) => {
+                                        let actual = prepared
+                                            .compute(1024 * 1024)
+                                            .unwrap()
+                                            .map_or(Datum::Null, Datum::Int);
+                                        assert_eq!(
+                                            expected.unwrap(),
+                                            actual,
+                                            "{op:?} {left:?} {right:?}"
+                                        );
+                                    }
+                                }
+                                assert_eq!(*original.2.borrow(), *unified.2.borrow());
+                                assert_eq!(
+                                    *original.0.borrow(),
+                                    *unified.0.borrow(),
+                                    "{op:?} {left:?} {right:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 157464);
+        assert_eq!(
+            hash, 0x4e3678354b488fcd,
+            "original comparison result/context witness"
+        );
+    }
+    #[test]
+    fn null_safe_comparison_matches_original_recipe_witness() {
+        let fixtures = comparison_fixtures();
+        let mut hash = 0xcbf29ce484222325;
+        let mut cases = 0;
+        for level in [
+            crate::ErrorLevel::Warn,
+            crate::ErrorLevel::Error,
+            crate::ErrorLevel::Ignore,
+        ] {
             for collation in [
                 Collation::Binary,
                 Collation::Utf8Mb4GeneralCi,
@@ -552,20 +695,20 @@ mod tests {
                     for (right, right_type) in &fixtures {
                         for (lc, rc) in [(false, false), (false, true), (true, false), (true, true)]
                         {
-                            let original = Context::default();
-                            let unified = Context::default();
+                            let original =
+                                Context(Default::default(), Some(level), Default::default());
+                            let unified =
+                                Context(Default::default(), Some(level), Default::default());
                             let lhs = expression(left, left_type, lc);
                             let rhs = expression(right, right_type, rc);
-                            let expected = eval_comparison_values_in(
-                                binary,
+                            let expected = eval_null_safe_eq_values_in(
                                 left.clone(),
                                 right.clone(),
                                 collation,
                                 Operands::of(&lhs, &rhs),
                                 &original,
                             );
-                            let prepared = prepare(
-                                op,
+                            let actual = prepare_null_safe(
                                 left.clone(),
                                 right.clone(),
                                 collation,
@@ -574,36 +717,190 @@ mod tests {
                                     rhs: facts(right_type, rc),
                                 },
                                 &unified,
-                            );
-                            match prepared {
-                                Err(error) => assert_eq!(
-                                    expected.unwrap_err(),
-                                    error,
-                                    "{op:?} {left:?} {right:?}"
-                                ),
-                                Ok(prepared) => {
-                                    let actual = prepared
-                                        .compute(1024 * 1024)
-                                        .unwrap()
-                                        .map_or(Datum::Null, Datum::Int);
-                                    assert_eq!(
-                                        expected.unwrap(),
-                                        actual,
-                                        "{op:?} {left:?} {right:?}"
-                                    );
-                                }
-                            }
-                            assert_eq!(
-                                *original.0.borrow(),
-                                *unified.0.borrow(),
-                                "{op:?} {left:?} {right:?}"
-                            );
+                            )
+                            .and_then(|value| {
+                                value.compute(1024 * 1024).map_err(arithmetic::kernel_error)
+                            })
+                            .map(|value| value.map_or(Datum::Null, Datum::Int));
+                            assert_eq!(actual, expected, "nullsafe {collation:?} {left:?} {right:?} constants={lc}/{rc} level={level:?}");
+                            assert_eq!(*original.0.borrow(), *unified.0.borrow());
+                            assert_eq!(*original.2.borrow(), *unified.2.borrow());
+                            comparison_witness(&mut hash, &expected, &original);
+                            cases += 1;
                         }
                     }
                 }
             }
         }
+        assert_eq!(cases, 26244);
+        assert_eq!(
+            hash, 0x93bb0d8b5b45573b,
+            "original NULL-safe comparison result/context witness"
+        );
     }
+
+    #[test]
+    fn typed_comparison_entries_match_original_recipe_witness() {
+        let mut hash = 0xcbf29ce484222325;
+        let mut cases = 0;
+        let bits = [0, 1, -1, i64::MIN, i64::MAX, 2, -2];
+        let decimals = [
+            "0",
+            "-0.0000",
+            "1",
+            "-1.2300",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "1.000000000000000000000000000000000001",
+            "99999999999999999999999999999999999999999999999999999999999999999",
+        ];
+        for (op, binary) in [
+            (ComparisonOp::Eq, BinaryOp::Eq),
+            (ComparisonOp::Ne, BinaryOp::Ne),
+            (ComparisonOp::Lt, BinaryOp::Lt),
+            (ComparisonOp::Le, BinaryOp::Le),
+            (ComparisonOp::Gt, BinaryOp::Gt),
+            (ComparisonOp::Ge, BinaryOp::Ge),
+        ] {
+            for lu in [false, true] {
+                for ru in [false, true] {
+                    for left in bits {
+                        for right in bits {
+                            let a = if lu {
+                                Integer::Unsigned(left as u64)
+                            } else {
+                                Integer::Signed(left)
+                            };
+                            let b = if ru {
+                                Integer::Unsigned(right as u64)
+                            } else {
+                                Integer::Signed(right)
+                            };
+                            let original = Context::default();
+                            let expected = eval_comparison_int_in(binary, a, b, &original);
+                            let actual = prepare_int(op, a, b)
+                                .compute(1024 * 1024)
+                                .map_err(arithmetic::kernel_error)
+                                .map(|value| value.map_or(Datum::Null, Datum::Int));
+                            assert_eq!(actual, expected);
+                            comparison_witness(&mut hash, &expected, &original);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+            for left in decimals {
+                for right in decimals {
+                    let a = Decimal::from_literal(left);
+                    let b = Decimal::from_literal(right);
+                    let original = Context::default();
+                    let expected = eval_comparison_decimal_in(binary, &a, &b, &original);
+                    let actual = prepare_decimal(op, &a, &b)
+                        .and_then(|value| {
+                            value.compute(1024 * 1024).map_err(arithmetic::kernel_error)
+                        })
+                        .map(|value| value.map_or(Datum::Null, Datum::Int));
+                    assert_eq!(actual, expected);
+                    comparison_witness(&mut hash, &expected, &original);
+                    cases += 1;
+                }
+            }
+            let original = Context::default();
+            let expected = eval_comparison_null_in(binary, &original);
+            assert_eq!(expected, Ok(Datum::Null));
+            comparison_witness(&mut hash, &expected, &original);
+            cases += 1;
+        }
+        assert_eq!(cases, 1566);
+        assert_eq!(
+            hash, 0x3d32f94b793fd8a9,
+            "original typed comparison result/context witness"
+        );
+    }
+
+    #[test]
+    fn direct_comparison_publication_keeps_zero_work_decimal_and_terminal_failures() {
+        use crate::tikv::ExpressionRuntimeFailureClass as Class;
+        let decimal = Decimal::from_literal("123456789012345678901234567890.0001");
+        for (op, equal) in [
+            (ComparisonOp::Eq, 1),
+            (ComparisonOp::Ne, 0),
+            (ComparisonOp::Lt, 0),
+            (ComparisonOp::Le, 1),
+            (ComparisonOp::Gt, 0),
+            (ComparisonOp::Ge, 1),
+        ] {
+            // Grow Ord borrows the actual words without scratch allocation;
+            // a zero work allowance must not invent arithmetic-buffer charges.
+            assert_eq!(
+                comparison_value_result(
+                    prepare_decimal(op, &decimal, &decimal).unwrap().compute(0)
+                ),
+                Ok(Datum::Int(equal))
+            );
+            // Deliberately corrupt only the SDK transport to obtain a genuine
+            // kernel failure, then move that original error into publication.
+            let error = PreparedComparison::Json(op, vec![], vec![])
+                .compute(0)
+                .unwrap_err();
+            assert!(matches!(error, LocalError::Evaluation(_)));
+            let Err(EvalError::ExpressionRuntimeFailure(failure)) =
+                comparison_value_result(Err(error))
+            else {
+                panic!("actual SDK failure lost")
+            };
+            assert_eq!(failure.class(), Class::Evaluation);
+            assert_eq!(failure.phase(), None);
+            let vector = || VectorFloat32::must_create(vec![1.0, 2.0]);
+            let Err(EvalError::ExpressionRuntimeFailure(failure)) = comparison_value_result(
+                PreparedComparison::Vector(op, vector(), vector()).compute(0),
+            ) else {
+                panic!("terminal value budget failure lost")
+            };
+            assert_eq!(failure.class(), Class::ResourceLimit);
+            assert_eq!(failure.phase(), None);
+        }
+        assert_eq!(
+            comparison_value_result(PreparedComparison::Null.compute(0)),
+            Ok(Datum::Null)
+        );
+    }
+    #[test]
+    fn direct_comparison_entries_reject_operator_before_bridge_or_context() {
+        let context = Context::default();
+        let invalid = Decimal::from_raw_parts(true, vec![255], u32::MAX, u32::MAX);
+        for op in [BinaryOp::Plus, BinaryOp::NullEq, BinaryOp::IntDiv] {
+            let expected = Err(EvalError::Unsupported("comparison operator"));
+            assert_eq!(
+                eval_comparison_int_in(
+                    op,
+                    Integer::Signed(1),
+                    Integer::Unsigned(u64::MAX),
+                    &context
+                ),
+                expected
+            );
+            assert_eq!(
+                eval_comparison_decimal_in(op, &invalid, &invalid, &context),
+                expected
+            );
+            assert_eq!(eval_comparison_null_in(op, &context), expected);
+            assert_eq!(
+                eval_comparison_values_in(
+                    op,
+                    Datum::Decimal(invalid.clone()),
+                    Datum::Null,
+                    Collation::Binary,
+                    Operands::LITERALS,
+                    &context
+                ),
+                expected
+            );
+        }
+        assert!(context.0.borrow().is_empty());
+        assert!(context.2.borrow().is_empty());
+    }
+
     #[test]
     fn prepared_comparison_enforces_finite_allowance_before_vector_conversion() {
         let vector = || tidb_datatype::VectorFloat32::must_create(vec![1.0, 2.0]);

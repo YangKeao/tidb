@@ -1322,3 +1322,56 @@ unchanged; N6q0 full1068/same6/one ignored/clippy89 is reused, not rerun.
 Receipt:docs/evidence/no-fallback-n6r.md. Sign locally, no push; the global goal
 remains active, with remaining comparison/other adapters and builtin/source
 coverage, alternate dispatch retirement and final inherited/SQL gates ahead.
+
+
+### N6s comparison argument-program retirement (2026-10-18, in progress)
+
+Generic, typed integer/Decimal, actual NULL and NULL-safe comparison callers
+still use temporary evaluated-argument programs, although canonical providers
+already compute genuine PreparedComparison/PreparedNullSafeComparison values.
+Capture independent OLD witnesses before deleting their descriptor conversion
+and extra predicate execution. Expanded27-fixture generic157,464 +NULL-safe
+26,244 comparisons span all six ordinary predicates, three collations, four
+literal/column fact combinations and Warn/Error/Ignore contexts with actual
+truncate getter/warning traces. Another1566 typed integer/Decimal/NULL cases
+cover signedness and representation boundaries. Preserve original duration
+text normalization versus datetime conversion NULL, finite resource errors
+and actual native causes. Then fullfrontend/Projection/lint/format gates and
+signed LOCAL checkpoint. No SDK production changes or global completion claim.
+
+
+N6s independent old proof passed all185,274 comparisons before switching.
+Actual OLD trace hashes:generic4e3678354b488fcd, NULL-safe93bb0d8b5b45573b,
+typed3d32f94b793fd8a9. Saved test-only reproduction patch against
+TiDB7e76f620/SDK6a36ba0. Removed six argument-descriptor constructors/conversion
+and replaced five caller families with genuine direct compute. NULL-safe
+presence/equality/duration normalization now uses the existing shared value
+compute instead of extra argument programs. Fixed OLD witnesses are asserted;
+new boundary checks cover zero-work Decimal comparison, original outer SDK
+classification, vector terminal refusal and operator-before-bridge precedence.
+Full validation is next; production SDK code is unchanged.
+
+
+N6s initial full run passes1527 with inherited4 plus one new test-assumption
+failure:Decimal comparison computes under zero budget because Grow Ord borrows
+all words without scratch allocation (impl_compare::native_compare_decimal).
+Correct the test to require that success, actual SDK evaluation failure from
+malformed JSON transport, and actual vector ResourceLimit refusal. No production
+change or weakened limit follows. Production Projection25 and make lint already
+pass against the final production source; only the test expectation changes.
+Rerun the complete frontend and final pinned formatting before signing.
+
+
+### N6s verified outcome (2026-10-18)
+
+Comparison caller adapters retired after185,274 independent old comparisons;
+three fixed OLD witnesses remain asserted. Complete frontend1528 pass, exact
+same inherited4/95 ignored/zero filtered, all159 batch and older witnesses pass.
+Actual zero-work Decimal, SDK evaluation error, terminal vector resource and
+operator precedence checks pass. Production Projection25 pass(28 mixed roots,
+both flags, serial/two workers); no production changes after that gate. make
+lint, pinned formatting for two changed Rust files and both diff checks pass.
+All jobs closed. SDK production/datatype unchanged; N6q0 full1068/same6/one
+ignored and clippy89 reused, not rerun. Receipt:docs/evidence/no-fallback-n6s.md.
+Sign locally, no push. Remaining adapter/source/builtin/caller coverage, global
+alternate dispatch removal and final inherited/SQL/server gates still ahead.
