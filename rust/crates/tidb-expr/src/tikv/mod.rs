@@ -101,7 +101,8 @@ pub(crate) use coalesce::eval_coalesce_in;
 mod context;
 mod convert_charset;
 pub(crate) use convert_charset::{
-    eval_charset_null_in, eval_convert_using_in, eval_from_binary_in, eval_to_binary_in,
+    convert_using_bounded, eval_charset_null_in, eval_convert_using_in, eval_from_binary_in,
+    eval_to_binary_in, from_binary_bounded, to_binary_bounded,
 };
 mod date_arithmetic;
 pub(crate) use date_arithmetic::{
@@ -126,6 +127,8 @@ pub(crate) use in_list::{
     eval_in_typed_values_in, in_control_datum, in_eq_observation, in_row_control_error,
 };
 pub use in_list::{eval_legacy_in_bytes_in, eval_legacy_in_int_in};
+#[cfg(test)]
+mod charset_value_tests;
 #[cfg(test)]
 mod extremum_value_tests;
 mod interval;

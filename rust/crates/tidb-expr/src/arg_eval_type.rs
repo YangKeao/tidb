@@ -424,17 +424,19 @@ pub(crate) fn wrap_string_args(
 /// captured, `hex(elt(1,v))` and `hex(ltrim(v))` over a `varbinary` holding
 /// `0xFF` are `FF`, and `hex(quote(v))` is `27EFBFBD27`.
 pub(crate) fn eval_string(v: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
+    eval_string_ref(v).map(|value| value.map(<[u8]>::to_vec))
+}
+
+/// The same actual ETString reader as eval_string, with no payload copy or
+/// invented cast. Native value kernels borrow this view until context work.
+pub(crate) fn eval_string_ref(v: &Datum) -> Result<Option<&[u8]>, EvalError> {
     match v {
         Datum::Null => Ok(None),
-        Datum::String(value) => Ok(Some(value.bytes().to_vec())),
-        Datum::Bytes(value) => Ok(Some(value.clone())),
-        Datum::BinaryLiteral(value) => Ok(Some(value.as_bytes().to_vec())),
-        Datum::Enum(value, _) => Ok(Some(value.name_bytes().to_vec())),
-        Datum::Set(value, _) => Ok(Some(value.name_bytes().to_vec())),
-        // Same contract as [`eval_int`]: the layer named this position
-        // `types.ETString`, so an un-cast datum here means an evaluator entry
-        // point reached the signature without passing through
-        // [`wrap_string_args`]. Refuse loudly rather than re-deriving.
+        Datum::String(value) => Ok(Some(value.bytes())),
+        Datum::Bytes(value) => Ok(Some(value)),
+        Datum::BinaryLiteral(value) => Ok(Some(value.as_bytes())),
+        Datum::Enum(value, _) => Ok(Some(value.name_bytes())),
+        Datum::Set(value, _) => Ok(Some(value.name_bytes())),
         _ => Err(EvalError::Unsupported("un-cast types.ETString argument")),
     }
 }

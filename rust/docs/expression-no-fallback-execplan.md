@@ -1866,3 +1866,80 @@ coherent local checkpoint, no push. Overall goal/task4 ACTIVE; other functions/
 sources/caller transports/alternate dispatch and final inherited/SQL/server
 closure remain unproven. Next inspect remaining native text/collection callers
 and their actual source coverage together; don't substitute performance work.
+
+### N6z charset actual bytes and canonical source closure
+
+N6y signed6e005bde/1e3efd8 is progress. Native to_binary/from_binary/
+convert_using and actual-NULL adapters still construct Ready programs, and no
+canonical charset source host exists. Capture actual OLD reader/result/charset
+metadata/NULL/unknown-target/error/warning/cached behavior BEFORE switching, plus
+source REDs. Exact source spelling and effective field charset must remain
+separate: lookup is case sensitive while FieldType canonicalization is not.
+Typed reader NULL produces empty bytes in direct codec APIs; actual source NULL
+short-circuits convert_using's target and connection-metadata read entirely.
+Unknown target precedes ETString reader in the direct API, but scalar source
+order is source→target/coerce→value cast→connection metadata→conversion. Preserve
+all those phases and late GB default-collation projection after actual conversion.
+Expose genuine bounded borrowed-byte SDK services, independently compare OLD
+before wire/caller retirement, then integrate the actual source driver without
+Expr callbacks/another program or static-target Unsupported escape. Field and
+coercibility snapshots, dynamic connection getters, resources/cancellation/
+provenance/publication, parents and mixed Projection must remain covered. Final
+full frontend/SDK/Projection/clippy/lint/fmt/diffs and signed coherent checkpoint,
+no push/subagents; global fallback goal remains incomplete.
+
+N6z OLD proof captured at6e005bde/SDK1e3efd8 BEFORE production changes:
+4200 binary reader/name cases fixedd7142611e2de991d;88200 exact/effective/
+target/reader cases fixede3a22bd8fcc8c70f;1604 isolated live GB default/source
+NULL cases fixed7d8948d00184e03d. All fixed witnesses pass, six source REDs
+match SQL/context then fail1refusal/1fallback, three actual Ready lookup traps
+fail old code. Original test-only baseline patch applies at6e005bde/1e3efd8
+(cached separate-index check pass), original production/tests/source-RED
+snapshots retained. Every cohort runs in an isolated child to avoid global
+collation races. NEVER regenerate fixed hashes from new code.
+
+New SDK borrowed-byte services plus shared borrowed ETString reader are added
+alongside still-active OLD workers. All94004 independently match OLD before
+caller/wire replacement (36578 closed0). Only afterward ordinary wire producers
+are delegated to actual values while preserving all original validation/protocol,
+and native frontend Ready wrappers/report copying/DateDiffNull dispatch retire.
+Direct NULL-reader APIs still compute empty bytes; actual source NULL uses the
+SDK's distinct null primitive. Bytes move directly; retag projection bounds its
+owner overlap and reads the current default collation after codec computation.
+Binary/Latin1 no-op copies and empty values pay no retired report framing charge.
+
+28246 post-retirement fixed+three worker-trap checks all6 pass. New canonical
+CharsetNative operation consumes SDK actual source-null demand. Source FT/exact
+names/result FT/coercibility/producer ordinals are detached snapshots; target
+remains actual dynamic input, not static admission. Runtime follows original
+source→target coercion→source value cast→unconditional connection getter→actual
+metadata selector→conversion→late retag. Store borrows end before connection
+getter, and retained source token is reauthenticated before target work. Metadata
+cloning precharges only names selected by actual shared selector (ignored large
+connection names do not invent work). Readonly string owners remain shared;
+actual Vec/format work and huge Decimal padding are bounded before copying/
+formatting. All six actual source REDs turn green (29406 closed0).
+
+Parent checks exposed genuine CONCAT admission/refusal/fallback (59819/17026).
+Fixed by allowing CharsetNative to publish the same computed value to ETString
+while always consuming native input capabilities; parent's original demand stays
+unchanged, no cast/evaluator/NativeEligibility widening. 90114 closed0 all4parent
+profiles; temporary diagnostics removed. 95939 closed0 all11charsetsource tests:
+full dynamic getter/order/partial outputs/2050duplicates, source name variants,
+wrong/stale/role/producer/occurrence and retained-first expiry before target work,
+source/target Decimal refusal and sentinel precedence, actual codec resource
+cause/phaseNone, huge readonly String unknown-target SQL error after getter,
+double cancellation and exact NULL/success output-provenance reuse. Isolated
+callback obtains store.borrow_mut(), flips GB mode, and verifies actual current
+default collation after conversion; actual NULL skips callback/target entirely.
+Raw target/source coercion work includes real raw byte copies.
+
+Full frontend79252 closed101:1606pass EXACTsame4/95ignored/0filtered/all196batch.
+SDK1082pass EXACTsame6/1ignored/0filtered, failure lists machine-match N6y.
+Clippy25520 closed0 warnings89unchanged; lint21878 closed0; pinnedfmt14Rustfiles
+and bothdiff pass. SDK guide targeted paragraph updated, receiptN6z records proof
+and remaining limitations. Projection77779 closed0 all25pass/four bounded mixed
+31/8/9/5root suites, bothflags workers0/2. Initial44107 reference-only failure was
+new test typo cast_string, corrected to existingcast_char TESTONLY; production
+unchanged after full checks. Finalfmt/diffs pass. Coherent signed local checkpoint,
+no push. Global fallback/remaining families and inherited failures remain incomplete.

@@ -2816,6 +2816,45 @@ mod tests {
         let extremum_mix = std::iter::once(0)
             .chain(extremum_start..roots.len())
             .collect::<Vec<_>>();
+        let charset_start = roots.len();
+        let binary = string
+            .clone()
+            .with_collation(tidb_datatype::Collation::Binary);
+        let gbk = string
+            .clone()
+            .with_collation(tidb_datatype::Collation::GbkBin);
+        let using = || {
+            call(
+                "convert_using",
+                gbk.clone(),
+                vec![
+                    call("cast_char", string.clone(), vec![column(0)]),
+                    Expression::Constant(Constant::new(Datum::new_string("gbk"), string.clone())),
+                ],
+            )
+        };
+        roots.push(using());
+        fields.push(gbk.clone());
+        roots.push(call("to_binary", binary.clone(), vec![using()]));
+        fields.push(binary.clone());
+        roots.push(call(
+            "from_binary",
+            gbk.clone(),
+            vec![call("to_binary", binary, vec![using()])],
+        ));
+        fields.push(gbk.clone());
+        roots.push(call(
+            "concat",
+            string.clone(),
+            vec![
+                using(),
+                Expression::Constant(Constant::new(Datum::new_string("x"), string.clone())),
+            ],
+        ));
+        fields.push(string.clone());
+        let charset_mix = std::iter::once(0)
+            .chain(charset_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (roots[..31].to_vec(), fields[..31].to_vec()),
@@ -2835,6 +2874,16 @@ mod tests {
                     .map(|&index| roots[index].clone())
                     .collect(),
                 extremum_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
+            (
+                charset_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                charset_mix
                     .iter()
                     .map(|&index| fields[index].clone())
                     .collect(),

@@ -26,8 +26,11 @@ use tidb_query_expr::local::{
 
 #[path = "batch_arithmetic_window.rs"]
 mod arithmetic_window;
+#[path = "batch_charset.rs"]
+mod charset_source;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+pub(super) use charset_source::NativeCharsetMetadata;
 #[path = "batch_extremum.rs"]
 mod extremum_source;
 pub(super) use extremum_source::NativeExtremumMetadata;
@@ -106,6 +109,7 @@ pub(super) enum NativeHostMetadata {
     In(NativeInMetadata),
     Interval(NativeIntervalMetadata),
     Extremum(NativeExtremumMetadata),
+    Charset(NativeCharsetMetadata),
     RawValues {
         operation: NativeRawValueOperation,
         name: Box<str>,
@@ -202,6 +206,7 @@ impl NativeHostMetadata {
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
+            Self::Charset(metadata) => Some(&metadata.result_type),
             Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
             | Self::Selection { result_type, .. }
@@ -221,6 +226,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Charset {
+        source: Option<[u8; native_values::HANDLE_BYTES]>,
+    },
     Extremum {
         next: usize,
         tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
@@ -296,6 +304,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
             SqlDemand::Interval { search } => Ok(match search.step() {
                 tidb_query_expr::NativeIntervalValueStep::Probe { index, .. } => Some(index),
                 tidb_query_expr::NativeIntervalValueStep::Index(_) => None,
@@ -323,6 +332,7 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
             SqlDemand::Extremum { .. }
             | SqlDemand::Interval { .. }
             | SqlDemand::In { .. }
@@ -1921,6 +1931,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::IntervalNative => self.start_interval(&invocation)?,
             SqlBatchHostOperation::ExtremumNative => self.start_extremum(&invocation)?,
+            SqlBatchHostOperation::CharsetNative(_) => self.start_charset(&invocation)?,
             SqlBatchHostOperation::InNative => {
                 self.validate_in_start(&invocation)?;
                 SqlDemand::In {
@@ -2286,6 +2297,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Charset { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("charset source cannot be wire NULL"));
+            };
+            return self.resume_charset(id, token);
         }
         if matches!(task.demand, SqlDemand::Extremum { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

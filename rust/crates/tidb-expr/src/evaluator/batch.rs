@@ -362,7 +362,8 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = native_unary_sign_operation(function.func_name.lowercase()).is_some()
+    let row_control = native_charset_operation(function.func_name.lowercase()).is_some()
+        || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
@@ -899,6 +900,11 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             domain,
         ));
     }
+    if native_charset_operation(function.func_name.lowercase()).is_some() {
+        // Charset producers always consume authentic native source values;
+        // a typed string parent may receive their ETString publication.
+        return NativeView::ValueToken;
+    }
     if view.value_role().is_some() && native_value_call(function) {
         return NativeView::ValueToken;
     }
@@ -1188,11 +1194,22 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
                 | "mul"
         )
 }
+fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharsetOperation> {
+    use tidb_query_expr::NativeCharsetOperation as Op;
+    Some(match name {
+        "to_binary" => Op::ToBinary,
+        "from_binary" => Op::FromBinary,
+        "convert_using" => Op::ConvertUsing,
+        _ => return None,
+    })
+}
 fn native_value_call(function: &ScalarFunction) -> bool {
-    matches!(
-        function.func_name.lowercase(),
-        "in" | "interval" | "greatest" | "least"
-    ) || native_unary_sign_operation(function.func_name.lowercase()).is_some()
+    native_charset_operation(function.func_name.lowercase()).is_some()
+        || matches!(
+            function.func_name.lowercase(),
+            "in" | "interval" | "greatest" | "least"
+        )
+        || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_arithmetic_operation(function.func_name.lowercase()).is_some()
         || native_character_value_argument(function)
 }
@@ -1200,6 +1217,22 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some(operation) = native_charset_operation(function.func_name.lowercase()) {
+        if function.args.len() != operation.arity()
+            || function.args.iter().any(|arg| arg.static_type().is_none())
+            || !function.get_static_type().is_some_and(|field| {
+                view.value_role().is_some() || field.eval_type() == NativeEvalType::String
+            })
+        {
+            return Err(BatchFailure::admission(
+                "charset source requires complete declarations and exact arity",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::CharsetNative(operation)),
+            function.args.len(),
+        ));
+    }
     if view.value_role().is_some() {
         if let Some(operation) = window_value_operation(function, view)
             .or_else(|| native_unary_sign_operation(function.func_name.lowercase()))
@@ -1971,6 +2004,19 @@ fn preflight_view<'a>(
                         budget.array::<i64>(function.args.len())?;
                         budget.field(sql, 1)?;
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::CharsetNative(_))
+                    ) {
+                        budget.array::<usize>(function.args.len())?;
+                        budget.field(
+                            function.args[0]
+                                .static_type()
+                                .expect("checked charset source"),
+                            1,
+                        )?;
+                        budget.field(sql, 1)?;
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -2474,6 +2520,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::InNative
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
+                                        | SqlBatchHostOperation::CharsetNative(_)
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
                                         | SqlBatchHostOperation::XorNative
@@ -2509,6 +2556,36 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::CharsetNative(operation) => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, *arity)?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("charset child ordinal overflow"))?;
+                                let source = checked
+                                    .get(child)
+                                    .ok_or_else(|| binding("charset source absent"))?;
+                                let source_type = snapshot_field_type(source.sql);
+                                for _ in 0..*arity {
+                                    let source = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("charset source node absent"))?;
+                                    arguments.push(child);
+                                    child = source.subtree_end;
+                                }
+                                NativeHostMetadata::Charset(hosts::NativeCharsetMetadata {
+                                    operation,
+                                    arguments: arguments.into_boxed_slice(),
+                                    source_type,
+                                    explicit_collation: crate::collation_derive::coercibility_of(
+                                        &sql.args[0],
+                                    )
+                                        == crate::expr_collation::Coercibility::EXPLICIT,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                })
+                            }
                             SqlBatchHostOperation::ExtremumNative => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, *arity)?;

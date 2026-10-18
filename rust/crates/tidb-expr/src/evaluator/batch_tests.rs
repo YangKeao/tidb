@@ -11540,3 +11540,813 @@ fn native_extremum_source_capabilities_resources_cancel_and_reuse_are_terminal()
         provider.cancel(&task);
     }
 }
+
+#[test]
+fn native_charset_to_binary_gbk_sources_require_canonical_driver() {
+    let gbk = string_ty().with_collation(Collation::GbkBin);
+    let binary = string_ty().with_collation(Collation::Binary);
+    compare_typed_profile(
+        call("to_binary", binary, vec![typed_column(0, &gbk)]),
+        &[gbk],
+        &[
+            vec![Datum::new_collation_string("一", Collation::GbkBin)],
+            vec![Datum::Null],
+            vec![Datum::new_collation_string("😂", Collation::GbkBin)],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_charset_from_binary_gbk_sources_require_canonical_driver() {
+    let binary = string_ty().with_collation(Collation::Binary);
+    let gbk = string_ty().with_collation(Collation::GbkBin);
+    compare_typed_profile(
+        call("from_binary", gbk, vec![typed_column(0, &binary)]),
+        &[binary],
+        &[
+            vec![Datum::Bytes(vec![0xd2, 0xbb])],
+            vec![Datum::Null],
+            vec![Datum::Bytes(vec![0x81])],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_charset_convert_using_dynamic_target_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "convert_using",
+            string.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        ),
+        &[string.clone(), string],
+        &[
+            vec![Datum::new_string("一"), Datum::new_string("gbk")],
+            vec![Datum::new_string("😂"), Datum::new_string("gbk")],
+            vec![Datum::Null, Datum::new_string("UNKNOWN")],
+            vec![Datum::new_string("a"), Datum::new_string("UNKNOWN")],
+        ],
+        &[0, 1, 2, 3],
+    );
+}
+#[test]
+fn native_charset_convert_using_binary_decode_sources_require_canonical_driver() {
+    let binary = string_ty().with_collation(Collation::Binary);
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "convert_using",
+            string.clone(),
+            vec![typed_column(0, &binary), typed_column(1, &string)],
+        ),
+        &[binary, string],
+        &[
+            vec![Datum::Bytes(vec![0xd2, 0xbb]), Datum::new_string("gbk")],
+            vec![Datum::Bytes(vec![255]), Datum::new_string("utf8mb4")],
+            vec![Datum::Null, Datum::Null],
+        ],
+        &[0, 1, 2, 0],
+    );
+}
+#[test]
+fn native_charset_convert_using_source_null_skips_target_errors_in_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "convert_using",
+            string.clone(),
+            vec![
+                typed_column(0, &string),
+                call("cast_char", string.clone(), vec![abs(column(1))]),
+            ],
+        ),
+        &[string, ty()],
+        &[
+            vec![Datum::Null, Datum::Int(i64::MIN)],
+            vec![Datum::new_string("a"), Datum::Int(i64::MIN)],
+        ],
+        &[0, 1],
+    );
+}
+#[test]
+fn native_charset_convert_using_numeric_cast_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "convert_using",
+            string.clone(),
+            vec![abs(column(0)), typed_column(1, &string)],
+        ),
+        &[ty(), string],
+        &[
+            vec![Datum::Int(2), Datum::new_string("utf8mb4")],
+            vec![Datum::Int(7), Datum::new_string("gbk")],
+            vec![Datum::Null, Datum::new_string("UNKNOWN")],
+        ],
+        &[0, 1, 2, 0],
+    );
+}
+
+#[derive(Default)]
+struct CharsetSourceContext {
+    enabled: Cell<bool>,
+    connection: Cell<usize>,
+    events: std::cell::RefCell<Vec<String>>,
+}
+impl Columns for CharsetSourceContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("charset sources must use checked value bindings")
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.events.borrow_mut().push("enable".into());
+        self.enabled.get()
+    }
+    fn connection_charset_info(&self) -> (&str, &str) {
+        let n = self.connection.get();
+        self.connection.set(n + 1);
+        self.events.borrow_mut().push(format!("connection:{n}"));
+        match n % 3 {
+            0 => ("gbk", "gbk_bin"),
+            1 => ("binary", "binary"),
+            _ => ("utf8mb4", "utf8mb4_bin"),
+        }
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.events
+            .borrow_mut()
+            .push(format!("warn:{code}:{message}"));
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        crate::ErrorLevel::Warn
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.events.borrow_mut().push("zone".into());
+        SessionTimeZone::utc()
+    }
+}
+fn compare_charset_source_context(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    for enabled in [true, false, true, false] {
+        let actual_ctx = CharsetSourceContext::default();
+        let reference_ctx = CharsetSourceContext::default();
+        actual_ctx.enabled.set(enabled);
+        reference_ctx.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut expected_input = chunk(schema, rows);
+        expected_input.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected = output_for(&field);
+        let actual = actual_suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, schema);
+        let reference = reference_suite.run(&reference_ctx, &mut expected_input, &mut expected);
+        assert_eq!(actual, reference, "flag={enabled} selection={selection:?}");
+        assert_eq!(*actual_ctx.events.borrow(), *reference_ctx.events.borrow());
+        assert_eq!(actual_ctx.connection.get(), reference_ctx.connection.get());
+        assert_eq!(output.num_rows(), expected.num_rows());
+        for position in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(position).is_null(0),
+                expected.get_row(position).is_null(0)
+            );
+            assert_eq!(
+                output.column(0).get_raw(position).as_ref(),
+                expected.column(0).get_raw(position).as_ref()
+            );
+        }
+        let routes = actual_suite.batch_route_snapshot();
+        assert_eq!((routes.refusals, routes.fallback), (0, 0));
+    }
+}
+#[test]
+fn native_charset_dynamic_connection_read_and_parent_phases_preserve_order_and_reuse() {
+    let string = string_ty();
+    let binary = string.clone().with_collation(Collation::Binary);
+    let gbk = string.clone().with_collation(Collation::GbkBin);
+    let inside = || {
+        call(
+            "convert_using",
+            string.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        )
+    };
+    let roots = [
+        inside(),
+        call("concat", string.clone(), vec![inside(), text(Some(b"x"))]),
+        call(
+            "ifnull",
+            string.clone(),
+            vec![inside(), text(Some(b"fallback"))],
+        ),
+        call(
+            "to_binary",
+            binary,
+            vec![call(
+                "convert_using",
+                gbk,
+                vec![typed_column(0, &string), text(Some(b"gbk"))],
+            )],
+        ),
+    ];
+    let rows = vec![
+        vec![Datum::new_string("一"), Datum::new_string("gbk")],
+        vec![Datum::Null, Datum::new_string("UNKNOWN")],
+        vec![Datum::new_string("😂"), Datum::new_string("gb18030")],
+        vec![Datum::new_string("a"), Datum::new_string("UNKNOWN")],
+    ];
+    for root in roots {
+        for selection in [
+            vec![],
+            vec![0, 1, 2, 0],
+            vec![3],
+            vec![0; 2050],
+            {
+                let mut selection = vec![0; 2050];
+                selection[2049] = 3;
+                selection
+            },
+            vec![1, 3, 1],
+        ] {
+            compare_charset_source_context(
+                root.clone(),
+                &[string.clone(), string.clone()],
+                &rows,
+                &selection,
+            );
+        }
+    }
+}
+#[test]
+fn native_charset_numeric_source_metadata_tracks_each_connection_getter() {
+    let string = string_ty();
+    let root = call(
+        "convert_using",
+        string.clone(),
+        vec![column(0), typed_column(1, &string)],
+    );
+    compare_charset_source_context(
+        root,
+        &[ty(), string],
+        &[
+            vec![Datum::Int(2), Datum::new_string("gbk")],
+            vec![Datum::Null, Datum::new_string("UNKNOWN")],
+            vec![Datum::Int(3), Datum::new_string("binary")],
+            vec![Datum::Int(4), Datum::new_string("utf8mb4")],
+        ],
+        &[0, 2, 1, 3, 0, 2],
+    );
+}
+#[test]
+fn native_charset_actual_source_metadata_keeps_alias_spelling_and_target_null_semantics() {
+    for name in ["gbk", "GBK", "gb18030", "utf8mb3", "unknown", ""] {
+        let source = string_ty()
+            .with_collation(Collation::GbkBin)
+            .with_charset_name(name);
+        let binary = string_ty().with_collation(Collation::Binary);
+        compare_typed_profile(
+            call("to_binary", binary.clone(), vec![typed_column(0, &source)]),
+            &[source.clone()],
+            &[
+                vec![Datum::new_string("一")],
+                vec![Datum::new_string("😂")],
+                vec![Datum::Null],
+            ],
+            &[0, 1, 2],
+        );
+        compare_typed_profile(
+            call(
+                "from_binary",
+                source.clone(),
+                vec![typed_column(0, &binary)],
+            ),
+            &[binary],
+            &[vec![Datum::Bytes(vec![0xd2, 0xbb])], vec![Datum::Null]],
+            &[0, 1],
+        );
+        compare_charset_source_context(
+            call(
+                "convert_using",
+                string_ty(),
+                vec![typed_column(0, &source), typed_column(1, &string_ty())],
+            ),
+            &[source, string_ty()],
+            &[
+                vec![Datum::new_string("一"), Datum::new_string("binary")],
+                vec![Datum::Null, Datum::Null],
+                vec![Datum::new_string("a"), Datum::Null],
+            ],
+            &[0, 1, 2],
+        );
+    }
+}
+
+#[test]
+fn native_charset_source_capabilities_resource_phases_cancel_and_reuse_are_terminal() {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    use tidb_query_expr::NativeCharsetOperation as Op;
+    for operation in [Op::ToBinary, Op::FromBinary, Op::ConvertUsing] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); operation.arity()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::CharsetNative(operation),
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::Charset(hosts::NativeCharsetMetadata {
+            operation,
+            arguments: [3, 8][..operation.arity()].into(),
+            source_type: string_ty(),
+            explicit_collation: false,
+            result_type: string_ty(),
+            output_node: 2,
+            output_role: Some(NativeValueRole::Output),
+        })];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let insert = |value: &Datum, role, node, row| {
+            store
+                .borrow_mut()
+                .insert_clone(value, role, NativeValueOrigin { node, row })
+                .unwrap()
+        };
+        let stale = insert(&Datum::new_string("a"), NativeValueRole::CharInput, 3, row);
+        store.borrow_mut().begin_window().unwrap();
+        let huge = Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+            false,
+            vec![b'1'],
+            u32::MAX,
+            0,
+        ));
+        let context = CharsetSourceContext::default();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 8192)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        // Each position validates epoch, role, producer and occurrence before
+        // any value formatting or context callback. Then cancel twice and reuse.
+        for index in 0..operation.arity() {
+            let node = [3, 8][index];
+            for bad in [
+                stale.clone(),
+                insert(&huge, NativeValueRole::Output, node, row),
+                insert(&huge, NativeValueRole::CharInput, 9, row),
+                insert(
+                    &huge,
+                    NativeValueRole::CharInput,
+                    node,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                ),
+            ] {
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!("charset pending")
+                };
+                if index == 1 {
+                    let first = insert(&Datum::new_string("a"), NativeValueRole::CharInput, 3, row);
+                    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1);
+                    assert!(
+                        matches!(provider.resume(&mut ctx,&task,HostArgReply{index:0,field_type:&field,values:&values}).unwrap(),HostStep::NeedArg(request) if request.index==1)
+                    );
+                }
+                let before = context.connection.get();
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1);
+                assert!(matches!(
+                    provider.resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &values
+                        }
+                    ),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert_eq!(context.connection.get(), before);
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+        }
+        // Codec allocation, target formatting, source formatting, and an early
+        // target SQL error have distinct terminal classifications and phases.
+        let cases = if operation == Op::ConvertUsing {
+            vec![
+                (Datum::new_string("a"), huge.clone(), 0, 0),
+                (huge.clone(), Datum::new_string("utf8mb4"), 0, 0),
+                (huge.clone(), Datum::MinNotNull, 1, 0),
+                (
+                    Datum::new_string("a".repeat(16384)),
+                    Datum::new_string("UNKNOWN"),
+                    2,
+                    1,
+                ),
+            ]
+        } else {
+            vec![(Datum::Bytes(vec![b'A'; 16384]), Datum::Null, 3, 0)]
+        };
+        for (source, target, kind, getters) in cases {
+            let first = insert(&source, NativeValueRole::CharInput, 3, row);
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("charset pending")
+            };
+            let before = context.connection.get();
+            let mut result = provider.resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &field,
+                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1),
+                },
+            );
+            if operation == Op::ConvertUsing {
+                assert!(matches!(result.unwrap(), HostStep::NeedArg(_)));
+                let second = insert(&target, NativeValueRole::CharInput, 8, row);
+                result = provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1),
+                    },
+                );
+            }
+            let error = result.unwrap_err();
+            assert_eq!(context.connection.get() - before, getters);
+            match kind {
+                0 => {
+                    assert!(matches!(error, LocalError::ResourceLimit(_)), "{error:?}");
+                    assert!(provider.take_native_error().is_none());
+                }
+                1 | 2 => {
+                    assert!(matches!(error, LocalError::HostContract(_)), "{error:?}");
+                    assert_eq!(
+                        provider.take_native_error(),
+                        Some(EvalError::Unsupported(if kind == 1 {
+                            "range sentinel byte coercion"
+                        } else {
+                            "unknown character set"
+                        }))
+                    );
+                }
+                _ => {
+                    assert!(matches!(error, LocalError::HostContract(_)), "{error:?}");
+                    let Some(EvalError::ExpressionRuntimeFailure(error)) =
+                        provider.take_native_error()
+                    else {
+                        panic!("codec resource cause")
+                    };
+                    assert_eq!(
+                        error.class(),
+                        crate::ExpressionRuntimeFailureClass::ResourceLimit
+                    );
+                    assert_eq!(error.phase(), None);
+                }
+            }
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+            provider.cancel(&task);
+        }
+        // Retained first input also expires: authenticate it before formatting a
+        // valid but enormous second argument. The failure is binding, not work.
+        if operation == Op::ConvertUsing {
+            let first = insert(&Datum::new_string("a"), NativeValueRole::CharInput, 3, row);
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert!(matches!(
+                provider
+                    .resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1)
+                        }
+                    )
+                    .unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            store.borrow_mut().begin_window().unwrap();
+            let second = insert(&huge, NativeValueRole::CharInput, 8, row);
+            let before = context.connection.get();
+            assert!(matches!(
+                provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1)
+                    }
+                ),
+                Err(LocalError::BindingContract(_))
+            ));
+            assert_eq!(context.connection.get(), before);
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+        }
+        for nullable in [true, false, true, false] {
+            let first = insert(
+                &if nullable {
+                    Datum::Null
+                } else {
+                    Datum::new_string("a")
+                },
+                NativeValueRole::CharInput,
+                3,
+                row,
+            );
+            let before = context.connection.get();
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let mut step = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1),
+                    },
+                )
+                .unwrap();
+            if !nullable && operation == Op::ConvertUsing {
+                assert!(matches!(step, HostStep::NeedArg(_)));
+                let second = insert(
+                    &Datum::new_string("utf8mb4"),
+                    NativeValueRole::CharInput,
+                    8,
+                    row,
+                );
+                step = provider
+                    .resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 1,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1),
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                context.connection.get() - before,
+                usize::from(!nullable && operation == Op::ConvertUsing)
+            );
+            let HostStep::Ready(output) = step else {
+                panic!("charset result")
+            };
+            let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                panic!("charset output provenance")
+            };
+            let value = store
+                .borrow()
+                .get(
+                    token,
+                    NativeValueRole::Output,
+                    NativeValueOrigin { node: 2, row },
+                )
+                .unwrap()
+                .clone();
+            if nullable {
+                assert_eq!(value, Datum::Null)
+            } else {
+                assert_eq!(
+                    crate::arg_eval_type::eval_string_ref(&value).unwrap(),
+                    Some(b"a".as_slice())
+                )
+            };
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+        }
+    }
+}
+
+#[test]
+fn native_charset_context_callback_releases_store_and_gb_default_is_read_after_conversion() {
+    const CHILD: &str = "TIDB_CHARSET_LATE_MODE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","evaluator::batch::tests::native_charset_context_callback_releases_store_and_gb_default_is_read_after_conversion","--nocapture"]).env(CHILD,"1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    use tidb_query_expr::NativeCharsetOperation as Op;
+    struct Late<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        calls: Cell<usize>,
+    }
+    impl Columns for Late<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no interpreter")
+        }
+        fn connection_charset_info(&self) -> (&str, &str) {
+            let _exclusive = self.store.borrow_mut();
+            self.calls.set(self.calls.get() + 1);
+            tidb_datatype::set_new_collation_enabled(true);
+            ("utf8mb4", "utf8mb4_bin")
+        }
+    }
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 2];
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::CharsetNative(Op::ConvertUsing),
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let metadata = [NativeHostMetadata::Charset(hosts::NativeCharsetMetadata {
+        operation: Op::ConvertUsing,
+        arguments: Box::new([3, 8]),
+        source_type: string_ty(),
+        explicit_collation: false,
+        result_type: string_ty().with_collation(Collation::GbkBin),
+        output_node: 2,
+        output_role: Some(NativeValueRole::Output),
+    })];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let context = Late {
+        store: &store,
+        calls: Cell::new(0),
+    };
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context, 8192).with_native_values(Some(&store));
+    let mut ctx = EvalContext::default();
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 0,
+    };
+    for nullable in [false, true, false] {
+        tidb_datatype::set_new_collation_enabled(false);
+        let before = context.calls.get();
+        let value = if nullable {
+            Datum::Null
+        } else {
+            Datum::new_string("一")
+        };
+        let first = store
+            .borrow_mut()
+            .insert_clone(
+                &value,
+                NativeValueRole::CharInput,
+                NativeValueOrigin { node: 3, row },
+            )
+            .unwrap();
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let mut step = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 0,
+                    field_type: &field,
+                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1),
+                },
+            )
+            .unwrap();
+        if !nullable {
+            assert!(matches!(step, HostStep::NeedArg(_)));
+            let second = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::new_string("gbk"),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 8, row },
+                )
+                .unwrap();
+            step = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1),
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(context.calls.get() - before, usize::from(!nullable));
+        let HostStep::Ready(output) = step else {
+            panic!()
+        };
+        let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+            panic!()
+        };
+        let value = store
+            .borrow()
+            .get(
+                token,
+                NativeValueRole::Output,
+                NativeValueOrigin { node: 2, row },
+            )
+            .unwrap()
+            .clone();
+        if nullable {
+            assert_eq!(value, Datum::Null)
+        } else {
+            assert_eq!(
+                value,
+                Datum::new_collation_string(
+                    "一".as_bytes().to_vec(),
+                    tidb_datatype::Charset::Gbk.default_collation()
+                )
+            );
+        }
+        provider.cancel(&task);
+    }
+}
