@@ -3154,8 +3154,62 @@ mod tests {
         let extract_mix = std::iter::once(0)
             .chain(extract_start..roots.len())
             .collect::<Vec<_>>();
+        let epoch_start = roots.len();
+        let epoch_decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(30)
+            .with_decimal(6);
+        let unix = || {
+            call(
+                "unix_timestamp",
+                epoch_decimal.clone(),
+                vec![call(
+                    "if",
+                    string.clone(),
+                    vec![
+                        column(0),
+                        Expression::Constant(Constant::new(
+                            Datum::new_string("2020-01-02 03:04:05.123456"),
+                            string.clone(),
+                        )),
+                        Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                    ],
+                )],
+            )
+        };
+        let from = |field: FieldType, formatted: bool| {
+            let mut args = vec![column(0)];
+            if formatted {
+                args.push(Expression::Constant(Constant::new(
+                    Datum::new_string("%Y-%m-%d %H:%i:%s.%f"),
+                    string.clone(),
+                )));
+            }
+            call("from_unixtime", field, args)
+        };
+        roots.push(unix());
+        fields.push(epoch_decimal.clone());
+        let epoch_time = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+        roots.push(from(epoch_time.clone(), false));
+        fields.push(epoch_time.clone());
+        roots.push(from(string.clone(), true));
+        fields.push(string.clone());
+        roots.push(call(
+            "cast_char",
+            string.clone(),
+            vec![from(epoch_time, false)],
+        ));
+        fields.push(string.clone());
+        roots.push(call("cast_char", string.clone(), vec![unix()]));
+        fields.push(string.clone());
+        let epoch_mix = std::iter::once(0)
+            .chain(epoch_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                epoch_mix.iter().map(|&i| roots[i].clone()).collect(),
+                epoch_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
             (
                 extract_mix.iter().map(|&i| roots[i].clone()).collect(),
                 extract_mix.iter().map(|&i| fields[i].clone()).collect(),

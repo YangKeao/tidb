@@ -172,7 +172,7 @@ fn datum_eval_type(value: &Datum) -> Option<tidb_datatype::EvalType> {
 /// cell that only the hybrid datum itself fits. Converting such a value onto
 /// its eval type would put an integer in a var-length column -- the very
 /// disagreement this check exists to prevent.
-fn same_eval_family(value: &Datum, ret_type: &tidb_datatype::FieldType) -> bool {
+pub(crate) fn same_eval_family(value: &Datum, ret_type: &tidb_datatype::FieldType) -> bool {
     use tidb_datatype::EvalType;
     if ret_type.is_hybrid() {
         return true;

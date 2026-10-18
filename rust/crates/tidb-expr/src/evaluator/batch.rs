@@ -369,7 +369,8 @@ fn promoted_native_root_view(
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_extract_call(function).is_some()
+    ) || native_epoch_call(function).is_some()
+        || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
@@ -916,7 +917,8 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_extract_call(function).is_some()
+    ) || native_epoch_call(function).is_some()
+        || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
     {
@@ -1175,6 +1177,7 @@ fn native_bitwise_operation(name: &str) -> Option<SqlBatchHostOperation> {
 /// fact, independent of which extra value producers the unified compiler gains.
 fn native_character_value_argument(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
+        || native_epoch_call(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1220,6 +1223,20 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_epoch_call(function: &ScalarFunction) -> Option<(bool, usize)> {
+    let from = match function.func_name.lowercase() {
+        "unix_timestamp" => false,
+        "from_unixtime" => true,
+        _ => return None,
+    };
+    let arity = function.args.len();
+    (if from {
+        (1..=2).contains(&arity)
+    } else {
+        arity <= 1
+    })
+    .then_some((from, arity))
 }
 #[derive(Clone, Copy)]
 enum NativeExtractCall {
@@ -1285,7 +1302,8 @@ fn native_value_call(function: &ScalarFunction) -> bool {
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_extract_call(function).is_some()
+    ) || native_epoch_call(function).is_some()
+        || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
@@ -1300,6 +1318,23 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some((from, arity)) = native_epoch_call(function) {
+        if view.value_role().is_none()
+            || function.args.iter().any(|v| v.static_type().is_none())
+            || function.get_static_type().is_none()
+        {
+            return Err(BatchFailure::admission(
+                "timestamp source requires original native value declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EpochNative {
+                from,
+                arity: arity as u8,
+            }),
+            arity,
+        ));
+    }
     if let Some(call) = native_extract_call(function) {
         if function.args.iter().any(|arg| arg.static_type().is_none()) {
             return Err(BatchFailure::admission(
@@ -2209,6 +2244,13 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if let Some((_, arity)) = native_epoch_call(function) {
+                        budget.add(
+                            arity
+                                .checked_mul(std::mem::size_of::<usize>())
+                                .ok_or_else(|| resource("epoch node metadata overflow"))?,
+                        )?;
+                    }
                     if let Some(call) = native_extract_call(function) {
                         budget.add(
                             call.arity()
@@ -2823,6 +2865,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                        | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
                                         | SqlBatchHostOperation::DateArithmeticNative { .. }
                                         | SqlBatchHostOperation::BoundedStalenessNative { .. }
@@ -2889,6 +2932,30 @@ fn lower_view(
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::EpochNative { from, arity } => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, usize::from(arity))?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("epoch ordinal overflow"))?;
+                                for _ in 0..arity {
+                                    arguments.push(child);
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("epoch argument node missing"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::Epoch {
+                                    arguments: arguments.into_boxed_slice(),
+                                    from,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("epoch result view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::ExtractNative { composite, .. } => {

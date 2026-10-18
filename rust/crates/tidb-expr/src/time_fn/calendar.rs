@@ -634,24 +634,7 @@ pub(crate) fn date_format_in(
     fmt: &Datum,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::DateFormatTextNative,
-        ctx,
-        || {
-            // Both original conversions run, even when the date is NULL.
-            // Parsing and text-policy formatting belong entirely to the worker.
-            let (date, fmt) = (coerce_str(date)?, coerce_str(fmt)?);
-            Ok(crate::tikv::EvaluatedArgs::Bytes2(
-                date.map(String::into_bytes),
-                fmt.map(String::into_bytes),
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
+    crate::tikv::eval_date_format_values_in(ctx, date, fmt)
 }
 
 #[cfg(test)]

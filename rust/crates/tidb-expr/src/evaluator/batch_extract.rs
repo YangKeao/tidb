@@ -159,6 +159,25 @@ impl NativeBatchHosts<'_> {
         row: InputRow,
         base: usize,
     ) -> LocalResult<HostStep> {
+        let field = self
+            .metadata
+            .get(self.task(id)?.slot.index())
+            .and_then(NativeHostMetadata::result_type)
+            .ok_or_else(|| binding("EXTRACT result declaration missing"))?;
+        let live = native_payload_bytes(&value)?
+            .checked_mul(2)
+            .and_then(|n| base.checked_add(n))
+            .ok_or_else(|| resource("EXTRACT return coercion extent overflow"))?;
+        self.check_bytes(live)?;
+        let value = match crate::tikv::coerce_result_bounded(
+            "extract",
+            field,
+            value,
+            self.max_retained_bytes - live,
+        ) {
+            Ok(v) => v,
+            Err(e) => return self.native_failure(e),
+        };
         if let Some(role) = output_role {
             return self
                 .finish_native_value(id, value, output_node, role, row, base)

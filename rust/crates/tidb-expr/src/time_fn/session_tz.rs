@@ -39,8 +39,6 @@
 #[cfg(test)]
 use chrono::{Datelike, NaiveDate, Timelike};
 
-use super::calendar::date_format_in;
-use crate::coerce::coerce_str;
 use crate::context::SessionTimeZone;
 #[cfg(test)]
 use crate::Decimal;
@@ -55,148 +53,12 @@ use tidb_query_expr::native_from_unixtime_instant_to_local as instant_to_local;
 
 /// `FROM_UNIXTIME(unix[, format])`.
 pub(crate) fn from_unixtime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
-    use tidb_query_expr::NativeFromUnixTimeResult;
-    crate::tikv::evaluate_prepared_args_scoped_in(
-        cols,
-        || {
-            if !(1..=2).contains(&vals.len()) {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            match &vals[0] {
-                Datum::Null => Ok((Op::FromUnixTimeNullNative, EvaluatedArgs::Bytes(None))),
-                value @ (Datum::Int(_)
-                | Datum::UInt(_)
-                | Datum::Decimal(_)
-                | Datum::Real(_)
-                | Datum::Float32(_)) => Ok((
-                    Op::FromUnixTimeNumericNative,
-                    crate::tikv::prepare_datum_identity_args(value)?,
-                )),
-                value => Ok((
-                    Op::FromUnixTimeTextNative,
-                    EvaluatedArgs::Bytes(coerce_str(value)?.map(String::into_bytes)),
-                )),
-            }
-        },
-        |computed, scoped_cols| {
-            let Some(bytes) = computed.into_bytes()? else {
-                return Ok(Datum::Null);
-            };
-            match tidb_query_expr::decode_native_from_unixtime_result(&bytes)
-                .ok_or_else(crate::tikv::native_time_result_contract_error)?
-            {
-                NativeFromUnixTimeResult::Continue(_) => {}
-                NativeFromUnixTimeResult::Truncate { message, .. } => {
-                    scoped_cols.handle_truncate(message)?;
-                }
-            }
-            // Keep the complete actual report, including a truncate report.
-            // Its policy replay must finish before the original zone demand.
-            crate::tikv::evaluate_prepared_args_scoped_in(
-                scoped_cols,
-                || {
-                    Ok((
-                        Op::FromUnixTimeLocalNative,
-                        EvaluatedArgs::TemporalValue {
-                            value: bytes,
-                            zone: scoped_cols.time_zone(),
-                        },
-                    ))
-                },
-                |computed, local_cols| {
-                    let Some(bytes) = computed.into_bytes()? else {
-                        return Ok(Datum::Null);
-                    };
-                    let value = Datum::new_string(bytes);
-                    if vals.len() == 1 {
-                        Ok(value)
-                    } else {
-                        // The existing formatter owns both conversions and its
-                        // worker, reached only after a successful local value.
-                        date_format_in(&value, &vals[1], local_cols)
-                    }
-                },
-            )
-        },
-    )
+    crate::tikv::eval_from_unixtime_values_in(cols, vals)
 }
 
 /// `UNIX_TIMESTAMP([datetime])`.
 pub(crate) fn unix_timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op, EvaluatedBytesResult};
-    use tidb_query_expr::NativeUnixTimestampResult;
-    crate::tikv::evaluate_prepared_args_scoped_in(
-        cols,
-        || {
-            match vals.len() {
-                0 => {
-                    let Some((seconds, nanos, _)) = cols.now() else {
-                        return Err(EvalError::Unsupported("session clock"));
-                    };
-                    return Ok((
-                        Op::UnixTimestampNowNative,
-                        EvaluatedArgs::Int2(Some(seconds), Some(i64::from(nanos))),
-                    ));
-                }
-                1 => {}
-                _ => return Err(EvalError::Unsupported("bad function arity")),
-            }
-            let Some(text) = coerce_str(&vals[0])? else {
-                return Ok((Op::UnixTimestampNullNative, EvaluatedArgs::Bytes(None)));
-            };
-            let is_float = matches!(
-                vals[0],
-                Datum::Int(_)
-                    | Datum::UInt(_)
-                    | Datum::Decimal(_)
-                    | Datum::Real(_)
-                    | Datum::Float32(_)
-            );
-            Ok((
-                Op::UnixTimestampParseNative,
-                EvaluatedArgs::TemporalParseText {
-                    value: text.into_bytes(),
-                    is_float,
-                    zone: cols.time_zone(),
-                },
-            ))
-        },
-        |computed, scoped_cols| {
-            let Some(bytes) = computed.into_bytes()? else {
-                return Ok(Datum::Null);
-            };
-            let result = tidb_query_expr::decode_native_unix_timestamp_result(&bytes)
-                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-            match result {
-                NativeUnixTimestampResult::Value(_) => {
-                    EvaluatedBytesResult::Bytes(Some(bytes)).into_identity_datum()
-                }
-                NativeUnixTimestampResult::Warning { code, message } => {
-                    scoped_cols.append_warning(code, message);
-                    Ok(Datum::Null)
-                }
-                NativeUnixTimestampResult::Continue(_) if vals.len() == 1 && !vals[0].is_null() => {
-                    // Only the worker's actual continuation demands the second
-                    // zone. Do not cache the first getter or re-pack its frame.
-                    crate::tikv::evaluate_prepared_args_in(
-                        scoped_cols,
-                        || {
-                            Ok((
-                                Op::UnixTimestampValueNative,
-                                EvaluatedArgs::TemporalValue {
-                                    value: bytes,
-                                    zone: scoped_cols.time_zone(),
-                                },
-                            ))
-                        },
-                        EvaluatedBytesResult::into_identity_datum,
-                    )
-                }
-                _ => Err(crate::tikv::native_time_result_contract_error()),
-            }
-        },
-    )
+    crate::tikv::eval_unix_timestamp_values_in(cols, vals)
 }
 
 /// `TIDB_PARSE_TSO(tso)`: the physical half as a full-precision native

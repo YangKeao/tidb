@@ -18,6 +18,7 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7j: replace native/legacy UNIX_TIMESTAMP and FROM_UNIXTIME Ready handoffs with actual SDK values and canonical sources, including DATE_FORMAT handoff, preserving distinct native/legacy conversion, dynamic context demand, raw numeric identity, finite resources and exact original comparison before retirement.
 - [x] N7i: retire EXTRACT selector/cast/mixed/composite/NULL Ready paths and integrate canonical scalar EXTRACT plus named composite sources, preserving original source metadata, both eager operands, casts, separately demanded mode reads, warning/error distinctions and broad composite arithmetic. Freeze independent old observations and actual Ready/source REDs before edits; pair old/new before wire/controller retirement; validate finite work, provenance, late errors, dynamic modes, duplicates and mixed Projection before signed local commits.
 
 - [x] N7h: retire legacy DATE_ADD/SUB text/time/duration Ready head/step/parse controllers in favor of actual SDK state, keeping exact requested source channels, folded i128, original explicit zone, generic MyDecimal parse/round/render and separate presence. Capture independent old observations and forbidden Ready REDs before edits, pair old/new before retiring old controller bodies, bound demanded work and validate public/unistore consumers with signed local commits. The broader unistore SimpleExpr walker and its other unsupported source families remain explicit global work; this checkpoint must not claim their canonical source migration.
@@ -2561,3 +2562,93 @@ formatting of9 frontend+6 SDK Rust files under both compilers, both diff checks
 and immutable STR_TO_DATE fixture checks pass. All jobs are closed. Receipt
 `evidence/no-fallback-n7i.md` records commands/proof; signed SDK1017778 is paired
 with this frontend checkpoint, with no push. The global migration remains open.
+
+### N7j UNIX_TIMESTAMP, FROM_UNIXTIME and their DATE_FORMAT handoff
+
+
+The ordinary timestamp functions in `time_fn/session_tz.rs` still execute Ready
+parse/value/local stages. Legacy `tikv/unix_timestamp.rs` encodes typed Time and
+`tikv/from_unixtime.rs` encodes Decimal and retains a selected wrapper through the
+pack callback. Eliminate those encoded in-process handoffs in favor of actual
+SDK parsed time, numeric result and epoch values. Keep native two-zone demand,
+no-clock error, unconditional bad-date warning, full-zero NULL versus partial-zero
+numeric zero, range and normalized decimal coefficient/scale. Legacy typed Time
+uses strict zone conversion, ignores raw kind/FSP for numeric output and returns
+Decimal scale0 zero or scale6 valid micros. Legacy FROM_UNIXTIME uses visible
+Decimal text, f64 conversion and its original extra ordinary u32 nanos*1000; this
+is a different policy from native rounded epoch preparation and must remain so.
+
+Native FROM_UNIXTIME rounds according to original numeric kind/visible scale,
+keeps warning plus its computed zero epoch through HandleTruncate, and reads the
+zone only afterward. Optional format expressions have already been eagerly
+evaluated by the ordinary scalar owner; their conversion/DATE_FORMAT execution
+happens only after a valid local result. The legacy pack callback receives the
+original context identity and keeps its original demanded-child ordering. It no
+longer needs an alternate selected execution wrapper. DATE_FORMAT's native text
+and legacy raw-core adapters are part of this handoff and should call the existing
+shared datatype format primitives directly, with finite work gates and unchanged
+conversion/NULL order. Do not introduce a new datetime parser/formatter.
+
+First capture outputs, raw representations, errors, exact mode/zone/clock/
+truncate/warning and pack identity under absent/shared/fresh Ready caches. Include
+DST gaps/folds, raw offsets, full/partial zero dates, raw Time metadata, numeric
+bounds/nonfinite floats, raw Decimal visible/storage/shape, invalid UTF-8 and
+format arguments. Record true forbidden-Ready and canonical-source refusal REDs
+before implementation. Add actual SDK/front candidates beside untouched old
+callers and wire controller bodies and pair observations before old-body removal;
+then preserve wire validation/codec/output plans while delegating to actual
+functions. Fixed old hashes must never be regenerated from replacements.
+
+Canonical source hosts for unix_timestamp0/1 and from_unixtime1/2 must preserve
+every eager source, original native/typed output semantics and the existing
+FROM_UNIXTIME post-result temporal conversion policy. Bound detached originals,
+unit/text/Decimal/parser/diagnostic/output work, authenticate every token and drop
+store borrows before every context callback. Check NULL-suppressed copies,
+warning/zone ordering, source errors, metadata, parents, duplicates, all provider
+prefixes, cancellation/reuse and mixed serial/parallel Projection. Run full
+frontend/SDK suites with exact inherited failure lists, clippy/lint, pinned
+formatting, diffs and immutable old calendar fixtures before signed local commits.
+TSO, other monolithic time callers, generic fallback, unistore's old walker,
+semantic calendar gaps and full-server gates remain global work after this scope.
+
+
+N7j original96492 captures384264/14B4FDA02CC55EED and reproduces12 Ready routes
+plus all4 canonical source refusals. Independent53693 matches every old/new
+observation while old caller/controller bodies remain untouched. Actual SDK
+numeric/parsed-time/epoch values and consuming finishes then replace native and
+legacy Ready callers; wire adapters retain their planners/codecs and delegate to
+the same actual functions. DATE_FORMAT handoff uses unchanged datatype kernels.
+Native and legacy DST, rounding, raw metadata and extra nanos multiplication
+policies remain distinct. Format values are eagerly evaluated/authenticated,
+but are only copied/converted after valid local output; callbacks hold no store
+borrow. Clock0 returns without a dummy child, with cleanup after a failed start.
+
+Source matrix32118 exposes a real missed ScalarFunction return-family boundary:
+Unix Int under Decimal metadata writes the wrong representation. Restoring the
+existing value-only coerce_function_result once (with finite work) fixes it.
+55144 proves the same omissions in earlier EXTRACT(Double/Decimal) and DATE_ADD
+(Timestamp) sources; they now share that original ordinary return policy.
+72957 additionally proves that treating a huge VARCHAR declaration as padding
+wrongly rejects a tiny actual conversion. Shared control_value coercion now
+charges actual Decimal scale/fixed-binary/Bit padding and input formatting, never
+an unused VARCHAR truncation width; original conversion error dispositions and
+same-family behavior remain authoritative. No timestamp arithmetic or historical
+digest is changed by these source fixes.
+
+Final frontend30633 has1676 passes/exact3 inherited failures/95ignored/0filtered,
+all240 batch tests green. SDKfull has1111 passes/exact1 inherited failure/1ignored/
+0filtered; all4 new actual tests pass. Projection95218 passes26 including a new
+six-root mixed timestamp group with both flags and workers0/2; all older groups
+remain. Provider28212 and final full tests cover every prefix/provenance forgery,
+clock cleanup, deferred-format/resource/cancel/reuse and exclusive clock/zone/
+truncate/mode callbacks. Four existing timestamp/formatter unistore consumer tests
+pass without changing unistore code. Clippy24644 keeps89 expression/171 all-crate
+titles exactly as N7i; frontend warning titles also match. Lint65515, pinned
+17frontend+6SDK source formatting under both compilers, both diffs and immutable
+calendar fixture checks pass. Earlier new-test wrong error-variant/ample-budget
+expectations and a new Projection moved-variable compile failure were corrected
+only in tests, not reclassified as semantic defect evidence. All jobs are closed.
+Receipt evidence/no-fallback-n7j.md records commands/proof; signed local SDK
+baea038 is paired with this frontend checkpoint, with no push. TSO/other Ready callers, generic fallback, unistore old
+walker, %j/other semantic audits, inherited failures and full server gates remain
+open; this is not complete package transcreation or broad PB-source coverage.

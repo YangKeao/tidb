@@ -34,6 +34,8 @@ mod charset_source;
 mod date_arithmetic_source;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_epoch.rs"]
+mod epoch_source;
 #[path = "batch_extract.rs"]
 mod extract_source;
 #[path = "batch_json_sum_crc32.rs"]
@@ -129,6 +131,13 @@ pub(super) enum NativeHostMetadata {
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
+    },
+    Epoch {
+        arguments: Box<[usize]>,
+        from: bool,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
     },
     Extract {
         arguments: Box<[usize]>,
@@ -267,6 +276,7 @@ impl NativeHostMetadata {
             Self::Extremum(metadata) => Some(&metadata.result_type),
             Self::Charset(metadata) => Some(&metadata.result_type),
             Self::TimestampDiff { result_type, .. }
+            | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
             | Self::DateArithmetic { result_type, .. }
             | Self::BoundedStaleness { result_type, .. }
@@ -294,6 +304,9 @@ enum SqlDemand {
     TimestampDiff {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
+    },
+    Epoch {
+        first: Option<[u8; native_values::HANDLE_BYTES]>,
     },
     Extract {
         first: Option<[u8; native_values::HANDLE_BYTES]>,
@@ -387,7 +400,8 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::TimestampDiff { next, .. } => Ok(Some(*next)),
-            SqlDemand::Extract { first }
+            SqlDemand::Epoch { first }
+            | SqlDemand::Extract { first }
             | SqlDemand::DateArithmetic { first }
             | SqlDemand::BoundedStaleness { first }
             | SqlDemand::StrToDate { first } => Ok(Some(usize::from(first.is_some()))),
@@ -423,7 +437,8 @@ impl NativeTask {
             SqlDemand::TimestampDiff { .. } => {
                 Err(binding("timestamp diff demand cannot retain byte prefix"))
             }
-            SqlDemand::Extract { .. }
+            SqlDemand::Epoch { .. }
+            | SqlDemand::Extract { .. }
             | SqlDemand::DateArithmetic { .. }
             | SqlDemand::BoundedStaleness { .. }
             | SqlDemand::StrToDate { .. } => Err(binding("date demand cannot retain byte prefix")),
@@ -2049,6 +2064,24 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::EpochNative { from, arity } => {
+                let Some(NativeHostMetadata::Epoch {
+                    arguments,
+                    from: declared,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("epoch descriptor missing"));
+                };
+                if self.native_values.is_none()
+                    || *declared != from
+                    || arguments.len() != usize::from(arity)
+                    || invocation.arg_types.len() != arguments.len()
+                {
+                    return Err(binding("epoch descriptor differs"));
+                }
+                SqlDemand::Epoch { first: None }
+            }
             SqlBatchHostOperation::ExtractNative { typed, composite } => {
                 let Some(NativeHostMetadata::Extract {
                     arguments,
@@ -2439,12 +2472,31 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 }
             }
         };
-        self.install_task(
+        let immediate =
+            matches!(demand, SqlDemand::Epoch { .. }) && invocation.arg_types.is_empty();
+        let start = self.install_task(
             invocation.slot,
             invocation.row,
             invocation.arg_types.len(),
             demand,
-        )
+        )?;
+        if immediate {
+            let HostStart::Pending { task, .. } = start else {
+                unreachable!()
+            };
+            return match self.resume_epoch(&task, None) {
+                Ok(HostStep::Ready(value)) => Ok(HostStart::Ready(value)),
+                Ok(HostStep::NeedArg(_)) => {
+                    self.cancel(&task);
+                    Err(binding("clock unexpectedly demanded an argument"))
+                }
+                Err(e) => {
+                    self.cancel(&task);
+                    Err(e)
+                }
+            };
+        }
+        Ok(start)
     }
     fn start_window(
         &mut self,
@@ -2509,6 +2561,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Epoch { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("epoch source cannot be wire NULL"));
+            };
+            return self.resume_epoch(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Extract { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

@@ -130,6 +130,20 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
+        let live = native_payload_bytes(&value)?
+            .checked_mul(2)
+            .and_then(|n| base.checked_add(n))
+            .ok_or_else(|| resource("date return coercion extent overflow"))?;
+        self.check_bytes(live)?;
+        let value = match crate::tikv::coerce_result_bounded(
+            if *sign < 0 { "date_sub" } else { "date_add" },
+            result_type,
+            value,
+            self.max_retained_bytes - live,
+        ) {
+            Ok(v) => v,
+            Err(e) => return self.native_failure(e),
+        };
         if let Some(role) = output_role {
             return self
                 .finish_native_value(id, value, *output_node, *role, row, base)

@@ -681,3 +681,24 @@ mod legacy_date_arithmetic_value_tests;
 
 #[cfg(test)]
 pub(crate) mod extract_value_tests;
+
+#[cfg(test)]
+pub(crate) mod unix_value_tests;
+
+mod epoch_value;
+
+pub(crate) use epoch_value::{
+    date_format_in as eval_date_format_values_in, from_in as eval_from_unixtime_values_in,
+    legacy_format_in as eval_date_format_core_values_in, unix_in as eval_unix_timestamp_values_in,
+};
+
+pub(crate) use epoch_value::{
+    date_format_values_bounded as eval_date_format_values_bounded,
+    finish_from_values_bounded as finish_from_unixtime_values_bounded,
+    from_head_values_bounded as eval_from_unixtime_head_values_bounded,
+    unix_values_bounded as eval_unix_timestamp_values_bounded,
+};
+
+pub(crate) use epoch_value::finish_epoch_result_bounded;
+
+pub(crate) use control_value::coerce_result_bounded;

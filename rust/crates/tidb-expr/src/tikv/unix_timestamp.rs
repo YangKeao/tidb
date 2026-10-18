@@ -14,64 +14,38 @@
 
 use tidb_datatype::{Decimal, SessionTimeZone, Time};
 
-use super::{
-    evaluate_prepared_args_in, identity_value, native_time_result_contract_error, EvaluatedArgs,
-    EvaluatedBytesOp,
-};
 use crate::{Columns, Datum, EvalError};
-
-fn prepare_legacy_value(
-    value: Option<Time>,
-    zone: &SessionTimeZone,
-    operation: EvaluatedBytesOp,
-) -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError> {
-    let Some(value) = value else {
-        return Ok((
-            EvaluatedBytesOp::UnixTimestampNullNative,
-            EvaluatedArgs::Bytes(None),
-        ));
-    };
-    let value = identity_value::encode(&Datum::Time(value))?
-        .ok_or_else(native_time_result_contract_error)?;
-    Ok((
-        operation,
-        EvaluatedArgs::TemporalValue {
-            value,
-            zone: zone.clone(),
-        },
-    ))
-}
-
-/// Evaluates the legacy integer signature using the actual typed time and zone.
+/// Original integer projection from actual typed Time and explicit zone.
 pub fn unix_timestamp_int_legacy_in(
     value: Option<Time>,
     zone: &SessionTimeZone,
-    cols: &dyn Columns,
+    _cols: &dyn Columns,
 ) -> Result<Option<i128>, EvalError> {
-    evaluate_prepared_args_in(
-        cols,
-        || prepare_legacy_value(value, zone, EvaluatedBytesOp::UnixTimestampIntLegacy),
-        |computed| match computed.into_identity_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(i128::from(value))),
-            _ => Err(native_time_result_contract_error()),
-        },
-    )
+    match super::epoch_value::unix_legacy_values_bounded(
+        value,
+        zone,
+        false,
+        super::control_value::default_budget(),
+    )? {
+        Datum::Null => Ok(None),
+        Datum::Int(n) => Ok(Some(i128::from(n))),
+        _ => Err(super::native_time_result_contract_error()),
+    }
 }
-
-/// Evaluates the legacy decimal signature without changing the returned scale.
+/// Original strict legacy Decimal projection, retaining its exact returned scale.
 pub fn unix_timestamp_dec_legacy_in(
     value: Option<Time>,
     zone: &SessionTimeZone,
-    cols: &dyn Columns,
+    _cols: &dyn Columns,
 ) -> Result<Option<Decimal>, EvalError> {
-    evaluate_prepared_args_in(
-        cols,
-        || prepare_legacy_value(value, zone, EvaluatedBytesOp::UnixTimestampDecLegacy),
-        |computed| match computed.into_identity_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Decimal(value) => Ok(Some(value)),
-            _ => Err(native_time_result_contract_error()),
-        },
-    )
+    match super::epoch_value::unix_legacy_values_bounded(
+        value,
+        zone,
+        true,
+        super::control_value::default_budget(),
+    )? {
+        Datum::Null => Ok(None),
+        Datum::Decimal(n) => Ok(Some(n)),
+        _ => Err(super::native_time_result_contract_error()),
+    }
 }

@@ -16236,3 +16236,825 @@ fn native_extract_capabilities_budget_cancel_and_exclusive_callbacks() {
         }
     }
 }
+
+#[test]
+fn native_unix_timestamp_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call("unix_timestamp", ty(), vec![typed_column(0, &string)]),
+        &[string],
+        &[
+            vec![Datum::new_string("2020-01-02")],
+            vec![Datum::new_string("bad")],
+            vec![Datum::Null],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_unix_timestamp_clock_requires_canonical_driver() {
+    compare_typed_profile(
+        call("unix_timestamp", ty(), vec![]),
+        &[ty()],
+        &[vec![Datum::Int(1)]],
+        &[0],
+    );
+}
+#[test]
+fn native_from_unixtime_sources_require_canonical_driver() {
+    compare_typed_profile(
+        call("from_unixtime", string_ty(), vec![typed_column(0, &ty())]),
+        &[ty()],
+        &[
+            vec![Datum::Int(42)],
+            vec![Datum::Null],
+            vec![Datum::Int(-1)],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_from_unixtime_format_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "from_unixtime",
+            string.clone(),
+            vec![typed_column(0, &ty()), typed_column(1, &string)],
+        ),
+        &[ty(), string],
+        &[
+            vec![Datum::Int(42), Datum::new_string("%Y-%m-%d %f")],
+            vec![Datum::Null, Datum::Null],
+        ],
+        &[0, 1],
+    );
+}
+
+fn compare_epoch_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    level: usize,
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    for enabled in [false, true, false, true] {
+        let mut actual_ctx = crate::tikv::unix_value_tests::context(0, seed, level);
+        actual_ctx.reject = true;
+        actual_ctx.enabled.set(enabled);
+        // The reference suite alone binds its existing cache scope first.
+        let original_ctx = crate::tikv::unix_value_tests::context(0, seed, level);
+        original_ctx.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut original = chunk(schema, rows);
+        original.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected = output_for(&field);
+        let result = actual_suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, schema);
+        let reference = reference_suite.run(&original_ctx, &mut original, &mut expected);
+        assert_eq!(
+            result,
+            reference,
+            "seed={seed} level={level} flag={enabled} selection={}",
+            selection.len()
+        );
+        assert_eq!(
+            *actual_ctx.events.borrow(),
+            *original_ctx.events.borrow(),
+            "seed={seed} level={level} flag={enabled}"
+        );
+        assert_eq!(output.num_rows(), expected.num_rows());
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(row).is_null(0),
+                expected.get_row(row).is_null(0)
+            );
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected.column(0).get_raw(row).as_ref()
+            );
+        }
+        let route = actual_suite.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+    }
+}
+#[test]
+fn native_unix_sources_keep_clock_late_zone_numeric_identity_parents_and_duplicate_occurrences() {
+    let string = string_ty();
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(30)
+        .with_decimal(6);
+    let cases = vec![
+        (
+            string.clone(),
+            vec![
+                Datum::new_string("2025-03-30 02:30:00.123"),
+                Datum::new_string("2025-10-26 02:30:00"),
+                Datum::new_string("2017-00-02 00:00:00.123"),
+                Datum::new_string("0000-00-00"),
+                Datum::Null,
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::UInt(u64::MAX),
+                Datum::UInt(151113102019),
+                Datum::Null,
+            ],
+        ),
+        (
+            decimal.clone(),
+            vec![
+                Datum::Decimal(Decimal::from_literal("151113102019.1234567")),
+                Datum::Decimal(Decimal::from_literal("0.123")),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Double),
+            vec![
+                Datum::Real(151113102019.123),
+                Datum::Real(f64::NAN),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Time(
+                    tidb_datatype::parse_datetime(
+                        "2020-01-02 03:04:05.123456",
+                        &chrono_tz::UTC,
+                        true,
+                        true,
+                    )
+                    .unwrap()
+                    .time,
+                ),
+                Datum::Null,
+            ],
+        ),
+    ];
+    for seed in 0..12 {
+        for level in 0..3 {
+            for (source, values) in &cases {
+                let root = call(
+                    "unix_timestamp",
+                    decimal.clone(),
+                    vec![typed_column(0, source)],
+                );
+                let rows = values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>();
+                for parent in [false, true] {
+                    let root = if parent {
+                        call("cast_char", string.clone(), vec![root.clone()])
+                    } else {
+                        root.clone()
+                    };
+                    for selection in [
+                        vec![],
+                        (0..rows.len()).collect(),
+                        (0..2050).map(|i| i % rows.len()).collect(),
+                    ] {
+                        compare_epoch_source(
+                            root.clone(),
+                            std::slice::from_ref(source),
+                            &rows,
+                            &selection,
+                            seed,
+                            level,
+                        );
+                    }
+                }
+            }
+            let root = call("unix_timestamp", ty(), vec![]);
+            for selection in [vec![], vec![0, 1, 0], vec![0; 2050]] {
+                compare_epoch_source(
+                    root.clone(),
+                    &[ty()],
+                    &[vec![Datum::Int(0)], vec![Datum::Int(1)]],
+                    &selection,
+                    seed,
+                    level,
+                );
+            }
+        }
+    }
+}
+#[test]
+fn native_from_unix_sources_keep_warning_epoch_format_suppression_and_temporal_result_policy() {
+    let string = string_ty();
+    let date = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+    let cases = vec![
+        (
+            ty(),
+            vec![
+                Datum::Int(42),
+                Datum::Null,
+                Datum::Int(-1),
+                Datum::Int(32_536_771_200),
+            ],
+        ),
+        (
+            string.clone(),
+            vec![
+                Datum::new_string("1e2"),
+                Datum::new_string("-0.5"),
+                Datum::new_string("32536771199.9999999"),
+                Datum::Null,
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(30)
+                .with_decimal(6),
+            vec![
+                Datum::Decimal(
+                    Decimal::from_raw_parts(false, b"1255".to_vec(), 2, 3)
+                        .with_declared_shape(30, 9),
+                ),
+                Datum::Decimal(Decimal::from_literal("-1")),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Double),
+            vec![
+                Datum::Real(1.00000051),
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::INFINITY),
+                Datum::Null,
+            ],
+        ),
+    ];
+    for seed in 0..12 {
+        for level in 0..3 {
+            for (source, values) in &cases {
+                for result_type in [
+                    string.clone(),
+                    date.clone(),
+                    FieldType::new(FieldTypeCode::Date),
+                    FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+                ] {
+                    let rows = values
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            vec![
+                                v,
+                                if i % 3 == 0 {
+                                    Datum::new_string("%H:%i:%s.%f")
+                                } else if i % 3 == 1 {
+                                    Datum::Null
+                                } else {
+                                    Datum::Bytes(vec![0xff])
+                                },
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    for formatted in [false, true] {
+                        let mut args = vec![typed_column(0, source)];
+                        if formatted {
+                            args.push(typed_column(1, &string));
+                        }
+                        let root = call("from_unixtime", result_type.clone(), args);
+                        for parent in [false, true] {
+                            let root = if parent {
+                                call("cast_char", string.clone(), vec![root.clone()])
+                            } else {
+                                root.clone()
+                            };
+                            for selection in [
+                                vec![],
+                                (0..rows.len()).collect(),
+                                (0..2050).map(|i| i % rows.len()).collect(),
+                            ] {
+                                compare_epoch_source(
+                                    root.clone(),
+                                    &[source.clone(), string.clone()],
+                                    &rows,
+                                    &selection,
+                                    seed,
+                                    level,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Eager format source errors survive a NULL first value.
+    compare_epoch_source(
+        call(
+            "from_unixtime",
+            string.clone(),
+            vec![
+                typed_column(0, &ty()),
+                call("abs", ty(), vec![typed_column(1, &ty())]),
+            ],
+        ),
+        &[ty(), ty()],
+        &[vec![Datum::Null, Datum::Int(i64::MIN)]],
+        &[0],
+        2,
+        0,
+    );
+    // Valid format source with invalid UTF-8 is not converted after a NULL epoch.
+    compare_epoch_source(
+        call(
+            "from_unixtime",
+            string.clone(),
+            vec![typed_column(0, &ty()), typed_column(1, &string)],
+        ),
+        &[ty(), string],
+        &[
+            vec![Datum::Null, Datum::Bytes(vec![0xff])],
+            vec![Datum::Int(-1), Datum::Bytes(vec![0xff])],
+        ],
+        &[0, 1, 0],
+        2,
+        0,
+    );
+}
+
+#[test]
+fn native_unix_epoch_capabilities_deferred_format_resources_clock_cleanup_and_exclusive_callbacks()
+{
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use super::native_values::{NativeValueOrigin, NativeValueRole, NativeValueStore};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostCatalog, HostInvocation, HostSignature, HostStart, HostStep,
+        LocalHostServices,
+    };
+    struct Context<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<String>>,
+        clock: Cell<bool>,
+        error: Cell<bool>,
+    }
+    impl Columns for Context<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented epoch sources")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready lookup")
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("now".into());
+            self.clock.get().then_some((1, 123456789, 0))
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("zone".into());
+            SessionTimeZone::utc()
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("modes".into());
+            tidb_datatype::DateModes::default()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("level".into());
+            if self.error.get() {
+                crate::ErrorLevel::Error
+            } else {
+                crate::ErrorLevel::Warn
+            }
+        }
+        fn append_warning(&self, code: u16, _: &str) {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push(format!("warn:{code}"));
+        }
+    }
+    for output_role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for (from, arity) in [(false, 0), (false, 1), (true, 1), (true, 2)] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); arity];
+            let ret = field.clone();
+            let op = SqlBatchHostOperation::EpochNative {
+                from,
+                arity: arity as u8,
+            };
+            assert!(
+                tidb_query_expr::local::BatchCallSignature::for_host(op, arity)
+                    .unwrap()
+                    .uses_native_value_inputs()
+            );
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                op,
+                HostSignature {
+                    arg_types: args.clone().into_boxed_slice(),
+                    return_type: ret.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let nodes = [3, 8][..arity].to_vec();
+            let metadata = [NativeHostMetadata::Epoch {
+                arguments: nodes.clone().into_boxed_slice(),
+                from,
+                result_type: if from { string_ty() } else { ty() },
+                output_node: 2,
+                output_role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(16 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let context = Context {
+                store: &store,
+                events: RefCell::new(vec![]),
+                clock: Cell::new(true),
+                error: Cell::new(false),
+            };
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 512 << 10)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            let check = |output: &VectorValue, expected: &Datum| {
+                let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                    panic!()
+                };
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(token, output_role, NativeValueOrigin { node: 2, row })
+                        .unwrap(),
+                    expected
+                );
+            };
+            if arity == 0 {
+                context.clock.set(false);
+                assert!(matches!(
+                    provider.start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret
+                        }
+                    ),
+                    Err(LocalError::HostContract(_))
+                ));
+                assert_eq!(
+                    provider.take_native_error(),
+                    Some(EvalError::Unsupported("session clock"))
+                );
+                context.clock.set(true);
+                context.events.borrow_mut().clear();
+                let HostStart::Ready(output) = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                check(&output, &Datum::Int(1));
+                assert_eq!(*context.events.borrow(), vec!["now"]);
+                continue;
+            }
+            for index in 0..arity {
+                for bad in [
+                    stale.clone(),
+                    insert(&Datum::Null, NativeValueRole::Output, nodes[index], row),
+                    insert(&Datum::Null, NativeValueRole::CharInput, 99, row),
+                    insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        nodes[index],
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    ),
+                ] {
+                    let HostStart::Pending { task, .. } = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    if index == 1 {
+                        let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                        assert!(matches!(
+                            provider
+                                .resume(
+                                    &mut ctx,
+                                    &task,
+                                    HostArgReply {
+                                        index: 0,
+                                        field_type: &field,
+                                        values: &VectorValue::from_scalar(
+                                            &ScalarValue::Bytes(Some(token)),
+                                            1
+                                        )
+                                    }
+                                )
+                                .unwrap(),
+                            HostStep::NeedArg(_)
+                        ));
+                    }
+                    assert!(matches!(
+                        provider.resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index,
+                                field_type: &field,
+                                values: &VectorValue::from_scalar(
+                                    &ScalarValue::Bytes(Some(bad)),
+                                    1
+                                )
+                            }
+                        ),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(context.events.borrow().is_empty());
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+            }
+            // The valid giant format is already evaluated/authenticated. NULL,
+            // out-of-range epochs and truncate errors must never copy it.
+            let mut cases = vec![
+                (Datum::Bytes(vec![b'1'; 1 << 20]), None, 0),
+                (Datum::Bytes(vec![b'1'; 8192]), None, 1),
+            ];
+            if arity == 2 {
+                for v in [Datum::Null, Datum::Int(-1), Datum::Real(f64::NAN)] {
+                    cases.push((v, Some(Datum::Bytes(vec![0xff; 1 << 20])), 2));
+                }
+                cases.push((
+                    Datum::new_string("1e2"),
+                    Some(Datum::Bytes(vec![0xff; 1 << 20])),
+                    3,
+                ));
+            }
+            cases.push((
+                if from {
+                    Datum::Int(42)
+                } else {
+                    Datum::new_string("1970-01-01 00:00:01")
+                },
+                arity.eq(&2).then(|| Datum::new_string("%Y")),
+                4,
+            ));
+            for (first, format, kind) in cases {
+                context.events.borrow_mut().clear();
+                context.error.set(kind == 3);
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                let token = insert(&first, NativeValueRole::CharInput, 3, row);
+                let mut result = provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1),
+                    },
+                );
+                if arity == 2 {
+                    assert!(matches!(result.unwrap(), HostStep::NeedArg(_)));
+                    let second = format.unwrap_or_else(|| Datum::new_string("%Y"));
+                    let token = insert(&second, NativeValueRole::CharInput, 8, row);
+                    result = provider.resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 1,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1),
+                        },
+                    );
+                }
+                match kind {
+                    0 => {
+                        assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
+                        assert!(context.events.borrow().is_empty());
+                        assert!(provider.take_native_error().is_none());
+                    }
+                    1 => {
+                        assert!(matches!(result, Err(LocalError::HostContract(_))));
+                        assert!(context.events.borrow().is_empty());
+                        assert!(matches!(
+                            provider.take_native_error(),
+                            Some(EvalError::ExpressionRuntimeFailure(_))
+                        ));
+                    }
+                    2 => {
+                        let HostStep::Ready(output) = result.unwrap() else {
+                            panic!()
+                        };
+                        check(&output, &Datum::Null);
+                        assert!(context.events.borrow().is_empty());
+                        assert!(provider.take_native_error().is_none());
+                    }
+                    3 => {
+                        assert!(matches!(result, Err(LocalError::HostContract(_))));
+                        assert!(matches!(
+                            provider.take_native_error(),
+                            Some(EvalError::TruncatedWrongValue(ref message)) if message == "Truncated incorrect DECIMAL value: '1e2'"
+                        ));
+                        assert_eq!(*context.events.borrow(), vec!["level"]);
+                    }
+                    _ => {
+                        let HostStep::Ready(output) = result.unwrap() else {
+                            panic!()
+                        };
+                        let expected = if !from {
+                            Datum::Int(1)
+                        } else if arity == 1 {
+                            Datum::new_string("1970-01-01 00:00:42")
+                        } else {
+                            Datum::new_string("1970")
+                        };
+                        check(&output, &expected);
+                        assert_eq!(
+                            *context.events.borrow(),
+                            if from {
+                                vec!["zone"]
+                            } else {
+                                vec!["zone", "zone"]
+                            }
+                        );
+                        assert!(provider.take_native_error().is_none());
+                    }
+                }
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+            if from && arity == 1 {
+                drop(provider);
+                context.events.borrow_mut().clear();
+                context.error.set(false);
+                let metadata = [NativeHostMetadata::Epoch {
+                    arguments: vec![3].into_boxed_slice(),
+                    from: true,
+                    result_type: FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                    output_node: 2,
+                    output_role,
+                }];
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    op,
+                    HostSignature {
+                        arg_types: args.clone().into_boxed_slice(),
+                        return_type: ret.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 512 << 10)
+                    .with_native_values(Some(&store));
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                let token = insert(&Datum::Int(42), NativeValueRole::CharInput, 3, row);
+                let HostStep::Ready(output) = provider
+                    .resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1),
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                let mut expected = tidb_datatype::parse_datetime(
+                    "1970-01-01 00:00:42",
+                    &chrono_tz::UTC,
+                    true,
+                    true,
+                )
+                .unwrap()
+                .time;
+                expected.set_fsp(3).unwrap();
+                check(&output, &Datum::Time(expected));
+                assert!(context.events.borrow().iter().any(|v| v == "modes"));
+                assert_eq!(context.events.borrow()[0], "zone");
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+            }
+        }
+    }
+}
+
+#[test]
+fn native_extract_existing_source_keeps_original_return_family_boundary() {
+    let string = string_ty();
+    let rows = vec![vec![Datum::new_string("2020-01-02")], vec![Datum::Null]];
+    for result in [
+        FieldType::new(FieldTypeCode::Double),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(30)
+            .with_decimal(6),
+    ] {
+        let root = call(
+            "extract",
+            result,
+            vec![text(Some(b"DAY")), typed_column(0, &string)],
+        );
+        compare_typed_profile(
+            root.clone(),
+            std::slice::from_ref(&string),
+            &rows,
+            &[0, 1, 0],
+        );
+        compare_typed_profile(
+            call("cast_char", string.clone(), vec![root]),
+            std::slice::from_ref(&string),
+            &rows,
+            &[0, 1, 0],
+        );
+    }
+}
+#[test]
+fn native_date_arithmetic_existing_source_keeps_original_return_family_boundary() {
+    let string = string_ty();
+    let field = FieldType::new(FieldTypeCode::Timestamp).with_decimal(3);
+    let root = call(
+        "date_add_day",
+        field,
+        vec![typed_column(0, &string), typed_column(1, &ty())],
+    );
+    let rows = vec![
+        vec![
+            Datum::new_string("2020-01-02 03:04:05.123456"),
+            Datum::Int(1),
+        ],
+        vec![Datum::Null, Datum::Null],
+    ];
+    compare_typed_profile(root.clone(), &[string.clone(), ty()], &rows, &[0, 1, 0]);
+    compare_typed_profile(
+        call("cast_char", string.clone(), vec![root]),
+        &[string, ty()],
+        &rows,
+        &[0, 1, 0],
+    );
+}
