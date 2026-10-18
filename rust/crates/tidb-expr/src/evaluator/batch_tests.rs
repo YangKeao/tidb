@@ -9588,3 +9588,198 @@ fn native_logical_xor_strict_warning_probe_errors_are_ignored_before_truth_conve
         }
     }
 }
+
+fn native_unary_sign_abs_operand_profile(name: &str) {
+    let root = call(name, ty(), vec![abs(column(0))]);
+    let schema = vec![ty()];
+    let rows = vec![vec![Datum::Int(1)], vec![Datum::Int(i64::MIN)]];
+    compare_typed_profile(root, &schema, &rows, &[0, 1]);
+}
+#[test]
+fn native_unary_sign_abs_plus_requires_canonical_driver() {
+    native_unary_sign_abs_operand_profile("unaryplus");
+}
+#[test]
+fn native_unary_sign_abs_minus_requires_canonical_driver() {
+    native_unary_sign_abs_operand_profile("unaryminus");
+}
+
+fn unary_sign_call(name: &str, argument: Expression) -> Expression {
+    let field = crate::builtin_op::infer_unary_op_type(name, &argument)
+        .unwrap_or_else(|| argument.static_type().unwrap().clone());
+    call(name, field, vec![argument])
+}
+#[test]
+fn native_unary_sign_literals_and_columns_keep_kinds_shape_flags_and_promotion() {
+    let mut values = native_operator_value_cases();
+    values.extend([
+        (Datum::Int(i64::MIN), ty()),
+        (Datum::Int(i64::MAX), ty()),
+        (Datum::UInt(1u64 << 63), ty().with_unsigned(true)),
+        (Datum::UInt((1u64 << 63) + 1), ty().with_unsigned(true)),
+        (Datum::UInt(0), ty().with_unsigned(true)),
+        (Datum::Real(-0.0), real_ty()),
+        (
+            Datum::Decimal(Decimal::from_literal("-1.2300").with_declared_shape(60, 4)),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(60)
+                .with_decimal(4),
+        ),
+        (
+            Datum::Decimal(Decimal::from_literal("-0.0000").with_declared_shape(60, 4)),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(60)
+                .with_decimal(4),
+        ),
+    ]);
+    for (value, field) in &values {
+        for name in ["unaryplus", "unaryminus"] {
+            let sign = unary_sign_call(name, literal(value.clone(), field.clone()));
+            let root = call("cast_char", string_ty(), vec![sign]);
+            for selection in [vec![], vec![0], vec![2, 0, 2], vec![2; 2050]] {
+                compare_typed_profile(root.clone(), &[], &vec![vec![]; 3], &selection);
+            }
+        }
+    }
+    for (value, field) in values.into_iter().filter(|(value, _)| {
+        matches!(
+            value,
+            Datum::Int(_)
+                | Datum::UInt(_)
+                | Datum::Real(_)
+                | Datum::Float32(_)
+                | Datum::Decimal(_)
+                | Datum::String(_)
+                | Datum::Duration(_)
+                | Datum::Time(_)
+                | Datum::Json(_)
+        )
+    }) {
+        let rows = vec![vec![value], vec![Datum::Null]];
+        for name in ["unaryplus", "unaryminus"] {
+            let sign = unary_sign_call(name, typed_column(0, &field));
+            let root = call("cast_char", string_ty(), vec![sign]);
+            for selection in [
+                vec![],
+                vec![0],
+                vec![1, 0, 1],
+                (0..2050).map(|row| row % 2).collect(),
+            ] {
+                compare_typed_profile(
+                    root.clone(),
+                    std::slice::from_ref(&field),
+                    &rows,
+                    &selection,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_unary_sign_parents_keep_operand_phases_and_folded_constant_facts() {
+    let schema = vec![ty(); 3];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(2), Datum::Int(i64::MIN)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1), Datum::Int(1)],
+        vec![Datum::Null, Datum::Int(i64::MIN), Datum::Int(1)],
+        vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)],
+    ];
+    let mut roots = Vec::new();
+    for name in ["unaryplus", "unaryminus"] {
+        let sign = || unary_sign_call(name, abs(column(0)));
+        roots.extend([
+            sign(),
+            plus(sign(), abs(column(2))),
+            abs(sign()),
+            call("if", ty(), vec![sign(), abs(column(2)), int(0)]),
+            call("xor", ty(), vec![sign(), abs(column(1))]),
+            call(
+                "bitxor",
+                ty().with_unsigned(true),
+                vec![sign(), abs(column(1))],
+            ),
+            unary_sign_call(name, call("unaryminus", ty(), vec![column(0)])),
+            unary_sign_call(name, call("if", ty(), vec![int(1), int(i64::MIN), int(0)])),
+            unary_sign_call(name, call("coalesce", ty(), vec![null(), int(i64::MIN)])),
+        ]);
+    }
+    for selection in [
+        vec![],
+        vec![3],
+        vec![0, 1],
+        vec![1, 0],
+        vec![2, 3, 2],
+        vec![3; 2050],
+        (0..2050)
+            .map(|row| if row == 2049 { 1 } else { 0 })
+            .collect(),
+    ] {
+        for root in &roots {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_unary_sign_parent_keeps_original_native_qualification() {
+    for field in [
+        ty(),
+        ty().with_unsigned(true),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        string_ty(),
+    ] {
+        for name in ["unaryplus", "unaryminus"] {
+            let sign = unary_sign_call(name, typed_column(0, &field));
+            let root = call("cast_char", string_ty(), vec![sign]);
+            // Unified admission must not grow the original native signature
+            // set or introduce a vectorization getter on this new producer.
+            assert!(
+                crate::scalar_function::static_batch_target(&root).is_none(),
+                "{name} changed CHAR qualification for {field:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_unary_sign_arguments_honor_enum_set_integer_view() {
+    use tidb_datatype::MysqlSet;
+    let field =
+        FieldType::new(FieldTypeCode::Set).with_elems((0..64).map(|index| format!("v{index}")));
+    let integer_view = field
+        .clone()
+        .with_added_flags(FieldTypeFlags::ENUM_SET_AS_INT);
+    let value = Datum::Set(MysqlSet::new("v0,v53", (1u64 << 53) | 1), Collation::Binary);
+    let literal = || self::literal(value.clone(), field.clone());
+    let roots = [
+        unary_sign_call(
+            "unaryminus",
+            self::literal(value.clone(), integer_view.clone()),
+        ),
+        unary_sign_call(
+            "unaryminus",
+            call(
+                "if",
+                integer_view.clone(),
+                vec![int(1), literal(), literal()],
+            ),
+        ),
+        unary_sign_call(
+            "unaryminus",
+            call("coalesce", integer_view.clone(), vec![null(), literal()]),
+        ),
+        unary_sign_call("unaryminus", typed_column(0, &integer_view)),
+    ];
+    for root in roots {
+        compare_arithmetic_profile(
+            root,
+            std::slice::from_ref(&integer_view),
+            &[vec![value.clone()]],
+            &[0],
+        );
+    }
+}

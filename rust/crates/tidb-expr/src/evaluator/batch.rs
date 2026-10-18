@@ -357,7 +357,8 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = native_bitwise_operation(function.func_name.lowercase()).is_some()
+    let row_control = native_unary_sign_operation(function.func_name.lowercase()).is_some()
+        || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some();
     if native_arithmetic_operation(function.func_name.lowercase()).is_none()
@@ -1107,6 +1108,14 @@ fn native_selection_operation(function: &ScalarFunction) -> Option<SqlBatchHostO
         name => native_boolean_operation(name),
     }
 }
+fn native_unary_sign_operation(name: &str) -> Option<SqlBatchHostOperation> {
+    use tidb_query_expr::impl_op::NativeUnarySign;
+    Some(SqlBatchHostOperation::UnarySignNative(match name {
+        "unaryplus" => NativeUnarySign::Plus,
+        "unaryminus" => NativeUnarySign::Minus,
+        _ => return None,
+    }))
+}
 fn native_bitwise_operation(name: &str) -> Option<SqlBatchHostOperation> {
     use tidb_query_expr::impl_op::NativeBitwiseOp as B;
     Some(SqlBatchHostOperation::BitwiseNative(match name {
@@ -1119,13 +1128,53 @@ fn native_bitwise_operation(name: &str) -> Option<SqlBatchHostOperation> {
         _ => return None,
     }))
 }
-fn native_value_call(function: &ScalarFunction) -> bool {
+/// Native CHAR's existing raw-value signature families. This is an admission
+/// fact, independent of which extra value producers the unified compiler gains.
+fn native_character_value_argument(function: &ScalarFunction) -> bool {
     native_cast_name(function).is_some()
-        || native_bitwise_operation(function.func_name.lowercase()).is_some()
-        || native_selection_operation(function).is_some()
-        || native_comparison_operation(function.func_name.lowercase()).is_some()
-        || native_math_operation(function).is_some()
-        || native_arithmetic_operation(function.func_name.lowercase()).is_some()
+        || matches!(
+            function.func_name.lowercase(),
+            "bitand"
+                | "bitor"
+                | "bitxor"
+                | "leftshift"
+                | "rightshift"
+                | "bitneg"
+                | "coalesce"
+                | "ifnull"
+                | "if"
+                | "case"
+                | "and"
+                | "logicand"
+                | "or"
+                | "logicor"
+                | "xor"
+                | "not"
+                | "isnull"
+                | "istrue"
+                | "isfalse"
+                | "isnottrue"
+                | "isnotfalse"
+                | "isunknown"
+                | "isnotunknown"
+                | "istrue_with_null"
+                | "eq"
+                | "ne"
+                | "lt"
+                | "le"
+                | "gt"
+                | "ge"
+                | "nulleq"
+                | "nullif"
+                | "abs"
+                | "plus"
+                | "minus"
+                | "mul"
+        )
+}
+fn native_value_call(function: &ScalarFunction) -> bool {
+    native_unary_sign_operation(function.func_name.lowercase()).is_some()
+        || native_character_value_argument(function)
 }
 fn resolve_call_in_view(
     function: &ScalarFunction,
@@ -1133,6 +1182,7 @@ fn resolve_call_in_view(
 ) -> Result<(CallTarget, usize)> {
     if view.value_role().is_some() {
         if let Some(operation) = window_value_operation(function, view)
+            .or_else(|| native_unary_sign_operation(function.func_name.lowercase()))
             .or_else(|| native_bitwise_operation(function.func_name.lowercase()))
             .or_else(|| native_selection_operation(function))
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
@@ -1163,7 +1213,18 @@ fn resolve_call_in_view(
     }
     resolve_call(function)
 }
+#[derive(Clone, Copy)]
+enum SignaturePurpose {
+    NativeEligibility,
+    CompiledSource,
+}
 fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
+    resolve_call_for(function, SignaturePurpose::CompiledSource)
+}
+fn resolve_call_for(
+    function: &ScalarFunction,
+    purpose: SignaturePurpose,
+) -> Result<(CallTarget, usize)> {
     let operation = match function.func_name.lowercase() {
         "concat" => Some(SqlBatchHostOperation::Concat),
         "concat_ws" => Some(SqlBatchHostOperation::ConcatWs),
@@ -1180,7 +1241,10 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
                         && function.args.first().is_some_and(|arg| match arg {
                             Expression::Constant(value) => matches!(value.literal_value(), Some(Datum::Null | Datum::Int(_)))
                                 || matches!(value.literal_value(), Some(Datum::UInt(_)) if field.is_unsigned()),
-                            Expression::ScalarFunction(function) if native_value_call(function) => false,
+                            Expression::ScalarFunction(function) if match purpose {
+                                SignaturePurpose::NativeEligibility => native_character_value_argument(function),
+                                SignaturePurpose::CompiledSource => native_value_call(function),
+                            } => false,
                             _ => true,
                         })
                 })
@@ -1211,7 +1275,10 @@ fn resolve_call(function: &ScalarFunction) -> Result<(CallTarget, usize)> {
             && function.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
                     if matches!(operation, SqlBatchHostOperation::CastCharNative { .. } | SqlBatchHostOperation::CastNative) {
-                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some()) || matches!(arg, Expression::ScalarFunction(function) if native_value_call(function))
+                        matches!(arg, Expression::Column(_)) || matches!(arg, Expression::Constant(value) if value.literal_value().is_some()) || matches!(arg, Expression::ScalarFunction(function) if match purpose {
+                            SignaturePurpose::NativeEligibility => native_character_value_argument(function),
+                            SignaturePurpose::CompiledSource => native_value_call(function),
+                        })
                     } else {
                         batch_eval_type(field.eval_type()) == operation.argument_type()
                             && (!field.is_unsigned() || field.eval_type() == NativeEvalType::Int)
@@ -1600,7 +1667,7 @@ fn batch_eval_type(native: NativeEvalType) -> TikvEvalType {
 pub(crate) fn batch_call_signature(
     function: &ScalarFunction,
 ) -> Option<tidb_query_expr::local::BatchCallSignature> {
-    let (target, arity) = resolve_call(function).ok()?;
+    let (target, arity) = resolve_call_for(function, SignaturePurpose::NativeEligibility).ok()?;
     match target {
         CallTarget::Kernel(function) => {
             tidb_query_expr::local::batch_signature_for_arity(function, arity)
@@ -1806,6 +1873,7 @@ fn preflight_view<'a>(
                             SqlBatchHostOperation::AbsNative
                                 | SqlBatchHostOperation::BitwiseNative(_)
                                 | SqlBatchHostOperation::XorNative
+                                | SqlBatchHostOperation::UnarySignNative(_)
                         )
                     ) {
                         budget.field(sql, 1)?;
@@ -2290,6 +2358,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
                                         | SqlBatchHostOperation::XorNative
+                                        | SqlBatchHostOperation::UnarySignNative(_)
                                         | SqlBatchHostOperation::AddNative
                                         | SqlBatchHostOperation::SubtractNative
                                         | SqlBatchHostOperation::MultiplyNative
@@ -2412,7 +2481,8 @@ fn lower_view(
                                 }
                             }
                             operation @ (SqlBatchHostOperation::BitwiseNative(_)
-                            | SqlBatchHostOperation::XorNative) => {
+                            | SqlBatchHostOperation::XorNative
+                            | SqlBatchHostOperation::UnarySignNative(_)) => {
                                 let left = ordinal
                                     .checked_add(1)
                                     .ok_or_else(|| resource("bitwise source ordinal overflow"))?;
@@ -2436,6 +2506,13 @@ fn lower_view(
                                                     checked[right].sql.is_unsigned()
                                                 }),
                                             ],
+                                        }
+                                    }
+                                    SqlBatchHostOperation::UnarySignNative(sign) => {
+                                        NativeRawValueOperation::UnarySign {
+                                            sign,
+                                            unsigned: checked[left].sql.is_unsigned(),
+                                            constant: checked[left].folds_to_constant,
                                         }
                                     }
                                     SqlBatchHostOperation::XorNative => {
@@ -3439,11 +3516,17 @@ impl NativeDatumSource for NativeChunk<'_> {
                 .native_values
                 .ok_or_else(|| binding("native source has no value store"))?;
             let token = match &node.kind {
-                SourceKind::NativeConstant { value } => store.borrow_mut().insert_clone(
-                    value,
-                    node.view.value_role().expect("checked native view"),
-                    NativeValueOrigin { node: ordinal, row },
-                )?,
+                SourceKind::NativeConstant { value } => {
+                    // Exactly the public Expression.Eval result view. Borrow
+                    // unchanged values until insert_clone's pre-copy gate.
+                    let integer = crate::expression::enum_set_integer_view(value, Some(&node.sql))
+                        .map(Datum::UInt);
+                    store.borrow_mut().insert_clone(
+                        integer.as_ref().unwrap_or(value),
+                        node.view.value_role().expect("checked native view"),
+                        NativeValueOrigin { node: ordinal, row },
+                    )?
+                }
                 SourceKind::Column { index } => {
                     let column = self.input.column(*index);
                     let cells = column.raw_cells();
@@ -3458,6 +3541,8 @@ impl NativeDatumSource for NativeChunk<'_> {
                         .input
                         .physical_row(row.input_row)
                         .get_datum(*index, &node.sql);
+                    let value =
+                        crate::expression::apply_enum_set_integer_view(value, Some(&node.sql));
                     store.borrow_mut().insert_clone(
                         &value,
                         node.view.value_role().expect("checked native view"),

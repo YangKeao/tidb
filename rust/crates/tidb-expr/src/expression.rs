@@ -623,6 +623,33 @@ pub(crate) fn propagate_type(expr: &mut Expression, eval_type: EvalType) {
     }
 }
 
+/// The original Expression.Eval result interpretation, borrowed so native
+/// literal transport can check its copy budget before cloning an owner.
+pub(crate) fn enum_set_integer_view(
+    value: &tidb_datatype::Datum,
+    field: Option<&tidb_datatype::FieldType>,
+) -> Option<u64> {
+    let field = field?;
+    if !field.has_flag(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT) {
+        return None;
+    }
+    match (field.code(), value) {
+        (tidb_datatype::FieldTypeCode::Enum, tidb_datatype::Datum::Enum(value, _)) => {
+            Some(value.value())
+        }
+        (tidb_datatype::FieldTypeCode::Set, tidb_datatype::Datum::Set(value, _)) => {
+            Some(value.value())
+        }
+        _ => None,
+    }
+}
+pub(crate) fn apply_enum_set_integer_view(
+    value: tidb_datatype::Datum,
+    field: Option<&tidb_datatype::FieldType>,
+) -> tidb_datatype::Datum {
+    enum_set_integer_view(&value, field).map_or(value, tidb_datatype::Datum::UInt)
+}
+
 impl Expression {
     /// Go `Expression.HashCode`: the type-tagged canonical byte encoding used as
     /// a map/dedup key. Structural and context-free.
@@ -786,25 +813,7 @@ impl Expression {
     }
 
     fn apply_enum_set_as_int(&self, value: tidb_datatype::Datum) -> tidb_datatype::Datum {
-        // `WrapWithCastAsInt` follows Go's hybrid ENUM path by setting
-        // `EnumSetAsIntFlag` on the source expression and returning it without
-        // building another cast node. The row/constant seam still materializes
-        // the native ENUM/SET datum, so honor that flag here just as Go's
-        // `EvalInt` does.
-        if let Some(field_type) = self.static_type() {
-            if field_type.has_flag(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT) {
-                return match (field_type.code(), value) {
-                    (tidb_datatype::FieldTypeCode::Enum, tidb_datatype::Datum::Enum(value, _)) => {
-                        tidb_datatype::Datum::UInt(value.value())
-                    }
-                    (tidb_datatype::FieldTypeCode::Set, tidb_datatype::Datum::Set(value, _)) => {
-                        tidb_datatype::Datum::UInt(value.value())
-                    }
-                    (_, value) => value,
-                };
-            }
-        }
-        value
+        apply_enum_set_integer_view(value, self.static_type())
     }
 
     /// Go `Expression.GetType` without an `EvalContext`: the expression's static

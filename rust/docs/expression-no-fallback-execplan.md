@@ -1060,3 +1060,72 @@ inherited warnings, both pinned formats and both diff checks pass. Datatype
 code is unchanged and was not rerun. All jobs are closed. Sign local commits
 and continue ordinary source families/compositions, dynamic/deferred sources,
 multi-output effects and other callers. The overall goal is not complete.
+
+### N6n unary sign coverage (2026-10-18, actual RED)
+
+Unary plus and unary minus over ABS(column0), rows1,MIN_INT, each refuse
+unified compilation and fall back(refusals=1,fallback=1). Both independent
+regressions fail on route counters while preserving the legacy ABS SQL error.
+Preserve actual Datum kind, Float32 full-f64 payload, String collation, Decimal
+declaration/storage metadata and constant-only integer promotion when adding
+native-value producers. Owned unsigned/constant declaration facts suffice for
+integer recipe selection; no Expression callback or fake ready child is needed.
+
+The current value helper still selects11 old ready-argument recipes. Expose
+single-source value kernels and retire those adapters before connecting the
+new raw-value provider. The existing authenticated unary-minus failure mapping
+is already known: ready_value.rs maps NativeUnaryMinusError bits/signedness to
+DataOutOfRange(BIGINT,"-<original bits>"); signed MIN deliberately renders two
+minus signs. Constant promotion and computed overflow must remain distinct.
+Inspect old Decimal recipe budgets and actual conversion/clone work before
+choosing new bounds; unperformed scale formatting must not be charged merely
+because the shared transport also serves bitwise conversions.
+
+
+### N6n verified outcome (2026-10-18)
+
+Both unary sign admission/fallback REDs now execute through the canonical
+native-value driver. Eleven frontend ready-argument recipes have been retired
+in favor of shared SDK value kernels, with original integer-constant promotion,
+computed overflow diagnostics, full f64 payloads and Decimal headers/scales.
+The enlarged matrix caught and corrected an invalid omission of the public
+ScalarFunction result normalizer. The separate CHAR qualification RED caught
+compiler capability growth changing the original native signature set; native
+eligibility and compiled transport now use independent signature facts.
+2176 new native-owner comparisons,63 shared provider cases and10 qualification
+assertions pass. Full frontend1509 passes retain the exact inherited4 failures;
+SDK1062 passes retain the exact inherited6 failures. All150 batch tests,
+18 protocol/catalog tests, the original unary expected-result tables,
+25 production Projection tests with22 output roots, lint, scoped clippy89
+inherited warnings, both pinned formats and both diff checks pass. Datatype
+code did not change. All jobs are closed. Sign local commits and continue
+source result flags, remaining operator/function families, dynamic sources,
+effectful multi-output and other callers; the global goal is not complete.
+
+
+### N6n additional source-flag probe before commit (2026-10-18)
+
+The original Expression.eval applies ENUM_SET_AS_INT after evaluating a leaf or
+scalar function. A wide SET ordinal2^53+1 under unary minus distinguishes its
+exact integer view from real conversion (which loses one). Check flagged
+literal/column inputs and flagged IF/COALESCE producer results before signing
+the checkpoint. If normalization is missing from native-value transport, fix
+that generic source/result boundary rather than narrowing valid inputs or
+hiding the issue with an operator-specific conversion. Prior passing gates
+remain evidence for their covered cases, not proof for this added concern.
+
+
+### N6n result-view correction (2026-10-18, RED to green)
+
+The valid SET ordinal2^53+1 probe failed: unary minus received an unflagged
+Set instead of the public Expression.Eval integer view and lost one through
+f64 conversion. Extract the original declaration/value rule and share it with
+native constant/column imports and SQL result publication. Existing host slots
+supply result types in O(1); unchanged constants stay borrowed until their
+copy-budget check. Literal, column, IF and COALESCE result paths now all pass
+(16 added flag comparisons), with no tree callback or new runtime path.
+Final frontend1510 passes retain exactly the inherited4 failures; all151 batch
+tests pass. SDK source stayed unchanged after1062 passes/exact inherited6 and
+clippy89 inherited warnings. Frontend Projection25, make lint, pinned format and diff gates pass again
+after the generic boundary correction. See evidence/no-fallback-n6n.md.
+The overall goal remains active.

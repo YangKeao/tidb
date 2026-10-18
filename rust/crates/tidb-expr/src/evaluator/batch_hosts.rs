@@ -68,18 +68,25 @@ pub(super) enum NativeRawValueOperation {
         unsigned: [bool; 2],
     },
     LogicalXor,
+    UnarySign {
+        sign: tidb_query_expr::impl_op::NativeUnarySign,
+        unsigned: bool,
+        constant: bool,
+    },
 }
 impl NativeRawValueOperation {
     fn sql_operation(self) -> SqlBatchHostOperation {
         match self {
             Self::Bitwise { operation, .. } => SqlBatchHostOperation::BitwiseNative(operation),
             Self::LogicalXor => SqlBatchHostOperation::XorNative,
+            Self::UnarySign { sign, .. } => SqlBatchHostOperation::UnarySignNative(sign),
         }
     }
     fn arity(self) -> usize {
         match self {
             Self::Bitwise { operation, .. } => operation.arity(),
             Self::LogicalXor => 2,
+            Self::UnarySign { .. } => 1,
         }
     }
 }
@@ -175,6 +182,18 @@ pub(super) enum NativeHostMetadata {
     },
 }
 impl NativeHostMetadata {
+    fn result_type(&self) -> Option<&FieldType> {
+        match self {
+            Self::RawValues { result_type, .. }
+            | Self::UnaryWindow { result_type, .. }
+            | Self::Selection { result_type, .. }
+            | Self::Comparison { result_type, .. }
+            | Self::Arithmetic { result_type, .. }
+            | Self::Math { result_type, .. }
+            | Self::ValueCast { result_type, .. } => Some(result_type),
+            _ => None,
+        }
+    }
     fn regexp(&self) -> Option<&tidb_query_expr::NativeRegexpInvocation> {
         match self {
             Self::Regexp(invocation) => Some(invocation),
@@ -685,6 +704,16 @@ impl<'a> NativeBatchHosts<'a> {
         row: InputRow,
         base: usize,
     ) -> LocalResult<VectorValue> {
+        // ScalarFunction.Eval's return normalization has already run. Its
+        // enclosing Expression.Eval applies this immutable result view next.
+        // Host slots provide O(1) declaration access without a tree callback,
+        // a per-row metadata scan or an extra source-schema allocation.
+        let field = self
+            .metadata
+            .get(self.task(id)?.slot.index())
+            .and_then(NativeHostMetadata::result_type)
+            .ok_or_else(|| binding("native SQL result lacks its declaration"))?;
+        let result = crate::expression::apply_enum_set_integer_view(result, Some(field));
         let store = self
             .native_values
             .ok_or_else(|| binding("native result has no value store"))?;
@@ -1913,7 +1942,8 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 }
             }
             operation @ (SqlBatchHostOperation::BitwiseNative(_)
-            | SqlBatchHostOperation::XorNative) => {
+            | SqlBatchHostOperation::XorNative
+            | SqlBatchHostOperation::UnarySignNative(_)) => {
                 let Some(NativeHostMetadata::RawValues {
                     operation: declared,
                     name,
@@ -1923,9 +1953,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 else {
                     return Err(binding("raw value source descriptor missing"));
                 };
-                let named = native_bitwise_operation(name).or_else(|| {
-                    (name.as_ref() == "xor").then_some(SqlBatchHostOperation::XorNative)
-                });
+                let named = native_unary_sign_operation(name)
+                    .or_else(|| native_bitwise_operation(name))
+                    .or_else(|| {
+                        (name.as_ref() == "xor").then_some(SqlBatchHostOperation::XorNative)
+                    });
                 if self.native_values.is_none()
                     || declared.sql_operation() != operation
                     || named != Some(operation)
@@ -2223,7 +2255,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         }
         if matches!(task.demand, SqlDemand::RawValues { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("bitwise argument cannot be wire NULL"));
+                return Err(binding("raw value argument cannot be wire NULL"));
             };
             return self.resume_raw_values(id, token);
         }

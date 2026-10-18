@@ -87,6 +87,23 @@ impl NativeBatchHosts<'_> {
                             },
                         )
                     }
+                    NativeRawValueOperation::UnarySign { sign, .. } => {
+                        let identity = *sign == tidb_query_expr::impl_op::NativeUnarySign::Plus;
+                        if matches!(value, Datum::Decimal(_))
+                            || (!identity && matches!(value, Datum::String(_) | Datum::Bytes(_)))
+                        {
+                            window_values::conversion_work_bound(value, 16)
+                        } else {
+                            native_payload_bytes(value)?
+                                .checked_mul(if matches!(value, Datum::Json(_)) {
+                                    128
+                                } else {
+                                    4
+                                })
+                                .and_then(|bytes| bytes.checked_add(1024))
+                                .ok_or_else(|| resource("unary sign work allowance overflow"))
+                        }
+                    }
                     // XOR tests Decimal coefficient zero directly. It does not
                     // render scale padding or stringify JSON for a cast.
                     NativeRawValueOperation::LogicalXor => native_payload_bytes(value)?
@@ -119,6 +136,10 @@ impl NativeBatchHosts<'_> {
                 },
             )
         };
+        let available = self
+            .max_retained_bytes
+            .checked_sub(base)
+            .ok_or_else(|| resource("raw value work allowance exhausted"))?;
         let computed = match *operation {
             NativeRawValueOperation::Bitwise {
                 operation,
@@ -129,6 +150,18 @@ impl NativeBatchHosts<'_> {
                 right,
                 unsigned,
                 self.context,
+            ),
+            NativeRawValueOperation::UnarySign {
+                sign,
+                unsigned,
+                constant,
+            } => crate::ops::eval_native_unary_sign_values(
+                sign,
+                left,
+                unsigned,
+                constant,
+                self.context,
+                available,
             ),
             NativeRawValueOperation::LogicalXor => crate::ops::eval_native_logical_xor_values(
                 left,
@@ -189,6 +222,18 @@ mod tests {
                 unsigned: [false; 2],
             })
             .chain(std::iter::once(NativeRawValueOperation::LogicalXor))
+            .chain(
+                [
+                    tidb_query_expr::impl_op::NativeUnarySign::Plus,
+                    tidb_query_expr::impl_op::NativeUnarySign::Minus,
+                ]
+                .into_iter()
+                .map(|sign| NativeRawValueOperation::UnarySign {
+                    sign,
+                    unsigned: false,
+                    constant: false,
+                }),
+            )
         {
             let field: tipb::FieldType = tidb_query_datatype::FieldTypeTp::Blob.into();
             let args = vec![field.clone(); operation.arity()];
@@ -209,13 +254,29 @@ mod tests {
                 SqlBatchHostOperation::BitwiseNative(B::RightShift) => "rightshift",
                 SqlBatchHostOperation::BitwiseNative(B::Neg) => "bitneg",
                 SqlBatchHostOperation::XorNative => "xor",
+                SqlBatchHostOperation::UnarySignNative(
+                    tidb_query_expr::impl_op::NativeUnarySign::Plus,
+                ) => "unaryplus",
+                SqlBatchHostOperation::UnarySignNative(
+                    tidb_query_expr::impl_op::NativeUnarySign::Minus,
+                ) => "unaryminus",
                 _ => unreachable!(),
             };
             let metadata = [NativeHostMetadata::RawValues {
                 operation,
                 name: name.into(),
-                result_type: FieldType::new(FieldTypeCode::LongLong)
-                    .with_unsigned(!matches!(operation, NativeRawValueOperation::LogicalXor)),
+                result_type: if matches!(
+                    operation,
+                    NativeRawValueOperation::UnarySign {
+                        sign: tidb_query_expr::impl_op::NativeUnarySign::Plus,
+                        ..
+                    }
+                ) {
+                    FieldType::new(FieldTypeCode::Varchar)
+                } else {
+                    FieldType::new(FieldTypeCode::LongLong)
+                        .with_unsigned(!matches!(operation, NativeRawValueOperation::LogicalXor))
+                },
                 left_node: 3,
                 right_node: (operation.arity() == 2).then_some(8),
                 output_node: 2,
@@ -328,6 +389,35 @@ mod tests {
                     );
                 }
                 match case {
+                    5 if matches!(
+                        operation,
+                        NativeRawValueOperation::UnarySign {
+                            sign: tidb_query_expr::impl_op::NativeUnarySign::Plus,
+                            ..
+                        }
+                    ) =>
+                    {
+                        let HostStep::Ready(values) = result.unwrap() else {
+                            panic!("unary plus must preserve actual string kind without conversion")
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                            panic!("expected native result")
+                        };
+                        assert_eq!(
+                            *store
+                                .borrow()
+                                .get(
+                                    token,
+                                    NativeValueRole::Output,
+                                    NativeValueOrigin { node: 2, row }
+                                )
+                                .unwrap(),
+                            Datum::new_string("2tail")
+                        );
+                        assert_eq!((context.reads.get(), context.warnings.get()), (0, 0));
+                        assert!(provider.take_native_error().is_none());
+                    }
+
                     1 | 5 if matches!(operation, NativeRawValueOperation::LogicalXor) => {
                         let HostStep::Ready(values) = result.unwrap() else {
                             panic!(

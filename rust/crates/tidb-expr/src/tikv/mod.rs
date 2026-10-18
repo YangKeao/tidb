@@ -498,7 +498,7 @@ pub(crate) fn restore_math_decimal(
 
 // Used only by the input/output decimal representation bridges. The backend's
 // narrow wrapper owns the actual NativeDecimalError, not its rendered message.
-fn math_decimal_bridge_error(
+pub(crate) fn math_decimal_bridge_error(
     error: tidb_query_datatype::codec::mysql::decimal::NativeDecimalError,
 ) -> crate::EvalError {
     let cause = tidb_query_expr::local::native_decimal_bridge_error(error);

@@ -70,36 +70,23 @@ pub(super) fn prepare_typed_integer_values(
     }
 }
 
-/// Select the signedness/constness recipe without inspecting overflow or
-/// computing a negated value. Constant recipes provide their own checked Int
-/// view of the computed Decimal; column recipes report the actual typed cause.
+/// Constant promotion and computed overflow share the actual SDK checked leaf.
 pub(super) fn unary_minus_integer(
     bits: u64,
     unsigned: bool,
-    arg: Operand<'_>,
-    ctx: &dyn crate::context::Columns,
+    constant: bool,
+    maximum: usize,
 ) -> Result<Datum, EvalError> {
-    use crate::tikv::{evaluate_args_in, EvaluatedArgs, EvaluatedBytesOp};
-
-    let constant = arg.is_constant();
-    let operation = match (unsigned, constant) {
-        (false, false) => EvaluatedBytesOp::UnaryMinusIntNative,
-        (true, false) => EvaluatedBytesOp::UnaryMinusUIntNative,
-        (false, true) => EvaluatedBytesOp::UnaryMinusIntConstantNative,
-        (true, true) => EvaluatedBytesOp::UnaryMinusUIntConstantNative,
-    };
-    evaluate_args_in(
-        operation,
-        ctx,
-        || Ok(EvaluatedArgs::Int(Some(bits as i64))),
-        |computed| {
-            if constant {
-                computed.into_decimal_or_int_datum()
-            } else {
-                computed.into_int_datum()
-            }
-        },
-    )
+    if constant {
+        let computed = tidb_query_expr::impl_op::native_unary_minus_constant_value(bits, unsigned);
+        if let tidb_query_datatype::codec::mysql::decimal::Res::Ok(value) = computed.as_i64() {
+            return Ok(Datum::Int(value));
+        }
+        return crate::tikv::restore_math_decimal(&computed, maximum).map(Datum::Decimal);
+    }
+    tidb_query_expr::impl_op::native_unary_minus_integer_value(bits, unsigned)
+        .map(Datum::Int)
+        .map_err(super::unary_minus_overflow)
 }
 
 /// Select a fixed integer recipe from original operand/profile metadata only.

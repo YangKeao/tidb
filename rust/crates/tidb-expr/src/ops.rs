@@ -94,171 +94,122 @@ pub(crate) fn eval_native_bitwise_values(
     )
 }
 
-/// Restore only unary-plus column metadata on the worker's computed value.
-/// Negation deliberately does not retain a declared DECIMAL column shape.
-fn pack_unary_decimal(
-    computed: crate::tikv::EvaluatedBytesResult,
-    declared_shape: Option<(i64, i64)>,
-) -> Result<Datum, EvalError> {
-    Ok(match (computed.into_decimal_datum()?, declared_shape) {
-        (Datum::Decimal(value), Some((flen, scale))) => {
-            Datum::Decimal(value.with_declared_shape(flen, scale))
-        }
-        (value, _) => value,
-    })
+/// Original typed SQL diagnostic from an actual shared integer-negation failure.
+pub(crate) fn unary_minus_overflow(
+    cause: tidb_query_expr::impl_op::NativeUnaryMinusError,
+) -> EvalError {
+    EvalError::DataOutOfRange {
+        value: "BIGINT",
+        expression: if cause.unsigned {
+            format!("-{}", cause.bits)
+        } else {
+            format!("-{}", cause.bits as i64)
+        },
+    }
 }
 
-/// Preserve the original value-domain coercion and result kind; fixed workers
-/// own identity, sign reversal, overflow and constant integer promotion.
+/// Metadata-only entry for callers which still own a native expression tree.
+/// All computation is the same value-only helper used by the canonical driver.
 fn eval_unary_sign_in(
     op: UnaryOp,
-    v: Datum,
+    value: Datum,
     arg: Operand<'_>,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    use crate::tikv::{evaluate_args_in, EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesResult};
+    let sign = if op == UnaryOp::Plus {
+        tidb_query_expr::impl_op::NativeUnarySign::Plus
+    } else {
+        tidb_query_expr::impl_op::NativeUnarySign::Minus
+    };
+    eval_native_unary_sign_values(
+        sign,
+        value,
+        arg.is_unsigned(),
+        arg.is_constant(),
+        ctx,
+        tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
+    )
+}
 
-    let plus = op == UnaryOp::Plus;
-    let bits_operation = if plus {
-        EvaluatedBytesOp::UnaryPlusBitsNative
-    } else {
-        EvaluatedBytesOp::UnaryMinusBitsNative
+/// Actual native value kind and declaration facts, without an Expression,
+/// ready-child tree, cache interpreter or callback for argument evaluation.
+pub(crate) fn eval_native_unary_sign_values(
+    sign: tidb_query_expr::impl_op::NativeUnarySign,
+    value: Datum,
+    unsigned: bool,
+    constant: bool,
+    ctx: &dyn crate::context::Columns,
+    maximum: usize,
+) -> Result<Datum, EvalError> {
+    use tidb_query_expr::impl_op::{
+        native_unary_null_value, native_unary_plus_bytes_value, native_unary_plus_int_value,
+        native_unary_sign_bits_value, NativeUnarySign,
     };
-    let decimal_operation = if plus {
-        EvaluatedBytesOp::UnaryPlusDecimalNative
-    } else {
-        EvaluatedBytesOp::UnaryMinusDecimalNative
-    };
-    match v {
-        Datum::Null => evaluate_args_in(
-            EvaluatedBytesOp::UnaryNullNative,
-            ctx,
-            || Ok(EvaluatedArgs::NullWitness(None)),
-            EvaluatedBytesResult::into_int_datum,
-        ),
-        Datum::String(value) if plus => {
-            let collation = value.collation();
-            evaluate_args_in(
-                EvaluatedBytesOp::UnaryPlusBytesNative,
-                ctx,
-                || Ok(EvaluatedArgs::Bytes(Some(value.into_bytes()))),
-                |computed| {
-                    Ok(computed.into_bytes()?.map_or(Datum::Null, |bytes| {
-                        Datum::String(tidb_datatype::StringDatum::new(bytes, collation))
-                    }))
-                },
-            )
+    let plus = sign == NativeUnarySign::Plus;
+    match value {
+        Datum::Null => Ok(native_unary_null_value().map_or(Datum::Null, Datum::Int)),
+        Datum::String(value) if plus => Ok(Datum::String(tidb_datatype::StringDatum::new(
+            native_unary_plus_bytes_value(value.bytes()),
+            value.collation(),
+        ))),
+        Datum::Bytes(value) if plus => Ok(Datum::Bytes(native_unary_plus_bytes_value(&value))),
+        value @ (Datum::String(_) | Datum::Bytes(_)) => Ok(Datum::Real(f64::from_bits(
+            native_unary_sign_bits_value(sign, to_f64_with_mysql_string(&value, ctx)?.to_bits()),
+        ))),
+        Datum::Decimal(value) => unary_sign_decimal_value(sign, value, maximum),
+        Datum::Real(value) => Ok(Datum::Real(f64::from_bits(native_unary_sign_bits_value(
+            sign,
+            value.to_bits(),
+        )))),
+        Datum::Float32(value) => Ok(Datum::Float32(f64::from_bits(
+            native_unary_sign_bits_value(sign, value.to_bits()),
+        ))),
+        Datum::Int(value) if plus => Ok(Datum::Int(native_unary_plus_int_value(value))),
+        Datum::UInt(value) if plus => {
+            Ok(Datum::UInt(native_unary_plus_int_value(value as i64) as u64))
         }
-        Datum::Bytes(value) if plus => evaluate_args_in(
-            EvaluatedBytesOp::UnaryPlusBytesNative,
-            ctx,
-            || Ok(EvaluatedArgs::Bytes(Some(value))),
-            |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::Bytes)),
-        ),
-        // Minus over strings is REAL, with the original warning/coercion policy.
-        value @ (Datum::String(_) | Datum::Bytes(_)) => evaluate_args_in(
-            bits_operation,
-            ctx,
-            || {
-                Ok(EvaluatedArgs::Ieee754Bits(Some(
-                    to_f64_with_mysql_string(&value, ctx)?.to_bits(),
-                )))
-            },
-            |computed| {
-                Ok(computed
-                    .into_ieee754_bits()?
-                    .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
-            },
-        ),
-        Datum::Decimal(value) => {
-            let declared_shape = if plus { value.declared_shape() } else { None };
-            evaluate_args_in(
-                decimal_operation,
-                ctx,
-                || {
-                    Ok(EvaluatedArgs::Decimal(Some(
-                        crate::tikv::prepare_math_decimal(&value)?,
-                    )))
-                },
-                |computed| pack_unary_decimal(computed, declared_shape),
-            )
-        }
-        Datum::Real(value) => evaluate_args_in(
-            bits_operation,
-            ctx,
-            || Ok(EvaluatedArgs::Ieee754Bits(Some(value.to_bits()))),
-            |computed| {
-                Ok(computed
-                    .into_ieee754_bits()?
-                    .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
-            },
-        ),
-        // Float32 carries an f64 payload; never narrow it through f32 or Real.
-        Datum::Float32(value) => evaluate_args_in(
-            bits_operation,
-            ctx,
-            || Ok(EvaluatedArgs::Ieee754Bits(Some(value.to_bits()))),
-            |computed| {
-                Ok(computed
-                    .into_ieee754_bits()?
-                    .map_or(Datum::Null, |bits| Datum::Float32(f64::from_bits(bits))))
-            },
-        ),
-        Datum::Int(value) if plus => evaluate_args_in(
-            EvaluatedBytesOp::UnaryPlusIntNative,
-            ctx,
-            || Ok(EvaluatedArgs::Int(Some(value))),
-            EvaluatedBytesResult::into_int_datum,
-        ),
-        Datum::UInt(value) if plus => evaluate_args_in(
-            EvaluatedBytesOp::UnaryPlusIntNative,
-            ctx,
-            || Ok(EvaluatedArgs::Int(Some(value as i64))),
-            EvaluatedBytesResult::into_uint_bits_datum,
-        ),
-        // Integer minus reads signedness from the argument flag, except UInt
-        // values which are always unsigned. Plus never retypes either kind.
-        Datum::Int(value) => unary_minus_integer(value as u64, arg.is_unsigned(), arg, ctx),
-        Datum::UInt(value) => unary_minus_integer(value, true, arg, ctx),
+        Datum::Int(value) => unary_minus_integer(value as u64, unsigned, constant, maximum),
+        Datum::UInt(value) => unary_minus_integer(value, true, constant, maximum),
         value @ (Datum::BinaryLiteral(_) | Datum::Enum(_, _) | Datum::Set(_, _)) if !plus => {
-            evaluate_args_in(
-                bits_operation,
-                ctx,
-                || Ok(EvaluatedArgs::Ieee754Bits(Some(to_f64(value).to_bits()))),
-                |computed| {
-                    Ok(computed
-                        .into_ieee754_bits()?
-                        .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits))))
-                },
-            )
+            Ok(Datum::Real(f64::from_bits(native_unary_sign_bits_value(
+                sign,
+                to_f64(value).to_bits(),
+            ))))
         }
         other => {
-            // Runtime plus is not a blanket Datum identity: its original
-            // fallback converts to Decimal. Capture only the converted header,
-            // not an answer, while retaining coercion within the driver.
-            let declared_shape = std::cell::Cell::new(None);
-            evaluate_args_in(
-                decimal_operation,
-                ctx,
-                || {
-                    if other.is_range_sentinel() {
-                        return Err(EvalError::Unsupported("range sentinel expression operand"));
-                    }
-                    let decimal = other
-                        .to_decimal()
-                        .map_err(|_| EvalError::Unsupported("numeric unary operand"))?
-                        .value;
-                    if plus {
-                        declared_shape.set(decimal.declared_shape());
-                    }
-                    Ok(EvaluatedArgs::Decimal(Some(
-                        crate::tikv::prepare_math_decimal(&decimal)?,
-                    )))
-                },
-                |computed| pack_unary_decimal(computed, declared_shape.get()),
-            )
+            if other.is_range_sentinel() {
+                return Err(EvalError::Unsupported("range sentinel expression operand"));
+            }
+            let decimal = other
+                .to_decimal()
+                .map_err(|_| EvalError::Unsupported("numeric unary operand"))?
+                .value;
+            unary_sign_decimal_value(sign, decimal, maximum)
         }
     }
+}
+fn unary_sign_decimal_value(
+    sign: tidb_query_expr::impl_op::NativeUnarySign,
+    value: Decimal,
+    maximum: usize,
+) -> Result<Datum, EvalError> {
+    let shape = if sign == tidb_query_expr::impl_op::NativeUnarySign::Plus {
+        value.declared_shape()
+    } else {
+        None
+    };
+    // Dense coefficient conversion and all copies obey the admitted bound.
+    let shared = value
+        .try_to_shared_math(maximum)
+        .map_err(crate::tikv::math_decimal_bridge_error)?;
+    let computed =
+        tidb_query_expr::impl_op::native_unary_sign_decimal_value(sign, &shared, maximum)
+            .map_err(crate::tikv::math_decimal_bridge_error)?;
+    let value = crate::tikv::restore_math_decimal(&computed, maximum)?;
+    Ok(Datum::Decimal(match shape {
+        Some((flen, scale)) => value.with_declared_shape(flen, scale),
+        None => value,
+    }))
 }
 
 pub(crate) fn eval_unary(

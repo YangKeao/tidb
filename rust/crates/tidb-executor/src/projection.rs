@@ -2564,6 +2564,31 @@ mod tests {
             ],
         ));
         fields.push(integer.clone());
+        roots.push(call("unaryplus", integer.clone(), vec![column(0)]));
+        fields.push(integer.clone());
+        roots.push(call("unaryminus", integer.clone(), vec![column(1)]));
+        fields.push(integer.clone());
+        let promoted = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(21)
+            .with_decimal(0);
+        roots.push(call(
+            "unaryminus",
+            promoted.clone(),
+            vec![Expression::Constant(Constant::new(
+                Datum::UInt(u64::MAX),
+                integer.clone().with_unsigned(true),
+            ))],
+        ));
+        fields.push(promoted);
+        let sign_decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(4);
+        roots.push(call(
+            "unaryplus",
+            sign_decimal.clone(),
+            vec![call("cast_decimal", sign_decimal.clone(), vec![column(0)])],
+        ));
+        fields.push(sign_decimal);
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

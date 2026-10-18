@@ -605,17 +605,9 @@ fn eval_worker_args(
                             reason: "unary-minus failure receipt lacks its native cause",
                         };
                     };
-                    // Render the authenticated source bits, not a new negation.
-                    // Signed MIN retains the original double minus in its text.
-                    let expression = if cause.unsigned {
-                        format!("-{}", cause.bits)
-                    } else {
-                        format!("-{}", cause.bits as i64)
-                    };
-                    return ReadyValueBoundaryError::Frontend(EvalError::DataOutOfRange {
-                        value: "BIGINT",
-                        expression,
-                    });
+                    return ReadyValueBoundaryError::Frontend(crate::ops::unary_minus_overflow(
+                        *cause,
+                    ));
                 }
                 (
                     EvaluatedBytesOp::RegexpLikeNative
