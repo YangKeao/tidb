@@ -2588,7 +2588,41 @@ mod tests {
             sign_decimal.clone(),
             vec![call("cast_decimal", sign_decimal.clone(), vec![column(0)])],
         ));
-        fields.push(sign_decimal);
+        fields.push(sign_decimal.clone());
+        for name in ["mod", "intdiv"] {
+            roots.push(call(name, integer.clone(), vec![column(0), literal(2)]));
+            fields.push(integer.clone());
+        }
+        roots.push(call(
+            "div",
+            sign_decimal.clone(),
+            vec![column(0), literal(2)],
+        ));
+        fields.push(sign_decimal.clone());
+        let real = FieldType::new(FieldTypeCode::Double);
+        for name in ["mod", "div"] {
+            roots.push(call(
+                name,
+                real.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::Real(2.5), real.clone())),
+                ],
+            ));
+            fields.push(real.clone());
+        }
+        roots.push(call(
+            "intdiv",
+            integer.clone(),
+            vec![
+                call("cast_decimal", sign_decimal.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(
+                    Datum::Decimal(tidb_datatype::Decimal::from_int(2)),
+                    sign_decimal,
+                )),
+            ],
+        ));
+        fields.push(integer.clone());
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

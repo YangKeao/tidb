@@ -9783,3 +9783,378 @@ fn native_unary_sign_arguments_honor_enum_set_integer_view() {
         );
     }
 }
+
+fn quotient_call(name: &str, left: Expression, right: Expression) -> Expression {
+    let field = crate::builtin_arithmetic::infer_arithmetic_type(name, &left, &right)
+        .unwrap_or_else(|| {
+            // Go's builder rejects quotient vector arguments. Keep an explicit
+            // generic declaration here to exercise that already-declared callable's
+            // runtime error path as well, rather than dropping the carrier case.
+            assert!(
+                left.static_type()
+                    .is_some_and(|field| field.eval_type().is_vector_kind())
+                    || right
+                        .static_type()
+                        .is_some_and(|field| field.eval_type().is_vector_kind())
+            );
+            crate::builtin_arithmetic::new_return_field_type(if name == "intdiv" {
+                NativeEvalType::Int
+            } else {
+                NativeEvalType::Real
+            })
+        });
+    call(name, field, vec![left, right])
+}
+fn native_quotient_abs_operand_profile(name: &str) {
+    let root = quotient_call(name, abs(column(0)), int(2));
+    let schema = vec![ty()];
+    let rows = vec![vec![Datum::Int(7)], vec![Datum::Int(i64::MIN)]];
+    compare_typed_profile(root, &schema, &rows, &[0, 1]);
+}
+#[test]
+fn native_modulo_abs_requires_canonical_driver() {
+    native_quotient_abs_operand_profile("mod");
+}
+#[test]
+fn native_division_abs_requires_canonical_driver() {
+    native_quotient_abs_operand_profile("div");
+}
+#[test]
+fn native_integer_division_abs_requires_canonical_driver() {
+    native_quotient_abs_operand_profile("intdiv");
+}
+
+#[test]
+fn native_quotient_literals_and_columns_keep_original_domains_and_warnings() {
+    let mut values = native_operator_value_cases();
+    values.extend([
+        (Datum::Int(i64::MIN), ty()),
+        (Datum::Int(i64::MAX), ty()),
+        (Datum::UInt(0), ty().with_unsigned(true)),
+        (Datum::UInt((1u64 << 53) + 1), ty().with_unsigned(true)),
+        (Datum::Real(-0.0), real_ty()),
+        (
+            Datum::Decimal(Decimal::from_literal("-7.0000")),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(4),
+        ),
+    ]);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    for (value, field) in &values {
+        for name in ["mod", "div", "intdiv"] {
+            for partner in [
+                int(2),
+                int(0),
+                null(),
+                literal(Datum::Real(0.5), real_ty()),
+                literal(
+                    Datum::Decimal(Decimal::from_literal("3.0000")),
+                    decimal.clone(),
+                ),
+            ] {
+                let argument = literal(value.clone(), field.clone());
+                for root in [
+                    quotient_call(name, argument.clone(), partner.clone()),
+                    quotient_call(name, partner, argument),
+                ] {
+                    for selection in [vec![], vec![0], vec![2, 0, 2]] {
+                        compare_arithmetic_profile(root.clone(), &[], &vec![vec![]; 3], &selection);
+                    }
+                }
+            }
+        }
+    }
+    for (value, field) in values.into_iter().filter(|(value, _)| {
+        matches!(
+            value,
+            Datum::Int(_)
+                | Datum::UInt(_)
+                | Datum::Real(_)
+                | Datum::Float32(_)
+                | Datum::Decimal(_)
+                | Datum::String(_)
+                | Datum::Time(_)
+                | Datum::Duration(_)
+                | Datum::Json(_)
+        )
+    }) {
+        let schema = vec![field.clone()];
+        let rows = vec![vec![value], vec![Datum::Null]];
+        for name in ["mod", "div", "intdiv"] {
+            for root in [
+                quotient_call(name, typed_column(0, &field), int(2)),
+                quotient_call(name, int(2), typed_column(0, &field)),
+            ] {
+                for selection in [vec![], vec![0], vec![1, 0, 1]] {
+                    compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_quotient_column_pairs_keep_whole_sources_and_null_modes() {
+    let values: Vec<_> = native_operator_value_cases()
+        .into_iter()
+        .filter(|(value, _)| {
+            matches!(
+                value,
+                Datum::Int(_)
+                    | Datum::UInt(_)
+                    | Datum::Real(_)
+                    | Datum::Float32(_)
+                    | Datum::Decimal(_)
+                    | Datum::String(_)
+                    | Datum::Time(_)
+                    | Datum::Duration(_)
+                    | Datum::Json(_)
+            )
+        })
+        .collect();
+    for (left, lf) in &values {
+        for (right, rf) in &values {
+            let schema = vec![lf.clone(), rf.clone()];
+            let rows = vec![
+                vec![left.clone(), right.clone()],
+                vec![Datum::Null, right.clone()],
+                vec![left.clone(), Datum::Null],
+            ];
+            for name in ["mod", "div", "intdiv"] {
+                let root = quotient_call(name, typed_column(0, lf), typed_column(1, rf));
+                for selection in [vec![], vec![0], vec![1, 2, 0, 1]] {
+                    compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_quotient_parents_keep_row_control_and_whole_arithmetic_phases() {
+    let schema = vec![ty(); 3];
+    let rows = vec![
+        vec![Datum::Null, Datum::Int(i64::MIN), Datum::Int(-1)],
+        vec![Datum::Int(1), Datum::Int(i64::MAX), Datum::Int(0)],
+        vec![Datum::Int(i64::MIN), Datum::Int(1), Datum::Int(-1)],
+        vec![Datum::Int(7), Datum::Int(2), Datum::Int(3)],
+    ];
+    for name in ["mod", "div", "intdiv"] {
+        let value = || quotient_call(name, column(0), column(1));
+        let field = value().static_type().unwrap().clone();
+        let roots = vec![
+            quotient_call(name, column(0), abs(column(1))),
+            quotient_call(name, abs(column(0)), abs(column(1))),
+            quotient_call(name, column(0), plus(column(1), int(1))),
+            quotient_call("plus", value(), column(2)),
+            quotient_call(
+                name,
+                quotient_call("mul", column(0), int(2)),
+                plus(column(1), int(1)),
+            ),
+            call("abs", field.clone(), vec![value()]),
+            call(
+                "cast_decimal",
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(65)
+                    .with_decimal(4),
+                vec![value()],
+            ),
+            call(
+                "cast_json",
+                FieldType::new(FieldTypeCode::Json),
+                vec![value()],
+            ),
+            call("if", field.clone(), vec![column(2), value(), null()]),
+            call("coalesce", field.clone(), vec![column(0), value()]),
+            call("and", ty(), vec![column(2), value()]),
+            call("isnull", ty(), vec![value()]),
+        ];
+        let char_root = call("cast_char", string_ty(), vec![value()]);
+        for selection in [
+            vec![],
+            vec![3],
+            vec![0, 1],
+            vec![2, 0],
+            vec![3, 0, 3],
+            vec![3; 2050],
+            (0..2050)
+                .map(|position| if position == 2049 { 1 } else { 3 })
+                .collect(),
+        ] {
+            for root in &roots {
+                compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+            }
+            compare_typed_profile(char_root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+struct QuotientPrecisionContext {
+    enabled: bool,
+    strict: bool,
+    increments: [u32; 2],
+    reads: std::cell::Cell<usize>,
+    events: std::cell::RefCell<Vec<String>>,
+}
+impl Columns for QuotientPrecisionContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        None
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.events.borrow_mut().push("enabled".into());
+        self.enabled
+    }
+    fn div_precision_increment(&self) -> u32 {
+        let read = self.reads.get();
+        self.reads.set(read + 1);
+        let value = self.increments[read % 2];
+        self.events
+            .borrow_mut()
+            .push(format!("precision:{read}:{value}"));
+        value
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.events.borrow_mut().push("truncate level".into());
+        if self.strict {
+            crate::ErrorLevel::Error
+        } else {
+            crate::ErrorLevel::Warn
+        }
+    }
+    fn handle_truncate(&self, message: &str) -> std::result::Result<(), EvalError> {
+        self.events.borrow_mut().push(format!("truncate:{message}"));
+        if self.strict {
+            Err(EvalError::Unsupported("quotient strict truncation"))
+        } else {
+            Ok(())
+        }
+    }
+    fn handle_division_by_zero(&self) -> std::result::Result<(), EvalError> {
+        self.events.borrow_mut().push("division by zero".into());
+        if self.strict {
+            Err(EvalError::Unsupported("quotient strict zero divisor"))
+        } else {
+            Ok(())
+        }
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.events
+            .borrow_mut()
+            .push(format!("warn:{code}:{message}"));
+    }
+}
+fn compare_quotient_precision_profile(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+) {
+    let field = root.static_type().unwrap().clone();
+    let actual = suite(root.clone());
+    let expected = suite(root);
+    for strict in [false, true] {
+        for increments in [[0, 4], [31, 0], [4, 100]] {
+            for enabled in [true, false, true, false] {
+                let ctx = || QuotientPrecisionContext {
+                    enabled,
+                    strict,
+                    increments,
+                    reads: std::cell::Cell::new(0),
+                    events: std::cell::RefCell::default(),
+                };
+                let ac = ctx();
+                let ec = ctx();
+                let mut input = chunk(schema, rows);
+                let mut reference = chunk(schema, rows);
+                input.set_sel(Some(selection.to_vec()));
+                reference.set_sel(Some(selection.to_vec()));
+                let mut output = output_for(&field);
+                let mut result = output_for(&field);
+                let a = actual.run_with_tikv_batch(&ac, &mut input, &mut output, schema);
+                let e = expected.run(&ec, &mut reference, &mut result);
+                assert_eq!(
+                    a, e,
+                    "enabled={enabled} strict={strict} {increments:?} selection={selection:?}"
+                );
+                assert_eq!(
+                    ac.events.take(),
+                    ec.events.take(),
+                    "enabled={enabled} strict={strict} {increments:?}"
+                );
+                assert_eq!(values_for(&output, &field), values_for(&result, &field));
+                let route = actual.batch_route_snapshot();
+                assert_eq!((route.refusals, route.fallback), (0, 0));
+            }
+        }
+    }
+}
+#[test]
+fn native_integer_division_keeps_conditional_precision_and_row_window_diagnostic_values() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    let real = real_ty();
+    for unsigned in [false, true] {
+        let schema = vec![decimal.clone().with_unsigned(unsigned), decimal.clone()];
+        let rows = vec![
+            vec![
+                Datum::Decimal(Decimal::from_literal("1.0000")),
+                Datum::Decimal(Decimal::from_literal("3.0000")),
+            ],
+            vec![
+                Datum::Decimal(Decimal::from_literal("9223372036854775808")),
+                Datum::Decimal(Decimal::from_int(1)),
+            ],
+            vec![
+                Datum::Decimal(Decimal::from_literal("-0.5000")),
+                Datum::Decimal(Decimal::from_int(1)),
+            ],
+            vec![Datum::Null, Datum::Decimal(Decimal::from_int(0))],
+        ];
+        let root = quotient_call(
+            "intdiv",
+            typed_column(0, &schema[0]),
+            typed_column(1, &schema[1]),
+        );
+        for selection in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2, 0, 2],
+            vec![3, 0, 1],
+            vec![0; 2050],
+        ] {
+            compare_quotient_precision_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+    let schema = vec![real.clone(), decimal.clone()];
+    let rows = vec![
+        vec![Datum::Real(1e20), Datum::Decimal(Decimal::from_int(1))],
+        vec![Datum::Real(-0.5), Datum::Decimal(Decimal::from_int(1))],
+        vec![Datum::Null, Datum::Decimal(Decimal::from_int(0))],
+    ];
+    let root = quotient_call("intdiv", typed_column(0, &real), typed_column(1, &decimal));
+    for selection in [vec![], vec![0], vec![1, 2, 0]] {
+        compare_quotient_precision_profile(root.clone(), &schema, &rows, &selection);
+    }
+    let computed = quotient_call(
+        "plus",
+        literal(Datum::Real(1e20), real.clone()),
+        literal(Datum::Real(0.0), real),
+    );
+    let json = call(
+        "cast_json",
+        FieldType::new(FieldTypeCode::Json),
+        vec![literal(Datum::UInt(u64::MAX), ty().with_unsigned(true))],
+    );
+    for operand in [computed, json] {
+        let root = quotient_call("intdiv", operand, int(1));
+        for selection in [vec![], vec![0], vec![2, 0, 2]] {
+            compare_quotient_precision_profile(root.clone(), &[], &vec![vec![]; 3], &selection);
+        }
+    }
+}

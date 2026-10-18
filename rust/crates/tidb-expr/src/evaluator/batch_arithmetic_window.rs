@@ -34,6 +34,11 @@ fn row_operation(operation: SqlBatchHostOperation) -> Option<SqlBatchHostOperati
         SqlBatchHostOperation::AddWindowNative => SqlBatchHostOperation::AddNative,
         SqlBatchHostOperation::SubtractWindowNative => SqlBatchHostOperation::SubtractNative,
         SqlBatchHostOperation::MultiplyWindowNative => SqlBatchHostOperation::MultiplyNative,
+        SqlBatchHostOperation::ModuloWindowNative => SqlBatchHostOperation::ModuloNative,
+        SqlBatchHostOperation::DivideWindowNative => SqlBatchHostOperation::DivideNative,
+        SqlBatchHostOperation::IntegerDivideWindowNative => {
+            SqlBatchHostOperation::IntegerDivideNative
+        }
         _ => return None,
     })
 }
@@ -52,6 +57,7 @@ impl NativeBatchHosts<'_> {
             binary_literal,
             literal,
             generic_mode,
+            intdiv,
             ..
         }) = self.metadata.get(invocation.slot.index())
         else {
@@ -69,6 +75,7 @@ impl NativeBatchHosts<'_> {
             || *actual != operation
             || row_operation(operation).is_none()
             || row_operation(operation) != native_arithmetic_operation(name)
+            || (name.as_ref() == "intdiv") != intdiv.is_some()
             || !matches!(
                 batch.domain,
                 NativeEvalType::Int | NativeEvalType::Real | NativeEvalType::Decimal
@@ -264,6 +271,9 @@ impl NativeBatchHosts<'_> {
             SqlBatchHostOperation::AddWindowNative => tidb_ast::BinaryOp::Plus,
             SqlBatchHostOperation::SubtractWindowNative => tidb_ast::BinaryOp::Minus,
             SqlBatchHostOperation::MultiplyWindowNative => tidb_ast::BinaryOp::Mul,
+            SqlBatchHostOperation::ModuloWindowNative => tidb_ast::BinaryOp::Mod,
+            SqlBatchHostOperation::DivideWindowNative => tidb_ast::BinaryOp::Div,
+            SqlBatchHostOperation::IntegerDivideWindowNative => tidb_ast::BinaryOp::IntDiv,
             _ => return Err(binding("window result operation differs")),
         };
         let diagnostic_bytes = overflow_expressions
@@ -316,36 +326,43 @@ impl NativeBatchHosts<'_> {
             let lhs = std::mem::replace(&mut left[position], Datum::Null);
             let rhs = std::mem::replace(&mut right[position], Datum::Null);
             let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
-            let prepared = if batch.integer {
-                match crate::ops::prepare_native_typed_arithmetic(
-                    op,
-                    lhs,
-                    rhs,
-                    unsigned,
-                    self.context,
-                ) {
-                    Ok(Some(prepared)) => prepared,
-                    Ok(None) => return Err(binding("integer window lost its strict typed values")),
-                    Err(error) => return self.native_failure(error),
-                }
-            } else {
-                let (lhs, rhs) = crate::binary_literal::cast_signed_literal_operands(
-                    op,
-                    lhs,
-                    rhs,
-                    unsigned.map(|value| !value),
-                );
-                let _ = self.context.div_precision_increment();
-                match crate::ops::arithmetic::prepare(op, lhs, rhs, unsigned, self.context) {
-                    Ok(prepared) => prepared,
-                    Err(error) => return self.native_failure(error),
-                }
-            };
             let available = self
                 .max_retained_bytes
                 .checked_sub(current)
                 .ok_or_else(|| resource("window kernel allowance exhausted"))?;
-            let value = match prepared.compute(available) {
+            let computed = if quotient::is_quotient(op) {
+                self.compute_quotient(&self.metadata[slot.index()], lhs, rhs, available)?
+            } else {
+                let prepared = if batch.integer {
+                    match crate::ops::prepare_native_typed_arithmetic(
+                        op,
+                        lhs,
+                        rhs,
+                        unsigned,
+                        self.context,
+                    ) {
+                        Ok(Some(prepared)) => prepared,
+                        Ok(None) => {
+                            return Err(binding("integer window lost its strict typed values"))
+                        }
+                        Err(error) => return self.native_failure(error),
+                    }
+                } else {
+                    let (lhs, rhs) = crate::binary_literal::cast_signed_literal_operands(
+                        op,
+                        lhs,
+                        rhs,
+                        unsigned.map(|value| !value),
+                    );
+                    let _ = self.context.div_precision_increment();
+                    match crate::ops::arithmetic::prepare(op, lhs, rhs, unsigned, self.context) {
+                        Ok(prepared) => prepared,
+                        Err(error) => return self.native_failure(error),
+                    }
+                };
+                prepared.compute(available)
+            };
+            let value = match computed {
                 Ok(value) => value,
                 Err(error) => {
                     let (class, text) = match error {

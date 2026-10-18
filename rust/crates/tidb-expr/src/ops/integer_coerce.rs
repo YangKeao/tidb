@@ -42,12 +42,12 @@ pub(super) fn unsigned_operand_flag(value: Datum, unsigned: bool) -> Datum {
 
 /// Pure typed integer input policy, shared by the original typed caller and
 /// compiled comparisons. Genuine NULL precedes integer coercion here.
-pub(super) enum TypedIntegerValues {
+pub(crate) enum TypedIntegerValues {
     Null,
     Pair(Integer, Integer),
     Outside,
 }
-pub(super) fn prepare_typed_integer_values(
+pub(crate) fn prepare_typed_integer_values(
     left: &Datum,
     right: &Datum,
     signed: [bool; 2],

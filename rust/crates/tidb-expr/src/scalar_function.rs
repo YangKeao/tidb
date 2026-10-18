@@ -385,7 +385,7 @@ fn numeric_diagnostic_literal(value: &Datum, go_float_format: bool) -> Option<St
     })
 }
 
-fn numeric_expression_text(
+pub(crate) fn numeric_expression_text(
     expression: &Expression,
     go_float_format: bool,
     ctx: &dyn Columns,
@@ -480,20 +480,98 @@ fn numeric_argument_text(
     ) {
         return Some(text);
     }
+    Some(native_intdiv_argument_text(
+        text,
+        field,
+        expression.const_level() == ConstLevel::STRICT,
+        decimal,
+    ))
+}
+
+fn native_intdiv_argument_text(
+    text: String,
+    field: &FieldType,
+    refine: bool,
+    decimal: Option<&tidb_datatype::Decimal>,
+) -> String {
     let mut target = numeric_decimal_cast_type(field);
-    if expression.const_level() == ConstLevel::STRICT {
+    if refine {
         if let Some(value) = decimal {
             let (precision, fraction) = value.precision_and_frac();
             target.set_flen_under_limit(i64::from(precision));
             target.set_decimal_under_limit(i64::from(fraction));
         }
     }
-    Some(native_render_decimal_cast_expression(
+    native_render_decimal_cast_expression(
         &text,
         target.flen(),
         target.decimal(),
         field.is_unsigned(),
-    ))
+    )
+}
+
+/// Detached original DIV diagnostic facts, never an expression callback.
+pub(crate) struct NativeIntDivDiagnostics {
+    pub(crate) arguments: [Option<Box<str>>; 2],
+    pub(crate) format_failures: [Option<[u8; 8]>; 2],
+    wrap: [bool; 2],
+    refine: [bool; 2],
+}
+impl NativeIntDivDiagnostics {
+    pub(crate) fn new(
+        function: &ScalarFunction,
+        arguments: [Option<Box<str>>; 2],
+        format_failures: [Option<[u8; 8]>; 2],
+    ) -> Self {
+        Self {
+            arguments, format_failures,
+            wrap: [0, 1].map(|index| native_should_wrap_intdiv_decimal_argument(
+                true, native_numeric_diagnostic_domain(function.numeric_operand_domain()),
+                function.args[index].static_type().expect("checked DIV argument").eval_type() == EvalType::Decimal,
+                matches!(&function.args[index], Expression::Constant(value) if value.literal_value().is_some()),
+            )),
+            refine: [0, 1].map(|index| function.args[index].const_level() == ConstLevel::STRICT),
+        }
+    }
+    pub(crate) fn decimal_overflow(
+        &self,
+        fields: &[FieldType; 2],
+        values: [&tidb_datatype::Decimal; 2],
+        unsigned: bool,
+    ) -> EvalError {
+        let text = |index: usize| -> Option<String> {
+            if let Some(bits) = self.format_failures[index] {
+                let _ = render_numeric_format_failure(bits);
+            }
+            let text = self.arguments[index].as_deref()?.to_owned();
+            Some(if self.wrap[index] {
+                native_intdiv_argument_text(
+                    text,
+                    &fields[index],
+                    self.refine[index],
+                    Some(values[index]),
+                )
+            } else {
+                text
+            })
+        };
+        // The original Option::zip evaluates both argument formatters.
+        match text(0).zip(text(1)) {
+            Some((left, right)) => EvalError::DataOutOfRange {
+                value: if unsigned {
+                    "BIGINT UNSIGNED"
+                } else {
+                    "BIGINT"
+                },
+                expression: native_render_binary_expression(
+                    &left,
+                    NativeArithmeticOperator::IntegerDivide,
+                    &right,
+                ),
+            },
+            None => EvalError::IntOverflow,
+        }
+    }
 }
 
 /// Go WrapWithCastAsDecimal: retain declared precision/scale for non-integer
@@ -502,7 +580,7 @@ fn numeric_decimal_cast_type(field: &FieldType) -> FieldType {
     numeric_argument_target_field(field, tidb_datatype::FieldTypeCode::NewDecimal.mysql_type()).0
 }
 
-fn integer_division_overflow(
+pub(crate) fn integer_division_overflow(
     left: crate::coerce::Integer,
     right: crate::coerce::Integer,
 ) -> EvalError {
@@ -549,31 +627,37 @@ pub(crate) fn static_arithmetic_overflow_expression(
     let [left, right] = function.args.as_slice() else {
         return None;
     };
-    let text = |expression: &Expression| {
-        if let Expression::Constant(constant) = expression {
-            if let Datum::BinaryLiteral(value) = &constant.value {
-                let value = value.to_int().value();
-                return Some(
-                    match native_binary_literal_render(
-                        native_numeric_diagnostic_domain(function.numeric_operand_domain()),
-                        expression.static_type()?.is_unsigned(),
-                    ) {
-                        NativeBinaryLiteralRender::Signed => (value as i64).to_string(),
-                        NativeBinaryLiteralRender::Real => {
-                            tidb_datatype::format_float_g_shortest(value as f64)
-                        }
-                        NativeBinaryLiteralRender::Unsigned => value.to_string(),
-                    },
-                );
-            }
-        }
-        static_numeric_expression_text(expression, float)
-    };
+    let text = |expression: &Expression| static_numeric_argument_text(function, expression, float);
     Some(native_render_binary_expression(
         &text(left)?,
         native_arithmetic_operator(op)?,
         &text(right)?,
     ))
+}
+
+pub(crate) fn static_numeric_argument_text(
+    function: &ScalarFunction,
+    expression: &Expression,
+    float: bool,
+) -> Option<String> {
+    if let Expression::Constant(constant) = expression {
+        if let Datum::BinaryLiteral(value) = &constant.value {
+            let value = value.to_int().value();
+            return Some(
+                match native_binary_literal_render(
+                    native_numeric_diagnostic_domain(function.numeric_operand_domain()),
+                    expression.static_type()?.is_unsigned(),
+                ) {
+                    NativeBinaryLiteralRender::Signed => (value as i64).to_string(),
+                    NativeBinaryLiteralRender::Real => {
+                        tidb_datatype::format_float_g_shortest(value as f64)
+                    }
+                    NativeBinaryLiteralRender::Unsigned => value.to_string(),
+                },
+            );
+        }
+    }
+    static_numeric_expression_text(expression, float)
 }
 
 /// Retain only the exact fixed native literal which has a demand-sensitive
@@ -3901,7 +3985,8 @@ pub(crate) enum NativeArithmeticInputMode {
 }
 impl ScalarFunction {
     pub(crate) fn native_arithmetic_mode(&self) -> NativeArithmeticInputMode {
-        if self.args.len() == 2
+        if matches!(self.func_name.lowercase(), "plus" | "minus" | "mul")
+            && self.args.len() == 2
             && self.args.iter().all(|arg| {
                 arg.static_type()
                     .is_some_and(|field| field.eval_type() == EvalType::Int)
@@ -3986,7 +4071,7 @@ fn cast_numeric_argument_in_mode(
     })
 }
 
-fn cast_numeric_argument_value(
+pub(crate) fn cast_numeric_argument_value(
     field: &FieldType,
     value: Datum,
     target: EvalType,

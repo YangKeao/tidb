@@ -132,7 +132,11 @@ fn execute_case(
     let operation = match name {
         "plus" => SqlBatchHostOperation::AddWindowNative,
         "minus" => SqlBatchHostOperation::SubtractWindowNative,
-        _ => SqlBatchHostOperation::MultiplyWindowNative,
+        "mul" => SqlBatchHostOperation::MultiplyWindowNative,
+        "mod" => SqlBatchHostOperation::ModuloWindowNative,
+        "div" => SqlBatchHostOperation::DivideWindowNative,
+        "intdiv" => SqlBatchHostOperation::IntegerDivideWindowNative,
+        _ => panic!("unknown arithmetic protocol fixture"),
     };
     let metadata = vec![NativeHostMetadata::Arithmetic {
         batch: Some(WindowArithmeticMetadata {
@@ -165,6 +169,16 @@ fn execute_case(
         overflow_expressions: [false, true].map(|float| {
             crate::scalar_function::static_arithmetic_overflow_expression(&function, op, float)
                 .map(String::into_boxed_str)
+        }),
+        intdiv: (name == "intdiv").then(|| {
+            Box::new(crate::scalar_function::NativeIntDivDiagnostics::new(
+                &function,
+                args.each_ref().map(|arg| {
+                    crate::scalar_function::static_numeric_argument_text(&function, arg, false)
+                        .map(String::into_boxed_str)
+                }),
+                [None; 2],
+            ))
         }),
         output_node: 0,
         output_role: NativeValueRole::Output,
@@ -235,7 +249,16 @@ fn execute_case(
         let mut chunk = Chunk::new_with_capacity(&fields, values[0].len());
         for row in 0..values[0].len() {
             for slot in 0..2 {
-                chunk.append_datum(slot, &values[slot][row]);
+                // A literal argument does not read its physical input column.
+                // Do not invent a chunk encoding of its possibly wider value.
+                chunk.append_datum(
+                    slot,
+                    if literal[slot] {
+                        &Datum::Null
+                    } else {
+                        &values[slot][row]
+                    },
+                );
             }
         }
         chunk.set_sel(Some(selection.to_vec()));
@@ -551,4 +574,100 @@ fn native_window_arithmetic_keeps_whole_2050_occurrence_phases_and_results() {
         false,
         Some((1, 0)),
     );
+}
+
+#[test]
+fn native_window_quotients_keep_values_diagnostics_full_sources_and_terminal_resource_failures() {
+    let integer = FieldType::new(FieldTypeCode::LongLong)
+        .with_flen(20)
+        .with_decimal(0);
+    let real = FieldType::new(FieldTypeCode::Double);
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    let string = FieldType::new(FieldTypeCode::VarString);
+    for name in ["mod", "div", "intdiv"] {
+        for (fields, values) in [
+            (
+                [integer.clone(), integer.clone()],
+                [
+                    vec![Datum::Null, Datum::Int(i64::MIN), Datum::Int(7)],
+                    vec![Datum::Int(3), Datum::Int(-1), Datum::Int(0)],
+                ],
+            ),
+            (
+                [integer.clone().with_unsigned(true), integer.clone()],
+                [
+                    vec![Datum::UInt(u64::MAX), Datum::UInt(1), Datum::Null],
+                    vec![Datum::Int(1), Datum::Int(-2), Datum::Int(0)],
+                ],
+            ),
+            (
+                [real.clone(), real.clone()],
+                [
+                    vec![Datum::Null, Datum::Real(-1.5), Datum::Real(7.0)],
+                    vec![Datum::Real(2.0), Datum::Real(0.0), Datum::Real(-0.0)],
+                ],
+            ),
+            (
+                [decimal.clone(), decimal.clone()],
+                [
+                    vec![
+                        Datum::Decimal(Decimal::from_literal("1.0000")),
+                        Datum::Null,
+                        Datum::Decimal(Decimal::from_literal("9223372036854775808")),
+                    ],
+                    vec![
+                        Datum::Decimal(Decimal::from_literal("3.0000")),
+                        Datum::Decimal(Decimal::from_int(0)),
+                        Datum::Decimal(Decimal::from_int(1)),
+                    ],
+                ],
+            ),
+            (
+                [string.clone(), decimal.clone()],
+                [
+                    vec![
+                        Datum::new_string("12.5"),
+                        Datum::Null,
+                        Datum::new_string("3tail"),
+                    ],
+                    vec![
+                        Datum::Decimal(Decimal::from_int(3)),
+                        Datum::Decimal(Decimal::from_int(2)),
+                        Datum::Decimal(Decimal::from_int(0)),
+                    ],
+                ],
+            ),
+        ] {
+            let args = [0, 1]
+                .map(|index| Expression::Column(Column::new(index as i64, fields[index].clone())));
+            let result =
+                crate::builtin_arithmetic::infer_arithmetic_type(name, &args[0], &args[1]).unwrap();
+            for selection in [vec![], vec![0], vec![2, 0, 2], vec![1, 0]] {
+                execute_case(
+                    name,
+                    fields.clone(),
+                    result.clone(),
+                    values.clone(),
+                    [false; 2],
+                    &selection,
+                    false,
+                    None,
+                );
+                if !selection.is_empty() {
+                    execute_case(
+                        name,
+                        fields.clone(),
+                        result.clone(),
+                        values.clone(),
+                        [false; 2],
+                        &selection,
+                        false,
+                        Some((1, 0)),
+                    );
+                }
+            }
+        }
+    }
 }

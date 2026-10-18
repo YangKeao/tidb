@@ -259,6 +259,114 @@ pub(crate) fn decimal_integer(
     }
 }
 
+/// Original integer-division promotion, shared by tree callers and native
+/// value providers. The callback converts an already fetched value; it never
+/// requests an operand. Source declaration/diagnostic ownership stays outside.
+pub(crate) enum PreparedIntegerDivision {
+    Null,
+    Integer {
+        left: Integer,
+        right: Integer,
+    },
+    Decimal {
+        left: Decimal,
+        right: Decimal,
+        unsigned: bool,
+    },
+}
+pub(crate) fn prepare_integer_division(
+    mut left: Datum,
+    mut right: Datum,
+    unsigned: [bool; 2],
+    ctx: &dyn crate::Columns,
+    real_decimal: &mut impl FnMut(usize, Datum) -> Result<Decimal, EvalError>,
+) -> Result<PreparedIntegerDivision, EvalError> {
+    loop {
+        if left.is_range_sentinel() || right.is_range_sentinel() {
+            return Err(EvalError::Unsupported("range sentinel expression operand"));
+        }
+        left = unsigned_operand_flag(left, unsigned[0]);
+        right = unsigned_operand_flag(right, unsigned[1]);
+        let unsigned_pair = matches!(left, Datum::UInt(_))
+            || matches!(right, Datum::UInt(_))
+            || unsigned[0]
+            || unsigned[1];
+        if matches!(left, Datum::Json(_)) || matches!(right, Datum::Json(_)) {
+            return Err(EvalError::Unsupported("JSON operand"));
+        }
+        if matches!(left, Datum::Raw(_) | Datum::VectorFloat32(_))
+            || matches!(right, Datum::Raw(_) | Datum::VectorFloat32(_))
+        {
+            return Err(EvalError::UnsupportedOperandPair(left.kind(), right.kind()));
+        }
+        if matches!(left, Datum::Time(_) | Datum::Duration(_))
+            || matches!(right, Datum::Time(_) | Datum::Duration(_))
+        {
+            left = numeric_context_value(left);
+            right = numeric_context_value(right);
+            continue;
+        }
+        if matches!(left, Datum::String(_) | Datum::Bytes(_))
+            || matches!(right, Datum::String(_) | Datum::Bytes(_))
+        {
+            left = cast_binary_string_operand(BinaryOp::IntDiv, left, ctx)?;
+            right = cast_binary_string_operand(BinaryOp::IntDiv, right, ctx)?;
+            continue;
+        }
+        if matches!(left, Datum::Real(_) | Datum::Float32(_))
+            || matches!(right, Datum::Real(_) | Datum::Float32(_))
+        {
+            if left.is_null() {
+                return Ok(PreparedIntegerDivision::Null);
+            }
+            let left = real_decimal(0, left)?;
+            if right.is_null() {
+                return Ok(PreparedIntegerDivision::Null);
+            }
+            let right = real_decimal(1, right)?;
+            return Ok(PreparedIntegerDivision::Decimal {
+                left,
+                right,
+                unsigned: unsigned_pair,
+            });
+        }
+        if matches!(left, Datum::Decimal(_)) || matches!(right, Datum::Decimal(_)) {
+            if left.is_null() || right.is_null() {
+                return Ok(PreparedIntegerDivision::Null);
+            }
+            return Ok(PreparedIntegerDivision::Decimal {
+                left: to_decimal(left),
+                right: to_decimal(right),
+                unsigned: unsigned_pair,
+            });
+        }
+        if left.is_null() || right.is_null() {
+            return Ok(PreparedIntegerDivision::Null);
+        }
+        return match (integer_of(&left)?, integer_of(&right)?) {
+            (Some(left), Some(right)) => Ok(PreparedIntegerDivision::Integer { left, right }),
+            _ => Err(EvalError::UnsupportedOperandPair(left.kind(), right.kind())),
+        };
+    }
+}
+impl PreparedIntegerDivision {
+    pub(crate) fn compute(
+        &self,
+        maximum: usize,
+        ctx: &dyn crate::Columns,
+    ) -> Result<Datum, EvalError> {
+        match self {
+            Self::Null => eval_binary_arithmetic_null_in(ctx),
+            Self::Integer { left, right } => integer(BinaryOp::IntDiv, *left, *right, ctx),
+            Self::Decimal {
+                left,
+                right,
+                unsigned,
+            } => decimal_integer(left, right, *unsigned, maximum, ctx),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

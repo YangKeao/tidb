@@ -101,33 +101,60 @@ pub(super) fn decimal_div_operand(
     operand: Operand<'_>,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Decimal, EvalError> {
+    let real = match &value {
+        Datum::Real(value) | Datum::Float32(value) => Some(*value),
+        _ => None,
+    };
+    let field = match operand {
+        Operand::Expr(expression) if real.is_some() => Some(
+            expression
+                .static_type()
+                .expect("numeric argument has a type"),
+        ),
+        Operand::Expr(expression) => expression.static_type(),
+        Operand::Literal => None,
+    };
+    decimal_div_operand_value(value, field, ctx, || match operand {
+        Operand::Expr(expression) => {
+            crate::scalar_function::numeric_expression_text(expression, true, ctx)
+        }
+        Operand::Literal => real.map(tidb_datatype::format_float_g_shortest),
+    })
+}
+
+/// The actual DIV source cast, with declaration facts and a diagnostic-only
+/// subject supplier. Canonical callers lend detached text, never an Expr.
+pub(crate) fn decimal_div_operand_value(
+    value: Datum,
+    field: Option<&tidb_datatype::FieldType>,
+    ctx: &dyn crate::context::Columns,
+    subject: impl FnOnce() -> Option<String>,
+) -> Result<Decimal, EvalError> {
     match value {
         Datum::Decimal(value) => Ok(value),
         Datum::Int(value) => Ok(Decimal::from_int(value)),
         Datum::UInt(value) => Ok(Decimal::from_uint(value)),
         value @ (Datum::Real(_) | Datum::Float32(_)) => {
             let literal;
-            let expression = match operand {
-                Operand::Expr(expression) => expression,
-                Operand::Literal => {
-                    let code = if matches!(value, Datum::Float32(_)) {
-                        tidb_datatype::FieldTypeCode::Float
-                    } else {
-                        tidb_datatype::FieldTypeCode::Double
-                    };
+            let field = match field {
+                Some(field) => field,
+                None => {
                     literal =
-                        crate::expression::Expression::Constant(crate::constant::Constant::new(
-                            value.clone(),
-                            tidb_datatype::FieldType::new(code),
-                        ));
+                        tidb_datatype::FieldType::new(if matches!(value, Datum::Float32(_)) {
+                            tidb_datatype::FieldTypeCode::Float
+                        } else {
+                            tidb_datatype::FieldTypeCode::Double
+                        });
                     &literal
                 }
             };
-            match crate::scalar_function::cast_numeric_argument(
-                expression,
+            match crate::scalar_function::cast_numeric_argument_value(
+                field,
                 value,
                 tidb_datatype::EvalType::Decimal,
                 ctx,
+                false,
+                subject,
             )? {
                 Datum::Decimal(value) => Ok(value),
                 _ => Err(EvalError::Unsupported("DIV decimal argument domain")),

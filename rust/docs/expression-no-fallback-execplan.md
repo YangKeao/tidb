@@ -1227,3 +1227,52 @@ lint, both pinned formats and both diff checks pass; all jobs closed. Sign the
 self-contained protocol checkpoint, keep the actual root regressions as local
 TDD work, and continue genuine quotient factory/host metadata and value phases.
 Neither the source-integration milestone nor the global goal is complete.
+
+### N6q1 source implementation (in validation)
+
+All three original ABS-operand admission REDs now pass with zero refusal and
+fallback. Quotient operations have genuine row and whole-window lowering,
+while the original additive-only typed probe remains limited to its old
+operators. Int/Real MOD retains right demand after left NULL. Window source
+collection/cast phases are unchanged, and quotient computation uses the direct
+N6o/N6p value kernels with the original precision-read points. Detached DIV
+argument text/wrap/strict facts preserve row decimal diagnostics; typed integer
+DIV reports actual integer operands, and whole Decimal DIV reports its actual
+converted decimals. Original diagnostic cast decoration is shared with the
+new value layer. The old fake literal Expression used only to carry a real
+source type has been removed. A shared raw DIV preparation policy serves both
+old tree callers and the canonical provider's already-fetched value casts.
+Expanded literal/column/type-pair/parent/control/selections tests are running;
+full regression, resource/provenance checks and production Projection remain
+before signing. No global completion claim follows from the three smoke REDs.
+
+
+N6q1 expanded validation now passes all159 batch tests, including the three
+original admission regressions and19,500 new source/value/context comparisons.
+Direct whole-window tests cover105 SQL/source-fault cases and180 terminal
+resource refusals. The existing fixed N6p pre-retirement witnesses remain
+active. A proposed extra low-budget source probe was discarded: its raw
+Decimal declared one million visible fractional digits with only one digit of
+coefficient storage. Chunk encoding rejects it, and detached SQL diagnostic
+formatting panics just as the original formatter does. Those setup failures
+are not evidence of a resource-admission bug. No source work bound was changed
+on that premise; the valid borrowed-kernel fast-path test remains active.
+Production Projection now includes six quotient outputs in the existing mixed
+serial/two-worker and vectorization-on/off matrix (28 outputs total). Full
+frontend, Projection and lint gates are in progress before signing.
+
+
+### N6q1 verified outcome (2026-10-18)
+
+All159 batch checks,19,500 source/value/context comparisons,105 direct window
+SQL/source-fault cases and180 terminal resource checks passed. Complete frontend
+1523 pass, exactly the same four inherited failures/95 ignored, zero filtered;
+fixed N6p independent witnesses remain active. Production Projection25 pass,
+including28 mixed output roots with six new quotient outputs under both flags
+and serial/two-worker execution. make lint, pinned frontend formatting for12
+changed Rust files and both diff checks pass. SDK production/datatype code is
+unchanged, so N6q0 SDK1068/same6/one ignored and clippy89 are reused rather than
+rerun. All build/test handles closed. Receipt:docs/evidence/no-fallback-n6q1.md.
+Sign this runnable source integration locally; no push or global completion.
+Next work includes remaining ready adapters, source/builtin/composition closure,
+other callers, global dispatch retirement and inherited-failure/final SQL gates.

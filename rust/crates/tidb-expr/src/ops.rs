@@ -28,8 +28,8 @@ mod integer_coerce;
 mod operand;
 pub(crate) mod quotient;
 mod real_coerce;
-pub(crate) use integer_coerce::integer_binary;
 use integer_coerce::*;
+pub(crate) use integer_coerce::{integer_binary, prepare_typed_integer_values, TypedIntegerValues};
 use operand::{ComparisonOperand, ComparisonOperands};
 pub(crate) use operand::{Operand, OperandFacts, Operands};
 pub(crate) use real_coerce::*;
@@ -872,6 +872,23 @@ fn eval_binary_value_dispatch(
     if matches!(op, Plus | Minus | Mul | Mod | Div) {
         return eval_binary_arithmetic_in(op, l, r, div_precision_increment, operands, ctx);
     }
+    if op == IntDiv {
+        return quotient::prepare_integer_division(l, r, unsigned, ctx, &mut |index, value| {
+            decimal_div_operand(
+                value,
+                if index == 0 {
+                    operands.lhs
+                } else {
+                    operands.rhs
+                },
+                ctx,
+            )
+        })?
+        .compute(
+            tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
+            ctx,
+        );
+    }
     if comparison_operation(op).is_some() {
         return eval_comparison_values_in(op, l, r, collation, operands, ctx);
     }
@@ -1034,19 +1051,6 @@ fn eval_binary_value_dispatch(
     if matches!(l, Datum::Real(_) | Datum::Float32(_))
         || matches!(r, Datum::Real(_) | Datum::Float32(_))
     {
-        // Go has no Real DIV signature: preserve each operand's precision
-        // while casting to Decimal, before the ordinary real promotion below.
-        if op == IntDiv {
-            if l == Datum::Null {
-                return eval_binary_arithmetic_null_in(ctx);
-            }
-            let a = decimal_div_operand(l, operands.lhs, ctx)?;
-            if r == Datum::Null {
-                return eval_binary_arithmetic_null_in(ctx);
-            }
-            let b = decimal_div_operand(r, operands.rhs, ctx)?;
-            return decimal_integer_division(&a, &b, unsigned_pair, ctx);
-        }
         return float_binary(op, l, r, ctx);
     }
     // go's bit signatures declare `ETInt` arguments, and the implied casts
@@ -1239,7 +1243,7 @@ fn decimal_binary(
     op: BinaryOp,
     l: Datum,
     r: Datum,
-    unsigned_pair: bool,
+    _unsigned_pair: bool,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
     use BinaryOp::*;
@@ -1273,12 +1277,12 @@ fn decimal_binary(
     }
     let a = to_decimal(l);
     let b = to_decimal(r);
-    Ok(match op {
+    match op {
         Plus | Minus | Mul => unreachable!("worker arithmetic dispatched before this ladder"),
         Eq | Ne | Lt | Le | Gt | Ge => unreachable!("worker comparison dispatched above"),
         Div => unreachable!("handled above"),
         // The bounded decimal kernel preserves warnings before ToInt/ToUint.
-        IntDiv => decimal_integer_division(&a, &b, unsigned_pair, ctx)?,
+        IntDiv => unreachable!("integer DIV uses its prepared value policy"),
         Mod => unreachable!("worker arithmetic dispatched before this ladder"),
         // Bitwise/shift operators work on integers in MySQL, so a decimal
         // operand rounds to the nearest `i64` first (ties away from zero),
@@ -1288,7 +1292,7 @@ fn decimal_binary(
             return eval_bitwise_binary_in(op, Some(ai), Some(bi), ctx);
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
-    })
+    }
 }
 
 /// A DECIMAL reaching a bitwise or shift operator, as the `i64` Go's own

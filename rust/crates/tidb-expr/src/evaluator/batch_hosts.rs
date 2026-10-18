@@ -28,6 +28,8 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_quotient.rs"]
+mod quotient;
 #[path = "batch_raw_values.rs"]
 mod raw_values;
 #[path = "batch_unary_window.rs"]
@@ -154,6 +156,7 @@ pub(super) enum NativeHostMetadata {
         subject_format_failures: [Option<[u8; 8]>; 2],
         overflow_format_failure: Option<[u8; 8]>,
         overflow_expressions: [Option<Box<str>>; 2],
+        intdiv: Option<Box<crate::scalar_function::NativeIntDivDiagnostics>>,
         output_node: usize,
         output_role: NativeValueRole,
     },
@@ -855,8 +858,8 @@ impl<'a> NativeBatchHosts<'a> {
         let (index, typed, row, slot) = (*next, *typed, task.row, task.slot);
         let Some(NativeHostMetadata::Arithmetic {
             operation,
-            name,
-            result_type,
+            name: _,
+            result_type: _,
             argument_nodes,
             source_types,
             literal,
@@ -865,10 +868,11 @@ impl<'a> NativeBatchHosts<'a> {
             generic_mode,
             subjects,
             subject_format_failures,
-            overflow_format_failure,
+            overflow_format_failure: _,
             overflow_expressions,
-            output_node,
-            output_role,
+            intdiv,
+            output_node: _,
+            output_role: _,
             batch: None,
         }) = self.metadata.get(slot.index())
         else {
@@ -878,6 +882,9 @@ impl<'a> NativeBatchHosts<'a> {
             SqlBatchHostOperation::AddNative => tidb_ast::BinaryOp::Plus,
             SqlBatchHostOperation::SubtractNative => tidb_ast::BinaryOp::Minus,
             SqlBatchHostOperation::MultiplyNative => tidb_ast::BinaryOp::Mul,
+            SqlBatchHostOperation::ModuloNative => tidb_ast::BinaryOp::Mod,
+            SqlBatchHostOperation::DivideNative => tidb_ast::BinaryOp::Div,
+            SqlBatchHostOperation::IntegerDivideNative => tidb_ast::BinaryOp::IntDiv,
             _ => return Err(binding("arithmetic operation differs")),
         };
         let store = self
@@ -895,6 +902,12 @@ impl<'a> NativeBatchHosts<'a> {
         let diagnostic_copies = subjects
             .iter()
             .chain(overflow_expressions.iter())
+            .chain(
+                intdiv
+                    .as_deref()
+                    .map_or(&[][..], |facts| facts.arguments.as_slice())
+                    .iter(),
+            )
             .flatten()
             .try_fold(0usize, |total, text| {
                 total
@@ -937,8 +950,16 @@ impl<'a> NativeBatchHosts<'a> {
         let prepared = if index == 0 {
             let stop = value.is_null()
                 && (typed
-                    || matches!(mode,Mode::Numeric(domain) if !(domain==NativeEvalType::Real && op==tidb_ast::BinaryOp::Plus)));
+                    || matches!(mode,Mode::Numeric(domain) if !(domain==NativeEvalType::Real && op==tidb_ast::BinaryOp::Plus)
+                        && !(op==tidb_ast::BinaryOp::Mod && domain!=NativeEvalType::Decimal)));
             if stop {
+                if quotient::is_quotient(op) {
+                    return self.finish_arithmetic_row_value(
+                        id,
+                        crate::ops::eval_binary_arithmetic_null_in(self.context),
+                        base,
+                    );
+                }
                 crate::ops::arithmetic::PreparedArithmetic::Null
             } else {
                 self.check_bytes(
@@ -977,6 +998,15 @@ impl<'a> NativeBatchHosts<'a> {
                 .take()
                 .ok_or_else(|| binding("arithmetic left value missing"))?;
             let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+            if quotient::is_quotient(op) {
+                let available = self
+                    .max_retained_bytes
+                    .checked_sub(base)
+                    .ok_or_else(|| resource("quotient allowance exhausted"))?;
+                let result =
+                    self.compute_quotient(&self.metadata[slot.index()], left, value, available)?;
+                return self.finish_arithmetic_row_value(id, result, base);
+            }
             if typed {
                 match crate::ops::prepare_native_typed_arithmetic(
                     op,
@@ -1024,41 +1054,7 @@ impl<'a> NativeBatchHosts<'a> {
             .max_retained_bytes
             .checked_sub(base)
             .ok_or_else(|| resource("arithmetic kernel allowance exhausted"))?;
-        let value = match prepared.compute(available) {
-            Ok(value) => value,
-            Err(error) => {
-                let (class, text) = match error {
-                    EvalError::IntOverflow => (
-                        if result_type.is_unsigned() {
-                            "BIGINT UNSIGNED"
-                        } else {
-                            "BIGINT"
-                        },
-                        overflow_expressions[0].as_deref(),
-                    ),
-                    EvalError::FloatOverflow => ("DOUBLE", overflow_expressions[1].as_deref()),
-                    EvalError::DecimalOverflow => ("DECIMAL", overflow_expressions[0].as_deref()),
-                    other => return self.native_failure(other),
-                };
-                if let Some(bits) = overflow_format_failure {
-                    let _ = crate::scalar_function::render_numeric_format_failure(*bits);
-                }
-                let Some(text) = text else {
-                    return self.native_failure(error);
-                };
-                return self.native_failure(EvalError::DataOutOfRange {
-                    value: class,
-                    expression: text.to_owned(),
-                });
-            }
-        };
-        let value =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
-        self.finish_native_value(id, value, *output_node, *output_role, row, base)
-            .map(HostStep::Ready)
+        self.finish_arithmetic_row_value(id, prepared.compute(available), base)
     }
 
     fn finish_math(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
@@ -1929,6 +1925,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     batch: None,
                     name,
                     mode,
+                    intdiv,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
                 else {
@@ -1938,6 +1935,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     || invocation.arg_types.len() != 2
                     || operation != *descriptor_operation
                     || native_arithmetic_operation(name) != Some(operation)
+                    || (name.as_ref() == "intdiv") != intdiv.is_some()
                 {
                     return Err(binding("arithmetic catalog descriptor differs"));
                 }

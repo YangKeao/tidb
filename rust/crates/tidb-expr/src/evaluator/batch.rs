@@ -252,6 +252,11 @@ fn window_arithmetic_operation(
             SqlBatchHostOperation::AddNative => SqlBatchHostOperation::AddWindowNative,
             SqlBatchHostOperation::SubtractNative => SqlBatchHostOperation::SubtractWindowNative,
             SqlBatchHostOperation::MultiplyNative => SqlBatchHostOperation::MultiplyWindowNative,
+            SqlBatchHostOperation::ModuloNative => SqlBatchHostOperation::ModuloWindowNative,
+            SqlBatchHostOperation::DivideNative => SqlBatchHostOperation::DivideWindowNative,
+            SqlBatchHostOperation::IntegerDivideNative => {
+                SqlBatchHostOperation::IntegerDivideWindowNative
+            }
             _ => return None,
         },
     )
@@ -1047,16 +1052,23 @@ fn native_arithmetic_operation(name: &str) -> Option<SqlBatchHostOperation> {
         "plus" => SqlBatchHostOperation::AddNative,
         "minus" => SqlBatchHostOperation::SubtractNative,
         "mul" => SqlBatchHostOperation::MultiplyNative,
+        "mod" => SqlBatchHostOperation::ModuloNative,
+        "div" => SqlBatchHostOperation::DivideNative,
+        "intdiv" => SqlBatchHostOperation::IntegerDivideNative,
         _ => return None,
     })
 }
 fn arithmetic_subject_required(function: &ScalarFunction, arg: &Expression) -> bool {
-    function.native_arithmetic_generic_mode()
-        == crate::scalar_function::NativeArithmeticInputMode::Numeric(NativeEvalType::Decimal)
+    (function.func_name.lowercase() == "intdiv"
         && arg
             .static_type()
-            .is_some_and(|field| field.eval_type() != NativeEvalType::Decimal)
-        && !matches!(arg,Expression::Constant(constant) if matches!(constant.value,Datum::BinaryLiteral(_)))
+            .is_some_and(|field| field.eval_type() == NativeEvalType::Real))
+        || function.native_arithmetic_generic_mode()
+            == crate::scalar_function::NativeArithmeticInputMode::Numeric(NativeEvalType::Decimal)
+            && arg
+                .static_type()
+                .is_some_and(|field| field.eval_type() != NativeEvalType::Decimal)
+            && !matches!(arg,Expression::Constant(constant) if matches!(constant.value,Datum::BinaryLiteral(_)))
 }
 fn native_math_operation(function: &ScalarFunction) -> Option<SqlBatchHostOperation> {
     (function.func_name.lowercase() == "abs").then_some(SqlBatchHostOperation::AbsNative)
@@ -1174,6 +1186,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_unary_sign_operation(function.func_name.lowercase()).is_some()
+        || native_arithmetic_operation(function.func_name.lowercase()).is_some()
         || native_character_value_argument(function)
 }
 fn resolve_call_in_view(
@@ -2033,6 +2046,10 @@ fn preflight_view<'a>(
                     .ok_or_else(|| resource("arithmetic diagnostic copies overflow"))?,
             )?;
         }
+        if function.func_name.lowercase() == "intdiv" {
+            budget.array::<crate::scalar_function::NativeIntDivDiagnostics>(1)?;
+            budget.add(512)?;
+        }
         let mut child = index + 1;
         for arg in &function.args {
             let item = checked
@@ -2043,6 +2060,15 @@ fn preflight_view<'a>(
                     budget.add(bytes.checked_mul(4).ok_or_else(|| {
                         resource("numeric argument diagnostic copies overflow")
                     })?)?;
+                }
+            }
+            if function.func_name.lowercase() == "intdiv" {
+                if let Some(bytes) = item.numeric_render_bound {
+                    budget.add(
+                        bytes
+                            .checked_mul(4)
+                            .ok_or_else(|| resource("DIV argument diagnostic copies overflow"))?,
+                    )?;
                 }
             }
             child = item.subtree_end;
@@ -2233,6 +2259,32 @@ fn arithmetic_host_metadata(
     } else {
         None
     };
+    let intdiv = if sql.func_name.lowercase() == "intdiv" {
+        let mut arguments = [None, None];
+        for index in 0..2 {
+            let child = &checked[nodes[index]];
+            if let Some(bound) = child.numeric_render_bound {
+                let text = crate::scalar_function::static_numeric_argument_text(
+                    sql,
+                    &sql.args[index],
+                    false,
+                );
+                if text.as_ref().is_some_and(|text| text.len() > bound) {
+                    return Err(binding("DIV argument text exceeds admitted bound").into());
+                }
+                arguments[index] = text.map(String::into_boxed_str);
+            }
+        }
+        Some(Box::new(
+            crate::scalar_function::NativeIntDivDiagnostics::new(
+                sql,
+                arguments,
+                nodes.map(|node| checked[node].numeric_format_failure),
+            ),
+        ))
+    } else {
+        None
+    };
     Ok(NativeHostMetadata::Arithmetic {
                                     batch, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
                                     argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].sql),snapshot_field_type(checked[right].sql)],
@@ -2240,7 +2292,7 @@ fn arithmetic_host_metadata(
                                     binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),
                                     mode:sql.native_arithmetic_mode(),generic_mode:sql.native_arithmetic_generic_mode(),subjects,
                                     subject_format_failures,overflow_format_failure:item.numeric_format_failure,
-                                    overflow_expressions:[capture(false)?,capture(true)?],output_node:ordinal,
+                                    overflow_expressions:[capture(false)?,capture(true)?],intdiv,output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("arithmetic result role missing"))?,
                                 })
 }
@@ -2362,9 +2414,15 @@ fn lower_view(
                                         | SqlBatchHostOperation::AddNative
                                         | SqlBatchHostOperation::SubtractNative
                                         | SqlBatchHostOperation::MultiplyNative
+                                        | SqlBatchHostOperation::ModuloNative
+                                        | SqlBatchHostOperation::DivideNative
+                                        | SqlBatchHostOperation::IntegerDivideNative
                                         | SqlBatchHostOperation::AddWindowNative
                                         | SqlBatchHostOperation::SubtractWindowNative
                                         | SqlBatchHostOperation::MultiplyWindowNative
+                                        | SqlBatchHostOperation::ModuloWindowNative
+                                        | SqlBatchHostOperation::DivideWindowNative
+                                        | SqlBatchHostOperation::IntegerDivideWindowNative
                                         | SqlBatchHostOperation::AbsIntWindowNative
                                         | SqlBatchHostOperation::CastDecimalWindowNative
                                         | SqlBatchHostOperation::CastJsonWindowNative
@@ -2424,9 +2482,15 @@ fn lower_view(
                             operation @ (SqlBatchHostOperation::AddNative
                             | SqlBatchHostOperation::SubtractNative
                             | SqlBatchHostOperation::MultiplyNative
+                            | SqlBatchHostOperation::ModuloNative
+                            | SqlBatchHostOperation::DivideNative
+                            | SqlBatchHostOperation::IntegerDivideNative
                             | SqlBatchHostOperation::AddWindowNative
                             | SqlBatchHostOperation::SubtractWindowNative
-                            | SqlBatchHostOperation::MultiplyWindowNative) => {
+                            | SqlBatchHostOperation::MultiplyWindowNative
+                            | SqlBatchHostOperation::ModuloWindowNative
+                            | SqlBatchHostOperation::DivideWindowNative
+                            | SqlBatchHostOperation::IntegerDivideWindowNative) => {
                                 arithmetic_host_metadata(operation, sql, item, ordinal, &checked)?
                             }
                             operation @ (SqlBatchHostOperation::AbsIntWindowNative
