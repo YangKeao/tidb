@@ -91,23 +91,14 @@ pub(crate) fn date_literal_in(
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,
     modes: tidb_datatype::DateModes,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<(Time, FieldType), EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            Ok((
-                crate::tikv::EvaluatedBytesOp::DateLiteralNative,
-                literal_args(text, zone, modes),
-            ))
-        },
-        |computed| {
-            let time = literal_time(computed, TimeType::Date)?;
-            let mut ft = FieldType::new(FieldTypeCode::Date);
-            ft.set_decimal(0);
-            ft.set_flen(MAX_DATE_WIDTH);
-            Ok((time, ft))
-        },
+    literal_value_bounded(
+        false,
+        text,
+        zone,
+        modes,
+        tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
     )
 }
 
@@ -132,24 +123,14 @@ pub(crate) fn timestamp_literal_in(
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,
     modes: tidb_datatype::DateModes,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<(Time, FieldType), EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            Ok((
-                crate::tikv::EvaluatedBytesOp::TimestampLiteralNative,
-                literal_args(text, zone, modes),
-            ))
-        },
-        |computed| {
-            let time = literal_time(computed, TimeType::DateTime)?;
-            let fsp = i64::from(time.fsp());
-            let mut ft = FieldType::new(FieldTypeCode::Datetime);
-            ft.set_decimal_under_limit(fsp);
-            ft.set_flen_under_limit(MAX_DATETIME_WIDTH_NO_FSP + fsp + i64::from(fsp > 0));
-            Ok((time, ft))
-        },
+    literal_value_bounded(
+        true,
+        text,
+        zone,
+        modes,
+        tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
     )
 }
 
@@ -177,50 +158,60 @@ pub(crate) fn timestamp_literal_in(
 /// the same statement rounds identically whichever of the two paths builds
 /// it. An explicit `+HH:MM` offset in the literal likewise normalizes into
 /// this zone rather than into UTC.
-fn literal_args(
+/// Actual literal policy used by construction, without a Ready program/frame.
+pub(crate) fn literal_value_bounded(
+    timestamp: bool,
     text: &str,
     zone: &tidb_datatype::SessionTimeZone,
     modes: tidb_datatype::DateModes,
-) -> crate::tikv::EvaluatedArgs {
-    crate::tikv::EvaluatedArgs::TemporalText {
-        value: text.as_bytes().to_vec(),
-        modes: i64::from(modes.allow_invalid_dates)
-            | (i64::from(modes.no_zero_date) << 1)
-            | (i64::from(modes.no_zero_in_date) << 2),
-        zone: zone.clone(),
+    maximum: usize,
+) -> Result<(Time, FieldType), EvalError> {
+    use tidb_query_expr::{NativeTemporalLiteralModes as M, NativeTemporalLiteralValueError as E};
+    let value = tidb_query_expr::native_temporal_literal_value(
+        timestamp,
+        text,
+        zone,
+        M {
+            allow_invalid_dates: modes.allow_invalid_dates,
+            no_zero_date: modes.no_zero_date,
+            no_zero_in_date: modes.no_zero_in_date,
+        },
+        maximum,
+    )
+    .map_err(|e| match e {
+        E::WrongValue { code, message } => EvalError::WrongTemporalLiteral { code, message },
+        E::Resource => EvalError::ExpressionRuntimeFailure(
+            crate::tikv::ExpressionRuntimeFailure::from_local_eval(
+                tidb_query_expr::local::LocalError::ResourceLimit(
+                    "native temporal literal work allowance exceeded".into(),
+                ),
+                None,
+            ),
+        ),
+    })?;
+    let expected = if timestamp {
+        TimeType::DateTime
+    } else {
+        TimeType::Date
+    };
+    if value.kind != expected {
+        return Err(crate::tikv::native_time_result_contract_error());
     }
-}
-
-/// Decode only the shared result contract, then project its exact raw temporal
-/// value into the native representation. There is no host reparse or validation.
-fn literal_time(
-    computed: crate::tikv::EvaluatedBytesResult,
-    expected_kind: TimeType,
-) -> Result<Time, EvalError> {
-    use tidb_query_expr::NativeTemporalLiteralResult;
-    let bytes = computed
-        .into_bytes()?
-        .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-    let result = tidb_query_expr::decode_native_temporal_literal_result(&bytes)
-        .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-    match result {
-        NativeTemporalLiteralResult::Value(value) => {
-            if value.kind != expected_kind {
-                return Err(crate::tikv::native_time_result_contract_error());
-            }
-            Ok(Time::from_raw_parts(
-                CoreTime::from_raw(value.raw),
-                value.kind,
-                value.fsp,
-            ))
-        }
-        NativeTemporalLiteralResult::WrongValue { code, message } => {
-            Err(EvalError::WrongTemporalLiteral {
-                code,
-                message: message.to_owned(),
-            })
-        }
+    let time = Time::from_raw_parts(CoreTime::from_raw(value.raw), value.kind, value.fsp);
+    let mut field = FieldType::new(if timestamp {
+        FieldTypeCode::Datetime
+    } else {
+        FieldTypeCode::Date
+    });
+    if timestamp {
+        let fsp = i64::from(time.fsp());
+        field.set_decimal_under_limit(fsp);
+        field.set_flen_under_limit(MAX_DATETIME_WIDTH_NO_FSP + fsp + i64::from(fsp > 0));
+    } else {
+        field.set_decimal(0);
+        field.set_flen(MAX_DATE_WIDTH);
     }
+    Ok((time, field))
 }
 
 #[cfg(test)]
@@ -328,7 +319,7 @@ mod tests {
     }
 
     /// The fold rounds in the SESSION zone, not in UTC: the capture in
-    /// [`literal_args`]'s doc, replayed against both zones. The instants are DST
+    /// [`literal_value_bounded`]'s doc, replayed against both zones. The instants are DST
     /// TRANSITIONS on purpose -- a probe over ordinary instants shows no
     /// difference in ANY zone and is a false negative (the same trap the
     /// sibling test in `crate::cast` documents).

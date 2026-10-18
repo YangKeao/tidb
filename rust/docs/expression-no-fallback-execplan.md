@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7s: remove GROUPING mode/NULL and DATE/TIMESTAMP literal Ready handoffs, expose actual metadata/id and parsed temporal/error values over original pure SDK owners, and integrate GROUPING canonical sources including missing metadata/NULL/argument-error demand. Freeze independent original observations and Ready/source REDs before candidate edits, pair before retirement, share immutable grouping metadata without cloning unused huge marks, retain literal explicit zone/modes/raw precision/hard errors and GROUPING uint bits. Validate metadata/hash/clone behavior, provenance/resources/selection/returns/Projection and full core/frontend/warnings/lint/format/fixtures, sign local DCO commits. Global fallback/unistore work stays open.
+
 - [x] N7r: retire all eight native vector SQL Ready callers and integrate canonical vector sources through the existing SDK frame, with borrowed actual vectors and original conversion/dimension/IEEE/NaN/NULL/error semantics. Capture original outcomes and Ready/source REDs before candidate edits, independently pair before retirement, bound demanded conversion/work/output ownership, validate all provenance and callbacks/cleanup, source metadata/selection/returns and mixed serial/parallel Projection, full frontend/SDK/exact warning and failure lists/lint/dual format/immutable fixtures, then sign local DCO commits. Generic fallback and unistore remain global work.
 
 - [x] N7q: integrate DATE_FORMAT canonical sources over the existing actual N7j owner and retire FORMAT_BYTES/FORMAT_NANO_TIME Ready handoffs, exposing an actual nullable f64 formatter over the existing scaled primitive. Capture fresh original outcomes/context including thresholds/IEEE/native kinds and source/Ready REDs before edits; pair the candidate while old metric callers/workers remain, then delegate explicit wire workers to the shared actual formatter. Preserve first DATE_FORMAT ETDatetime source cast/full metadata before both eager strict text conversions, NULL/error order, numeric-prefix metric conversion/warnings and original return-family boundary. Borrow callback-free metric kinds so unsupported huge vectors do not copy; copy real string/bytes before their callbacks. Validate provenance, budget/demand/panic recovery, all source kinds, result declarations and mixed Projection, full frontend/SDK, exact warning/failure lists, lint/dual format/immutable fixtures and local DCO commits. Global generic/unistore/semantic/full-server work remains open.
@@ -111,6 +113,19 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7s independently paired10416 GROUPING and12960 typed-literal observations
+before retiring six Ready routes. The first GROUPING source omitted the outer
+ScalarFunction::eval return-family conversion because its inner signature returns
+UInt directly. A genuine Varchar source test showed native fixed-column panic
+versus old success; ordinary conversion is now restored once. A separate real
+3000-empty-set/500000-work counterexample exposed uniform worst-tree overcharge;
+work now admits bounded group headers and charges actual NumericSet size bounds.
+Both frozen SQL witnesses remain unchanged. A new test initially assumed Equals/
+Hash64 include planner metadata; existing source intentionally excludes it there,
+while HashCode includes it. Only the test was corrected; hashing policy is retained.
+SDK test-zone construction uses inferred named TZ parsing because its dependency
+graph carries two chrono_tz versions; this is test portability, not a policy delta.
+
 N7r confirms that the eight vector functions already share native raw_ref
 algorithms through the actual datatype and the old explicit workers. The SQL
 wrappers were nevertheless cloning vectors and re-entering Ready solely to
@@ -185,6 +200,22 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: share validated GROUPING metadata through immutable Arc snapshots,
+  defer metadata errors/work until after non-NULL strict Int/UInt reading, and use
+  a dedicated GroupingNative identity on the existing SDK frame. Keep the outer
+  ordinary return-family boundary once, with original integer bits unchanged.
+  Rationale: source preparation must not clone unused huge marks or turn NULL
+  into metadata failure. Original HashCode/Equals/Hash64 contracts and immutable
+  replacement isolation remain distinct; source slots own distinct snapshots.
+  Date/Author: 2026-10-19 / TiDBEngineer.
+
+- Decision: expose typed temporal literal values/errors over the original private
+  SDK parsers, accepting already-captured boolean modes and an explicit zone.
+  Rationale: literal construction is neither a generic cast nor a second context
+  read; retain hard errors, raw precision, DST carry and full FieldType without
+  transporting an identity frame through Ready.
+  Date/Author: 2026-10-19 / TiDBEngineer.
+
 - Decision: add dedicated VectorNative catalog/metadata/demand through the
   existing HostFrame, with actual NativeVectorValue outputs and pure borrowed
   conversion. Keep explicit wire workers and actual APIs on the same native
@@ -251,6 +282,22 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7s retires GROUPING's three mode routes/NULL route and both typed temporal
+literal Ready callers. Canonical GROUPING accepts absent metadata until an actual
+non-NULL id demands it, shares immutable marks and applies the original outer
+return boundary. All10416/A5CDD369E6A88378 grouping and12960/80D479F72878FD19
+literal pairs passed before retirement. Genuine source-return and finite-work
+REDs now pass without rewriting those witnesses. Final frontend1739/exact3/95ignored
+has all268 batch tests green; SDK1127/exact1/1ignored and Projection26 preserve
+inherited failure lists. The new13-root Projection group includes three metadata
+modes, NULL with missing metadata, two folded literals and their CHAR parents plus
+an older arithmetic output. Source/resource/hash/rewriter tests, frontend346 and
+clippy89 expression/171 all warning-title Counters, lint, both pinned16-file
+formatters, immutable fixtures and both diffs are recorded in
+rust/docs/evidence/no-fallback-n7s.md. Local DCO checkpoint only; global generic
+fallback, remaining Ready families, unistore, unsupported/malformed shapes,
+inherited failures, semantic audits and full-server gates remain open.
 
 N7r retires all eight native vector SQL Ready callers and integrates their
 canonical sources. Independent proof matched207504 observations and Real bits
@@ -3316,3 +3363,67 @@ retirement remain open after signing this local checkpoint.
 Revision N7r: recorded complete eight-function vector source/caller migration,
 independent old observations and Real bits, borrowed payload/demand boundaries,
 finite-resource checks and final scoped gates across all four living sections.
+
+
+## N7s milestone: grouping metadata and typed literal values
+
+
+The original GROUPING algorithm remains GroupingMetadata::eval in SDK
+impl_miscellaneous.rs. native_grouping_value.rs accepts an actual nullable u64
+id and optional immutable metadata, preserving NULL-before-metadata and original
+uninitialized errors. ScalarFunction now stores Arc metadata, retaining the
+public borrowed getter and validated replacement/failure semantics. Source
+preparation clones only that shared header; it never serializes/scans unused
+mark sets. Dedicated GroupingNative metadata records the original argument node,
+optional shared marks, result FieldType and output provenance on the same SDK
+HostFrame. Runtime authenticates the input, consumes invocation demand, reads
+strict Int/UInt without inventing a cast and then executes original metadata.
+The inner signature returns UInt bits; the original outer ScalarFunction::eval
+ordinary return-family boundary follows once before publication. No generic
+temporal-result parse or store-borrow-spanning context callback is introduced.
+
+Grouping work first admits a bounded header pass and only NumericSet adds an
+actual-length-derived search bound before original evaluation. The real3000-empty-
+set/500000-work RED and the source Varchar publication RED are preserved in
+n7s-resource-red-focus.log. A100000-group source now refuses demanded non-NULL work
+without fallback; reusing it on a NULL selection succeeds. Mark counts remain
+uncapped and UInt results wrap exactly as before. Huge shared marks remain unused
+on NULL. HashCode still includes metadata; Equals/Hash64 still exclude it. Tests
+preserve clone isolation, replacement cache invalidation and failure-to-uninitialized
+behavior, rather than imposing a new hash/equality policy.
+
+DATE/TIMESTAMP literal construction now calls native_temporal_literal_value over
+unchanged private date_value/timestamp_value owners. Actual parsed temporal values
+or owned hard errors cross the native boundary directly. Source syntax still folds
+to a typed constant carrying exact raw kind/FSP and full Date/Datetime FieldType.
+Regex gates, DATE zero-mode order, distinct1292/1525 diagnostics, explicit offsets
+and named-zone DST carry remain original. The builder captures zone/modes once;
+execution Columns provide no additional temporal settings or Ready lookup. Explicit
+wire workers retain their original decoders/validators/frames and shared parsers.
+
+Original84009 captured10416 grouping/A5CDD369E6A88378 and12960 literal/
+80D479F72878FD19 observations before candidate edits; six Ready guards and a separate
+source guard were RED. True40193 compared both exact witness tests with original
+callers still present and passed before retirement. The persistent workspace
+n7s-before-*.rs, original-witness.rs, final-independent-pairs.rs and logs are the
+independent evidence. Current fixed hashes are guards, not renewed proof; never
+regenerate them or rerun applied /tmp/n7s-host.py or /tmp/n7s-tests.py. The later
+explicit work correction keeps both checksums unchanged.
+
+From TiDB root run RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test
+--manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib
+-- metadata_ native_grouping_ --nocapture, then run the complete frontend without
+those libtest filters. Use -p tidb-executor --lib projection::tests for mixed
+serial/parallel output. From TiKV root run RUSTFLAGS='' CARGO_BUILD_JOBS=8
+../tools/cargo-tikv test --release --locked --offline -j8 -p tidb_query_expr --lib,
+then the receipt's scoped make-run clippy command. Run make lint, both pinned16-file
+formatters, immutable fixture length/hash checks and both diffs. Expect front1739/
+exact3/95ignored/all268 batch, SDK1127/exact1/1ignored and Projection26, with exact
+failure/title Counters matching N7r. Source tests retain14 input declarations,
+9 returns and31 metadata states, all selections/flag transitions/context/CHAR/error
+prefixes. NewDate remains computed over supported physical inputs; malformed-source
+validity and full server SQL are not certified. Keep the full objective active.
+
+Revision N7s: recorded grouping/literal ownership, independent proofs, actual
+return-boundary and budget RED corrections, preserved hash contracts and final
+scoped validation across all four living sections.

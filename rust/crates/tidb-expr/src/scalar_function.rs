@@ -316,7 +316,7 @@ pub struct ScalarFunction {
     /// Grouping is built through `NewFunctionWithInit`, so carrying the
     /// validated metadata on the node is what lets clones and substitution
     /// preserve the function's grouping-id semantics and hash identity.
-    grouping_metadata: Option<GroupingMetadata>,
+    grouping_metadata: Option<std::sync::Arc<GroupingMetadata>>,
 
     /// Go embedded collation state (via the `Function`'s `collationInfo`).
     pub collation: CollationInfo,
@@ -1109,15 +1109,21 @@ impl ScalarFunction {
         self.clean_hash_code();
         self.grouping_metadata = None;
         let metadata = GroupingMetadata::new(mode, grouping_marks)?;
-        self.grouping_metadata = Some(metadata);
+        self.grouping_metadata = Some(std::sync::Arc::new(metadata));
         Ok(())
     }
 
     /// Returns the validated grouping metadata installed on this function.
     pub fn grouping_metadata(&self) -> Result<&GroupingMetadata, GroupingMetadataError> {
         self.grouping_metadata
-            .as_ref()
+            .as_deref()
             .ok_or(GroupingMetadataError::Uninitialized)
+    }
+
+    /// Share immutable planner metadata without reading/copying its mark sets.
+    /// The source runtime still demands it only after a non-NULL strict id.
+    pub(crate) fn shared_grouping_metadata(&self) -> Option<std::sync::Arc<GroupingMetadata>> {
+        self.grouping_metadata.clone()
     }
 
     /// Whether this function has completed the source `SetMetadata` step.

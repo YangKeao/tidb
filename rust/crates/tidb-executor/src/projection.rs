@@ -3571,6 +3571,83 @@ mod tests {
         let vector_mix = std::iter::once(0)
             .chain(vector_start..roots.len())
             .collect::<Vec<_>>();
+        let metadata_start = roots.len();
+        for mode in [
+            tidb_expr::GroupingMode::BitAnd,
+            tidb_expr::GroupingMode::NumericCmp,
+            tidb_expr::GroupingMode::NumericSet,
+        ] {
+            let unsigned = integer.clone().with_unsigned(true);
+            let arg = call(
+                "if",
+                unsigned.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::UInt(u64::MAX), unsigned.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, unsigned.clone())),
+                ],
+            );
+            let mut function = ScalarFunction::new(
+                tidb_ast::CiString::new("grouping"),
+                unsigned.clone(),
+                vec![arg],
+            );
+            let marks = match mode {
+                tidb_expr::GroupingMode::BitAnd => std::collections::BTreeSet::from([1]),
+                tidb_expr::GroupingMode::NumericCmp => std::collections::BTreeSet::from([u64::MAX]),
+                tidb_expr::GroupingMode::NumericSet => std::collections::BTreeSet::new(),
+            };
+            function.set_grouping_metadata(mode, vec![marks]).unwrap();
+            let root = Expression::ScalarFunction(function);
+            roots.push(root.clone());
+            fields.push(unsigned);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let root = Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("grouping"),
+            integer.clone(),
+            vec![Expression::Constant(Constant::new(
+                Datum::Null,
+                integer.clone(),
+            ))],
+        ));
+        roots.push(root.clone());
+        fields.push(integer.clone());
+        roots.push(call("cast_char", string.clone(), vec![root]));
+        fields.push(string.clone());
+        for timestamp in [false, true] {
+            let expr = tidb_ast::Expr::Cast(tidb_ast::CastExpr {
+                expr: Box::new(tidb_ast::Expr::String(
+                    if timestamp {
+                        "2024-02-29 12:34:56.010"
+                    } else {
+                        "2024-02-29"
+                    }
+                    .into(),
+                )),
+                cast_type: if timestamp {
+                    tidb_ast::CastType::DateTime { fsp: None }
+                } else {
+                    tidb_ast::CastType::Date
+                },
+                style: if timestamp {
+                    tidb_ast::CastStyle::TimestampLiteral
+                } else {
+                    tidb_ast::CastStyle::DateLiteral
+                },
+                array: false,
+            });
+            let root = tidb_expr::rewriter::rewrite_expr(&expr).unwrap();
+            let field = root.static_type().unwrap().clone();
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let metadata_mix = std::iter::once(0)
+            .chain(metadata_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3594,6 +3671,10 @@ mod tests {
                     .iter()
                     .map(|&i| fields[i].clone())
                     .collect(),
+            ),
+            (
+                metadata_mix.iter().map(|&i| roots[i].clone()).collect(),
+                metadata_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
             (
                 vector_mix.iter().map(|&i| roots[i].clone()).collect(),

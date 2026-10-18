@@ -275,19 +275,6 @@ pub(crate) fn prepare_char_args(values: &[Option<i64>]) -> Result<EvaluatedArgs,
     })
 }
 
-/// Packs only the actual grouping id and validated mark sets with checked extent.
-/// Preserve the shared preparation error without inventing a worker phase.
-pub(crate) fn prepare_grouping_args(
-    gid: u64,
-    metadata: &tidb_query_expr::GroupingMetadata,
-) -> Result<EvaluatedArgs, crate::EvalError> {
-    tidb_query_expr::local::prepare_grouping_args(gid, metadata).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
-            error, None,
-        ))
-    })
-}
-
 /// Encode one actual native datum in the existing identity representation.
 pub(crate) fn prepare_datum_identity_args(
     value: &tidb_datatype::Datum,
@@ -696,3 +683,8 @@ pub(crate) mod presentation_value_tests;
 pub(crate) mod vector_value_tests;
 
 pub(crate) mod vector_value;
+
+#[cfg(test)]
+pub(crate) mod metadata_value_tests;
+
+pub(crate) mod grouping_value;

@@ -44,6 +44,8 @@ mod duration_construction_source;
 mod epoch_source;
 #[path = "batch_extract.rs"]
 mod extract_source;
+#[path = "batch_grouping.rs"]
+mod grouping;
 #[path = "batch_json_sum_crc32.rs"]
 mod json_sum_crc32_source;
 #[path = "batch_str_to_date.rs"]
@@ -141,6 +143,13 @@ pub(super) enum NativeHostMetadata {
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
+    },
+    Grouping {
+        argument: usize,
+        metadata: Option<std::sync::Arc<crate::grouping::GroupingMetadata>>,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
     },
     Vector {
         arguments: Box<[usize]>,
@@ -328,6 +337,7 @@ impl NativeHostMetadata {
             | Self::Calendar { result_type, .. }
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
+            | Self::Grouping { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
@@ -354,6 +364,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Grouping {
+        consumed: bool,
+    },
     Vector {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
@@ -465,6 +478,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Grouping { consumed } => Ok(Some(usize::from(*consumed))),
             SqlDemand::TimestampDiff { next, .. }
             | SqlDemand::DurationConstruction { next, .. }
             | SqlDemand::Vector { next, .. } => Ok(Some(*next)),
@@ -503,6 +517,7 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::Grouping { .. } => Err(binding("GROUPING demand cannot retain byte prefix")),
             SqlDemand::TimestampDiff { .. }
             | SqlDemand::DurationConstruction { .. }
             | SqlDemand::Vector { .. } => {
@@ -2138,6 +2153,18 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::GroupingNative => {
+                if self.native_values.is_none()
+                    || invocation.arg_types.len() != 1
+                    || !matches!(
+                        self.metadata.get(invocation.slot.index()),
+                        Some(NativeHostMetadata::Grouping { .. })
+                    )
+                {
+                    return Err(binding("GROUPING descriptor differs"));
+                }
+                SqlDemand::Grouping { consumed: false }
+            }
             SqlBatchHostOperation::VectorNative(op) => {
                 let Some(NativeHostMetadata::Vector {
                     arguments,
@@ -2746,6 +2773,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Grouping { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("GROUPING source cannot be wire NULL"));
+            };
+            return self.resume_grouping(id, token);
         }
         if matches!(task.demand, SqlDemand::Vector { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

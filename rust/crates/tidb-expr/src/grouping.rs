@@ -16,7 +16,7 @@
 //!
 //! TiDB rewrites a user-facing `GROUPING(...)` expression into a grouping-id
 //! column plus validated metadata. Public types alias the shared pure core;
-//! runtime evaluation sends the actual id and marks through the guarded worker.
+//! runtime evaluation borrows the actual id and immutable marks in the pure core.
 //! Planner rewriting and protobuf admission remain unchanged.
 
 #[cfg(test)]
@@ -26,45 +26,26 @@ pub use tidb_query_expr::{
     GroupingFunction, GroupingMetadata, GroupingMetadataError, GroupingMode,
 };
 
-/// Execute only an actual grouping id and validated planner metadata. Input
-/// serialization is guarded; neither marks nor the final answer are computed here.
+/// Execute the original pure metadata algorithm over actual id and mark sets.
 pub(crate) fn eval_grouping_in(
     grouping_id: u64,
     metadata: &GroupingMetadata,
-    ctx: &dyn crate::Columns,
+    _ctx: &dyn crate::Columns,
 ) -> Result<crate::Datum, crate::EvalError> {
-    use crate::tikv::EvaluatedBytesOp;
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            let operation = match metadata.mode() {
-                GroupingMode::BitAnd => EvaluatedBytesOp::GroupingBitAndNative,
-                GroupingMode::NumericCmp => EvaluatedBytesOp::GroupingNumericCmpNative,
-                GroupingMode::NumericSet => EvaluatedBytesOp::GroupingNumericSetNative,
-            };
-            Ok((
-                operation,
-                crate::tikv::prepare_grouping_args(grouping_id, metadata)?,
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    crate::tikv::grouping_value::value(
+        Some(grouping_id),
+        Some(metadata),
+        tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
     )
 }
-
-/// NULL is observed before any metadata demand, so it carries no fabricated
-/// grouping id or metadata; its own closed worker returns the nullable result.
+/// Actual NULL returns before metadata demand, without a fabricated id or marks.
 pub(crate) fn eval_grouping_null_in(
-    ctx: &dyn crate::Columns,
+    _ctx: &dyn crate::Columns,
 ) -> Result<crate::Datum, crate::EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            Ok((
-                crate::tikv::EvaluatedBytesOp::GroupingNullNative,
-                crate::tikv::EvaluatedArgs::NullWitness(None),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
+    crate::tikv::grouping_value::value(
+        None,
+        None,
+        tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
     )
 }
 

@@ -375,6 +375,7 @@ fn promoted_native_root_view(
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_grouping_call(function)
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -928,6 +929,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_grouping_call(function)
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1060,7 +1062,7 @@ fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
         || (function.pb_signature().is_some() && !pb_timestamp_diff(function))
         || (function.pb_origin().is_some() && !pb_timestamp_diff(function))
         || function.has_values_offset()
-        || function.has_grouping_metadata()
+        || (function.has_grouping_metadata() && !native_grouping_call(function))
     {
         return Err(BatchFailure::admission("outside native batch call closure"));
     }
@@ -1193,6 +1195,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_grouping_call(function)
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1238,6 +1241,9 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_grouping_call(function: &ScalarFunction) -> bool {
+    function.func_name.lowercase() == "grouping" && function.args.len() == 1
 }
 fn native_vector_call(function: &ScalarFunction) -> Option<tidb_query_expr::NativeVectorOperation> {
     use tidb_query_expr::NativeVectorOperation as O;
@@ -1440,6 +1446,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_grouping_call(function)
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1455,6 +1462,17 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if native_grouping_call(function) {
+        if view.value_role().is_none()
+            || function.get_static_type().is_none()
+            || function.args[0].static_type().is_none()
+        {
+            return Err(BatchFailure::admission(
+                "GROUPING requires original native declarations",
+            ));
+        }
+        return Ok((CallTarget::Host(SqlBatchHostOperation::GroupingNative), 1));
+    }
     if let Some(op) = native_vector_call(function) {
         if view.value_role().is_none()
             || function.get_static_type().is_none()
@@ -2457,6 +2475,12 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if native_grouping_call(function) {
+                        budget.field(sql, 1)?;
+                        budget.add(std::mem::size_of::<
+                            Option<std::sync::Arc<crate::grouping::GroupingMetadata>>,
+                        >())?;
+                    }
                     if let Some(op) = native_vector_call(function) {
                         budget.field(sql, 1)?;
                         budget.add(
@@ -3124,6 +3148,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::CalendarNative { .. }
                                         | SqlBatchHostOperation::DurationConstructionNative(_)
                                         | SqlBatchHostOperation::VectorNative(_)
+                                        | SqlBatchHostOperation::GroupingNative
                                         | SqlBatchHostOperation::TsoNative(_)
                                         | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
@@ -3194,6 +3219,18 @@ fn lower_view(
                                     output_role: item.view.value_role(),
                                 }
                             }
+                            SqlBatchHostOperation::GroupingNative => NativeHostMetadata::Grouping {
+                                argument: ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("GROUPING child overflow"))?,
+                                metadata: sql.shared_grouping_metadata(),
+                                result_type: snapshot_field_type(item.sql),
+                                output_node: ordinal,
+                                output_role: item
+                                    .view
+                                    .value_role()
+                                    .ok_or_else(|| binding("GROUPING result view missing"))?,
+                            },
                             SqlBatchHostOperation::VectorNative(op) => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, op.arity())?;
