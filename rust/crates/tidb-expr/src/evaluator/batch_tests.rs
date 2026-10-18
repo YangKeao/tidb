@@ -18251,3 +18251,539 @@ fn native_clock_capabilities_precision_without_copy_resources_cleanup_and_exclus
         }
     }
 }
+
+#[test]
+fn native_calendar_sources_do_not_fallback() {
+    let mut failed = vec![];
+    for name in crate::tikv::calendar_value_tests::NAMES {
+        let field = if matches!(name, "DATE" | "LAST_DAY") {
+            FieldType::new(FieldTypeCode::Date)
+        } else if matches!(name, "MONTHNAME" | "DAYNAME") {
+            string_ty()
+        } else {
+            ty()
+        };
+        let root = call(
+            &name.to_lowercase(),
+            field.clone(),
+            vec![literal(
+                Datum::new_string("2024-02-29 12:34:56"),
+                string_ty(),
+            )],
+        );
+        let suite = suite(root);
+        let ctx = crate::tikv::calendar_value_tests::context(1, 0, 0);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&field);
+        suite
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        let route = suite.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failed.push((name, route));
+        }
+    }
+    assert!(failed.is_empty(), "calendar refused: {failed:?}");
+}
+fn compare_calendar_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    level: usize,
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let label = format!(
+        "{root:?} source={schema:?} seed={seed} level={level} selection={}",
+        selection.len()
+    );
+    let actual = suite(root.clone());
+    let reference = suite(root);
+    for enabled in [false, true, false, true] {
+        let mut ctx = crate::tikv::calendar_value_tests::context(1, seed, level);
+        ctx.reject = true;
+        ctx.enabled.set(enabled);
+        let oldctx = crate::tikv::calendar_value_tests::context(1, seed, level);
+        oldctx.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut old = chunk(schema, rows);
+        old.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected = output_for(&field);
+        assert_eq!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, schema),
+            reference.run(&oldctx, &mut old, &mut expected),
+            "{label} flag={enabled}"
+        );
+        assert_eq!(*ctx.events.borrow(), *oldctx.events.borrow(), "{label}");
+        assert_eq!(output.num_rows(), expected.num_rows(), "{label}");
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(row).is_null(0),
+                expected.get_row(row).is_null(0),
+                "{label}"
+            );
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected.column(0).get_raw(row).as_ref(),
+                "{label}"
+            );
+        }
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0), "{label}");
+    }
+}
+
+#[test]
+fn native_calendar_sources_cast_modes_defaults_returns_parents_and_duplicate_selection() {
+    let cases = vec![
+        (
+            string_ty(),
+            vec![
+                Datum::Null,
+                Datum::new_string("2024-02-29 12:34:56.123456"),
+                Datum::new_string("0000-00-00"),
+                Datum::new_string("2020-00-00"),
+                Datum::new_string("2020-02-31"),
+                Datum::new_string("71/1/1"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            ty(),
+            vec![
+                Datum::Int(20240229),
+                Datum::Int(0),
+                Datum::Int(-1),
+                Datum::Int(i64::MAX),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Int(0), Datum::Int(24), Datum::Int(2024), Datum::Null],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Duration(MySqlDuration::from_nanoseconds(45678900000000, 6).unwrap()),
+                Datum::Null,
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(30)
+                .with_decimal(3),
+            vec![
+                Datum::Decimal(Decimal::from_literal("20240229123456.123")),
+                Datum::Null,
+            ],
+        ),
+    ];
+    for (source, values) in cases {
+        let schema = [source.clone()];
+        let rows = values.into_iter().map(|v| vec![v]).collect::<Vec<_>>();
+        let selection = (0..rows.len()).rev().chain([0, 0]).collect::<Vec<_>>();
+        for name in crate::tikv::calendar_value_tests::NAMES {
+            let fields = if matches!(name, "MONTHNAME" | "DAYNAME") {
+                vec![string_ty(), FieldType::new(FieldTypeCode::Date), ty()]
+            } else {
+                vec![
+                    ty(),
+                    string_ty(),
+                    FieldType::new(FieldTypeCode::Date),
+                    FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                    FieldType::new(FieldTypeCode::NewDecimal)
+                        .with_flen(30)
+                        .with_decimal(3),
+                ]
+            };
+            for field in fields {
+                let mut args = vec![typed_column(0, &source)];
+                let variants = if matches!(name, "WEEK" | "YEARWEEK") {
+                    3
+                } else {
+                    1
+                };
+                for variant in 0..variants {
+                    args.truncate(1);
+                    if variant != 0 {
+                        args.push(if variant == 1 {
+                            literal(Datum::Null, ty())
+                        } else {
+                            literal(Datum::new_string(" 3.5 "), string_ty())
+                        });
+                    }
+                    let root = call(&name.to_lowercase(), field.clone(), args.clone());
+                    for seed in 0..4 {
+                        for level in 0..3 {
+                            compare_calendar_source(
+                                root.clone(),
+                                &schema,
+                                &rows,
+                                &selection,
+                                seed,
+                                level,
+                            );
+                        }
+                    }
+                    let parent = call("cast_char", string_ty(), vec![root]);
+                    compare_calendar_source(parent, &schema, &rows, &selection, 3, 0);
+                }
+            }
+        }
+    }
+    let schema = [string_ty()];
+    let rows = vec![vec![Datum::new_string("2024-02-29")], vec![Datum::Null]];
+    compare_calendar_source(
+        call("week", ty(), vec![typed_column(0, &schema[0])]),
+        &schema,
+        &rows,
+        &vec![0; 2050],
+        2,
+        0,
+    );
+    for name in ["WEEK", "YEARWEEK"] {
+        let root = call(
+            &name.to_lowercase(),
+            ty(),
+            vec![
+                literal(Datum::Null, string_ty()),
+                call("abs", ty(), vec![literal(Datum::Int(i64::MIN), ty())]),
+            ],
+        );
+        compare_calendar_source(root, &[], &[vec![]], &[0], 0, 0);
+    }
+}
+#[test]
+fn native_calendar_capabilities_eager_mode_resources_cancel_and_exclusive_callbacks() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use super::native_values::{NativeValueOrigin, NativeValueRole, NativeValueStore};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostCatalog, HostInvocation, HostSignature, HostStart, HostStep,
+            LocalHostServices,
+        },
+        NativeCalendarOperation as O,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!()
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready")
+        }
+        fn default_week_format(&self) -> i64 {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("default");
+            3
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("modes");
+            tidb_datatype::DateModes {
+                no_zero_date: true,
+                no_zero_in_date: true,
+                allow_invalid_dates: false,
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("zone");
+            SessionTimeZone::utc()
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("clock");
+            Some((1700000000, 0, 0))
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("level");
+            crate::ErrorLevel::Warn
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("warning");
+        }
+    }
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for op in [
+            O::Date,
+            O::Year,
+            O::Month,
+            O::Day,
+            O::Quarter,
+            O::Hour,
+            O::Minute,
+            O::Second,
+            O::DayOfWeek,
+            O::DayOfYear,
+            O::Weekday,
+            O::MonthName,
+            O::DayName,
+            O::WeekOfYear,
+            O::Week,
+            O::YearWeek,
+            O::LastDay,
+            O::ToDays,
+            O::ToSeconds,
+        ] {
+            for arity in 1..=2 {
+                if !op.accepts_arity(arity) {
+                    continue;
+                }
+                let field = projected(&native_bytes_type(), true).unwrap();
+                let args = vec![field.clone(); arity];
+                let ret = field.clone();
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::CalendarNative {
+                        operation: op,
+                        arity: arity as u8,
+                    },
+                    HostSignature {
+                        arg_types: args.clone().into_boxed_slice(),
+                        return_type: ret.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::Calendar {
+                    arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
+                    source_type: string_ty(),
+                    operation: op,
+                    result_type: if matches!(op, O::Date | O::LastDay) {
+                        FieldType::new(FieldTypeCode::Date)
+                    } else if matches!(op, O::MonthName | O::DayName) {
+                        string_ty()
+                    } else {
+                        ty()
+                    },
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(16 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let row = InputRow {
+                    occurrence: 0,
+                    input_row: 0,
+                };
+                let insert = |v: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(v, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                store.borrow_mut().begin_window().unwrap();
+                let context = C {
+                    store: &store,
+                    events: RefCell::new(vec![]),
+                };
+                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 16384)
+                    .with_native_values(Some(&store));
+                let mut ctx = EvalContext::default();
+                let start = |p: &mut NativeBatchHosts<'_>, ctx: &mut EvalContext| {
+                    let HostStart::Pending { task, .. } = p
+                        .start(
+                            ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    task
+                };
+                for index in 0..arity {
+                    let mut corrupt =
+                        insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                    corrupt[0] ^= 1;
+                    for bad in [
+                        None,
+                        Some(corrupt),
+                        Some(stale.clone()),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::Output,
+                            3 + index,
+                            row,
+                        )),
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            InputRow {
+                                occurrence: 1,
+                                input_row: 0,
+                            },
+                        )),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            InputRow {
+                                occurrence: 0,
+                                input_row: 1,
+                            },
+                        )),
+                    ] {
+                        context.events.borrow_mut().clear();
+                        let task = start(&mut provider, &mut ctx);
+                        if index == 1 {
+                            let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                            assert!(matches!(
+                                provider.resume(
+                                    &mut ctx,
+                                    &task,
+                                    HostArgReply {
+                                        index: 0,
+                                        field_type: &field,
+                                        values: &VectorValue::from_scalar(
+                                            &ScalarValue::Bytes(Some(token.to_vec())),
+                                            1
+                                        )
+                                    }
+                                ),
+                                Ok(HostStep::NeedArg(_))
+                            ));
+                        }
+                        assert!(matches!(
+                            provider.resume(
+                                &mut ctx,
+                                &task,
+                                HostArgReply {
+                                    index,
+                                    field_type: &field,
+                                    values: &VectorValue::from_scalar(
+                                        &ScalarValue::Bytes(bad.map(|v| v.to_vec())),
+                                        1
+                                    )
+                                }
+                            ),
+                            Err(LocalError::BindingContract(_))
+                        ));
+                        assert!(context.events.borrow().is_empty());
+                        assert!(provider.take_native_error().is_none());
+                        provider.cancel(&task);
+                        provider.cancel(&task);
+                    }
+                }
+                for value in [
+                    Datum::Null,
+                    Datum::new_string("2024-02-29 12:34:56"),
+                    Datum::new_string("0000-00-00"),
+                    Datum::new_string("bad"),
+                    Datum::Bytes(vec![b'1'; 1 << 20]),
+                ] {
+                    context.events.borrow_mut().clear();
+                    let task = start(&mut provider, &mut ctx);
+                    let token = insert(&value, NativeValueRole::CharInput, 3, row);
+                    let mut step = provider.resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(
+                                &ScalarValue::Bytes(Some(token.to_vec())),
+                                1,
+                            ),
+                        },
+                    );
+                    if arity == 2 {
+                        assert!(matches!(step, Ok(HostStep::NeedArg(_))));
+                        assert!(context.events.borrow().is_empty());
+                        // NULL first still authenticates mode but does not clone or
+                        // convert this huge ignored payload.
+                        let token = insert(
+                            &Datum::Bytes(vec![0xff; 1 << 20]),
+                            NativeValueRole::CharInput,
+                            4,
+                            row,
+                        );
+                        step = provider.resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index: 1,
+                                field_type: &field,
+                                values: &VectorValue::from_scalar(
+                                    &ScalarValue::Bytes(Some(token.to_vec())),
+                                    1,
+                                ),
+                            },
+                        );
+                    }
+                    if let Ok(HostStep::Ready(output)) = step {
+                        let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                            panic!()
+                        };
+                        store
+                            .borrow()
+                            .get(token, role, NativeValueOrigin { node: 2, row })
+                            .unwrap();
+                        if arity == 2 && value.is_null() {
+                            assert!(store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap()
+                                .is_null());
+                        }
+                    } else {
+                        assert!(
+                            provider.take_native_error().is_some()
+                                || matches!(step, Err(LocalError::ResourceLimit(_)))
+                        );
+                    }
+                    provider.cancel(&task);
+                    let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                    assert!(provider
+                        .resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index: 0,
+                                field_type: &field,
+                                values: &VectorValue::from_scalar(
+                                    &ScalarValue::Bytes(Some(token.to_vec())),
+                                    1
+                                )
+                            }
+                        )
+                        .is_err());
+                }
+            }
+        }
+    }
+}

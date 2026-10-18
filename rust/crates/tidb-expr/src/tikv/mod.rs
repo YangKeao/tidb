@@ -353,25 +353,6 @@ pub(crate) fn prepare_weight_padded_args(
     Ok(EvaluatedArgs::Bytes2(Some(bytes), Some(metadata)))
 }
 
-/// Transport the actual temporal core and the original three DATE mode bits.
-pub(crate) fn prepare_date_args(
-    core: u64,
-    modes: tidb_datatype::DateModes,
-) -> Result<EvaluatedArgs, crate::EvalError> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(8).map_err(|error| {
-        crate::EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
-            LocalError::ResourceLimit(format!("DATE core input allocation failed: {error}").into()),
-            None,
-        ))
-    })?;
-    bytes.extend_from_slice(&core.to_le_bytes());
-    let flags = i64::from(modes.no_zero_date)
-        | (i64::from(modes.no_zero_in_date) << 1)
-        | (i64::from(modes.allow_invalid_dates) << 2);
-    Ok(EvaluatedArgs::BytesInt(Some(bytes), Some(flags)))
-}
-
 /// Serialize already-coerced serde documents and the actual optional path.
 /// This transports data only; SQL validation and worker evaluation remain separate.
 pub(crate) fn prepare_json_serde_args(
@@ -692,3 +673,7 @@ pub(crate) mod clock_value_tests;
 pub(crate) mod clock_value;
 
 pub(crate) use epoch_value::finish_temporal_values_bounded;
+
+pub(crate) mod calendar_value;
+#[cfg(test)]
+pub(crate) mod calendar_value_tests;

@@ -53,31 +53,12 @@ pub(crate) fn component_time_core(vals: &[Datum]) -> Result<Option<CoreTime>, Ev
     }
 }
 
-/// Sends the complete, unvalidated stored core through the closed worker.
-/// ETDatetime conversion belongs to the existing caller, not this adapter.
-pub(crate) fn component_field_in(
-    vals: &[Datum],
-    operation: crate::tikv::EvaluatedBytesOp,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits(
-                component_time_core(vals)?.map(CoreTime::raw),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
-}
-
 pub(crate) fn year_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    component_field_in(vals, crate::tikv::EvaluatedBytesOp::YearCoreNative, ctx)
+    crate::tikv::calendar_value::eval(tidb_query_expr::NativeCalendarOperation::Year, vals, 0, ctx)
 }
 
 /// Test compatibility only: the original tuple uses the shared CoreTime
-/// getters. Production date-part evaluation always enters the closed worker.
+/// getters. Production date-part evaluation uses the shared actual-core kernel.
 #[cfg(test)]
 pub(crate) fn component_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
     Ok(component_time_core(vals)?.map(|core| {
@@ -126,63 +107,43 @@ pub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {
     TikvTime::parse_native_date_ymd(s)
 }
 
-/// Preserves the original string coercion, including Duration Display/FSP,
-/// without adding an ETDuration cast. Arity and UTF-8 errors precede admission;
-/// parsing and clamping run in the worker, so zero-slot refusal now precedes
-/// a malformed-text NULL result. SQL NULL also executes the worker.
-fn hms_text_in(
-    vals: &[Datum],
-    operation: crate::tikv::EvaluatedBytesOp,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        operation,
-        ctx,
-        || {
-            let [value] = vals else {
-                return Err(EvalError::Unsupported("bad function arity"));
-            };
-            Ok(coerce_str(value)?.map(String::into_bytes))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
-}
-
 pub(crate) fn hour_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    hms_text_in(vals, crate::tikv::EvaluatedBytesOp::HourTextNative, ctx)
+    crate::tikv::calendar_value::eval(tidb_query_expr::NativeCalendarOperation::Hour, vals, 0, ctx)
 }
 
 pub(crate) fn minute_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    hms_text_in(vals, crate::tikv::EvaluatedBytesOp::MinuteTextNative, ctx)
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Minute,
+        vals,
+        0,
+        ctx,
+    )
 }
 
 pub(crate) fn second_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    hms_text_in(vals, crate::tikv::EvaluatedBytesOp::SecondTextNative, ctx)
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Second,
+        vals,
+        0,
+        ctx,
+    )
 }
 
 /// Projects already-evaluated legacy nanoseconds, not native SQL text.
-/// No field is precomputed and NULL is still a demanded worker input.
+/// NULL and signed nanos reach the shared raw-value kernel unchanged.
 pub(crate) fn hms_nanos_in(
     field: crate::LegacyHmsField,
     nanos: Option<i64>,
     ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
-    use crate::tikv::EvaluatedBytesOp;
-
-    let operation = match field {
-        crate::LegacyHmsField::Hour => EvaluatedBytesOp::HourNanosNative,
-        crate::LegacyHmsField::Minute => EvaluatedBytesOp::MinuteNanosNative,
-        crate::LegacyHmsField::Second => EvaluatedBytesOp::SecondNanosNative,
-    };
-    crate::tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || Ok(crate::tikv::EvaluatedArgs::Int(nanos)),
-        |computed| match computed.into_int_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            _ => Err(EvalError::Unsupported("legacy HMS result kind mismatch")),
+    let _ = ctx;
+    crate::tikv::calendar_value::nanos(
+        match field {
+            crate::LegacyHmsField::Hour => tidb_query_expr::NativeCalendarOperation::Hour,
+            crate::LegacyHmsField::Minute => tidb_query_expr::NativeCalendarOperation::Minute,
+            crate::LegacyHmsField::Second => tidb_query_expr::NativeCalendarOperation::Second,
         },
+        nanos,
     )
 }
 
@@ -430,11 +391,11 @@ pub(crate) fn timestamp_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// source's year-zero `0000-01-01 -> 1` behavior while rejecting invalid
 /// zero-date components and malformed time suffixes.
 pub(crate) fn to_days_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::ToDaysTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::ToDays,
+        vals,
+        0,
         ctx,
-        || super::single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -447,11 +408,11 @@ pub(crate) fn to_days(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// arithmetic as the Go builtin.  Fractional seconds are deliberately
 /// ignored because the source's `SECOND` unit returns whole seconds.
 pub(crate) fn to_seconds_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::ToSecondsTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::ToSeconds,
+        vals,
+        0,
         ctx,
-        || super::single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 

@@ -138,42 +138,11 @@ fn tidb_bounded_staleness(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, E
 /// a typed temporal value. The function applies its own zero-date SQL-mode
 /// checks, clears the clock, and changes the result domain to `DATE`.
 pub(crate) fn date(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Date,
+        vals,
+        0,
         cols,
-        || {
-            let [value] = vals else {
-                return Err(EvalError::Unsupported("bad function arity"));
-            };
-            let Datum::Time(value) = value else {
-                return if matches!(value, Datum::Null) {
-                    Ok((
-                        crate::tikv::EvaluatedBytesOp::DateDiffNullNative,
-                        crate::tikv::EvaluatedArgs::NullWitness(None),
-                    ))
-                } else {
-                    Err(EvalError::Unsupported(
-                        "DATE argument reached the signature without its ETDatetime cast",
-                    ))
-                };
-            };
-            let core = value.core_time().raw();
-            let modes = cols.date_modes();
-            if tidb_query_datatype::codec::mysql::Time::native_date_rejects_zero(
-                core,
-                modes.no_zero_date,
-                modes.no_zero_in_date,
-            ) {
-                cols.handle_truncate(&format!("Incorrect datetime value: '{value}'"))?;
-            }
-            // Even a soft-rejected non-NULL retains its actual core and modes.
-            // The worker owns the nullable decision and unconditional midnight
-            // projection, including hidden clock bits in a Date-kind input.
-            Ok((
-                crate::tikv::EvaluatedBytesOp::DateCoreNative,
-                crate::tikv::prepare_date_args(core, modes)?,
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_date_core_datum,
     )
 }
 
@@ -335,7 +304,12 @@ pub(crate) fn parse_fsp_with_null_as_zero(
 /// `types.ETDatetime` (`builtin_time.go:1116`) and so receives a value
 /// `EvalTime` already produced non-NULL — see [`calendar::component_time_core`].
 pub(crate) fn month_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    calendar::component_field_in(vals, crate::tikv::EvaluatedBytesOp::MonthCoreNative, ctx)
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Month,
+        vals,
+        0,
+        ctx,
+    )
 }
 
 #[cfg(test)]
@@ -349,20 +323,8 @@ pub(crate) fn month_core_in(
     value: Option<tidb_datatype::CoreTime>,
     ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::MonthCoreNative,
-        ctx,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits(
-                value.map(tidb_datatype::CoreTime::raw),
-            ))
-        },
-        |computed| match computed.into_int_datum()? {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            _ => Err(EvalError::Unsupported("MONTH result kind mismatch")),
-        },
-    )
+    let _ = ctx;
+    crate::tikv::calendar_value::core(tidb_query_expr::NativeCalendarOperation::Month, value)
 }
 
 /// `builtinDayOfMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
@@ -372,11 +334,7 @@ pub(crate) fn month_core_in(
 /// `types.ETDatetime` (`builtin_time.go:1284`) and so receives a value
 /// `EvalTime` already produced non-NULL — see [`calendar::component_time_core`].
 fn day_of_month_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    calendar::component_field_in(
-        vals,
-        crate::tikv::EvaluatedBytesOp::DayOfMonthCoreNative,
-        ctx,
-    )
+    crate::tikv::calendar_value::eval(tidb_query_expr::NativeCalendarOperation::Day, vals, 0, ctx)
 }
 
 #[cfg(test)]
@@ -385,13 +343,13 @@ fn day_of_month(vals: &[Datum]) -> Result<Datum, EvalError> {
 }
 
 /// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7.
-/// Original date parsing and projection run in the worker, including NULL.
+/// The shared actual-value kernel owns parsing and projection, including NULL.
 pub(crate) fn day_of_week_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::DayOfWeekTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::DayOfWeek,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -403,11 +361,11 @@ fn day_of_week(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// `builtinDayOfYearSig.evalInt`: one-based day within the calendar year.
 /// Keep the existing cast and text preparation, not a host-computed day count.
 pub(crate) fn day_of_year_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::DayOfYearTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::DayOfYear,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -417,13 +375,13 @@ fn day_of_year(vals: &[Datum]) -> Result<Datum, EvalError> {
 }
 
 /// `builtinWeekDaySig.evalInt`: Monday is 0 through Sunday 6.
-/// The worker retains native date validity, including valid year-zero dates.
+/// The shared parser retains native date validity, including valid year-zero dates.
 pub(crate) fn weekday_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::WeekdayTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Weekday,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -445,7 +403,12 @@ fn weekday(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// it is `types.ParseTime` under the READ path's `IgnoreZeroInDate`, which
 /// keeps a zero month exactly as Go does.
 fn quarter_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    calendar::component_field_in(vals, crate::tikv::EvaluatedBytesOp::QuarterCoreNative, ctx)
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Quarter,
+        vals,
+        0,
+        ctx,
+    )
 }
 
 #[cfg(test)]
@@ -453,15 +416,13 @@ fn quarter(vals: &[Datum]) -> Result<Datum, EvalError> {
     quarter_in(vals, &crate::NoColumns)
 }
 
-/// `WEEKOFYEAR(date)` uses mode 3 in its single shared worker invocation.
-/// Date parsing and NULL results follow admission; original text preparation
-/// remains inside the frontend guard.
+/// WEEKOFYEAR retains mode 3 and the existing shared date parser.
 fn week_of_year_builtin_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::WeekOfYearTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::WeekOfYear,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
 
@@ -552,48 +513,6 @@ pub(crate) fn get_format_ast_in(
     )
 }
 
-/// Probe the date in a worker before demanding the optional mode. The probe
-/// returns the original owned text, never parsed fields or a host-side answer.
-/// Its driver call finishes before the second call starts: no frontend callback
-/// reenters C4. Admission may therefore fail before mode coercion is demanded.
-fn week_text_in(
-    vals: &[Datum],
-    default_mode: i64,
-    operation: crate::tikv::EvaluatedBytesOp,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let date = crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::WeekDateTextNative,
-        ctx,
-        || {
-            if !(1..=2).contains(&vals.len()) {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            Ok(crate::tikv::EvaluatedArgs::Bytes(
-                coerce_str(&vals[0])?.map(String::into_bytes),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_bytes,
-    )?;
-    let Some(date) = date else {
-        return Ok(Datum::Null);
-    };
-    crate::tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || {
-            // An actual NULL mode stays NULL here; the worker applies mode zero.
-            let mode = if vals.len() == 2 {
-                int_arg(&vals[1])?
-            } else {
-                Some(default_mode)
-            };
-            Ok(crate::tikv::EvaluatedArgs::BytesInt(Some(date), mode))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
-}
-
 /// Only the no-mode branch consumes the supplied default. Callers preserve the
 /// original eager default_week_format getter, even for explicit modes or errors.
 pub(crate) fn week_in(
@@ -601,10 +520,10 @@ pub(crate) fn week_in(
     default_week_format: i64,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    week_text_in(
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::Week,
         vals,
         default_week_format,
-        crate::tikv::EvaluatedBytesOp::WeekTextNative,
         ctx,
     )
 }
@@ -615,10 +534,14 @@ pub(crate) fn week(vals: &[Datum], default_week_format: i64) -> Result<Datum, Ev
 }
 
 /// YEARWEEK's omitted mode is always zero, not the session default. Its year
-/// combination and negative sentinel are calculated only by the final worker.
+/// combination and negative sentinel belong to the shared consuming kernel.
 fn yearweek_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let operation = crate::tikv::EvaluatedBytesOp::YearWeekTextNative;
-    week_text_in(vals, 0, operation, ctx)
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::YearWeek,
+        vals,
+        0,
+        ctx,
+    )
 }
 
 #[cfg(test)]
@@ -632,16 +555,9 @@ pub(crate) fn week_core_in(
     value: Option<tidb_datatype::CoreTime>,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::WeekCoreNative,
-        ctx,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::TimeCoreBits(
-                value.map(tidb_datatype::CoreTime::raw),
-            ))
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
+    let _ = ctx;
+    crate::tikv::calendar_value::core(tidb_query_expr::NativeCalendarOperation::Week, value)
+        .map(|v| v.map_or(Datum::Null, Datum::Int))
 }
 
 /// Original single-argument text preparation, used only inside the guards.
@@ -655,17 +571,13 @@ fn single_temporal_text(vals: &[Datum]) -> Result<Option<Vec<u8>>, EvalError> {
 }
 
 /// `builtinMonthNameSig` retains its existing upstream ETDatetime cast.
-/// The worker parses the actual text and selects the shared full month name.
+/// The shared kernel parses actual text and selects the full month name.
 pub(crate) fn monthname_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::MonthNameTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::MonthName,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -675,17 +587,13 @@ fn monthname(vals: &[Datum]) -> Result<Datum, EvalError> {
 }
 
 /// `builtinDayNameSig` parses the actual text and selects the shared full
-/// weekday name in the worker; no native date result or table lookup is kept.
+/// weekday name in the shared kernel.
 pub(crate) fn dayname_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::DayNameTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::DayName,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -694,19 +602,14 @@ fn dayname(vals: &[Datum]) -> Result<Datum, EvalError> {
     dayname_in(vals, &crate::NoColumns)
 }
 
-/// `builtinLastDaySig` retains the original guarded text coercion. The worker
-/// owns whitespace splitting, strict clock-suffix validation and month-end
-/// arithmetic; the existing outer typed DATE conversion is unchanged.
+/// LAST_DAY retains text coercion, strict clock suffix validation and shared
+/// month-end arithmetic; the original outer typed conversion remains upstream.
 fn last_day_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::LastDayTextNative,
+    crate::tikv::calendar_value::eval(
+        tidb_query_expr::NativeCalendarOperation::LastDay,
+        vals,
+        0,
         ctx,
-        || single_temporal_text(vals),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 

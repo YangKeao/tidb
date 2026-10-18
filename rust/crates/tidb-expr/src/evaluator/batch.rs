@@ -372,6 +372,7 @@ fn promoted_native_root_view(
     ) || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
+        || native_calendar_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -922,6 +923,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
     ) || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
+        || native_calendar_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1184,6 +1186,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
+        || native_calendar_call(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "bitand"
@@ -1229,6 +1232,36 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 }
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
+}
+fn native_calendar_call(
+    function: &ScalarFunction,
+) -> Option<(tidb_query_expr::NativeCalendarOperation, usize)> {
+    use tidb_query_expr::NativeCalendarOperation as O;
+    let op = match function.func_name.lowercase() {
+        "date" => O::Date,
+        "year" => O::Year,
+        "month" => O::Month,
+        "day" => O::Day,
+        "dayofmonth" => O::Day,
+        "quarter" => O::Quarter,
+        "hour" => O::Hour,
+        "minute" => O::Minute,
+        "second" => O::Second,
+        "dayofweek" => O::DayOfWeek,
+        "dayofyear" => O::DayOfYear,
+        "weekday" => O::Weekday,
+        "monthname" => O::MonthName,
+        "dayname" => O::DayName,
+        "weekofyear" => O::WeekOfYear,
+        "week" => O::Week,
+        "yearweek" => O::YearWeek,
+        "last_day" => O::LastDay,
+        "to_days" => O::ToDays,
+        "to_seconds" => O::ToSeconds,
+        _ => return None,
+    };
+    op.accepts_arity(function.args.len())
+        .then_some((op, function.args.len()))
 }
 fn native_clock_call(
     function: &ScalarFunction,
@@ -1339,6 +1372,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
     ) || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
+        || native_calendar_call(function).is_some()
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -1354,6 +1388,23 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some((operation, arity)) = native_calendar_call(function) {
+        if view.value_role().is_none()
+            || function.get_static_type().is_none()
+            || function.args.iter().any(|v| v.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "calendar requires original native declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::CalendarNative {
+                operation,
+                arity: arity as u8,
+            }),
+            arity,
+        ));
+    }
     if let Some((operation, arity)) = native_clock_call(function) {
         if view.value_role().is_none()
             || function.get_static_type().is_none()
@@ -2311,6 +2362,20 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if let Some((_, arity)) = native_calendar_call(function) {
+                        budget.field(sql, 1)?;
+                        budget.field(
+                            function.args[0]
+                                .static_type()
+                                .expect("checked calendar source"),
+                            1,
+                        )?;
+                        budget.add(
+                            arity
+                                .checked_mul(std::mem::size_of::<usize>())
+                                .ok_or_else(|| resource("calendar metadata overflow"))?,
+                        )?;
+                    }
                     if native_clock_call(function).is_some() {
                         budget.field(sql, 1)?;
                     }
@@ -2942,6 +3007,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
                                         | SqlBatchHostOperation::ClockNative { .. }
+                                        | SqlBatchHostOperation::CalendarNative { .. }
                                         | SqlBatchHostOperation::TsoNative(_)
                                         | SqlBatchHostOperation::EpochNative { .. }
                                         | SqlBatchHostOperation::ExtractNative { .. }
@@ -3010,6 +3076,33 @@ fn lower_view(
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::CalendarNative { operation, arity } => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, usize::from(arity))?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("calendar ordinal overflow"))?;
+                                for _ in 0..arity {
+                                    arguments.push(child);
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("calendar argument missing"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::Calendar {
+                                    arguments: arguments.into_boxed_slice(),
+                                    source_type: snapshot_field_type(
+                                        sql.args[0].static_type().expect("checked calendar source"),
+                                    ),
+                                    operation,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("calendar result view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::ClockNative { operation, arity } => {

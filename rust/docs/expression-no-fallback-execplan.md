@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7m: retire DATE/core/text calendar components and week demand plus legacy MONTH/WEEK/HMS Ready seams; integrate complete canonical calendar sources with original casts/context/provenance/finite work and independent old comparisons.
+
 - [x] N7l: retire statement/live clock Ready callers and integrate the entire clock family and aliases as authenticated sources, preserving precision, original clock tuple, live SYSDATE sampling, callbacks and result boundaries.
 
 - [x] N7k: retire physical/logical TSO Ready calls and integrate transaction timestamp canonical sources with independent old observations, finite resource/provenance and original return-family validation.
@@ -2819,3 +2821,62 @@ signed checkpoint does not close generic fallback, calendar/component callers,
 unistore walker, inherited semantic failures or full-server gates.
 
 Paired signed local SDK checkpoint 52cfb464e31bd14ab1f3e7babf7e8ecdd6849909 accompanies this frontend checkpoint; no push.
+
+
+## N7m: calendar components and week demand
+
+
+Retire DATE, YEAR, MONTH, DAY/DAYOFMONTH, QUARTER, HOUR/MINUTE/SECOND,
+DAYOFWEEK/DAYOFYEAR/WEEKDAY, MONTHNAME/DAYNAME, WEEKOFYEAR/WEEK/YEARWEEK,
+LAST_DAY and TO_DAYS/TO_SECONDS Ready calls, plus original raw MONTH/WEEK and
+legacy HMS-nanosecond entries. Existing datatype calendar/raw-core/HMS parsers
+remain authorities. Extract wire worker policies into actual finite SDK value
+functions and delegate old wire wrappers only after independent pairing.
+
+Capture original outputs/raw identities/errors/getters (including explicit panic
+boundaries) before edits, reproduce Ready/source refusals, retain original
+callers and workers during additive candidate comparisons, then retire. WEEK's
+caller eagerly reads default_week_format after original ETDatetime argument
+conversion, even for explicit modes/NULL/errors; YEARWEEK defaults0 without that
+getter. Both date probes suppress mode conversion only after eager child
+expressions have already run. A consuming actual parsed-date state retains YMD,
+never a ready answer, for delayed mode. DATE separately captures its own mode
+read and warning, projects raw core with midnight even for dirty Date-kind values,
+and returns Date/FSP0. Raw legacy core/nanos policies are not replaced by SQL
+text validation or clamping.
+
+Canonical hosts authenticate all eager capabilities, retain full original input/
+result FieldTypes, apply exactly the original ETDatetime cast except HMS, and
+release store borrows over all context callbacks. After date validity only,
+consume the original mode value without cloning ignored huge data. Preserve
+DATE's own zero-date warning, YEAR metadata-specific argument conversion, NULL
+and result conversion; only LAST_DAY has the original generic temporal result
+policy before ordinary return-family coercion. Bound actual conversions/parser/
+warning work without charging unused shape or suppressing ample-budget original
+panic behavior. No new expression evaluator or fabricated worker input.
+
+Validate raw/core/text/date/week paths, static types, dynamic defaults/modes/zone/
+clock/truncation, parents, eager errors, empty/full/duplicate selections, native
+provenance, resources/cancellation/reuse/exclusive callbacks, and mixed Projection.
+Run release locked/offline frontend/SDK/full relevant consumers, clippy, lint,
+both pinned formatters, immutable fixture/diff gates. Keep exact inherited
+frontend3/SDK1 failures visible; no Go/package completion or full-server claim.
+Sign paired local checkpoints without push. Receipt evidence/no-fallback-n7m.md.
+Generic fallback, remaining time functions/unistore walker and semantic/full-server
+gates remain globally open beyond this scope.
+
+
+N7m outcome and decision: all246096 independent pairs and24 raw-FSP255 DATE
+panic/context comparisons passed before retirement; frozen246096/E72FB95D39CD0172
+remains unchanged. The consuming week state owns actual YMD, not a result or
+validity marker; date validity suppresses only late mode conversion, never eager
+children/authentication/default demand. Original YEAR source metadata and the
+separate LAST_DAY temporal/ordinary return boundaries are retained. The25
+native/legacy Ready and20 source regressions are green. Final frontend1698/
+exact3 inherited/95ignored/all251batch, SDK1115/exact1 inherited/1ignored,
+Projection26/new41rootgroup/bothflags/workers0/2, clippy89expression/171all exact
+N7l titles, unchanged frontend titles, lint/both15fileformatters/immutablefixtures/
+diffs all pass. Only a clock documentation comment was relocated after runtime
+checks. Receipt rust/docs/evidence/no-fallback-n7m.md records exact commands and
+limits. Sign local paired commits without push; the overall task remains active
+for other time families, generic fallback, unistore and semantic/full-server gates.

@@ -28,6 +28,8 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_bounded_staleness.rs"]
 mod bounded_staleness_source;
+#[path = "batch_calendar.rs"]
+mod calendar_source;
 #[path = "batch_charset.rs"]
 mod charset_source;
 #[path = "batch_clock.rs"]
@@ -135,6 +137,14 @@ pub(super) enum NativeHostMetadata {
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
+    },
+    Calendar {
+        arguments: Box<[usize]>,
+        source_type: FieldType,
+        operation: tidb_query_expr::NativeCalendarOperation,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
     },
     Clock {
         argument: Option<usize>,
@@ -296,6 +306,7 @@ impl NativeHostMetadata {
             Self::Charset(metadata) => Some(&metadata.result_type),
             Self::TimestampDiff { result_type, .. }
             | Self::Clock { result_type, .. }
+            | Self::Calendar { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
@@ -325,6 +336,9 @@ enum SqlDemand {
     TimestampDiff {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
+    },
+    Calendar {
+        first: Option<[u8; native_values::HANDLE_BYTES]>,
     },
     Clock,
     Tso,
@@ -423,7 +437,8 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::TimestampDiff { next, .. } => Ok(Some(*next)),
-            SqlDemand::Epoch { first }
+            SqlDemand::Calendar { first }
+            | SqlDemand::Epoch { first }
             | SqlDemand::Extract { first }
             | SqlDemand::DateArithmetic { first }
             | SqlDemand::BoundedStaleness { first }
@@ -460,7 +475,8 @@ impl NativeTask {
             SqlDemand::TimestampDiff { .. } => {
                 Err(binding("timestamp diff demand cannot retain byte prefix"))
             }
-            SqlDemand::Clock
+            SqlDemand::Calendar { .. }
+            | SqlDemand::Clock
             | SqlDemand::Tso
             | SqlDemand::Epoch { .. }
             | SqlDemand::Extract { .. }
@@ -2089,6 +2105,25 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::CalendarNative { operation, arity } => {
+                let Some(NativeHostMetadata::Calendar {
+                    arguments,
+                    operation: declared,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("calendar descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || operation != *declared
+                    || !operation.accepts_arity(usize::from(arity))
+                    || arguments.len() != usize::from(arity)
+                    || invocation.arg_types.len() != arguments.len()
+                {
+                    return Err(binding("calendar descriptor differs"));
+                }
+                SqlDemand::Calendar { first: None }
+            }
             SqlBatchHostOperation::ClockNative { operation, arity } => {
                 let Some(NativeHostMetadata::Clock {
                     argument,
@@ -2634,6 +2669,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Calendar { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("calendar source cannot be wire NULL"));
+            };
+            return self.resume_calendar(id, token);
         }
         if matches!(task.demand, SqlDemand::Clock) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

@@ -3260,11 +3260,61 @@ mod tests {
         let clock_mix = std::iter::once(0)
             .chain(clock_start..roots.len())
             .collect::<Vec<_>>();
+        let calendar_start = roots.len();
+        for name in [
+            "date",
+            "year",
+            "month",
+            "day",
+            "dayofmonth",
+            "quarter",
+            "hour",
+            "minute",
+            "second",
+            "dayofweek",
+            "dayofyear",
+            "weekday",
+            "monthname",
+            "dayname",
+            "weekofyear",
+            "week",
+            "yearweek",
+            "last_day",
+            "to_days",
+            "to_seconds",
+        ] {
+            let field = if matches!(name, "date" | "last_day") {
+                FieldType::new(FieldTypeCode::Date)
+            } else if matches!(name, "monthname" | "dayname") {
+                string.clone()
+            } else {
+                integer.clone()
+            };
+            let root = call(
+                name,
+                field.clone(),
+                vec![Expression::Constant(Constant::new(
+                    Datum::new_string("2024-02-29 12:34:56.123456"),
+                    string.clone(),
+                ))],
+            );
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let calendar_mix = std::iter::once(0)
+            .chain(calendar_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
                 clock_mix.iter().map(|&i| roots[i].clone()).collect(),
                 clock_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                calendar_mix.iter().map(|&i| roots[i].clone()).collect(),
+                calendar_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
             (
                 tso_mix.iter().map(|&i| roots[i].clone()).collect(),
