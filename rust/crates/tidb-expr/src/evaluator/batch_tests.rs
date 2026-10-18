@@ -12650,3 +12650,870 @@ fn native_json_sum_crc32_capabilities_resources_and_cancel_reuse_are_terminal() 
         }
     }
 }
+
+#[test]
+fn native_str_to_date_text_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "str_to_date",
+            string.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        ),
+        &[string.clone(), string],
+        &[
+            vec![
+                Datum::new_string("2020-02-29"),
+                Datum::new_string("%Y-%m-%d"),
+            ],
+            vec![Datum::Null, Datum::new_string("%Y")],
+            vec![Datum::new_string("bad"), Datum::new_string("%Y-%m-%d")],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_str_to_date_typed_clock_sources_require_canonical_driver() {
+    let string = string_ty();
+    let field = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    compare_typed_profile(
+        call(
+            "str_to_date",
+            field,
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        ),
+        &[string.clone(), string],
+        &[
+            vec![
+                Datum::new_string("12:34:56.123456"),
+                Datum::new_string("%H:%i:%s.%f"),
+            ],
+            vec![Datum::Null, Datum::new_string("%Y")],
+        ],
+        &[0, 1],
+    );
+}
+#[test]
+fn native_str_to_date_actual_null_still_demands_other_source_errors() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "str_to_date",
+            string.clone(),
+            vec![text(None), call("abs", ty(), vec![column(0)])],
+        ),
+        &[ty()],
+        &[vec![Datum::Int(i64::MIN)], vec![Datum::Int(1)]],
+        &[1, 0],
+    );
+}
+
+#[test]
+fn native_str_to_date_date_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "str_to_date",
+            FieldType::new(FieldTypeCode::Date),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        ),
+        &[string.clone(), string],
+        &[
+            vec![
+                Datum::new_string("2020-02-29"),
+                Datum::new_string("%Y-%m-%d"),
+            ],
+            vec![Datum::Null, Datum::new_string("%Y")],
+        ],
+        &[0, 1],
+    );
+}
+#[test]
+fn native_str_to_date_duration_sources_require_canonical_driver() {
+    let string = string_ty();
+    compare_typed_profile(
+        call(
+            "str_to_date",
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        ),
+        &[string.clone(), string],
+        &[
+            vec![
+                Datum::new_string("12:34:56.123456"),
+                Datum::new_string("%H:%i:%s.%f"),
+            ],
+            vec![Datum::Null, Datum::new_string("%Y")],
+        ],
+        &[0, 1],
+    );
+}
+
+#[derive(Default)]
+struct StrToDateSourceContext {
+    enabled: Cell<bool>,
+    seed: usize,
+    constant: bool,
+    modes: Cell<usize>,
+    zones: Cell<usize>,
+    events: RefCell<Vec<String>>,
+}
+impl Columns for StrToDateSourceContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("date sources must use checked bindings")
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.events.borrow_mut().push("enable".into());
+        self.enabled.get()
+    }
+    fn date_modes(&self) -> tidb_datatype::DateModes {
+        let n = self.modes.get();
+        self.modes.set(n + 1);
+        let bits = (self.seed + if self.constant { 0 } else { n }) % 8;
+        self.events.borrow_mut().push(format!("modes:{n}:{bits}"));
+        tidb_datatype::DateModes {
+            no_zero_date: bits & 1 != 0,
+            no_zero_in_date: bits & 2 != 0,
+            allow_invalid_dates: bits & 4 != 0,
+        }
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        let n = self.zones.get();
+        self.zones.set(n + 1);
+        self.events.borrow_mut().push(format!("zone:{n}"));
+        if n % 2 == 0 {
+            SessionTimeZone::utc()
+        } else {
+            SessionTimeZone::Named(chrono_tz::Asia::Shanghai)
+        }
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        crate::ErrorLevel::Warn
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.events
+            .borrow_mut()
+            .push(format!("warn:{code}:{message}"));
+    }
+}
+fn compare_str_to_date_context(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+) {
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    for enabled in [true, false, true, false] {
+        let actual_ctx = StrToDateSourceContext {
+            seed,
+            ..StrToDateSourceContext::default()
+        };
+        let reference_ctx = StrToDateSourceContext {
+            seed,
+            ..StrToDateSourceContext::default()
+        };
+        actual_ctx.enabled.set(enabled);
+        reference_ctx.enabled.set(enabled);
+        let mut input = chunk(schema, rows);
+        input.set_sel(Some(selection.to_vec()));
+        let mut reference_input = chunk(schema, rows);
+        reference_input.set_sel(Some(selection.to_vec()));
+        let mut output = output_for(&field);
+        let mut expected = output_for(&field);
+        let actual = actual_suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, schema);
+        let reference = reference_suite.run(&reference_ctx, &mut reference_input, &mut expected);
+        assert_eq!(
+            actual, reference,
+            "flag={enabled} seed={seed} selection={selection:?}"
+        );
+        assert_eq!(*actual_ctx.events.borrow(), *reference_ctx.events.borrow());
+        assert_eq!(actual_ctx.modes.get(), reference_ctx.modes.get());
+        assert_eq!(actual_ctx.zones.get(), reference_ctx.zones.get());
+        assert_eq!(output.num_rows(), expected.num_rows());
+        for position in 0..output.num_rows() {
+            assert_eq!(
+                output.get_row(position).is_null(0),
+                expected.get_row(position).is_null(0)
+            );
+            assert_eq!(
+                output.column(0).get_raw(position).as_ref(),
+                expected.column(0).get_raw(position).as_ref()
+            );
+        }
+        let route = actual_suite.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+    }
+}
+#[test]
+fn native_str_to_date_dynamic_modes_special_temporal_finish_and_typed_parents_preserve_order() {
+    let string = string_ty();
+    let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let date = FieldType::new(FieldTypeCode::Date);
+    let inside = |field: &FieldType| {
+        call(
+            "str_to_date",
+            field.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        )
+    };
+    let roots = [
+        inside(&string),
+        call(
+            "concat",
+            string.clone(),
+            vec![inside(&string), text(Some(b"x"))],
+        ),
+        call(
+            "ifnull",
+            string.clone(),
+            vec![inside(&string), text(Some(b"fallback"))],
+        ),
+        inside(&datetime),
+        call("month", ty(), vec![inside(&datetime)]),
+        call("cast_char", string.clone(), vec![inside(&datetime)]),
+        inside(&duration),
+        call(
+            "ifnull",
+            duration.clone(),
+            vec![
+                inside(&duration),
+                literal(
+                    Datum::Duration(tidb_datatype::MySqlDuration::from_nanoseconds(0, 6).unwrap()),
+                    duration.clone(),
+                ),
+            ],
+        ),
+        call("cast_char", string.clone(), vec![inside(&duration)]),
+        inside(&date),
+        call("month", ty(), vec![inside(&date)]),
+    ];
+    let rows = vec![
+        vec![
+            Datum::new_string("2020-02-29 12:34:56.123456"),
+            Datum::new_string("%Y-%m-%d %H:%i:%s.%f"),
+        ],
+        vec![
+            Datum::new_string("12:34:56.123456"),
+            Datum::new_string("%H:%i:%s.%f"),
+        ],
+        vec![Datum::new_string("2019"), Datum::new_string("%Y")],
+        vec![
+            Datum::new_string("2021-02-29"),
+            Datum::new_string("%Y-%m-%d"),
+        ],
+        vec![Datum::Null, Datum::new_string("bad")],
+        vec![Datum::new_string("one一😂"), Datum::new_string("%Y")],
+        vec![Datum::new_string("366"), Datum::new_string("%j")],
+        vec![Datum::Null, Datum::Null],
+        vec![Datum::Bytes(vec![255]), Datum::new_string("%Y")],
+    ];
+    let Expression::ScalarFunction(month) = &roots[4] else {
+        panic!("typed MONTH parent")
+    };
+    assert!(
+        batch_call_signature(month).is_none(),
+        "source closure must not widen legacy eligibility"
+    );
+    for root in roots {
+        for seed in 0..8 {
+            for selection in [
+                vec![],
+                vec![0, 1, 2, 3, 4, 5, 6, 7, 0],
+                vec![0; 2050],
+                {
+                    let mut selection = vec![0; 2050];
+                    selection[2049] = 3;
+                    selection
+                },
+                vec![4, 3, 1, 7],
+                vec![0, 8, 1],
+                {
+                    let mut selection = vec![0; 2050];
+                    selection[2049] = 8;
+                    selection
+                },
+            ] {
+                compare_str_to_date_context(
+                    root.clone(),
+                    &[string.clone(), string.clone()],
+                    &rows,
+                    &selection,
+                    seed,
+                )
+            }
+        }
+    }
+}
+
+#[test]
+fn native_str_to_date_result_fsp_kind_and_constant_relaxed_clock_match_original() {
+    let string = string_ty();
+    for code in [
+        FieldTypeCode::Datetime,
+        FieldTypeCode::Date,
+        FieldTypeCode::Duration,
+    ] {
+        for fsp in [-1, 0, 3, 6] {
+            let root = call(
+                "str_to_date",
+                FieldType::new(code).with_decimal(fsp),
+                vec![typed_column(0, &string), typed_column(1, &string)],
+            );
+            compare_typed_profile(
+                root,
+                &[string.clone(), string.clone()],
+                &[
+                    vec![
+                        Datum::new_string("2020-02-29 12:34:56.123456"),
+                        Datum::new_string("%Y-%m-%d %H:%i:%s.%f"),
+                    ],
+                    vec![
+                        Datum::new_string("12:34:56.123456"),
+                        Datum::new_string("%H:%i:%s.%f"),
+                    ],
+                    vec![Datum::Null, Datum::Null],
+                ],
+                &[0, 1, 2, 0],
+            );
+        }
+    }
+    let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let inside = || {
+        call(
+            "str_to_date",
+            datetime.clone(),
+            vec![typed_column(0, &string), typed_column(1, &string)],
+        )
+    };
+    for (root, want_month) in [
+        (inside(), false),
+        (call("month", ty(), vec![inside()]), true),
+    ] {
+        let actual = suite(root.clone());
+        let reference = suite(root);
+        let field = if want_month { ty() } else { datetime.clone() };
+        for enabled in [true, false] {
+            let actual_ctx = StrToDateSourceContext {
+                constant: true,
+                ..StrToDateSourceContext::default()
+            };
+            let reference_ctx = StrToDateSourceContext {
+                constant: true,
+                ..StrToDateSourceContext::default()
+            };
+            actual_ctx.enabled.set(enabled);
+            reference_ctx.enabled.set(enabled);
+            let rows = [vec![
+                Datum::new_string("12:34:56.123456"),
+                Datum::new_string("%H:%i:%s.%f"),
+            ]];
+            let schema = [string.clone(), string.clone()];
+            let mut input = chunk(&schema, &rows);
+            let mut reference_input = chunk(&schema, &rows);
+            let mut output = output_for(&field);
+            let mut expected = output_for(&field);
+            assert_eq!(
+                actual.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, &schema),
+                reference.run(&reference_ctx, &mut reference_input, &mut expected)
+            );
+            assert_eq!(*actual_ctx.events.borrow(), *reference_ctx.events.borrow());
+            assert_eq!(output.num_rows(), 1);
+            assert!(!output.get_row(0).is_null(0));
+            if want_month {
+                assert_eq!(output.get_row(0).get_int64(0), 0);
+            }
+
+            assert_eq!(
+                output.column(0).get_raw(0).as_ref(),
+                expected.column(0).get_raw(0).as_ref()
+            );
+            let routes = actual.batch_route_snapshot();
+            assert_eq!((routes.refusals, routes.fallback), (0, 0));
+        }
+    }
+}
+
+#[test]
+fn native_str_to_date_providers_keep_capabilities_resources_callbacks_and_cancel_reuse() {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+        SqlTemporalOutput as Output,
+    };
+    struct Context<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        modes: Cell<usize>,
+        events: RefCell<Vec<String>>,
+    }
+    impl Columns for Context<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("date host cannot interpret an expression")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::tikv::ReadyValueCache> {
+            panic!("date host attempted a retired Ready program")
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            let _exclusive = self.store.borrow_mut();
+            self.modes.set(self.modes.get() + 1);
+            self.events.borrow_mut().push("modes".into());
+            tidb_datatype::DateModes::default()
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            let _exclusive = self.store.borrow_mut();
+            self.events
+                .borrow_mut()
+                .push(format!("warn:{code}:{message}"));
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("zone".into());
+            SessionTimeZone::utc()
+        }
+        fn now(&self) -> Option<(i64, u32, i32)> {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("now".into());
+            Some((1_600_000_000, 0, 0))
+        }
+    }
+    for output in [
+        Output::Value,
+        Output::Bytes,
+        Output::DateTime,
+        Output::Duration,
+    ] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); 2];
+        let result_type = match output {
+            Output::Bytes => string_ty(),
+            Output::Duration => FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            _ => FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        };
+        let return_type = if output == Output::Value {
+            field.clone()
+        } else {
+            projected(&result_type, true).unwrap()
+        };
+        let operation = SqlBatchHostOperation::StrToDateNative { output };
+        assert!(
+            tidb_query_expr::local::BatchCallSignature::for_host(operation, 2)
+                .unwrap()
+                .uses_native_value_inputs()
+        );
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            operation,
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: return_type.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::StrToDate {
+            arguments: [3, 8],
+            result_type,
+            output_node: 2,
+            output_role: (output == Output::Value).then_some(NativeValueRole::Output),
+            output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let insert = |value: &Datum, role, node, row| {
+            store
+                .borrow_mut()
+                .insert_clone(value, role, NativeValueOrigin { node, row })
+                .unwrap()
+        };
+        let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+        store.borrow_mut().begin_window().unwrap();
+        let huge = Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+            false,
+            vec![b'1'],
+            u32::MAX,
+            0,
+        ));
+        let context = Context {
+            store: &store,
+            modes: Cell::new(0),
+            events: RefCell::new(vec![]),
+        };
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 8192)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        for index in 0..2 {
+            let node = [3, 8][index];
+            for bad in [
+                stale.clone(),
+                insert(&huge, NativeValueRole::Output, node, row),
+                insert(&huge, NativeValueRole::CharInput, 9, row),
+                insert(
+                    &huge,
+                    NativeValueRole::CharInput,
+                    node,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                ),
+            ] {
+                for nullable in [false, true] {
+                    let HostStart::Pending { task, .. } = provider
+                        .start(
+                            &mut ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &return_type,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    if index == 1 {
+                        let first = insert(
+                            &if nullable {
+                                Datum::Null
+                            } else {
+                                Datum::new_string("2020")
+                            },
+                            NativeValueRole::CharInput,
+                            3,
+                            row,
+                        );
+                        let step = provider
+                            .resume(
+                                &mut ctx,
+                                &task,
+                                HostArgReply {
+                                    index: 0,
+                                    field_type: &field,
+                                    values: &VectorValue::from_scalar(
+                                        &ScalarValue::Bytes(Some(first)),
+                                        1,
+                                    ),
+                                },
+                            )
+                            .unwrap();
+                        assert!(matches!(step,HostStep::NeedArg(request)if request.index==1));
+                    }
+                    let before = context.events.borrow().len();
+                    assert!(matches!(
+                        provider.resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index,
+                                field_type: &field,
+                                values: &VectorValue::from_scalar(
+                                    &ScalarValue::Bytes(Some(bad.clone())),
+                                    1
+                                )
+                            }
+                        ),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert_eq!(context.events.borrow().len(), before);
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+            }
+        }
+        for (source, format, expected) in [
+            (huge.clone(), Datum::new_string("%Y"), None),
+            (Datum::new_string("2020"), huge.clone(), None),
+            (
+                Datum::Bytes(vec![b'1'; 16384]),
+                Datum::new_string("%Y"),
+                None,
+            ),
+            (
+                Datum::Bytes(vec![255; 16384]),
+                huge.clone(),
+                Some("invalid UTF-8 byte datum"),
+            ),
+            (
+                Datum::MinNotNull,
+                huge.clone(),
+                Some("range sentinel string coercion"),
+            ),
+            (
+                Datum::new_string("2020"),
+                Datum::MinNotNull,
+                Some("range sentinel string coercion"),
+            ),
+        ] {
+            let first = insert(&source, NativeValueRole::CharInput, 3, row);
+            let second = insert(&format, NativeValueRole::CharInput, 8, row);
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &return_type,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let before = context.events.borrow().len();
+            assert!(matches!(
+                provider
+                    .resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1)
+                        }
+                    )
+                    .unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1),
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(error, LocalError::HostContract(_)), "{error:?}");
+            let native = provider.take_native_error().unwrap();
+            if let Some(message) = expected {
+                assert_eq!(native, EvalError::Unsupported(message))
+            } else {
+                let EvalError::ExpressionRuntimeFailure(error) = native else {
+                    panic!("actual resource cause")
+                };
+                assert_eq!(
+                    error.class(),
+                    crate::ExpressionRuntimeFailureClass::ResourceLimit
+                );
+                assert_eq!(error.phase(), None);
+            }
+            assert_eq!(context.events.borrow().len(), before);
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+            provider.cancel(&task);
+        }
+        // Expiring the retained first input must win over enormous later work.
+        let first = insert(
+            &Datum::new_string("2020"),
+            NativeValueRole::CharInput,
+            3,
+            row,
+        );
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &return_type,
+                },
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1)
+                    }
+                )
+                .unwrap(),
+            HostStep::NeedArg(_)
+        ));
+        store.borrow_mut().begin_window().unwrap();
+        let second = insert(&huge, NativeValueRole::CharInput, 8, row);
+        let before = context.events.borrow().len();
+        assert!(matches!(
+            provider.resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 1,
+                    field_type: &field,
+                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1)
+                }
+            ),
+            Err(LocalError::BindingContract(_))
+        ));
+        assert_eq!(context.events.borrow().len(), before);
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+        for nullable in [true, false, true, false] {
+            let source = if nullable {
+                Datum::Null
+            } else {
+                Datum::new_string("12:34:56.123456")
+            };
+            let format = if nullable {
+                huge.clone()
+            } else {
+                Datum::new_string("%H:%i:%s.%f")
+            };
+            let first = insert(&source, NativeValueRole::CharInput, 3, row);
+            let second = insert(&format, NativeValueRole::CharInput, 8, row);
+            let before = context.events.borrow().len();
+            let modes = context.modes.get();
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &return_type,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert!(matches!(
+                provider
+                    .resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1)
+                        }
+                    )
+                    .unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            let HostStep::Ready(value) = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(second)), 1),
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("date host incomplete")
+            };
+            if nullable {
+                // The original computed-Duration adapter evaluates zone()
+                // before its generic NULL guard. Parser/coercion stay skipped.
+                let events = context.events.borrow();
+                if output == Output::Duration {
+                    assert_eq!(&events[before..], &["zone".to_owned()]);
+                } else {
+                    assert!(events[before..].is_empty());
+                }
+            } else if matches!(output, Output::Value | Output::DateTime) {
+                assert_eq!(context.modes.get() - modes, 2)
+            }
+            match output {
+                Output::Value => {
+                    let ScalarValueRef::Bytes(Some(token)) = value.get_scalar_ref(0) else {
+                        panic!("output provenance")
+                    };
+                    let result = store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin { node: 2, row },
+                        )
+                        .unwrap()
+                        .clone();
+                    if nullable {
+                        assert_eq!(result, Datum::Null)
+                    } else {
+                        let Datum::Time(time) = result else {
+                            panic!("original temporal conversion required")
+                        };
+                        assert_eq!(
+                            (
+                                time.core_time().year(),
+                                time.core_time().month(),
+                                time.core_time().day(),
+                                time.core_time().hour(),
+                                time.core_time().minute(),
+                                time.core_time().second(),
+                                time.fsp()
+                            ),
+                            (0, 0, 0, 12, 34, 56, 6)
+                        );
+                    }
+                }
+                Output::Bytes => assert_eq!(
+                    value.get_scalar_ref(0),
+                    ScalarValueRef::Bytes(if nullable {
+                        None
+                    } else {
+                        Some(b"12:34:56.123456".as_slice())
+                    })
+                ),
+                Output::DateTime => {
+                    let ScalarValueRef::DateTime(time) = value.get_scalar_ref(0) else {
+                        panic!()
+                    };
+                    if nullable {
+                        assert!(time.is_none())
+                    } else {
+                        let time = time.unwrap();
+                        assert_eq!(
+                            (
+                                time.year(),
+                                time.month(),
+                                time.day(),
+                                time.hour(),
+                                time.minute(),
+                                time.second(),
+                                time.fsp()
+                            ),
+                            (0, 0, 0, 12, 34, 56, 6)
+                        );
+                    }
+                }
+                Output::Duration => {
+                    let ScalarValueRef::Duration(duration) = value.get_scalar_ref(0) else {
+                        panic!()
+                    };
+                    if nullable {
+                        assert!(duration.is_none())
+                    } else {
+                        let duration = duration.unwrap();
+                        assert_eq!(duration.to_nanos(), 45_296_123_456_000);
+                        assert_eq!(duration.fsp(), 6);
+                    }
+                }
+            }
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+        }
+    }
+}

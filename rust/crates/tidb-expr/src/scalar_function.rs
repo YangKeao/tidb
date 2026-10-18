@@ -3254,24 +3254,7 @@ impl ScalarFunction {
                 crate::time_fn::dispatch(&upper, &vals, ctx)
                     .expect("the native temporal family is registered")?
             };
-            return match self.get_static_type().map(FieldType::code) {
-                Some(tidb_datatype::FieldTypeCode::Datetime) => crate::cast::parse_computed_time(
-                    &result,
-                    ctx,
-                    tidb_datatype::TimeType::DateTime,
-                    self.get_static_type().map(FieldType::decimal),
-                ),
-                Some(tidb_datatype::FieldTypeCode::Date) => crate::cast::parse_computed_time(
-                    &result,
-                    ctx,
-                    tidb_datatype::TimeType::Date,
-                    Some(0),
-                ),
-                Some(tidb_datatype::FieldTypeCode::Duration) => {
-                    crate::cast::parse_computed_duration(&result, ctx)
-                }
-                _ => Ok(result),
-            };
+            return finish_native_temporal_result(self.get_static_type(), result, ctx);
         }
         if matches!(upper.as_str(), "ROUND" | "TRUNCATE")
             && matches!(vals.first(), Some(Datum::Decimal(_)))
@@ -3347,6 +3330,30 @@ fn uservar_as_kind(kind: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum,
     // Every target above is numeric or string, so no arm reads the
     // source type.
     crate::cast::eval_cast(&target, value, None, ctx)
+}
+
+/// Original temporal signature result conversion, with actual statement
+/// diagnostics and complete declared result metadata; no expression callback.
+pub(crate) fn finish_native_temporal_result(
+    ret_type: Option<&FieldType>,
+    result: Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    match ret_type.map(FieldType::code) {
+        Some(tidb_datatype::FieldTypeCode::Datetime) => crate::cast::parse_computed_time(
+            &result,
+            ctx,
+            tidb_datatype::TimeType::DateTime,
+            ret_type.map(FieldType::decimal),
+        ),
+        Some(tidb_datatype::FieldTypeCode::Date) => {
+            crate::cast::parse_computed_time(&result, ctx, tidb_datatype::TimeType::Date, Some(0))
+        }
+        Some(tidb_datatype::FieldTypeCode::Duration) => {
+            crate::cast::parse_computed_duration(&result, ctx)
+        }
+        _ => Ok(result),
+    }
 }
 
 /// Value-only result boundary shared by expression callers and frame hosts.

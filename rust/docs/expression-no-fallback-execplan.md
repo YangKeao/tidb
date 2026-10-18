@@ -1981,3 +1981,94 @@ mixedgroups31/8/9/5/5 bothflags workers0/2. Lint/static15Rustfiles/bothdiffpass.
 Guide/receiptN7a final; coherent signed local checkpoint, no push. All jobs closed.
 Global goal remains active with remaining date families/source closure and
 inherited failures pending; no global completion claim.
+
+### N7b STR_TO_DATE actual parse states and sources
+
+At signed fec0abbf/8c6e58a, STR_TO_DATE still builds three Ready/report stages.
+Capture actual OLD values/warnings/modes/metadata identity before replacement,
+including named Datetime versus Unknown(12), wide day/year, partial formats,
+Unicode parser classes, malformed arity, source NULL and later source errors.
+Both source children evaluate eagerly before a NULL prepass suppresses coercion;
+then input coercion precedes format coercion. SDK scan alone decides whether
+and when date_modes is requested. Scalar source finishing additionally invokes
+original parse_computed_time/parse_computed_duration by complete result field;
+that must not be replaced merely by the generic coerce_function_result helper.
+Expose actual parsed state and bounded actual string/warning computation, not
+encoded reports pretending to be values. Preserve original ordinary wire
+validation/protocol and share actual grammar/policy after independent proof.
+Then integrate full source/parent/capability/resource/late-context coverage,
+mixed Projection and complete checks/signing. Existing partial-format failures
+remain explicitly real pending global semantic work, not a completed goal.
+Current original witness/source RED capture68316 is running; production unchanged.
+
+N7b OLD844344 fixed d7dd9f9ee5b55431 atfec0abbf/8c6e58a, count includes62inputs/
+63formats×9resultidentities×8modebits×3cacheprofiles plus648badarity. Fixed8996
+witnessPASS, five text/Datetime/Date/Duration/NULL-with-late-error source REDs each
+matchSQL/context thenrefusal1/fallback1; actualReadycachetrapRED. Originaltest/
+production snapshots and test-only n7b-original-date-baseline.patch retained,
+separate-index cachedapplycheckfec0abbfPASS. Neverregeneratehashfromnewcode.
+New SDK actual prepared strings, opaque parsed Date state and TypedClock state
+are added alongside OLD. Original scanner/render helper visibility/Debug only,
+no OLD body changes. SDK owns actual NULL prepass, ordered coerce_str and actual
+text/NULL/warning computation, late mode decisions and finite demanded copies/
+Decimal/f64/JSON/vector/scanner/formatter capacity. Two Vec<char> work bounded
+before scanner; empty scanner adds no fake frame cost. Frontend precharges text
+owner overlap before Arc publication and uses actual context callbacks after
+owned preparation, not a borrowed value-store reference. First12888 was only
+prototype compile+OLDwitness, not independent proof (test insertion script had
+stopped before editing tests). Actual independent all844344 comparison54980 and
+SDK2units36652 now running. Await actual proof before changing caller/wire bodies.
+
+N7b ACTUAL independent comparison54980 closed0 ALL844344 pass, immutable OLD
+hash verified afterward, BEFORE any caller/wire body switch. New SDK2units36652
+closed0 actualstates/lateflags/namedUnknown/resources/earlyerror/NULLskip and
+emptywarningexactbudget pass. No fake empty-scanner frame allowance. Original
+source/caller/wire remain active; no integration/source completion claim. All
+jobs closed. Next retire old native caller and delegate ordinary wire's actual
+head/date/typed computation while preserving complete transport validators and
+original output bounds; native finite work allowance must not be imposed on
+ordinary wire owners. Then canonical eager2sources, ownedprepare before ctx,
+originalspecialtemporalfinish PLUSgenericRT/Enum, allnaturalparentcarriers,
+provenance/resources/cancel/reuse/2050/mixedProjection and fullgates/signing.
+
+After independent proof, native caller's Cell/report/Ready/scoped-rebinding
+stages retire. Ordinary wire shares actual head/date/clock logic with its own
+None allowance (not native Somefinite), preserving validators/whole-state
+reports/input+64bound and no extra clock clone. Postretirement67074 fixedOLD+
+workertrap2pass;33203 oldwire+new2core tests3pass. Source StrToDateNative now
+reads both authenticated sources eagerly, ownedprepare understoreborrow,
+dropsborrow beforeactualmodes/warnings, dropsprepared before original shared
+specialtemporalfinish, genericRT/Enum andnativeortyped4carrierpublication.
+
+Five original source REDs green32619; new11parent/dynamic8mode/toggle/2050 test
+found Month outside eager signature closure2707. Existing pure stored-field
+MONTH kernel's exact DateTime→signedInt signature now composes for CompiledSource,
+with explicit regression retaining previous NativeEligibility contract. 80928
+then exposed genuine ResourceLimit Invoke. Temporary cause diagnostic19756:
+`retained evaluation storage exceeded`, because host_copy_precharge treated
+DateTime/Duration as usizeMAX, and host copies supported only Int/Bytes. Shared
+host compact scalar/window copies now meter actual temporal minimum/capacities
+and copy unchanged fields; no budget increases. 18288 all11parents×dynamicmodes/
+selections pass. Temporary diagnostics removed. 18412 adds actual fatal UTF8
+source errors early/late, resultFSP/kind and constant-relaxed typed-clock/month0
+cases, currently running; no premature parent/error completion claim. Direct
+provider resources/provenance/cancel/reuse/borrowmutcallback and Projection/full
+gates/guide/receipt/sign still required. Goal remains active.
+
+N7b final direct provider26998 closed0 all8source/provider/context tests pass;
+fatalUTF8early/late and2050prefixes, constantrelaxedclock/month0 andFSP/kind
+variants pass. All4carriers' stale/role/node/occurrence/retainedepoch checks
+precedework, nativeResourcecauseNone/earlySQLerror/cancelreuse/provenance pass.
+Everymode/warning/zone/clockcallbackobtainsstore.borrow_mut; noheldborrow or
+retiredReadylookup. NULLDuration's original finalzonegetter ispreserved even
+thoughparser/coercionsskip; correctedTESTONLYpreviouszero-callbackassumption.
+SDKcompacttemporalcopyregressionchecksraw/FSP/NULLand1/3rowbroadcast. Fullfront
+18723 closed1011623pass EXACTsame4/95ignored/0filtered/all209batch; SDK95169
+closed1011087pass EXACTsame6/1ignored/0filtered (failure lists machine-matchN7a).
+Finalclippy89562 closed089exactdiagnostictitlesunchanged, afterunusedtestimport
+cleanupONLY; finalclippycompiledlib+tests, no SDK runtime bodychangeafterfull.
+Projection54048 closed0 all25pass sevenboundedgroups31/8/9/5/5/4/5 bothflags
+workers0/2, oldmatrices/allowancesunchanged. Lint88401 closed0, pinnedfmt17Rust/
+bothdiffpass. Guide/receiptN7b final, coherentlocalDCOcheckpoint; noPush.
+Globalfallbackgoal remainsactive; inheritedpartial-formatmonth0bug andother
+families/source closure/remainingfailures areexplicitlypending, notignored.

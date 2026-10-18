@@ -362,8 +362,10 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = function.func_name.lowercase() == "json_sum_crc32"
-        || native_charset_operation(function.func_name.lowercase()).is_some()
+    let row_control = matches!(
+        function.func_name.lowercase(),
+        "json_sum_crc32" | "str_to_date"
+    ) || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
@@ -901,8 +903,10 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             domain,
         ));
     }
-    if function.func_name.lowercase() == "json_sum_crc32"
-        || native_charset_operation(function.func_name.lowercase()).is_some()
+    if matches!(
+        function.func_name.lowercase(),
+        "json_sum_crc32" | "str_to_date"
+    ) || native_charset_operation(function.func_name.lowercase()).is_some()
     {
         // Native producers always consume authentic native source values;
         // a typed parent receives its original carrier from the same value.
@@ -1207,8 +1211,10 @@ fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharset
     })
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    function.func_name.lowercase() == "json_sum_crc32"
-        || native_charset_operation(function.func_name.lowercase()).is_some()
+    matches!(
+        function.func_name.lowercase(),
+        "json_sum_crc32" | "str_to_date"
+    ) || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
             "in" | "interval" | "greatest" | "least"
@@ -1221,6 +1227,40 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if function.func_name.lowercase() == "str_to_date" {
+        use tidb_query_expr::local::SqlTemporalOutput as Output;
+        if function.args.len() != 2
+            || function
+                .args
+                .iter()
+                .any(|argument| argument.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "date source requires complete declarations and exact arity",
+            ));
+        }
+        let result = function
+            .get_static_type()
+            .ok_or_else(|| BatchFailure::admission("date result declaration absent"))?;
+        let output = if view.value_role().is_some() {
+            Output::Value
+        } else {
+            match result.eval_type() {
+                NativeEvalType::String => Output::Bytes,
+                NativeEvalType::Datetime | NativeEvalType::Timestamp => Output::DateTime,
+                NativeEvalType::Duration => Output::Duration,
+                _ => {
+                    return Err(BatchFailure::admission(
+                        "date typed result family is outside its signature",
+                    ))
+                }
+            }
+        };
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::StrToDateNative { output }),
+            2,
+        ));
+    }
     if function.func_name.lowercase() == "json_sum_crc32" {
         if function.args.len() != 1
             || function.args[0].static_type().is_none()
@@ -1378,6 +1418,15 @@ fn resolve_call_for(
                     "SQL host requires exact ready argument/result declarations",
                 )
             });
+    }
+    // The compiled source graph gains the pure typed MONTH parent. Keep the
+    // older native eligibility contract separate from source composition.
+    if matches!(purpose, SignaturePurpose::NativeEligibility)
+        && function.func_name.lowercase() == "month"
+    {
+        return Err(BatchFailure::admission(
+            "MONTH is outside the legacy eligibility closure",
+        ));
     }
     batch_fact(function).map(|(function, arity)| (CallTarget::Kernel(function), arity))
 }
@@ -2542,6 +2591,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::InNative
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
+                                        | SqlBatchHostOperation::StrToDateNative { .. }
                                         | SqlBatchHostOperation::JsonSumCrc32Native { .. }
                                         | SqlBatchHostOperation::CharsetNative(_)
                                         | SqlBatchHostOperation::AbsNative
@@ -2579,6 +2629,22 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::StrToDateNative { output } => {
+                                let first = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("date source ordinal overflow"))?;
+                                let second = checked
+                                    .get(first)
+                                    .ok_or_else(|| binding("date first source absent"))?
+                                    .subtree_end;
+                                NativeHostMetadata::StrToDate {
+                                    arguments: [first, second],
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                    output,
+                                }
+                            }
                             SqlBatchHostOperation::JsonSumCrc32Native { .. } => {
                                 NativeHostMetadata::JsonSumCrc32 {
                                     argument_node: ordinal.checked_add(1).ok_or_else(|| {

@@ -2892,6 +2892,78 @@ mod tests {
         let jsonsum_mix = std::iter::once(0)
             .chain(jsonsum_start..roots.len())
             .collect::<Vec<_>>();
+        let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+        let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+        let parsed = |result: &FieldType, clock: bool| {
+            call(
+                "str_to_date",
+                result.clone(),
+                vec![
+                    call(
+                        "if",
+                        string.clone(),
+                        vec![
+                            column(0),
+                            Expression::Constant(Constant::new(
+                                Datum::new_string(if clock {
+                                    "12:34:56.123456"
+                                } else {
+                                    "2020-02-29 12:34:56.123456"
+                                }),
+                                string.clone(),
+                            )),
+                            Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                        ],
+                    ),
+                    Expression::Constant(Constant::new(
+                        Datum::new_string(if clock {
+                            "%H:%i:%s.%f"
+                        } else {
+                            "%Y-%m-%d %H:%i:%s.%f"
+                        }),
+                        string.clone(),
+                    )),
+                ],
+            )
+        };
+        let temporal_start = roots.len();
+        roots.push(parsed(&datetime, false));
+        fields.push(datetime.clone());
+        roots.push(parsed(&duration, true));
+        fields.push(duration.clone());
+        roots.push(call(
+            "month",
+            integer.clone(),
+            vec![parsed(&datetime, false)],
+        ));
+        fields.push(integer.clone());
+        let temporal_mix = std::iter::once(0)
+            .chain(temporal_start..roots.len())
+            .collect::<Vec<_>>();
+        let temporal_text_start = roots.len();
+        roots.push(parsed(&string, false));
+        fields.push(string.clone());
+        roots.push(call(
+            "concat",
+            string.clone(),
+            vec![
+                parsed(&string, false),
+                Expression::Constant(Constant::new(Datum::new_string("x"), string.clone())),
+            ],
+        ));
+        fields.push(string.clone());
+        let date = FieldType::new(FieldTypeCode::Date);
+        roots.push(parsed(&date, false));
+        fields.push(date);
+        roots.push(call(
+            "cast_char",
+            string.clone(),
+            vec![parsed(&duration, true)],
+        ));
+        fields.push(string.clone());
+        let temporal_text_mix = std::iter::once(0)
+            .chain(temporal_text_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (roots[..31].to_vec(), fields[..31].to_vec()),
@@ -2931,6 +3003,26 @@ mod tests {
                     .map(|&index| roots[index].clone())
                     .collect(),
                 jsonsum_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
+            (
+                temporal_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                temporal_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
+            (
+                temporal_text_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                temporal_text_mix
                     .iter()
                     .map(|&index| fields[index].clone())
                     .collect(),
