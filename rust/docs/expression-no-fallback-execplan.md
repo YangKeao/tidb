@@ -1588,3 +1588,42 @@ pass. All jobs closed; exact inherited failure comparisons saved. Receipt
 separate still-RED source gate explicitly. Sign SDK value implementation/guide
 and frontend typed adapter/tests/receipt; leave batch_tests.rs source regressions
 unstaged for next actual integration. No push; overall goal remains active.
+
+
+### N6v1 genuine IN source closure (active)
+
+Add one vararg row-scoped InNative operation to the same SDK driver. Immutable
+metadata carries actual original cache keys/dynamic indices, source fields and
+comparison facts. Typed tasks demand all source capabilities before cloning/
+casting the complete value vector; generic/prepared tasks compare every required
+candidate through the shared generic preparation and SDK membership state.
+No expression callbacks, fake literals/Ready programs, cached membership answers
+or permanent source refusals. Preflight budgets detached metadata, tasks charge
+capabilities/clones/conversion work before allocation, every reply authenticates
+actual role/origin, and SDK cancellation owns task cleanup. Three existing REDs
+stay active. No new checkpoint until source/effects/resources/projection gates.
+
+
+N6v1 first genuine source gate passes all three original REDs and three demand/
+cast/cache regressions. Complete frontend1552 pass/exact inherited4/95ignored/
+zero filtered, then expanded raw-source matrix yields1554 pass/same4/95ignored/
+zero filtered. Generic8192 source cases x four flag/reuse phases compare against
+unchanged original ScalarFunction evaluation, including raw representations,
+unsigned facts, NULL placement and original SQL failures. Duration-column versus
+constant-text facts, four temporal/JSON domains, source-error-before-cast order,
+prepared-hit dynamic errors, 2050 repeated/late-error selections, nested row IN
+inside whole arithmetic and controls pass. Direct capability tests authenticate
+stale/wrong-role/wrong-node/wrong-occurrence inputs after earlier matches; actual
+resource refusal, repeated cancellation and exact-provider reuse pass in three
+domains. SDK1071 pass/exact inherited6/one ignored/zero filtered. Projection
+mixed31roots and clippy are still running; lint/fmt8files/bothdiff final gates.
+
+N6v1 FINAL: frontend1554 exact inherited4/95ignored/zero filtered, all169 batch;
+SDK1071 exact inherited6/one ignored/zero filtered, scoped clippy89 unchanged.
+Projection25 pass with31mixedroots under both flags/zero-two workers. make lint,
+pinned fmt8Rustfiles, both diff checks pass; all45599/36345/4068/74634/76715
+closed. Three originally uncommitted root REDs are now green and included in
+this coherent source checkpoint. Receipt docs/evidence/no-fallback-n6v1.md;
+SDK maintenance guide reconciles source admission and contracts. Sign local
+commits, no push. Remaining other source/function/caller/legacy/global dispatch
+and final inherited-failure/SQL/server gates keep goal/task4 ACTIVE.

@@ -10158,3 +10158,503 @@ fn native_integer_division_keeps_conditional_precision_and_row_window_diagnostic
         }
     }
 }
+
+#[test]
+fn native_in_generic_abs_operands_require_canonical_driver() {
+    let root = call("in", ty(), vec![abs(column(0)), int(1), int(2)]);
+    compare_typed_profile(
+        root,
+        &[ty()],
+        &[vec![Datum::Int(7)], vec![Datum::Int(i64::MIN)]],
+        &[0, 1],
+    );
+}
+#[test]
+fn native_in_duration_columns_require_canonical_driver() {
+    let field = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let duration = Datum::Duration(
+        tidb_datatype::MySqlDuration::from_nanoseconds(3_600_000_000_000, 6).unwrap(),
+    );
+    let root = call(
+        "in",
+        ty(),
+        vec![
+            typed_column(0, &field),
+            literal(duration.clone(), field.clone()),
+            null(),
+        ],
+    );
+    compare_typed_profile(
+        root,
+        &[field],
+        &[vec![duration], vec![Datum::Null]],
+        &[0, 1, 0],
+    );
+}
+#[test]
+fn native_in_computed_json_requires_canonical_driver() {
+    let json = FieldType::new(FieldTypeCode::Json);
+    let root = call(
+        "in",
+        ty(),
+        vec![
+            call("cast_json", json.clone(), vec![column(0)]),
+            literal(
+                Datum::Json(tidb_datatype::BinaryJSON::parse("1").unwrap()),
+                json,
+            ),
+            literal(Datum::new_string("2"), string_ty()),
+        ],
+    );
+    compare_typed_profile(
+        root,
+        &[ty()],
+        &[vec![Datum::Int(1)], vec![Datum::Int(2)], vec![Datum::Null]],
+        &[0, 1, 2, 0],
+    );
+}
+
+#[test]
+fn native_in_exhaustive_sources_keep_match_null_error_and_reuse_order() {
+    let schema = [ty(), ty(), ty()];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(1), Datum::Int(i64::MIN)],
+        vec![Datum::Null, Datum::Int(1), Datum::Int(i64::MIN)],
+        vec![Datum::Int(7), Datum::Null, Datum::Int(2)],
+        vec![Datum::Int(2), Datum::Int(2), Datum::Int(3)],
+    ];
+    let root = call("in", ty(), vec![column(0), column(1), abs(column(2))]);
+    for selection in [
+        vec![],
+        vec![0],
+        vec![1],
+        vec![2, 3, 2],
+        vec![3; 2050],
+        {
+            let mut selection = vec![3; 2050];
+            selection[2049] = 0;
+            selection
+        },
+        vec![3, 0, 3],
+        vec![3, 1, 3],
+    ] {
+        compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+    }
+}
+
+#[test]
+fn native_in_prepared_strings_keep_dynamic_errors_after_cache_hits() {
+    let mut root = call(
+        "in",
+        ty(),
+        vec![
+            typed_column(0, &string_ty()),
+            text(Some(b"a")),
+            null(),
+            call("cast_char", string_ty(), vec![abs(column(1))]),
+        ],
+    );
+    let Expression::ScalarFunction(function) = &mut root else {
+        unreachable!()
+    };
+    function.prepare_in_string_hash_set();
+    let (keys, dynamic, has_null) = function.native_in_cache();
+    assert!(keys.is_some());
+    assert!(has_null);
+    assert_eq!(dynamic, &[3]);
+    let schema = [string_ty(), ty()];
+    let rows = vec![
+        vec![Datum::new_string("a"), Datum::Int(i64::MIN)],
+        vec![Datum::Null, Datum::Int(i64::MIN)],
+        vec![Datum::new_string("7"), Datum::Int(7)],
+        vec![Datum::new_string("z"), Datum::Int(7)],
+    ];
+    for selection in [
+        vec![],
+        vec![0],
+        vec![1],
+        vec![2, 3, 2],
+        vec![2; 2050],
+        vec![2, 0],
+    ] {
+        compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+    }
+}
+
+#[test]
+fn native_in_typed_all_sources_then_all_casts_keep_json_document_member_modes() {
+    let json = FieldType::new(FieldTypeCode::Json);
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let timestamp = FieldType::new(FieldTypeCode::Timestamp).with_decimal(6);
+    for domain in [json, duration, datetime, timestamp] {
+        let schema = [domain.clone(), string_ty(), ty()];
+        let base = match domain.eval_type() {
+            NativeEvalType::Json => Datum::Json(tidb_datatype::BinaryJSON::parse("1").unwrap()),
+            NativeEvalType::Duration => Datum::Duration(
+                tidb_datatype::MySqlDuration::from_nanoseconds(3_600_000_000_000, 6).unwrap(),
+            ),
+            _ => Datum::Time(
+                tidb_datatype::parse_datetime("2026-10-17 12:34:56", &chrono_tz::UTC, true, false)
+                    .unwrap()
+                    .time,
+            ),
+        };
+        let rows = vec![
+            vec![base.clone(), Datum::new_string("1"), Datum::Int(1)],
+            vec![
+                Datum::Null,
+                Datum::new_string("invalid"),
+                Datum::Int(i64::MIN),
+            ],
+            vec![base.clone(), Datum::new_string("invalid"), Datum::Int(1)],
+            vec![
+                base.clone(),
+                Datum::new_string("2026-10-17 12:34:56"),
+                Datum::Int(1),
+            ],
+            vec![base, Datum::new_string("01:00:00"), Datum::Int(1)],
+        ];
+        let root = call(
+            "in",
+            ty(),
+            vec![
+                typed_column(0, &domain),
+                typed_column(1, &string_ty()),
+                abs(column(2)),
+            ],
+        );
+        for selection in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2],
+            vec![3, 4, 0, 3],
+            vec![4; 2050],
+            vec![0, 1],
+        ] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_in_handles_resource_failure_cancellation_and_reuse_are_terminal() {
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    for domain in [
+        ty(),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Json),
+    ] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); 3];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::InNative,
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::In(hosts::NativeInMetadata {
+            arguments: [3, 8, 9]
+                .into_iter()
+                .map(|node| hosts::NativeInArgument {
+                    node,
+                    field: domain.clone(),
+                    facts: crate::ops::OperandFacts {
+                        eval_type: Some(domain.eval_type()),
+                        unsigned: false,
+                        constant: false,
+                        duration_column: domain.code() == FieldTypeCode::Duration,
+                    },
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            prepared: None,
+            dynamic: Box::new([]),
+            has_null: false,
+            collation: Collation::Binary,
+            result_type: ty(),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        })];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let origin = NativeValueOrigin { node: 9, row };
+        let stale = store
+            .borrow_mut()
+            .insert_clone(&Datum::Int(1), NativeValueRole::CharInput, origin)
+            .unwrap();
+        store.borrow_mut().begin_window().unwrap();
+        let value = match domain.eval_type() {
+            NativeEvalType::Duration => {
+                Datum::Duration(tidb_datatype::MySqlDuration::from_nanoseconds(1, 6).unwrap())
+            }
+            NativeEvalType::Json => Datum::Json(tidb_datatype::BinaryJSON::parse("1").unwrap()),
+            _ => Datum::Int(1),
+        };
+        let tokens = [3, 8, 9].map(|node| {
+            store
+                .borrow_mut()
+                .insert_clone(
+                    &value,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node, row },
+                )
+                .unwrap()
+        });
+        let wrong_role = store
+            .borrow_mut()
+            .insert_clone(&value, NativeValueRole::Output, origin)
+            .unwrap();
+        let wrong_node = store
+            .borrow_mut()
+            .insert_clone(
+                &value,
+                NativeValueRole::CharInput,
+                NativeValueOrigin { node: 8, row },
+            )
+            .unwrap();
+        let wrong_row = store
+            .borrow_mut()
+            .insert_clone(
+                &value,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 9,
+                    row: InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                },
+            )
+            .unwrap();
+        let large = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Bytes(vec![b'X'; 16384]),
+                NativeValueRole::CharInput,
+                origin,
+            )
+            .unwrap();
+        let context = ArithmeticProfilesContext::default();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 8192)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        for (bad, resource) in [
+            (stale, false),
+            (wrong_role, false),
+            (wrong_node, false),
+            (wrong_row, false),
+            (large, true),
+        ] {
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("IN pending")
+            };
+            for (index, token) in tokens.iter().take(2).enumerate() {
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.clone())), 1);
+                assert!(matches!(
+                    provider
+                        .resume(
+                            &mut ctx,
+                            &task,
+                            HostArgReply {
+                                index,
+                                field_type: &field,
+                                values: &values
+                            }
+                        )
+                        .unwrap(),
+                    HostStep::NeedArg(_)
+                ));
+            }
+            let before = context.trace.borrow().clone();
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1);
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 2,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap_err();
+            assert!(
+                if resource {
+                    matches!(error, LocalError::ResourceLimit(_))
+                } else {
+                    matches!(error, LocalError::BindingContract(_))
+                },
+                "{error:?}"
+            );
+            assert_eq!(
+                *context.trace.borrow(),
+                before,
+                "invalid capability/resource refusal must not run later comparison/casts"
+            );
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+            provider.cancel(&task);
+        }
+        // Reuse the exact provider after every cancellation/resource failure.
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("IN pending")
+        };
+        for (index, token) in tokens.iter().enumerate() {
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.clone())), 1);
+            let step = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap();
+            if index < 2 {
+                assert!(matches!(step, HostStep::NeedArg(_)));
+            } else {
+                let HostStep::Ready(output) = step else {
+                    panic!("IN did not finish")
+                };
+                use tidb_query_datatype::codec::data_type::ScalarValueRef;
+                let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                    panic!("output capability")
+                };
+                assert_eq!(
+                    *store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin { node: 2, row }
+                        )
+                        .unwrap(),
+                    Datum::Int(1)
+                );
+            }
+        }
+        provider.cancel(&task);
+    }
+}
+
+#[test]
+fn native_in_composes_with_whole_arithmetic_and_row_controls_without_replay() {
+    let inside = || call("in", ty(), vec![column(0), column(1), abs(column(2))]);
+    let roots = [
+        plus(inside(), abs(column(2))),
+        plus(abs(column(2)), inside()),
+        call("if", ty(), vec![inside(), abs(column(2)), int(0)]),
+        call("in", ty(), vec![inside(), int(1), abs(column(2))]),
+    ];
+    let schema = [ty(), ty(), ty()];
+    let rows = vec![
+        vec![Datum::Int(1), Datum::Int(1), Datum::Int(i64::MIN)],
+        vec![Datum::Null, Datum::Int(1), Datum::Int(1)],
+        vec![Datum::Int(7), Datum::Null, Datum::Int(2)],
+        vec![Datum::Int(2), Datum::Int(2), Datum::Int(3)],
+    ];
+    for root in roots {
+        for selection in [
+            vec![],
+            vec![0],
+            vec![1, 2, 3],
+            vec![3; 2050],
+            {
+                let mut selection = vec![3; 2050];
+                selection[2049] = 0;
+                selection
+            },
+            vec![3, 0, 3],
+        ] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_in_generic_raw_literal_sources_match_original_generic_dispatch_facts() {
+    // Int declarations deliberately choose the original generic-IN branch;
+    // raw constant representations still reach it unchanged. This exercises
+    // the private owner's accepted kinds, not typed integer comparison probes.
+    let values = crate::ops::arithmetic::tests::fixtures();
+    let mut cases = 0;
+    for unsigned in [[false, false], [false, true], [true, false], [true, true]] {
+        for left in &values {
+            for right in &values {
+                for null_first in [false, true] {
+                    let mut args = vec![literal(left.clone(), ty().with_unsigned(unsigned[0]))];
+                    if null_first {
+                        args.push(null());
+                    }
+                    args.push(literal(right.clone(), ty().with_unsigned(unsigned[1])));
+                    if !null_first {
+                        args.push(null());
+                    }
+                    compare_arithmetic_profile(call("in", ty(), args), &[], &[vec![]], &[0]);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 8192);
+}
+
+#[test]
+fn native_in_generic_duration_column_and_constant_text_keep_comparison_facts() {
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let schema = [string_ty(), duration.clone()];
+    let rows = vec![
+        vec![
+            Datum::new_string("01:00:00"),
+            Datum::Duration(
+                tidb_datatype::MySqlDuration::from_nanoseconds(3_600_000_000_000, 6).unwrap(),
+            ),
+        ],
+        vec![
+            Datum::new_string("invalid"),
+            Datum::Duration(tidb_datatype::MySqlDuration::from_nanoseconds(1, 6).unwrap()),
+        ],
+        vec![Datum::Null, Datum::Null],
+    ];
+    for first in [typed_column(0, &string_ty()), text(Some(b"01:00:00"))] {
+        let root = call("in", ty(), vec![first, typed_column(1, &duration), null()]);
+        for selection in [vec![], vec![0, 1, 2], vec![0; 2050], vec![1, 0, 2, 1]] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}

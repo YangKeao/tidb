@@ -2623,6 +2623,46 @@ mod tests {
             ],
         ));
         fields.push(integer.clone());
+        roots.push(call(
+            "in",
+            integer.clone(),
+            vec![
+                call("abs", integer.clone(), vec![column(0)]),
+                literal(1),
+                column(1),
+            ],
+        ));
+        fields.push(integer.clone());
+        let json = FieldType::new(FieldTypeCode::Json);
+        roots.push(call(
+            "in",
+            integer.clone(),
+            vec![
+                call("cast_json", json.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(
+                    Datum::Json(tidb_datatype::BinaryJSON::parse("1").unwrap()),
+                    json,
+                )),
+                Expression::Constant(Constant::new(Datum::new_string("2"), string.clone())),
+            ],
+        ));
+        fields.push(integer.clone());
+        let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+        roots.push(call(
+            "in",
+            integer.clone(),
+            vec![
+                call("cast_time", duration.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(
+                    Datum::Duration(
+                        tidb_datatype::MySqlDuration::from_nanoseconds(1_000_000_000, 6).unwrap(),
+                    ),
+                    duration,
+                )),
+                column(1),
+            ],
+        ));
+        fields.push(integer.clone());
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

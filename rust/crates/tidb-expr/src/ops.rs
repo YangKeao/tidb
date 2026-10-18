@@ -460,6 +460,29 @@ fn comparison_operation(op: BinaryOp) -> Option<tidb_query_expr::ComparisonOp> {
     })
 }
 
+/// Generic IN uses the original binary value comparison, without the scalar
+/// comparison node's typed-integer probe or signed-literal normalization.
+/// Its owner already observed div_precision_increment before this preparation.
+pub(crate) fn prepare_in_comparison(
+    left: Datum,
+    right: Datum,
+    collation: tidb_datatype::Collation,
+    facts: [OperandFacts; 2],
+    ctx: &dyn crate::Columns,
+) -> Result<comparison::PreparedComparison, EvalError> {
+    comparison::prepare(
+        tidb_query_expr::ComparisonOp::Eq,
+        left,
+        right,
+        collation,
+        ComparisonOperands {
+            lhs: facts[0],
+            rhs: facts[1],
+        },
+        ctx,
+    )
+}
+
 pub(crate) fn prepare_native_comparison(
     op: tidb_query_expr::ComparisonOp,
     left: Datum,

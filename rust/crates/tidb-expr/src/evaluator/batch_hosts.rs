@@ -28,6 +28,9 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_in.rs"]
+mod in_source;
+pub(super) use in_source::{NativeInArgument, NativeInMetadata};
 #[path = "batch_quotient.rs"]
 mod quotient;
 #[path = "batch_raw_values.rs"]
@@ -94,6 +97,7 @@ impl NativeRawValueOperation {
 }
 
 pub(super) enum NativeHostMetadata {
+    In(NativeInMetadata),
     RawValues {
         operation: NativeRawValueOperation,
         name: Box<str>,
@@ -187,6 +191,7 @@ pub(super) enum NativeHostMetadata {
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
+            Self::In(metadata) => Some(&metadata.result_type),
             Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
             | Self::Selection { result_type, .. }
@@ -206,6 +211,11 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    In {
+        next: usize,
+        tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
+        membership: Option<tidb_query_expr::NativeInMembership>,
+    },
     RawValues {
         left_token: Option<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -276,7 +286,8 @@ impl NativeTask {
             SqlDemand::RawValues { left_token } | SqlDemand::Comparison { left_token } => {
                 Ok(Some(usize::from(left_token.is_some())))
             }
-            SqlDemand::Nullable { next }
+            SqlDemand::In { next, .. }
+            | SqlDemand::Nullable { next }
             | SqlDemand::Conditional { next }
             | SqlDemand::Logical { next, .. } => Ok(Some(*next)),
             SqlDemand::Concat { demand, .. } => demand.next_argument(),
@@ -290,7 +301,8 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::WindowUnary { .. }
+            SqlDemand::In { .. }
+            | SqlDemand::WindowUnary { .. }
             | SqlDemand::WindowDecimalFast { .. }
             | SqlDemand::WindowArithmetic { .. }
             | SqlDemand::Nullable { .. }
@@ -328,6 +340,13 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::In { tokens, .. } = &self.demand {
+            return bytes
+                .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
+                    tokens.capacity(),
+                )?)
+                .ok_or_else(|| resource("IN token storage overflow"));
+        }
         if let SqlDemand::WindowUnary { rows } = &self.demand {
             return bytes
                 .checked_add(array_bytes::<usize>(rows.capacity())?)
@@ -1876,6 +1895,14 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             ));
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::InNative => {
+                self.validate_in_start(&invocation)?;
+                SqlDemand::In {
+                    next: 0,
+                    tokens: Vec::new(),
+                    membership: None,
+                }
+            }
             SqlBatchHostOperation::Concat => SqlDemand::Concat {
                 kind: ConcatKind::Concat,
                 demand: ConcatDemand::new(ConcatKind::Concat, invocation.arg_types.len())?,
@@ -2233,6 +2260,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::In { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("native IN argument cannot be wire NULL"));
+            };
+            return self.resume_in(id, token);
         }
         if matches!(task.demand, SqlDemand::Arithmetic { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

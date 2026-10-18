@@ -1414,6 +1414,18 @@ impl ScalarFunction {
             .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION)
     }
 
+    /// Immutable cache evidence only; compiled sources never retain this node
+    /// or an expression-evaluation callback. Absence is not an empty cache.
+    pub(crate) fn native_in_cache(
+        &self,
+    ) -> (Option<&std::collections::HashSet<Vec<u8>>>, &[usize], bool) {
+        (
+            self.in_string_hash_set.as_ref(),
+            &self.in_string_non_const_args,
+            self.in_string_has_null,
+        )
+    }
+
     /// Builds Go `builtinInStringSig.buildHashMapForConstArgs` for the strict
     /// string literals this expression model can evaluate without a statement
     /// context. Other constant families remain in the row path because their

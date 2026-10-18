@@ -365,7 +365,8 @@ fn promoted_native_root_view(
     let row_control = native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
-        || native_comparison_operation(function.func_name.lowercase()).is_some();
+        || native_comparison_operation(function.func_name.lowercase()).is_some()
+        || function.func_name.lowercase() == "in";
     if native_arithmetic_operation(function.func_name.lowercase()).is_none()
         && !matches!(
             function.func_name.lowercase(),
@@ -1185,7 +1186,8 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         )
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_unary_sign_operation(function.func_name.lowercase()).is_some()
+    function.func_name.lowercase() == "in"
+        || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_arithmetic_operation(function.func_name.lowercase()).is_some()
         || native_character_value_argument(function)
 }
@@ -1201,6 +1203,9 @@ fn resolve_call_in_view(
             .or_else(|| native_comparison_operation(function.func_name.lowercase()))
             .or_else(|| native_math_operation(function))
             .or_else(|| native_arithmetic_operation(function.func_name.lowercase()))
+            .or_else(|| {
+                (function.func_name.lowercase() == "in").then_some(SqlBatchHostOperation::InNative)
+            })
         {
             if !operation.accepts_arity(function.args.len())
                 || function.get_static_type().is_none()
@@ -1907,6 +1912,34 @@ fn preflight_view<'a>(
                                 .field(arg.static_type().expect("checked arithmetic source"), 1)?;
                         }
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::InNative)
+                    ) {
+                        budget.array::<hosts::NativeInArgument>(function.args.len())?;
+                        budget.field(sql, 1)?;
+                        for arg in &function.args {
+                            budget.field(arg.static_type().expect("checked IN source"), 1)?;
+                        }
+                        let (keys, dynamic, _) = function.native_in_cache();
+                        budget.array::<usize>(dynamic.len())?;
+                        if let Some(keys) = keys {
+                            // Conservative logical table/key duplication allowance;
+                            // no whole allocator-memory guarantee is implied.
+                            budget.array::<(Vec<u8>, u64)>(
+                                keys.capacity()
+                                    .checked_mul(4)
+                                    .ok_or_else(|| resource("IN key table allowance overflow"))?,
+                            )?;
+                            for key in keys {
+                                budget.add(
+                                    key.len().checked_mul(2).ok_or_else(|| {
+                                        resource("IN key copy allowance overflow")
+                                    })?,
+                                )?;
+                            }
+                        }
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -2407,6 +2440,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::CompareNative(_)
                                         | SqlBatchHostOperation::NullSafeEqNative
                                         | SqlBatchHostOperation::NullIfNative
+                                        | SqlBatchHostOperation::InNative
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
                                         | SqlBatchHostOperation::XorNative
@@ -2442,6 +2476,67 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::InNative => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, *arity)?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("IN child ordinal overflow"))?;
+                                for _ in 0..*arity {
+                                    let source = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("IN source missing"))?;
+                                    arguments.push(hosts::NativeInArgument {
+                                        node: child,
+                                        field: snapshot_field_type(source.sql),
+                                        facts: crate::ops::OperandFacts {
+                                            eval_type: Some(source.sql.eval_type()),
+                                            unsigned: source.sql.is_unsigned(),
+                                            constant: source.folds_to_constant,
+                                            duration_column: matches!(
+                                                source.node,
+                                                Expression::Column(_)
+                                            ) && source.sql.code()
+                                                == FieldTypeCode::Duration,
+                                        },
+                                    });
+                                    child = source.subtree_end;
+                                }
+                                let (stored, dynamic, has_null) = sql.native_in_cache();
+                                let prepared = if let Some(stored) = stored {
+                                    let mut keys = std::collections::HashSet::new();
+                                    keys.try_reserve(stored.len()).map_err(|error| {
+                                        LocalError::ResourceLimit(error.to_string())
+                                    })?;
+                                    for key in stored {
+                                        let mut owned = Vec::new();
+                                        reserve(&mut owned, key.len())?;
+                                        owned.extend_from_slice(key);
+                                        keys.insert(owned);
+                                    }
+                                    Some(keys)
+                                } else {
+                                    None
+                                };
+                                NativeHostMetadata::In(hosts::NativeInMetadata {
+                                    arguments: arguments.into_boxed_slice(),
+                                    prepared,
+                                    dynamic: {
+                                        let mut copied = Vec::new();
+                                        reserve(&mut copied, dynamic.len())?;
+                                        copied.extend_from_slice(dynamic);
+                                        copied.into_boxed_slice()
+                                    },
+                                    has_null,
+                                    collation: sql.derived_collation(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("IN result role missing"))?,
+                                })
+                            }
                             SqlBatchHostOperation::CoalesceNative
                             | SqlBatchHostOperation::IfNullNative
                             | SqlBatchHostOperation::IfNative
