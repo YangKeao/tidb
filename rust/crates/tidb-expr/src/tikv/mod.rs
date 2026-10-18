@@ -114,7 +114,10 @@ pub(crate) use date_arithmetic::{
 // The closed ready-argument families share this value boundary and one pool.
 mod extract;
 mod ready_value;
-pub(crate) use extract::{eval_extract_composite_in, eval_extract_in, eval_extract_null_unit_in};
+pub(crate) use extract::{
+    eval_extract_composite_in, eval_extract_composite_values_bounded, eval_extract_in,
+    eval_extract_scalar_values_bounded, eval_extract_scalar_values_in,
+};
 mod extremum;
 pub(crate) use extremum::{eval_extremum_in, eval_extremum_values_bounded};
 mod from_unixtime;
@@ -675,3 +678,6 @@ mod date_arithmetic_value_tests;
 
 #[cfg(test)]
 mod legacy_date_arithmetic_value_tests;
+
+#[cfg(test)]
+pub(crate) mod extract_value_tests;

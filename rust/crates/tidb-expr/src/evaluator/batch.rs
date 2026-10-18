@@ -369,7 +369,8 @@ fn promoted_native_root_view(
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_date_arithmetic_call(function).is_some()
+    ) || native_extract_call(function).is_some()
+        || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
@@ -915,7 +916,8 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_date_arithmetic_call(function).is_some()
+    ) || native_extract_call(function).is_some()
+        || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
     {
         // Native producers always consume authentic native source values;
@@ -1219,6 +1221,44 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
 }
+#[derive(Clone, Copy)]
+enum NativeExtractCall {
+    Scalar,
+    Composite(&'static str),
+}
+impl NativeExtractCall {
+    fn unit(self) -> Option<&'static str> {
+        match self {
+            Self::Scalar => None,
+            Self::Composite(unit) => Some(unit),
+        }
+    }
+    fn arity(self) -> usize {
+        if self.unit().is_some() {
+            1
+        } else {
+            2
+        }
+    }
+}
+fn native_extract_call(function: &ScalarFunction) -> Option<NativeExtractCall> {
+    let call = match function.func_name.lowercase() {
+        "extract" => NativeExtractCall::Scalar,
+        "year_month" => NativeExtractCall::Composite("YEAR_MONTH"),
+        "day_hour" => NativeExtractCall::Composite("DAY_HOUR"),
+        "day_minute" => NativeExtractCall::Composite("DAY_MINUTE"),
+        "day_second" => NativeExtractCall::Composite("DAY_SECOND"),
+        "day_microsecond" => NativeExtractCall::Composite("DAY_MICROSECOND"),
+        "hour_minute" => NativeExtractCall::Composite("HOUR_MINUTE"),
+        "hour_second" => NativeExtractCall::Composite("HOUR_SECOND"),
+        "hour_microsecond" => NativeExtractCall::Composite("HOUR_MICROSECOND"),
+        "minute_second" => NativeExtractCall::Composite("MINUTE_SECOND"),
+        "minute_microsecond" => NativeExtractCall::Composite("MINUTE_MICROSECOND"),
+        "second_microsecond" => NativeExtractCall::Composite("SECOND_MICROSECOND"),
+        _ => return None,
+    };
+    (function.args.len() == call.arity()).then_some(call)
+}
 fn native_date_arithmetic_call(function: &ScalarFunction) -> Option<(&str, i64)> {
     if function.args.len() != 2 {
         return None;
@@ -1245,7 +1285,8 @@ fn native_value_call(function: &ScalarFunction) -> bool {
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_date_arithmetic_call(function).is_some()
+    ) || native_extract_call(function).is_some()
+        || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
@@ -1259,6 +1300,29 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some(call) = native_extract_call(function) {
+        if function.args.iter().any(|arg| arg.static_type().is_none()) {
+            return Err(BatchFailure::admission(
+                "EXTRACT source declarations absent",
+            ));
+        }
+        let result = function
+            .get_static_type()
+            .ok_or_else(|| BatchFailure::admission("EXTRACT result declaration absent"))?;
+        let typed = view.value_role().is_none();
+        if typed && result.eval_type() != NativeEvalType::Int {
+            return Err(BatchFailure::admission(
+                "EXTRACT result carrier is not covered",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::ExtractNative {
+                typed,
+                composite: call.unit().is_some(),
+            }),
+            call.arity(),
+        ));
+    }
     if native_date_arithmetic_call(function).is_some() {
         use tidb_query_expr::local::SqlTemporalOutput as Output;
         if function.args.iter().any(|arg| arg.static_type().is_none()) {
@@ -2145,6 +2209,22 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if let Some(call) = native_extract_call(function) {
+                        budget.add(
+                            call.arity()
+                                .checked_mul(std::mem::size_of::<usize>())
+                                .ok_or_else(|| resource("EXTRACT node metadata overflow"))?,
+                        )?;
+                        if let Some(unit) = call.unit() {
+                            budget.add(unit.len())?;
+                        }
+                        budget.field(
+                            function.args[usize::from(call.unit().is_none())]
+                                .static_type()
+                                .expect("checked EXTRACT value source"),
+                            1,
+                        )?;
+                    }
                     if native_date_arithmetic_call(function).is_some() {
                         let (unit, _) =
                             native_date_arithmetic_call(function).expect("checked date arithmetic");
@@ -2743,6 +2823,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                        | SqlBatchHostOperation::ExtractNative { .. }
                                         | SqlBatchHostOperation::DateArithmeticNative { .. }
                                         | SqlBatchHostOperation::BoundedStalenessNative { .. }
                                         | SqlBatchHostOperation::StrToDateNative { .. }
@@ -2805,6 +2886,36 @@ fn lower_view(
                                         )
                                     }),
                                     stop_on_null,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::ExtractNative { composite, .. } => {
+                                let first = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("EXTRACT ordinal overflow"))?;
+                                let arguments = if composite {
+                                    vec![first]
+                                } else {
+                                    vec![
+                                        first,
+                                        checked
+                                            .get(first)
+                                            .ok_or_else(|| binding("EXTRACT first source absent"))?
+                                            .subtree_end,
+                                    ]
+                                };
+                                let call = native_extract_call(sql)
+                                    .ok_or_else(|| binding("EXTRACT source keyword lost"))?;
+                                NativeHostMetadata::Extract {
+                                    arguments: arguments.into_boxed_slice(),
+                                    source_type: snapshot_field_type(
+                                        sql.args[usize::from(!composite)]
+                                            .static_type()
+                                            .expect("checked EXTRACT value source"),
+                                    ),
+                                    unit: call.unit().map(Into::into),
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),

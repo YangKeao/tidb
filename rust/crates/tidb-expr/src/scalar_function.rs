@@ -3029,16 +3029,11 @@ impl ScalarFunction {
         // constant. Keep the value's static type when selecting the datetime,
         // duration or mixed DAY_* string signature.
         if upper == "EXTRACT" && vals.len() == 2 {
-            let unit = crate::coerce::coerce_str_bytes(&vals[0])?
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_ascii_uppercase());
-            let Some(unit) = unit else {
-                return crate::tikv::eval_extract_null_unit_in(ctx);
-            };
-            return crate::time_fn::extract::extract(
-                &unit,
+            return crate::tikv::eval_extract_scalar_values_in(
+                ctx,
+                &vals[0],
                 &vals[1],
                 self.args[1].static_type(),
-                ctx,
             );
         }
         // `JSON_ARRAY`/`JSON_OBJECT`/`JSON_{SET,INSERT,REPLACE}`/

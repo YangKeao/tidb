@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7i: retire EXTRACT selector/cast/mixed/composite/NULL Ready paths and integrate canonical scalar EXTRACT plus named composite sources, preserving original source metadata, both eager operands, casts, separately demanded mode reads, warning/error distinctions and broad composite arithmetic. Freeze independent old observations and actual Ready/source REDs before edits; pair old/new before wire/controller retirement; validate finite work, provenance, late errors, dynamic modes, duplicates and mixed Projection before signed local commits.
+
 - [x] N7h: retire legacy DATE_ADD/SUB text/time/duration Ready head/step/parse controllers in favor of actual SDK state, keeping exact requested source channels, folded i128, original explicit zone, generic MyDecimal parse/round/render and separate presence. Capture independent old observations and forbidden Ready REDs before edits, pair old/new before retiring old controller bodies, bound demanded work and validate public/unistore consumers with signed local commits. The broader unistore SimpleExpr walker and its other unsupported source families remain explicit global work; this checkpoint must not claim their canonical source migration.
 
 - [x] N7g: remove ordinary DATE_ADD/SUB calendar, AST-default and typed-duration Ready controllers; preserve composite-amount-first versus duration-date-first demand, exact coercion/rounding, unconditional warnings and late overflow disposition. Capture original observations and source/Ready REDs before production edits, then shared actual-value SDK controller, generic date_add_/date_sub_ source integration, finite work/ownership and full validation with signed local commits. Legacy PB date arithmetic is separate and remains explicit pending work.
@@ -2480,3 +2482,82 @@ Final pinned source/hunk formatting, both diffs and immutable fixture hashes pas
 Receipt `evidence/no-fallback-n7h.md` records proof/commands; signed SDKcba2532
 is paired with this implementation without push. Broader unistore walker/source retirement and all
 global gaps remain open.
+
+### N7i EXTRACT actual values and canonical source integration
+
+
+The current `tikv/extract.rs` is the complete ordinary EXTRACT frontend, not just
+a legacy MONTH facade. It selects datetime/duration/mixed signatures through a
+Ready report, performs original casts, then executes further Ready extraction
+stages; the mixed path separately reads allow-invalid-dates before duration parse
+and only after success before datetime finish. The broad composite calendar
+helper is a different one-argument policy with right-aligned duration groups,
+unrestricted u32 hours, trimmed text and warning1292 for invalid dates. Its
+ordinary signed arithmetic, raw cores and NULL/arity behavior must stay intact.
+
+Scalar EXTRACT first eagerly evaluates both children, including a value error
+when the unit is NULL. It then byte-coerces the unit, lossily decodes and ASCII
+uppercases it, and uses the original value FieldType in signature selection.
+Known named timestamp/date/datetime types count as temporal; Unknown lookalike
+codes do not. Keep original datetime, duration and string argument casts, their
+metadata, context getter/warning/error order and early returns. Scalar and named
+composite calls return their original Datum without a new generic result cast.
+
+First capture original outputs/raw identities/errors/context reads under three
+cache profiles, dynamic date-mode seeds, truncate dispositions, source metadata,
+all actual datum kinds and clock/date/composite/unknown units. Reproduce all
+Ready entry routes and canonical-source refusal/fallback for ordinary EXTRACT and
+a named composite. Introduce actual SDK selection, extraction, mixed parsed state
+and composite result functions beside independent old wire bodies; compare old
+and new before replacing old caller/control bodies. Pure existing arithmetic
+helpers may be shared. Mixed state must hold actual nanos/FSP and borrowed original
+text/unit, consumed once by the finish function; never serialize a continuation
+or recompute the first parse from a cached flag.
+
+Add finite work gates before demanded unit/cast/decimal/text/parser/diagnostic
+allocation using actual routing. Preserve byte-unit lossy behavior, string UTF-8
+error identities after the original cast route (Bit becomes Bytes, Raw becomes
+String), duration cast SQL-display behavior, YEAR fast paths and original raw
+invariant panics. Do not reuse a string preflight that rejects a byte or duration
+route's originally accepted invalid UTF-8. Explicit wire compatibility keeps its
+validation/report format/output planner and delegates to the same actual SDK
+functions after old/new comparison.
+
+Integrate scalar2-argument and static-composite1-argument native-capability host
+operations in the existing canonical source frame. Demand every original eager
+source, authenticate each token/node/role/occurrence, bound detached payloads and
+drop store borrows before all casts, mode/zone/clock/truncate/warning callbacks.
+Snapshot original value metadata and immutable composite keyword within metadata
+bounds. Support integer and native-value outputs with original raw/NULL/error
+prefix semantics, including parents, dynamic contexts, repeated vector flags,
+empty/full/2050-duplicate selections, provider failures/cancellation/reuse and
+serial/parallel heterogeneous Projection. Run full frontend/SDK, clippy/lint,
+pinned formatting/diffs and immutable fixture checks with exact inherited failure
+lists before signing a local pair. Other timestamp functions, generic admission
+fallback, unistore walker and the global migration remain open.
+
+N7i original62568 captured1107720/9EC51A59F6C44C40 and reproduced five Ready
+routes plus both canonical-source refusals. Independent paired73850 matched every
+observation while old callers/wire controllers were untouched. Actual SDK state,
+wire delegation and scalar/composite source hosts were integrated only afterward.
+Dynamic-source19211 passes all15 focused checks; SDK7571 has1107 passes/exact1
+inherited failure, clippy12609 keeps89 expression/171 all-crate warning titles.
+Initial new-test assumptions about zero-clock FSP and the HostContract/native
+error channel were corrected without changing the original runtime behavior.
+
+Self-review found an actual new source-host resource bug: a NULL scalar unit
+still caused an unnecessary detached right-value clone.87053 reproduces a valid
+16KiB right capability being rejected under an8KiB host allowance, even though
+both original children already ran and further conversion is suppressed. The
+fix authenticates both original capabilities before any early publication, then
+publishes NULL without cloning the ignored right value. All stale/role/node/
+occurrence checks remain demanded, including forged right replies after NULL
+left. Final frontend60057 has1664 passes/exact3 inherited failures/95ignored/
+0filtered; all231 batch tests pass. Projection71301 passes all26, including the
+mixed5root EXTRACT group with both flags and workers0/2. SDK7571 has1107 passes/
+exact1 inherited failure/1ignored/0filtered. Frontend warning titles and scoped
+clippy's89 expression/171 all-crate titles exactly match N7h. Lint60091, pinned
+formatting of9 frontend+6 SDK Rust files under both compilers, both diff checks
+and immutable STR_TO_DATE fixture checks pass. All jobs are closed. Receipt
+`evidence/no-fallback-n7i.md` records commands/proof; signed SDK1017778 is paired
+with this frontend checkpoint, with no push. The global migration remains open.

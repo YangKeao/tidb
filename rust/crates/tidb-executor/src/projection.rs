@@ -3101,8 +3101,65 @@ mod tests {
         let date_arithmetic_mix = std::iter::once(0)
             .chain(date_arithmetic_start..roots.len())
             .collect::<Vec<_>>();
+        let extract_start = roots.len();
+        let extract = |duration_input: bool| {
+            call(
+                "extract",
+                integer.clone(),
+                vec![
+                    Expression::Constant(Constant::new(
+                        Datum::new_string(if duration_input { "HOUR" } else { "DAY_SECOND" }),
+                        string.clone(),
+                    )),
+                    if duration_input {
+                        Expression::Constant(Constant::new(
+                            Datum::new_duration(tidb_datatype::MySqlDuration::from_raw_parts(
+                                3_660_000_000_000,
+                                6,
+                            )),
+                            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+                        ))
+                    } else {
+                        call(
+                            "if",
+                            string.clone(),
+                            vec![
+                                column(0),
+                                Expression::Constant(Constant::new(
+                                    Datum::new_string("2020-01-02 03:04:05"),
+                                    string.clone(),
+                                )),
+                                Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                            ],
+                        )
+                    },
+                ],
+            )
+        };
+        roots.push(extract(false));
+        fields.push(integer.clone());
+        roots.push(extract(true));
+        fields.push(integer.clone());
+        roots.push(call(
+            "day_second",
+            integer.clone(),
+            vec![Expression::Constant(Constant::new(
+                Datum::new_string("1:02"),
+                string.clone(),
+            ))],
+        ));
+        fields.push(integer.clone());
+        roots.push(call("cast_char", string.clone(), vec![extract(false)]));
+        fields.push(string.clone());
+        let extract_mix = std::iter::once(0)
+            .chain(extract_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                extract_mix.iter().map(|&i| roots[i].clone()).collect(),
+                extract_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
             (
                 date_arithmetic_mix
                     .iter()
