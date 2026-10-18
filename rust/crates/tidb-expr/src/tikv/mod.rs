@@ -117,6 +117,8 @@ mod from_unixtime;
 mod identity_value;
 mod if_control;
 mod if_null;
+#[cfg(test)]
+mod in_legacy_value_tests;
 mod in_list;
 #[cfg(test)]
 mod in_value_tests;

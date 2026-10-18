@@ -1627,3 +1627,57 @@ this coherent source checkpoint. Receipt docs/evidence/no-fallback-n6v1.md;
 SDK maintenance guide reconciles source admission and contracts. Sign local
 commits, no push. Remaining other source/function/caller/legacy/global dispatch
 and final inherited-failure/SQL/server gates keep goal/task4 ACTIVE.
+
+
+### N6w legacy IN Ready-loop retirement (active)
+
+Previous turn made authoritative progress: signed N6v0/N6v1 value and genuine
+source integration, with all3 actual source REDs green. Continue the complete
+goal, not a global completion claim. Legacy integer/byte channels still use
+serialized head/step reports and scoped Ready workers in tikv/in_list.rs.
+Capture independent OLD return/demand/context/warning/source-error identity
+and late collation behavior before production changes, plus two actual worker
+lookup REDs. Mandatory operand0 for count0/1, fulli128, base-NULL exhaustive
+reads, early match, generic E identity, signed original ID and late mutable
+mode resolution are contracts. Add pure genuine shared SDK value/progress
+policy, reusing existing comparison primitives over original typed source channels,
+without manufactured Exprs or a nested Ready evaluator. Retire caller frames after independent comparison proof;
+bound actual retained payload/comparison work with finite logical allowances.
+Validate frontend/SDK/real unistore consumers, Projection, lint/fmt/diff and
+sign only the coherent runnable step. No push/PR/deploy/subagents authorized.
+
+
+N6w actual OLD proof captured before production changes:27360 return/demand/
+context hash03fe1f325a53c789,336 original generic SourceE Arc-identity/retry
+hash7643f3333ea24bfd,160 late-mutable-collation hash86adc5e714cb9209. The late
+mode test runs a single-test child process, never mutating the normal parallel
+suite or adding an ignored test. Both actual worker lookup traps fail old code.
+Test-only reproduction patch targets762c0152/SDKe5da224 and cached apply-check
+passes with a separate Git index. All three cohorts then independently compare
+old active head/step workers to new SDK values BEFORE either old wire body or
+caller is changed (n6w-old-vs-legacy-values.log). Fixed hashes are never
+regenerated from new code; snapshots preserve original and independent tests.
+
+After proof, frontend legacy drive/head/step/scoped-context machinery is removed.
+SDK wire validation/protocol remains unchanged and delegates equality/no-match
+primitives. Source E returns unchanged; only explicit new SDK ResourceLimit
+maps to existing ResourceLimit/phaseNone. Finite actual byte capacities and GB
+binary encoding work are bounded; no retired frame charge or unperformed string
+work is imposed on empty/streaming values. Whole-heap/source-provider allocation
+recovery is not claimed. Source callback timing and late original signed-ID
+policy remain intact. Complete frontend1560 pass/exact inherited4/95ignored/
+zero filtered, including fixed OLD proof, both worker traps and actual-capacity
+refusal/no further read/retry checks. SDK full/Unistore consumer/Projection/
+clippy are running; lint and pinned fmt5Rustfiles/bothdiff pass. Do not sign
+until all remaining results are reconciled. Overall goal remains incomplete.
+
+N6w FINAL:frontend1560 exact inherited4/95ignored/zero filtered, all169batch;
+SDK1073 exact inherited6/one ignored/zero filtered, clippy89 unchanged. Both
+actual Unistore cophandler IN tests pass; Projection25/mixed31roots bothflags/
+serial-two workers pass. make lint, pinnedfmt5Rustfiles and bothdiffchecks pass.
+All53550/80104/40099/11371/5469/72773 CLOSED. Receipt docs/evidence/no-fallback-n6w.md
+and SDK guide record actual original source channels, independent OLD proof and
+finite logical capacity/work boundary. Sign local runnable commits, no push.
+Other source/function/caller/global dispatch and final inherited/SQL/server gates
+remain; goal/task4 NOT complete. Next inspect INTERVAL's eager/lazy value and
+source closure together, with actual source REDs before changing its transport.

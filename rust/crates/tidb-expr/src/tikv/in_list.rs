@@ -13,12 +13,8 @@
 // limitations under the License.
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::{
-    evaluate_args_in, evaluate_prepared_args_scoped_in, identity_value, EvaluatedArgs,
-    EvaluatedBytesOp as Op, EvaluatedBytesResult, ExpressionRuntimeFailure, LocalError,
-};
+use super::{ExpressionRuntimeFailure, LocalError};
 use crate::{Columns, Datum, EvalError};
-use tidb_query_expr::{NativeInRequest as Request, NativeInResult as Report};
 
 /// Preserve the actual comparison channel, including non-Boolean integers.
 /// Each SDK control service owns its source-specific interpretation.
@@ -79,130 +75,72 @@ pub(crate) fn eval_in_typed_values_in(
     .map_err(|_| invalid_report())
 }
 
-#[derive(Clone, Copy)]
-enum LegacyKind {
-    Int,
-    Bytes,
-}
-
-fn drive<E: From<EvalError>>(
-    computed: EvaluatedBytesResult,
-    selected: &dyn Columns,
-    kind: LegacyKind,
-    count: usize,
-    eval: &mut impl FnMut(usize, &dyn Columns) -> Result<Option<Vec<u8>>, E>,
+fn legacy_result<E: From<EvalError>>(
+    result: Result<Option<bool>, tidb_query_expr::NativeInLegacyError<E>>,
 ) -> Result<Option<i128>, E> {
-    let mut state = computed
-        .into_bytes()
-        .map_err(E::from)?
-        .ok_or_else(|| E::from(invalid_report()))?;
-    let mut at_head = true;
-    loop {
-        let report = tidb_query_expr::decode_native_in_result(&state)
-            .ok_or_else(|| E::from(invalid_report()))?;
-        let request = match report {
-            Report::Null if !at_head => return Ok(None),
-            Report::Bool(value) if !at_head => return Ok(Some(i128::from(value))),
-            Report::Request { kind: request, .. } => request,
-            _ => return Err(E::from(invalid_report())),
-        };
-        let actual = match (kind, request) {
-            (LegacyKind::Int, Request::Int128 { index })
-            | (LegacyKind::Bytes, Request::Bytes { index }) => {
-                // The original reader is asked for operand zero even for an
-                // empty child list; it supplies its actual missing-child NULL.
-                if (at_head && index != 0) || (index != 0 && index >= count) {
-                    return Err(E::from(invalid_report()));
-                }
-                eval(index, selected)?
-            }
-            (LegacyKind::Bytes, Request::Collation { collation_id }) if !at_head => {
-                // Resolve only when the SDK requests the original late
-                // non-NULL-pair lookup. Do not snapshot this mutable mode in
-                // the head and do not return a host-computed equality result.
-                let tag = tidb_datatype::get_collator_by_id(collation_id)
-                    .new_collation()
-                    .map_or(
-                        super::NativeCollation::Binary,
-                        tidb_datatype::Collation::native_policy,
-                    )
-                    .tag();
-                Some(tag.to_le_bytes().to_vec())
-            }
-            _ => return Err(E::from(invalid_report())),
-        };
-        state = evaluate_args_in(
-            Op::InLegacyStepNative,
-            selected,
-            || Ok(EvaluatedArgs::Bytes2(Some(state), actual)),
-            |computed| computed.into_bytes()?.ok_or_else(invalid_report),
-        )
-        .map_err(E::from)?;
-        at_head = false;
+    match result {
+        Ok(value) => Ok(value.map(i128::from)),
+        Err(tidb_query_expr::NativeInLegacyError::Source(error)) => Err(error),
+        Err(tidb_query_expr::NativeInLegacyError::ResourceLimit(reason)) => Err(E::from(
+            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
+                LocalError::ResourceLimit(reason.into()),
+                None,
+            )),
+        )),
     }
 }
 
-fn legacy<E: From<EvalError>>(
-    ctx: &dyn Columns,
-    kind: LegacyKind,
-    count: usize,
-    metadata: impl FnOnce() -> Result<Vec<u8>, tidb_query_expr::NativeIdentityFrameError>,
-    mut eval: impl FnMut(usize, &dyn Columns) -> Result<Option<Vec<u8>>, E>,
-) -> Result<Option<i128>, E> {
-    evaluate_prepared_args_scoped_in(
-        ctx,
-        || {
-            let operation = match kind {
-                LegacyKind::Int => Op::InLegacyIntHeadNative,
-                LegacyKind::Bytes => Op::InLegacyStringHeadNative,
-            };
-            Ok((
-                operation,
-                EvaluatedArgs::Bytes(Some(metadata().map_err(frame_error)?)),
-            ))
-        },
-        |computed, selected| {
-            // Preserve the original callback E under the live head pack guard;
-            // no artificial EvalError, SQL folding, or extra worker is involved.
-            Ok(drive(computed, selected, kind, count, &mut eval))
-        },
-    )
-    .map_err(E::from)?
-}
-
-/// Legacy integer IN reads the caller's native integer channel, not a folded
-/// surrogate. Its full i128 domain and original errors survive unchanged.
+/// Legacy integer IN reads the caller's original native integer channel,
+/// including operand0 for an empty list. No frame, scoped context or worker is
+/// created; the SDK owns full-i128 equality, NULL policy and subsequent demand.
 pub fn eval_legacy_in_int_in<E: From<EvalError>>(
     ctx: &dyn Columns,
     count: usize,
     mut eval: impl FnMut(usize, &dyn Columns) -> Result<Option<i128>, E>,
 ) -> Result<Option<i128>, E> {
-    legacy(
-        ctx,
-        LegacyKind::Int,
+    legacy_result(tidb_query_expr::native_in_legacy_i128_values(
         count,
-        || tidb_query_expr::encode_native_in_legacy_int_head(count),
-        |index, selected| {
-            eval(index, selected).map(|value| value.map(|value| value.to_le_bytes().to_vec()))
-        },
-    )
+        |index| eval(index, ctx),
+    ))
 }
 
-/// Legacy byte IN retains the caller's byte-channel SQL folding and receives
-/// the actual collation ID; only the SDK owns comparison and list progress.
+/// Legacy byte IN keeps the actual source error and byte owners. Only a real
+/// non-NULL pair resolves the original signed collation ID under current mode,
+/// after its candidate read; the SDK performs comparison and early matching.
 pub fn eval_legacy_in_bytes_in<E: From<EvalError>>(
     ctx: &dyn Columns,
     count: usize,
     collation: i32,
     eval: impl FnMut(usize, &dyn Columns) -> Result<Option<Vec<u8>>, E>,
 ) -> Result<Option<i128>, E> {
-    legacy(
+    eval_legacy_in_bytes_bounded_in(
         ctx,
-        LegacyKind::Bytes,
         count,
-        || tidb_query_expr::encode_native_in_legacy_string_head(count, collation),
+        collation,
+        super::control_value::default_budget(),
         eval,
     )
+}
+fn eval_legacy_in_bytes_bounded_in<E: From<EvalError>>(
+    ctx: &dyn Columns,
+    count: usize,
+    collation: i32,
+    maximum: usize,
+    mut eval: impl FnMut(usize, &dyn Columns) -> Result<Option<Vec<u8>>, E>,
+) -> Result<Option<i128>, E> {
+    legacy_result(tidb_query_expr::native_in_legacy_bytes_values(
+        count,
+        maximum,
+        |index| eval(index, ctx),
+        || {
+            tidb_datatype::get_collator_by_id(collation)
+                .new_collation()
+                .map_or(
+                    super::NativeCollation::Binary,
+                    tidb_datatype::Collation::native_policy,
+                )
+        },
+    ))
 }
 
 fn invalid_report() -> EvalError {
@@ -212,14 +150,63 @@ fn invalid_report() -> EvalError {
     ))
 }
 
-fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
-    match error {
-        tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
-        tidb_query_expr::NativeIdentityFrameError::Capacity => {
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
-                LocalError::ResourceLimit("native IN frame allocation or size failed".into()),
-                None,
-            ))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    struct NoWorkers;
+    impl Columns for NoWorkers {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("unexpected lookup")
         }
+        fn ready_value_cache(&self) -> Option<&super::super::ReadyValueCache> {
+            panic!("retired worker lookup")
+        }
+    }
+    #[test]
+    fn legacy_byte_actual_capacity_refusal_keeps_resource_class_and_permits_clean_reuse() {
+        let ctx = NoWorkers;
+        let seen = RefCell::new(Vec::new());
+        for at in [0, 1] {
+            seen.borrow_mut().clear();
+            let actual =
+                eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 3, 63, 128, |index, _| {
+                    seen.borrow_mut().push(index);
+                    let mut value = if index == at {
+                        Vec::with_capacity(1024)
+                    } else {
+                        Vec::new()
+                    };
+                    value.push(b'x');
+                    Ok(Some(value))
+                });
+            let Err(EvalError::ExpressionRuntimeFailure(error)) = actual else {
+                panic!("resource refusal converted to a SQL answer")
+            };
+            assert_eq!(
+                error.class(),
+                crate::ExpressionRuntimeFailureClass::ResourceLimit
+            );
+            assert_eq!(error.phase(), None);
+            assert_eq!(*seen.borrow(), (0..=at).collect::<Vec<_>>());
+            let retry = eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 3, 63, 2, |index, _| {
+                assert!(index < 2, "matching path demanded a dead source");
+                Ok(Some(vec![b'x']))
+            });
+            assert_eq!(retry, Ok(Some(1)));
+        }
+        assert!(matches!(
+            eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 0, 63, usize::MAX, |_, _| panic!(
+                "invalid unlimited allowance fetched a source"
+            )),
+            Err(EvalError::ExpressionRuntimeFailure(_))
+        ));
+        assert_eq!(
+            eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 0, 63, 0, |index, _| {
+                assert_eq!(index, 0);
+                Ok(Some(Vec::new()))
+            }),
+            Ok(Some(0))
+        );
     }
 }
