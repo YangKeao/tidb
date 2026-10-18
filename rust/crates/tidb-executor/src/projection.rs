@@ -3401,6 +3401,39 @@ mod tests {
         let duration_mix = std::iter::once(0)
             .chain(duration_start..roots.len())
             .collect::<Vec<_>>();
+        let timezone_start = roots.len();
+        for (date, from, to) in [
+            ("2025-10-26 02:30:00.5", "Europe/Paris", "UTC"),
+            ("2025-03-30 02:30:00", "Europe/Paris", "Asia/Shanghai"),
+            ("2021-11-07 01:30:00", "SYSTEM", "+00:00"),
+        ] {
+            let field = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+            let date = call(
+                "if",
+                string.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::new_string(date), string.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                ],
+            );
+            let root = call(
+                "convert_tz",
+                field.clone(),
+                vec![
+                    date,
+                    Expression::Constant(Constant::new(Datum::new_string(from), string.clone())),
+                    Expression::Constant(Constant::new(Datum::new_string(to), string.clone())),
+                ],
+            );
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let timezone_mix = std::iter::once(0)
+            .chain(timezone_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3410,6 +3443,10 @@ mod tests {
             (
                 duration_mix.iter().map(|&i| roots[i].clone()).collect(),
                 duration_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                timezone_mix.iter().map(|&i| roots[i].clone()).collect(),
+                timezone_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
             (
                 calendar_mix.iter().map(|&i| roots[i].clone()).collect(),

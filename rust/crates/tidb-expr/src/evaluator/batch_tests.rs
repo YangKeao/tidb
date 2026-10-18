@@ -19184,6 +19184,7 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             O::PeriodDiff,
             O::GetFormat,
             O::DateDiff,
+            O::ConvertTz,
         ] {
             let arity = op.arity();
             let field = projected(&native_bytes_type(), true).unwrap();
@@ -19313,6 +19314,11 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                 }
             }
             let normal = match op {
+                O::ConvertTz => vec![
+                    Datum::new_string("2025-10-26 02:30:00.5"),
+                    Datum::new_string("Europe/Paris"),
+                    Datum::new_string("UTC"),
+                ],
                 O::GetFormat => vec![Datum::new_string("DATE"), Datum::new_string("USA")],
                 O::DateDiff => vec![
                     Datum::new_string("2024-02-29"),
@@ -19391,6 +19397,83 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                 let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
                 assert!(reply(&mut provider, &mut ctx, &task, 0, Some(token)).is_err());
             }
+            if op == O::ConvertTz {
+                // All three capabilities authenticate before the first cast.
+                // The old Unicode-offset panic must close demand before unwind.
+                context.events.borrow_mut().clear();
+                let task = begin(&mut provider, &mut ctx);
+                for (index, value) in ["2004-01-01", ""].into_iter().enumerate() {
+                    let token = insert(
+                        &Datum::new_string(value),
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        row,
+                    );
+                    assert!(matches!(
+                        reply(&mut provider, &mut ctx, &task, index, Some(token)),
+                        Ok(HostStep::NeedArg(_))
+                    ));
+                    assert!(context.events.borrow().is_empty());
+                }
+                let token = insert(
+                    &Datum::new_string("+1:٢"),
+                    NativeValueRole::CharInput,
+                    5,
+                    row,
+                );
+                assert!(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        2,
+                        Some(token)
+                    )))
+                    .is_err()
+                );
+                let token = insert(&Datum::Null, NativeValueRole::CharInput, 5, row);
+                assert!(reply(&mut provider, &mut ctx, &task, 2, Some(token)).is_err());
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+                let task = begin(&mut provider, &mut ctx);
+                for (index, value) in ["2004-01-01", "UTC", "UTC"].into_iter().enumerate() {
+                    let token = insert(
+                        &Datum::new_string(value),
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        row,
+                    );
+                    let step = reply(&mut provider, &mut ctx, &task, index, Some(token)).unwrap();
+                    if index < 2 {
+                        assert!(matches!(step, HostStep::NeedArg(_)));
+                    } else {
+                        assert!(matches!(step, HostStep::Ready(_)));
+                    }
+                }
+                provider.cancel(&task);
+                context.events.borrow_mut().clear();
+                let task = begin(&mut provider, &mut ctx);
+                for index in 0..2 {
+                    let token = insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                    assert!(matches!(
+                        reply(&mut provider, &mut ctx, &task, index, Some(token)),
+                        Ok(HostStep::NeedArg(_))
+                    ));
+                }
+                let token = insert(
+                    &Datum::Bytes(vec![b'x'; 1 << 20]),
+                    NativeValueRole::CharInput,
+                    5,
+                    row,
+                );
+                assert!(reply(&mut provider, &mut ctx, &task, 2, Some(token)).is_err());
+                assert!(matches!(
+                    provider.take_native_error(),
+                    Some(EvalError::ExpressionRuntimeFailure(_))
+                ));
+                assert!(context.events.borrow().is_empty());
+                provider.cancel(&task);
+            }
             if op == O::FromDays {
                 // The original raw panic survives, but the closed invocation cannot
                 // replay and no retired Ready cache can poison the next SQL call.
@@ -19435,4 +19518,234 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             }
         }
     }
+}
+
+#[test]
+fn native_convert_tz_sources_do_not_fallback() {
+    let field = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+    let root = call(
+        "convert_tz",
+        field.clone(),
+        vec![
+            literal(Datum::new_string("2025-10-26 02:30:00.5"), string_ty()),
+            literal(Datum::new_string("Europe/Paris"), string_ty()),
+            literal(Datum::new_string("UTC"), string_ty()),
+        ],
+    );
+    let s = suite(root);
+    let mut input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&field);
+    s.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+        .unwrap();
+    let route = s.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0), "{route:?}");
+}
+
+#[test]
+fn native_convert_tz_sources_keep_casts_returns_context_and_eager_errors() {
+    let cases = vec![
+        (
+            ty(),
+            vec![
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(-1),
+                Datum::Int(2024),
+                Datum::Int(i64::MAX),
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::Null,
+                Datum::UInt(0),
+                Datum::UInt(59),
+                Datum::UInt(u64::MAX),
+            ],
+        ),
+        (
+            real_ty(),
+            vec![
+                Datum::Null,
+                Datum::Real(30.0000005),
+                Datum::Real(59.9),
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::INFINITY),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(7),
+            vec![
+                Datum::Null,
+                Datum::Decimal(Decimal::from_literal("30.0000005")),
+                Datum::Decimal(Decimal::from_literal(
+                    "999999999999999999999999999999999999999999999999.25",
+                )),
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::Null,
+                Datum::new_string("2024-02-29 12:34:56.123456"),
+                Datum::new_string("12:34:56.1234567"),
+                Datum::new_string("DATE"),
+                Datum::new_string("USA"),
+                Datum::new_string("%H:%i:%s.%f"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Null, Datum::Int(0), Datum::Int(24), Datum::Int(2024)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Date),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Duration(MySqlDuration::from_nanoseconds(-45678900000000, 6).unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(64),
+            vec![
+                Datum::Null,
+                Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0xff; 8])),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Null,
+                Datum::Json(BinaryJSON::parse("[1,true]").unwrap()),
+            ],
+        ),
+    ];
+    let returns = vec![
+        ty(),
+        string_ty(),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+    ];
+
+    for index in 0..3 {
+        for (source, values) in &cases {
+            let rows = values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>();
+            let selections = [
+                vec![],
+                (0..rows.len()).collect(),
+                vec![rows.len() - 1, 0, rows.len() - 1],
+            ];
+            let mut args = vec![
+                literal(Datum::new_string("2025-10-26 02:30:00.5"), string_ty()),
+                literal(Datum::new_string("Europe/Paris"), string_ty()),
+                literal(Datum::new_string("UTC"), string_ty()),
+            ];
+            args[index] = typed_column(0, source);
+            for field in &returns {
+                let root = call("convert_tz", field.clone(), args.clone());
+                for seed in 0..4 {
+                    for level in 0..3 {
+                        for selection in &selections {
+                            compare_duration_construction_source(
+                                root.clone(),
+                                std::slice::from_ref(source),
+                                &rows,
+                                selection,
+                                seed,
+                                level,
+                            );
+                        }
+                    }
+                }
+                compare_duration_construction_source(
+                    call("cast_char", string_ty(), vec![root]),
+                    std::slice::from_ref(source),
+                    &rows,
+                    &[rows.len() - 1, 0, rows.len() - 1],
+                    3,
+                    0,
+                );
+            }
+        }
+    }
+    for position in [1, 2] {
+        let mut args = vec![
+            literal(Datum::Null, string_ty()),
+            literal(Datum::Null, string_ty()),
+            literal(Datum::Null, string_ty()),
+        ];
+        args[position] = abs(int(i64::MIN));
+        compare_duration_construction_source(
+            call("convert_tz", string_ty(), args),
+            &[],
+            &[vec![]],
+            &[0],
+            2,
+            0,
+        );
+    }
+    let source = string_ty();
+    let rows = vec![
+        vec![Datum::new_string("2025-10-26 02:30:00.5")],
+        vec![Datum::new_string("bad")],
+        vec![Datum::Null],
+    ];
+    compare_duration_construction_source(
+        call(
+            "convert_tz",
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                typed_column(0, &source),
+                literal(Datum::new_string("Europe/Paris"), string_ty()),
+                literal(Datum::new_string("UTC"), string_ty()),
+            ],
+        ),
+        &[source],
+        &rows,
+        &vec![1; 2050],
+        2,
+        0,
+    );
 }

@@ -1254,6 +1254,7 @@ fn native_duration_construction_call(
         "period_diff" => O::PeriodDiff,
         "get_format" => O::GetFormat,
         "datediff" => O::DateDiff,
+        "convert_tz" => O::ConvertTz,
         _ => return None,
     };
     (function.args.len() == op.arity()).then_some(op)

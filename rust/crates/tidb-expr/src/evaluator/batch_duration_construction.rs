@@ -189,7 +189,44 @@ impl NativeBatchHosts<'_> {
                 ),
             }
         } else {
-            let first = if values::start_calls_context(*operation) {
+            let first = if *operation == O::ConvertTz {
+                // Original first ETDatetime cast precedes all signature text
+                // coercions, carrying YEAR and other complete source metadata.
+                let (original, live) = copy_value(
+                    store,
+                    token_for(0)?,
+                    NativeValueOrigin {
+                        node: arguments[0],
+                        row,
+                    },
+                    base,
+                    self.max_retained_bytes,
+                )?;
+                let cast = crate::tikv::calendar_value::cast_source(
+                    tidb_query_expr::NativeCalendarOperation::Date,
+                    &original,
+                    &argument_types[0],
+                    self.context,
+                    self.max_retained_bytes - live,
+                );
+                drop(original);
+                match cast {
+                    Err(e) => Err(e),
+                    Ok(value) => {
+                        let live = native_payload_bytes(&value)?
+                            .checked_mul(2)
+                            .and_then(|n| base.checked_add(n))
+                            .ok_or_else(|| resource("timezone cast extent overflow"))?;
+                        self.check_bytes(live)?;
+                        values::start(
+                            *operation,
+                            &value,
+                            self.context,
+                            self.max_retained_bytes - live,
+                        )
+                    }
+                }
+            } else if values::start_calls_context(*operation) {
                 let (original, live) = copy_value(
                     store,
                     token_for(0)?,

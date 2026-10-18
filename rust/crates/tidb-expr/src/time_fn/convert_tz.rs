@@ -33,7 +33,6 @@
 //!   arguments, and zero/invalid datetimes are all NULL;
 //! - `SYSTEM` maps to the process-local zone, matching Go's `time.Local`.
 
-use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 
 /// Original one-shot helper retained for existing callers.
@@ -41,40 +40,15 @@ pub(super) fn convert_tz(vals: &[Datum]) -> Result<Datum, EvalError> {
     convert_tz_in(vals, &crate::NoColumns)
 }
 
-/// Coerce the three actual operands under one guard; the shared worker owns
-/// datetime parsing, SQL zone arguments, instant conversion, and rendering.
+/// Preserve eager strict text coercions, then call the actual shared value kernel.
 pub(super) fn convert_tz_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::ConvertTz,
+        vals,
         cols,
-        || {
-            if vals.len() != 3 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            // Preserve tuple demand: NULL does not suppress later coercions,
-            // but an earlier coercion error still stops the tuple.
-            let (dt, from, to) = (
-                coerce_str(&vals[0])?,
-                coerce_str(&vals[1])?,
-                coerce_str(&vals[2])?,
-            );
-            Ok((
-                crate::tikv::EvaluatedBytesOp::ConvertTzNative,
-                crate::tikv::EvaluatedArgs::Bytes3([
-                    dt.map(String::into_bytes),
-                    from.map(String::into_bytes),
-                    to.map(String::into_bytes),
-                ]),
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::convert_tz;

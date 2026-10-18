@@ -682,3 +682,6 @@ pub(crate) mod calendar_value_tests;
 pub(crate) mod duration_construction_value_tests;
 
 pub(crate) mod duration_construction_value;
+
+#[cfg(test)]
+pub(crate) mod convert_tz_value_tests;

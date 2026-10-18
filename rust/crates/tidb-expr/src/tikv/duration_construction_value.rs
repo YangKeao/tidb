@@ -111,12 +111,17 @@ pub(crate) enum Pair {
     DateDiff { left: Option<String> },
     TimeDiff(tidb_query_expr::NativeTimeDiffValue),
     TimeFormat(tidb_query_expr::NativeTimeFormatValue),
+    ConvertTz(Option<String>),
 }
 /// Each stage owns actual values and is consumed before conversion can fail or
 /// panic. No executable child, source callback or replayable validity flag lives here.
 pub(crate) enum Prepared {
     Value(Datum),
     Pair(Pair),
+    TimeZoneDestination {
+        datetime: Option<String>,
+        from: Option<String>,
+    },
     Third {
         hour: Option<(i64, bool)>,
         minute: Option<i64>,
@@ -125,7 +130,13 @@ pub(crate) enum Prepared {
 impl Prepared {
     pub(crate) fn retained_bytes(&self) -> usize {
         match self {
-            Self::Pair(Pair::DateDiff { left }) => left.as_ref().map_or(0, String::capacity),
+            Self::Pair(Pair::DateDiff { left }) | Self::Pair(Pair::ConvertTz(left)) => {
+                left.as_ref().map_or(0, String::capacity)
+            }
+            Self::TimeZoneDestination { datetime, from } => datetime
+                .as_ref()
+                .map_or(0, String::capacity)
+                .saturating_add(from.as_ref().map_or(0, String::capacity)),
             Self::Pair(Pair::TimeFormat(v)) => v.retained_bytes(),
             _ => 0,
         }
@@ -137,6 +148,7 @@ impl Prepared {
             Self::Value(_) => None,
             Self::Pair(_) => Some((1, false)),
             Self::Third { .. } => Some((2, true)),
+            Self::TimeZoneDestination { .. } => Some((2, false)),
         }
     }
     pub(crate) fn advance(
@@ -148,6 +160,21 @@ impl Prepared {
         work(maximum, 0)?;
         let result = match self {
             Self::Value(_) => return Err(super::native_time_result_contract_error()),
+            Self::TimeZoneDestination { datetime, from } => {
+                let to = text(value, maximum)?;
+                let remaining = maximum
+                    .checked_sub(to.as_ref().map_or(0, String::capacity))
+                    .ok_or_else(resource)?;
+                string_datum(
+                    tidb_query_expr::native_convert_tz_value(
+                        datetime.as_deref(),
+                        from.as_deref(),
+                        to.as_deref(),
+                        remaining,
+                    )
+                    .map_err(error)?,
+                )
+            }
             Self::Third { hour, minute } => {
                 let second = number(value, ctx, maximum)?;
                 let seconds =
@@ -164,6 +191,12 @@ impl Prepared {
                 )
             }
             Self::Pair(pair) => match pair {
+                Pair::ConvertTz(datetime) => {
+                    return Ok(Self::TimeZoneDestination {
+                        datetime,
+                        from: text(value, maximum)?,
+                    });
+                }
                 Pair::Integer { op, left } => {
                     let right = integer(value, maximum)?;
                     if op == O::MakeDate {
@@ -227,6 +260,7 @@ pub(crate) fn start(
 ) -> Result<Prepared, EvalError> {
     work(maximum, 0)?;
     let v = match op {
+        O::ConvertTz => return Ok(Prepared::Pair(Pair::ConvertTz(text(value, maximum)?))),
         O::MakeDate | O::PeriodAdd | O::PeriodDiff => {
             return Ok(Prepared::Pair(Pair::Integer {
                 op,
@@ -348,7 +382,14 @@ pub(crate) fn eval_bounded(
     }
     let mut prepared = start(op, &values[0], ctx, maximum)?;
     while let Some((index, _)) = prepared.argument() {
-        prepared = prepared.advance(&values[index], ctx, maximum)?;
+        let remaining = if op == O::ConvertTz {
+            maximum
+                .checked_sub(prepared.retained_bytes())
+                .ok_or_else(resource)?
+        } else {
+            maximum
+        };
+        prepared = prepared.advance(&values[index], ctx, remaining)?;
     }
     prepared.into_value()
 }

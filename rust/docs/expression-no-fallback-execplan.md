@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7o: migrate CONVERT_TZ direct and canonical source through actual text operands. Capture independent original fresh-cache observations under isolated UTC/Asia/Shanghai/America/New_York child processes before candidate edits; reproduce Ready and source fallbacks; preserve eager strict three-text conversion, original first ETDatetime source cast/full FieldType, named DST and SYSTEM policies, original Unicode-offset panic, generic temporal result plus ordinary return boundary. Extend existing finite native time-family host with consumed three-operand stages; test provenance/budget/cancellation/panic recovery, mixed Projection, full frontend/core, warning parity, lint and both formatters; sign local commits only. Remaining ADDTIME/SUBTIME/TIMESTAMP/TIMESTAMPADD, generic fallback and unistore work remain global follow-up.
+
 - [x] N7n: retire remaining native duration/construction/period/format/date-difference Ready families, preserve staged coercion/error/result contracts and integrate complete ordinary sources; independently pair before retirement, validate and sign local commits.
 
 - [x] N7m: retire DATE/core/text calendar components and week demand plus legacy MONTH/WEEK/HMS Ready seams; integrate complete canonical calendar sources with original casts/context/provenance/finite work and independent old comparisons.
@@ -103,6 +105,16 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7o confirms that CONVERT_TZ has two eager boundaries: the first source
+ETDatetime cast with original FieldType, then all three strict text conversions
+even after NULL. The date parser precedes both zone parsers; both zone parsers
+run before testing either Option, preserving the original Unicode-digit offset
+panic even if the other zone is invalid. Invalid UTF-8 is checked before string
+materialization budget: a new test initially assumed Resource for huge invalid
+bytes, then switched to legal ASCII to isolate budget refusal. Production policy
+was not changed for that test correction. Original fresh-cache capture and697356
+independent pairs passed before retirement under three isolated process timezones.
+
 N7e fresh RED enters a substituted ASCII panic kernel despite the official name. Fresh-factory pointer comparison cannot fix this safely across codegen units; a saved pointer from the same construction instance avoids that ambiguity.
 
 
@@ -128,6 +140,18 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: extend the existing actual time-family host with CONVERT_TZ arity3
+  and consuming actual text stages; retain the original pure SDK kernel as the
+  sole parser/zone/format owner used by both actual-value and explicit wire entries.
+  Rationale: reuse eager authentication/terminal invocation cleanup without a
+  second argument interpreter, synthetic NULL witness or encoded native value.
+  Isolated child processes pin SYSTEM timezone; fresh original caches prevent
+  obsolete cache poisoning from hiding SQL behavior. Each original timezone hash
+  remains immutable. DATE_FORMAT/TIMESTAMPDIFF direct entries already use actual
+  values, so this checkpoint does not redundantly migrate them or claim source
+  closure for them.
+  Date/Author: 2026-10-19 / TiDBEngineer.
+
 - Decision: Snapshot generated RpnFnMeta name and all three pointers once in a private field, and check unchanged dispatch only at closed evaluated-recipe admission. Preserve checked FunctionRef selection, generic const macro construction, canonical shape checks and original raw/wire execution.
   Rationale: Reject mutated or renamed-other-factory calls before witness/kernel effects without executing a validator as a probe, adding a second dispatcher, or comparing independently emitted function addresses. Actual metadata sizes remain included in existing resource budgets.
   Date/Author: 2026-10-18 / TiDBEngineer.
@@ -150,6 +174,19 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7o closes CONVERT_TZ direct and canonical sources locally. All697356 independent
+old/new comparisons passed before direct retirement; immutable three-timezone
+witnesses remain. Final frontend1710 passes/exact3 inherited failures/95 ignored,
+all256 batch pass; SDK1120 passes/exact1 inherited/1 ignored; Projection26 passes
+including a new seven-root zone/CHAR/arithmetic group under both flags and
+workers0/2. Expanded provider authentication, exclusive context, finite work,
+original panic/replay cleanup and recovery checks pass. Clippy89 expression/171
+all warning titles and frontend346 warning titles exactly match N7n; lint, both
+pinned11-file formatters, unchanged fixtures and both diff checks pass. Only a
+witness explanatory comment changed after runtime gates; no logic changed. The
+receipt rust/docs/evidence/no-fallback-n7o.md records commands, failures and scope.
+This is a signed local checkpoint, not global completion or a Go-package port.
 
 N7f retires another native head/finish Ready program pair and adds canonical generic bounded-staleness source execution. Fixed old behavior, callback authority and original argument-cast order are verified independently. Fullfront1644same3/all222batch, SDK1096same1, Projection26 and exact inherited lint diagnostics pass; global migration and remaining source/PB/oldcaller work remain unfinished.
 
@@ -2959,3 +2996,49 @@ certification of malformed source validity. Sign paired local commits without
 push. No datatype/unistore production edit or rerun, no Go/Bazel edit. The whole
 goal remains active for remaining functions, generic fallback, unistore,
 unsupported/malformed sources, inherited failures and semantic/full-server gates.
+
+
+## N7o milestone: CONVERT_TZ direct and canonical sources
+
+The native direct entry in rust/crates/tidb-expr/src/time_fn/convert_tz.rs now
+calls the actual shared value owner, without constructing Ready or a second
+argument program. The existing DurationConstructionNative host retains all three
+argument nodes/types and output provenance, authenticates every eager capability,
+closes demand before body execution, and casts only the original first
+ETDatetime source before signature text conversion. It never holds a value-store
+borrow over date-mode/zone/clock/truncation/warning callbacks. The consumed stages
+retain actual datetime and source-zone strings; every strict conversion still
+runs after NULL, while earlier errors stop later conversion. The original
+UNICODE-offset panic remains, but replay is denied and a new invocation succeeds.
+The result runs the original generic temporal finish and then ordinary
+return-family conversion once. The actual SDK interface in
+components/tidb_query_expr/src/native_convert_tz.rs accepts borrowed nullable text
+and a finite allowance, sharing its original pure worker kernel with explicit
+wire compatibility. Named DST and SYSTEM Local policies are unchanged.
+
+Original capture16506 recorded232452 observations in each of three isolated
+children: UTC BD5985171C035C25, Asia/Shanghai522632888DE0D4F5 and
+America/New_YorkB1E585671A6BACCD. The original direct Ready lookup and source
+admission/fallback counterexamples both failed first. Independent pair18304 then
+compared all697356 actual candidates against still-present original calls and
+passed all original hashes before retiring the direct caller. The permanent test
+keeps those checksums, never replaces them with a new implementation checksum.
+Original witness/pair source and logs are archived in the agent workspace
+`evidence/no-fallback/n7o-*`; the original pure temporal kernel did not change.
+
+From TiDB repository root, run RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb
+test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr
+--lib convert_tz for the fixed witnesses, no-Ready guard, eager text/work checks
+and full source-type matrix. Run the same command without the filter for all
+frontend tests including the expanded provider checks, and with -p tidb-executor
+--lib projection::tests for mixed serial/parallel output. From TiKV root, run
+RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tikv test --release --locked --offline
+-j8 -p tidb_query_expr --lib, then the scoped make-run clippy command in the
+receipt. Run make lint in TiDB and both pinned source formatters and unchanged
+STR_TO_DATE fixture checks from the receipt. Expected results retain exactly the
+known three frontend and one SDK failures, with no new failure or warning title.
+A filtered historical independent-pair test no longer exists after retirement;
+its archive/log is evidence, not a test to regenerate. Resume from current trees,
+never rerun applied /tmp/n7o-candidate.py. Only local DCO commits are authorized.
+All global remaining function, fallback, unistore, malformed/unsupported-source,
+semantic and full-server work remains active.
