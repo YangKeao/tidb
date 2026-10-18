@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
+use super::{ExpressionRuntimeFailure, LocalError};
+use crate::{Columns, Datum, EvalError};
 use tidb_datatype::{EvalType, FieldType};
 use tidb_query_expr::{
-    NativeIntervalCast as Cast, NativeIntervalEvalType as Type, NativeIntervalFieldType,
-    NativeIntervalResult as Report,
+    NativeIntervalCast as Cast, NativeIntervalEagerInput as Input,
+    NativeIntervalEagerStart as Start, NativeIntervalEvalType as Type, NativeIntervalFieldType,
+    NativeIntervalNumber as Number, NativeIntervalSearch, NativeIntervalValueError as Error,
+    NativeIntervalValueStep as Step,
 };
-
-use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::{
-    evaluate_args_in, evaluate_prepared_args_scoped_in, identity_value, EvaluatedArgs,
-    EvaluatedBytesOp as Op, EvaluatedBytesResult, ExpressionRuntimeFailure, LocalError,
-};
-use crate::{Columns, Datum, EvalError};
 
 fn invalid_report() -> EvalError {
     EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_scope(
@@ -31,42 +29,33 @@ fn invalid_report() -> EvalError {
         "invalid native INTERVAL report",
     ))
 }
-
-fn frame_error(error: tidb_query_expr::NativeIdentityFrameError) -> EvalError {
+pub(crate) fn interval_value_error(error: Error) -> EvalError {
     match error {
-        tidb_query_expr::NativeIdentityFrameError::Invalid => invalid_report(),
-        tidb_query_expr::NativeIdentityFrameError::Capacity => {
+        Error::Arity { .. } => {
             EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
-                LocalError::ResourceLimit("native INTERVAL frame allocation or size failed".into()),
-                None,
+                LocalError::evaluated_argument_shape_mismatch(),
+                Some(crate::ExpressionRuntimeFailurePhase::Invoke),
             ))
         }
+        Error::Invalid => invalid_report(),
+        Error::ResourceLimit(reason) => resource(reason),
     }
 }
-
-fn real_identity(value: &Datum, ctx: &dyn Columns) -> Result<Option<Vec<u8>>, EvalError> {
-    if value.is_null() {
-        Ok(None)
-    } else {
-        identity_value::encode(&Datum::Real(crate::ops::to_f64_with_mysql_string(
-            value, ctx,
-        )?))
-    }
+fn resource(reason: &'static str) -> EvalError {
+    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
+        LocalError::ResourceLimit(reason.into()),
+        None,
+    ))
 }
-
-fn integer_identity(
-    value: &Datum,
-    source: Option<&FieldType>,
-    ctx: &dyn Columns,
-) -> Result<Option<Vec<u8>>, EvalError> {
-    let cast = crate::cast::cast_arg_as_int(value, source, ctx)?;
-    if !matches!(cast, Datum::Int(_) | Datum::UInt(_) | Datum::Null) {
-        return Err(invalid_report());
+fn budget(bytes: usize, maximum: usize) -> Result<(), EvalError> {
+    if maximum == usize::MAX || bytes > maximum {
+        return Err(resource(
+            "INTERVAL actual state/conversion allowance exceeded",
+        ));
     }
-    identity_value::encode(&cast)
+    Ok(())
 }
-
-fn field_metadata(field: &FieldType) -> NativeIntervalFieldType {
+pub(crate) fn interval_field_metadata(field: &FieldType) -> NativeIntervalFieldType {
     NativeIntervalFieldType {
         eval_type: match field.eval_type() {
             EvalType::Int => Type::Int,
@@ -82,127 +71,318 @@ fn field_metadata(field: &FieldType) -> NativeIntervalFieldType {
         flags: field.flags(),
     }
 }
-
-#[derive(Clone, Copy)]
-enum Entry {
-    Eager,
-    Lazy,
+/// Bound only conversion that is actually demanded. Decimal-to-real uses its
+/// original visible formatter; retained coefficient bytes alone are insufficient.
+fn conversion_work(value: &Datum, cast: Cast) -> Result<usize, EvalError> {
+    let bytes = match value {
+        Datum::Null
+        | Datum::Int(_)
+        | Datum::UInt(_)
+        | Datum::MinNotNull
+        | Datum::MaxValue
+        | Datum::VectorFloat32(_) => return Ok(0),
+        Datum::Real(_) | Datum::Float32(_) if cast == Cast::Real => return Ok(0),
+        Datum::Decimal(value) => value
+            .coefficient_bytes()
+            .len()
+            .checked_add(value.scale().max(value.storage_scale()) as usize)
+            .and_then(|bytes| bytes.checked_add(4))
+            .ok_or_else(|| resource("INTERVAL Decimal conversion shape overflow"))?,
+        Datum::String(value) => value.bytes().len(),
+        Datum::Bytes(value) | Datum::Raw(value) => value.len(),
+        Datum::BinaryLiteral(value) | Datum::Bit(value) => value.as_bytes().len(),
+        Datum::Json(value) => value
+            .value()
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| resource("INTERVAL JSON conversion extent overflow"))?,
+        Datum::Enum(_, _)
+        | Datum::Set(_, _)
+        | Datum::Time(_)
+        | Datum::Duration(_)
+        | Datum::Real(_)
+        | Datum::Float32(_) => 0,
+    };
+    bytes
+        .checked_mul(16)
+        .and_then(|bytes| bytes.checked_add(1024))
+        .ok_or_else(|| resource("INTERVAL conversion work extent overflow"))
 }
-
-fn drive(
-    computed: EvaluatedBytesResult,
-    selected: &dyn Columns,
-    entry: Entry,
-    count: usize,
-    mut prepare: impl FnMut(usize, Cast) -> Result<Option<Vec<u8>>, EvalError>,
-) -> Result<Datum, EvalError> {
-    let mut state = computed.into_bytes()?.ok_or_else(invalid_report)?;
-    let mut at_head = true;
-    loop {
-        let (index, cast) = match tidb_query_expr::decode_native_interval_result(&state)
-            .ok_or_else(invalid_report)?
-        {
-            Report::IntIndex(index) if !at_head || matches!(entry, Entry::Eager) => {
-                return Ok(Datum::Int(index));
+/// Original actual-value cast, shared by the direct adapter and canonical host.
+/// No identity frame, synthetic literal or source evaluation occurs here.
+pub(crate) fn prepare_interval_number_in(
+    ctx: &dyn Columns,
+    value: &Datum,
+    source: Option<&FieldType>,
+    cast: Cast,
+    maximum: usize,
+) -> Result<Option<Number>, EvalError> {
+    budget(conversion_work(value, cast)?, maximum)?;
+    match cast {
+        Cast::Real => {
+            if value.is_null() {
+                Ok(None)
+            } else {
+                crate::ops::to_f64_with_mysql_string(value, ctx)
+                    .map(|value| Some(Number::Real(value.to_bits())))
             }
-            Report::SentinelsError if at_head && matches!(entry, Entry::Eager) => {
-                return Err(EvalError::Unsupported("range sentinel INTERVAL argument"));
-            }
-            Report::Request { index, cast, .. } => {
-                if index >= count
-                    || (at_head && index != 0)
-                    || (matches!(entry, Entry::Eager) && !matches!(cast, Cast::Real))
-                {
-                    return Err(invalid_report());
-                }
-                (index, cast)
-            }
-            _ => return Err(invalid_report()),
-        };
-        state = evaluate_args_in(
-            Op::IntervalStepNative,
-            selected,
-            || {
-                // Evaluation and original casts are guarded, but only the SDK
-                // decides which index to visit and when enough values were read.
-                let actual = prepare(index, cast)?;
-                Ok(EvaluatedArgs::Bytes2(Some(state), actual))
-            },
-            |computed| computed.into_bytes()?.ok_or_else(invalid_report),
-        )?;
-        at_head = false;
+        }
+        Cast::Int => match crate::cast::cast_arg_as_int(value, source, ctx)? {
+            Datum::Null => Ok(None),
+            Datum::Int(value) => Ok(Some(Number::Signed(value))),
+            Datum::UInt(value) => Ok(Some(Number::Unsigned(value))),
+            _ => Err(invalid_report()),
+        },
     }
 }
-
-pub(crate) fn eval_interval_in(ctx: &dyn Columns, vals: &[Datum]) -> Result<Datum, EvalError> {
-    evaluate_prepared_args_scoped_in(
-        ctx,
-        || {
-            let identities = vals
-                .iter()
-                .map(identity_value::encode)
-                .collect::<Result<Vec<_>, _>>()?;
-            let views = identities.iter().map(Option::as_deref).collect::<Vec<_>>();
-            let packet =
-                tidb_query_expr::encode_native_interval_eager_head(&views).map_err(frame_error)?;
-            Ok((
-                Op::IntervalEagerHeadNative,
-                EvaluatedArgs::Bytes(Some(packet)),
-            ))
-        },
-        |computed, selected| {
-            drive(
-                computed,
-                selected,
-                Entry::Eager,
-                vals.len(),
-                |index, cast| {
-                    let value = vals.get(index).ok_or_else(invalid_report)?;
-                    match cast {
-                        Cast::Real => real_identity(value, ctx),
-                        Cast::Int => Err(invalid_report()),
-                    }
-                },
-            )
-        },
-    )
+fn eager_view(value: &Datum) -> Input {
+    match value {
+        Datum::Null => Input::Null,
+        Datum::Int(value) => Input::Int(*value),
+        Datum::UInt(value) => Input::UInt(*value),
+        Datum::MinNotNull | Datum::MaxValue => Input::Sentinel,
+        _ => Input::Other,
+    }
 }
-
+pub(crate) fn eval_interval_in(ctx: &dyn Columns, vals: &[Datum]) -> Result<Datum, EvalError> {
+    eager_bounded(ctx, vals, super::control_value::default_budget())
+}
+fn eager_bounded(ctx: &dyn Columns, vals: &[Datum], maximum: usize) -> Result<Datum, EvalError> {
+    if vals.len() < 2 {
+        return Err(interval_value_error(Error::Arity { actual: vals.len() }));
+    }
+    let planned = vals
+        .len()
+        .checked_mul(std::mem::size_of::<Input>())
+        .ok_or_else(|| resource("INTERVAL borrowed view extent overflow"))?;
+    budget(planned, maximum)?;
+    let mut views = Vec::new();
+    views
+        .try_reserve_exact(vals.len())
+        .map_err(|_| resource("INTERVAL borrowed view allocation failed"))?;
+    let retained = views
+        .capacity()
+        .checked_mul(std::mem::size_of::<Input>())
+        .ok_or_else(|| resource("INTERVAL borrowed view capacity overflow"))?;
+    budget(retained, maximum)?;
+    views.extend(vals.iter().map(eager_view));
+    match tidb_query_expr::native_interval_eager_values(&views, maximum - retained)
+        .map_err(interval_value_error)?
+    {
+        Start::Index(index) => Ok(Datum::Int(index)),
+        Start::Sentinels => Err(EvalError::Unsupported("range sentinel INTERVAL argument")),
+        Start::Real(mut state) => {
+            let state_bytes = state.retained_bytes();
+            let available = maximum
+                .checked_sub(retained)
+                .and_then(|bytes| bytes.checked_sub(state_bytes))
+                .ok_or_else(|| resource("INTERVAL eager state allowance exhausted"))?;
+            loop {
+                match state.step() {
+                    Step::Index(index) => break Ok(Datum::Int(index)),
+                    Step::Probe {
+                        index,
+                        cast: Cast::Real,
+                    } => {
+                        let Some(Number::Real(value)) = prepare_interval_number_in(
+                            ctx,
+                            &vals[index],
+                            None,
+                            Cast::Real,
+                            available,
+                        )?
+                        else {
+                            return Err(invalid_report());
+                        };
+                        state
+                            .accept_real(f64::from_bits(value))
+                            .map_err(interval_value_error)?;
+                    }
+                    _ => return Err(invalid_report()),
+                }
+            }
+        }
+    }
+}
 pub(crate) fn eval_interval_lazy_in(
     ctx: &dyn Columns,
     arg_types: &[Option<FieldType>],
-    mut eval: impl FnMut(usize) -> Result<Datum, EvalError>,
+    eval: impl FnMut(usize) -> Result<Datum, EvalError>,
 ) -> Result<Datum, EvalError> {
     debug_assert!(arg_types.len() >= 2);
-    evaluate_prepared_args_scoped_in(
-        ctx,
-        || {
-            let types = arg_types
-                .iter()
-                .map(|field| field.as_ref().map(field_metadata))
-                .collect::<Vec<_>>();
-            let packet =
-                tidb_query_expr::encode_native_interval_lazy_head(&types).map_err(frame_error)?;
-            Ok((
-                Op::IntervalLazyHeadNative,
-                EvaluatedArgs::Bytes(Some(packet)),
-            ))
-        },
-        |computed, selected| {
-            drive(
-                computed,
-                selected,
-                Entry::Lazy,
-                arg_types.len(),
-                |index, cast| {
-                    let source = arg_types.get(index).ok_or_else(invalid_report)?.as_ref();
-                    let value = eval(index)?;
-                    match cast {
-                        Cast::Int => integer_identity(&value, source, ctx),
-                        Cast::Real => real_identity(&value, ctx),
-                    }
-                },
-            )
-        },
+    lazy_bounded(ctx, arg_types, eval, super::control_value::default_budget())
+}
+fn lazy_bounded(
+    ctx: &dyn Columns,
+    arg_types: &[Option<FieldType>],
+    mut eval: impl FnMut(usize) -> Result<Datum, EvalError>,
+    maximum: usize,
+) -> Result<Datum, EvalError> {
+    let mut search = NativeIntervalSearch::new(
+        arg_types
+            .iter()
+            .map(|field| field.as_ref().map(interval_field_metadata)),
     )
+    .map_err(interval_value_error)?;
+    budget(0, maximum)?;
+    loop {
+        match search.step() {
+            Step::Index(index) => break Ok(Datum::Int(index)),
+            Step::Probe { index, cast } => {
+                let value = eval(index)?;
+                let value = prepare_interval_number_in(
+                    ctx,
+                    &value,
+                    arg_types[index].as_ref(),
+                    cast,
+                    maximum,
+                )?;
+                search.accept(value).map_err(interval_value_error)?;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct NoEffects;
+    impl Columns for NoEffects {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("unexpected source")
+        }
+        fn ready_value_cache(&self) -> Option<&super::super::ReadyValueCache> {
+            panic!("retired worker")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("unperformed conversion emitted warning")
+        }
+    }
+    #[test]
+    fn interval_arity_keeps_actual_invalid_batch_cause_and_invoke_phase() {
+        for count in [0, 1] {
+            let values = vec![Datum::Null; count];
+            let types = vec![None; count];
+            for actual in [
+                eager_bounded(&NoEffects, &values, 1024),
+                lazy_bounded(
+                    &NoEffects,
+                    &types,
+                    |_| panic!("invalid arity read a source"),
+                    1024,
+                ),
+            ] {
+                let Err(EvalError::ExpressionRuntimeFailure(error)) = actual else {
+                    panic!("arity boundary changed")
+                };
+                assert_eq!(
+                    error.class(),
+                    crate::ExpressionRuntimeFailureClass::InvalidBatch
+                );
+                assert_eq!(
+                    error.phase(),
+                    Some(crate::ExpressionRuntimeFailurePhase::Invoke)
+                );
+                assert_eq!(
+                    error.local_error().to_string(),
+                    LocalError::evaluated_argument_shape_mismatch().to_string()
+                );
+            }
+        }
+    }
+    #[test]
+    fn interval_bounds_actual_state_and_demanded_decimal_format_without_touching_skips() {
+        let denied = |actual: Result<Datum, EvalError>| {
+            let Err(EvalError::ExpressionRuntimeFailure(error)) = actual else {
+                panic!("resource refusal was folded")
+            };
+            assert_eq!(
+                error.class(),
+                crate::ExpressionRuntimeFailureClass::ResourceLimit
+            );
+            assert_eq!(error.phase(), None);
+        };
+        for value in [
+            Datum::Null,
+            Datum::Int(1),
+            Datum::UInt(u64::MAX),
+            Datum::Real(1.0),
+        ] {
+            assert!(prepare_interval_number_in(&NoEffects, &value, None, Cast::Real, 0).is_ok());
+        }
+        let huge = Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+            false,
+            vec![b'1'],
+            u32::MAX,
+            0,
+        ));
+        denied(eager_bounded(
+            &NoEffects,
+            &[huge.clone(), Datum::Real(2.0)],
+            1024,
+        ));
+        assert_eq!(
+            eager_bounded(
+                &NoEffects,
+                &[Datum::Null, Datum::MaxValue, huge.clone()],
+                1024
+            ),
+            Err(EvalError::Unsupported("range sentinel INTERVAL argument"))
+        );
+        let views = [Datum::Int(1), Datum::Int(2)];
+        assert_eq!(
+            eager_bounded(&NoEffects, &views, 2 * std::mem::size_of::<Input>()),
+            Ok(Datum::Int(0))
+        );
+        let real = FieldType::new(tidb_datatype::FieldTypeCode::Double).with_flags(1);
+        let types = vec![Some(real); 4];
+        let seen = std::cell::RefCell::new(vec![]);
+        let values = [
+            Datum::Real(100.0),
+            huge.clone(),
+            Datum::Real(10.0),
+            Datum::Real(20.0),
+        ];
+        assert_eq!(
+            lazy_bounded(
+                &NoEffects,
+                &types,
+                |i| {
+                    seen.borrow_mut().push(i);
+                    assert_ne!(i, 1);
+                    Ok(values[i].clone())
+                },
+                1024
+            ),
+            Ok(Datum::Int(3))
+        );
+        assert_eq!(*seen.borrow(), vec![0, 2, 3]);
+        seen.borrow_mut().clear();
+        denied(lazy_bounded(
+            &NoEffects,
+            &types,
+            |i| {
+                seen.borrow_mut().push(i);
+                Ok(if i == 0 {
+                    Datum::Real(0.0)
+                } else {
+                    values[i].clone()
+                })
+            },
+            1024,
+        ));
+        assert_eq!(*seen.borrow(), vec![0, 2, 1]);
+        assert_eq!(
+            lazy_bounded(
+                &NoEffects,
+                &types,
+                |i| {
+                    assert_eq!(i, 0);
+                    Ok(Datum::Null)
+                },
+                0
+            ),
+            Ok(Datum::Int(-1))
+        );
+    }
 }

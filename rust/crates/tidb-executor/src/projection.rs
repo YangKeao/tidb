@@ -2663,59 +2663,114 @@ mod tests {
             ],
         ));
         fields.push(integer.clone());
-        for enabled in [true, false] {
-            let reference =
-                crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
-            let suite = EvaluatorSuite::new(roots.clone(), false);
-            let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
-            for row in 0..3 {
-                input.append_int64(0, row);
-                input.append_int64(1, row * 2);
-            }
-            let mut expected = Chunk::new_with_capacity(&fields, 0);
-            suite.run(&reference, &mut input, &mut expected).unwrap();
-            let warnings = reference.take_warnings();
-            for workers in [0, 2] {
-                let context =
+        roots.push(call(
+            "interval",
+            integer.clone(),
+            vec![
+                call("abs", integer.clone(), vec![column(0)]),
+                literal(1),
+                literal(3),
+                column(1),
+            ],
+        ));
+        fields.push(integer.clone());
+        let interval_real = FieldType::new(FieldTypeCode::Double).with_flags(1);
+        roots.push(call(
+            "interval",
+            integer.clone(),
+            vec![
+                call("cast_double", interval_real.clone(), vec![column(0)]),
+                Expression::Constant(Constant::new(Datum::Real(1.0), interval_real.clone())),
+                Expression::Constant(Constant::new(Datum::Real(2.0), interval_real.clone())),
+                Expression::Constant(Constant::new(Datum::Real(3.0), interval_real)),
+            ],
+        ));
+        fields.push(integer.clone());
+        roots.push(call(
+            "interval",
+            integer.clone(),
+            vec![
+                call(
+                    "cast_json",
+                    FieldType::new(FieldTypeCode::Json),
+                    vec![column(0)],
+                ),
+                literal(1),
+                literal(2),
+            ],
+        ));
+        fields.push(integer.clone());
+        let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
+        let configurations = [
+            (roots[..31].to_vec(), fields[..31].to_vec()),
+            (
+                interval_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                interval_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
+        ];
+        // Keep the prior mixed suite intact. A second heterogeneous suite adds
+        // all INTERVAL domains within the unchanged finite metadata allowance.
+        for (roots, fields) in configurations {
+            for enabled in [true, false] {
+                let reference =
                     crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
-                let (source, _) = NumberSource::new(3, 3);
-                let schema = Schema::new(
-                    fields
-                        .iter()
-                        .enumerate()
-                        .map(|(index, field)| Column::new(index as i64 + 1, field.clone()))
-                        .collect(),
-                );
-                let mut projection = ProjectionExec::new(
-                    ExecutorMeta::new(schema, 1, 3, 1024),
-                    roots.clone(),
-                    source,
-                    context.clone(),
-                )
-                .with_workers(workers);
-                projection.open().unwrap();
-                let mut output = projection.new_chunk();
-                projection.next(&mut output).unwrap();
-                assert_eq!(output.num_rows(), expected.num_rows());
-                for row in 0..output.num_rows() {
-                    for column in 0..fields.len() {
-                        assert_eq!(
-                            output.get_row(row).is_null(column),
-                            expected.get_row(row).is_null(column)
-                        );
-                        assert_eq!(
-                            output.column(column).get_raw(row).as_ref(),
-                            expected.column(column).get_raw(row).as_ref(),
-                            "flag={enabled} workers={workers} row={row} column={column}"
-                        );
+                let suite = EvaluatorSuite::new(roots.clone(), false);
+                let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+                for row in 0..3 {
+                    input.append_int64(0, row);
+                    input.append_int64(1, row * 2);
+                }
+                let mut expected = Chunk::new_with_capacity(&fields, 0);
+                suite.run(&reference, &mut input, &mut expected).unwrap();
+                let warnings = reference.take_warnings();
+                for workers in [0, 2] {
+                    let context =
+                        crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                    let (source, _) = NumberSource::new(3, 3);
+                    let schema = Schema::new(
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, field)| Column::new(index as i64 + 1, field.clone()))
+                            .collect(),
+                    );
+                    let mut projection = ProjectionExec::new(
+                        ExecutorMeta::new(schema, 1, 3, 1024),
+                        roots.clone(),
+                        source,
+                        context.clone(),
+                    )
+                    .with_workers(workers);
+                    projection.open().unwrap();
+                    let mut output = projection.new_chunk();
+                    projection.next(&mut output).unwrap();
+                    assert_eq!(output.num_rows(), expected.num_rows());
+                    for row in 0..output.num_rows() {
+                        for column in 0..fields.len() {
+                            assert_eq!(
+                                output.get_row(row).is_null(column),
+                                expected.get_row(row).is_null(column)
+                            );
+                            assert_eq!(
+                                output.column(column).get_raw(row).as_ref(),
+                                expected.column(column).get_raw(row).as_ref(),
+                                "flag={enabled} workers={workers} row={row} column={column}"
+                            );
+                        }
                     }
+                    assert_eq!(context.take_warnings(), warnings);
+                    if workers == 0 {
+                        let route = projection.evaluator_suite.batch_route_snapshot();
+                        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                    }
+                    projection.close().unwrap();
                 }
-                assert_eq!(context.take_warnings(), warnings);
-                if workers == 0 {
-                    let route = projection.evaluator_suite.batch_route_snapshot();
-                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
-                }
-                projection.close().unwrap();
             }
         }
     }

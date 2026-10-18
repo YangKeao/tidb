@@ -10658,3 +10658,393 @@ fn native_in_generic_duration_column_and_constant_text_keep_comparison_facts() {
         }
     }
 }
+
+#[test]
+fn native_interval_integer_abs_sources_require_canonical_driver() {
+    let root = call(
+        "interval",
+        ty(),
+        vec![abs(column(0)), int(1), int(3), abs(column(1))],
+    );
+    compare_typed_profile(
+        root,
+        &[ty(), ty()],
+        &[
+            vec![Datum::Int(2), Datum::Int(5)],
+            vec![Datum::Int(7), Datum::Int(i64::MIN)],
+            vec![Datum::Null, Datum::Int(i64::MIN)],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_interval_not_null_real_binary_sources_require_canonical_driver() {
+    let real = real_ty().with_flags(FieldTypeFlags::NOT_NULL);
+    let integer = ty().with_flags(FieldTypeFlags::NOT_NULL);
+    let root = call(
+        "interval",
+        ty(),
+        vec![
+            typed_column(0, &real),
+            call("abs", integer.clone(), vec![typed_column(1, &integer)]),
+            literal(Datum::Real(1.0), real.clone()),
+            literal(Datum::Real(2.0), real.clone()),
+            literal(Datum::Real(3.0), real.clone()),
+        ],
+    );
+    compare_typed_profile(
+        root,
+        &[real, integer],
+        &[
+            vec![Datum::Real(100.0), Datum::Int(i64::MIN)],
+            vec![Datum::Real(0.0), Datum::Int(i64::MIN)],
+            vec![Datum::Real(f64::NAN), Datum::Int(i64::MIN)],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_interval_computed_json_sources_require_canonical_driver() {
+    let root = call(
+        "interval",
+        ty(),
+        vec![
+            call(
+                "cast_json",
+                FieldType::new(FieldTypeCode::Json),
+                vec![column(0)],
+            ),
+            int(1),
+            int(2),
+        ],
+    );
+    compare_typed_profile(
+        root,
+        &[ty()],
+        &[vec![Datum::Int(1)], vec![Datum::Int(7)], vec![Datum::Null]],
+        &[0, 1, 2, 0],
+    );
+}
+
+#[test]
+fn native_interval_raw_constant_sources_match_original_metadata_selected_probes() {
+    let values = crate::ops::arithmetic::tests::fixtures();
+    let mut cases = 0;
+    for field in [
+        ty(),
+        ty().with_flags(1),
+        ty().with_flags(1).with_unsigned(true),
+        real_ty(),
+        real_ty().with_flags(1),
+        string_ty().with_flags(1),
+    ] {
+        for first in &values {
+            for other in &values {
+                for input in [
+                    vec![first.clone(), other.clone()],
+                    vec![
+                        first.clone(),
+                        Datum::Int(0),
+                        Datum::Null,
+                        other.clone(),
+                        Datum::UInt(u64::MAX),
+                    ],
+                ] {
+                    let root = call(
+                        "interval",
+                        ty(),
+                        input
+                            .into_iter()
+                            .map(|value| literal(value, field.clone()))
+                            .collect(),
+                    );
+                    compare_arithmetic_profile(root, &[], &[vec![]], &[0]);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 12288);
+}
+#[test]
+fn native_interval_parent_phases_preserve_probe_skips_errors_duplicates_and_reuse() {
+    let integer = ty().with_flags(1);
+    let interval = || {
+        call(
+            "interval",
+            ty(),
+            vec![
+                typed_column(0, &integer),
+                call("abs", integer.clone(), vec![typed_column(1, &integer)]),
+                literal(Datum::Int(10), integer.clone()),
+                literal(Datum::Int(20), integer.clone()),
+            ],
+        )
+    };
+    let roots = [
+        interval(),
+        plus(interval(), abs(typed_column(1, &integer))),
+        plus(abs(typed_column(1, &integer)), interval()),
+        call(
+            "if",
+            ty(),
+            vec![interval(), int(1), abs(typed_column(1, &integer))],
+        ),
+        call(
+            "interval",
+            ty(),
+            vec![interval(), int(1), abs(typed_column(1, &integer))],
+        ),
+    ];
+    let schema = [integer.clone(), integer];
+    let rows = vec![
+        vec![Datum::Int(100), Datum::Int(i64::MIN)],
+        vec![Datum::Int(0), Datum::Int(i64::MIN)],
+        vec![Datum::Null, Datum::Int(i64::MIN)],
+        vec![Datum::Int(12), Datum::Int(2)],
+    ];
+    for root in roots {
+        for selection in [
+            vec![],
+            vec![0],
+            vec![1],
+            vec![2],
+            vec![3, 0, 2, 3],
+            vec![3; 2050],
+            {
+                let mut selection = vec![3; 2050];
+                selection[2049] = 1;
+                selection
+            },
+        ] {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, &selection);
+        }
+    }
+}
+
+#[test]
+fn native_interval_probe_capabilities_resources_cancel_and_reuse_are_terminal() {
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 3];
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::IntervalNative,
+        HostSignature {
+            arg_types: args.clone().into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let domain = real_ty().with_flags(1);
+    let metadata = [NativeHostMetadata::Interval(
+        hosts::NativeIntervalMetadata {
+            arguments: [3, 8, 9]
+                .into_iter()
+                .map(|node| hosts::NativeIntervalArgument {
+                    node,
+                    field: domain.clone(),
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            search: tidb_query_expr::NativeIntervalSearch::new(
+                [Some(crate::tikv::interval_field_metadata(&domain)); 3].into_iter(),
+            )
+            .unwrap(),
+            result_type: ty(),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        },
+    )];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    store.borrow_mut().begin_window().unwrap();
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 0,
+    };
+    let origin = NativeValueOrigin { node: 8, row };
+    let stale = store
+        .borrow_mut()
+        .insert_clone(&Datum::Real(-1.0), NativeValueRole::CharInput, origin)
+        .unwrap();
+    store.borrow_mut().begin_window().unwrap();
+    let tokens = [(3, 0.0), (8, -1.0), (9, 1.0)].map(|(node, value)| {
+        store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Real(value),
+                NativeValueRole::CharInput,
+                NativeValueOrigin { node, row },
+            )
+            .unwrap()
+    });
+    let wrong_role = store
+        .borrow_mut()
+        .insert_clone(&Datum::Real(-1.0), NativeValueRole::Output, origin)
+        .unwrap();
+    let wrong_node = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Real(-1.0),
+            NativeValueRole::CharInput,
+            NativeValueOrigin { node: 9, row },
+        )
+        .unwrap();
+    let wrong_row = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Real(-1.0),
+            NativeValueRole::CharInput,
+            NativeValueOrigin {
+                node: 8,
+                row: InputRow {
+                    occurrence: 1,
+                    input_row: 0,
+                },
+            },
+        )
+        .unwrap();
+    let large = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Bytes(vec![b'X'; 16384]),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    let huge = store
+        .borrow_mut()
+        .insert_clone(
+            &Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+                false,
+                vec![b'1'],
+                u32::MAX,
+                0,
+            )),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    let context = ArithmeticProfilesContext::default();
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context, 8192).with_native_values(Some(&store));
+    let mut ctx = EvalContext::default();
+    for (bad, kind) in [
+        (stale, 0),
+        (wrong_role, 0),
+        (wrong_node, 0),
+        (wrong_row, 0),
+        (large, 1),
+        (huge, 2),
+    ] {
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!("INTERVAL pending")
+        };
+        // NOT NULL real metadata chooses binary probes 0,2,1, rather than a prefix.
+        for (index, next) in [(0, 2), (2, 1)] {
+            let values =
+                VectorValue::from_scalar(&ScalarValue::Bytes(Some(tokens[index].clone())), 1);
+            assert!(
+                matches!(provider.resume(&mut ctx,&task,HostArgReply {index,field_type:&field,values:&values}).unwrap(),HostStep::NeedArg(request) if request.index == next)
+            );
+        }
+        let before = context.trace.borrow().clone();
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1);
+        let error = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index: 1,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap_err();
+        match kind {
+            0 => assert!(matches!(error, LocalError::BindingContract(_)), "{error:?}"),
+            1 => assert!(matches!(error, LocalError::ResourceLimit(_)), "{error:?}"),
+            _ => {
+                let native = provider
+                    .take_native_error()
+                    .expect("bounded conversion preserves native resource error");
+                let EvalError::ExpressionRuntimeFailure(native) = native else {
+                    panic!("resource error lost")
+                };
+                assert_eq!(
+                    native.class(),
+                    crate::ExpressionRuntimeFailureClass::ResourceLimit
+                );
+                assert_eq!(native.phase(), None);
+            }
+        }
+        assert_eq!(*context.trace.borrow(), before);
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+        provider.cancel(&task);
+    }
+    let HostStart::Pending { task, .. } = provider
+        .start(
+            &mut ctx,
+            HostInvocation {
+                slot,
+                row,
+                arg_types: &args,
+                return_type: &field,
+            },
+        )
+        .unwrap()
+    else {
+        panic!("INTERVAL pending")
+    };
+    for index in [0, 2, 1] {
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(tokens[index].clone())), 1);
+        let step = provider
+            .resume(
+                &mut ctx,
+                &task,
+                HostArgReply {
+                    index,
+                    field_type: &field,
+                    values: &values,
+                },
+            )
+            .unwrap();
+        if index != 1 {
+            assert!(matches!(step, HostStep::NeedArg(_)));
+        } else {
+            let HostStep::Ready(output) = step else {
+                panic!("INTERVAL did not finish")
+            };
+            use tidb_query_datatype::codec::data_type::ScalarValueRef;
+            let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                panic!("output capability")
+            };
+            assert_eq!(
+                *store
+                    .borrow()
+                    .get(
+                        token,
+                        NativeValueRole::Output,
+                        NativeValueOrigin { node: 2, row }
+                    )
+                    .unwrap(),
+                Datum::Int(1)
+            );
+        }
+    }
+    provider.cancel(&task);
+}

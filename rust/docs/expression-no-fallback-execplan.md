@@ -1681,3 +1681,88 @@ finite logical capacity/work boundary. Sign local runnable commits, no push.
 Other source/function/caller/global dispatch and final inherited/SQL/server gates
 remain; goal/task4 NOT complete. Next inspect INTERVAL's eager/lazy value and
 source closure together, with actual source REDs before changing its transport.
+
+
+### N6x INTERVAL value and canonical source integration (active)
+
+Previous goal turn is progress: N6w signed actual legacy channel computation and
+caller program removal with complete local gates. INTERVAL retains two native
+Ready controllers and no canonical source closure. First reproduce actual
+integer/NN-real/computed-JSON source route REDs and independently capture OLD
+eager/lazy results, precise cast/read/warning/context/error traces, arity/private
+cause and worker lookup traps. Eager sentinel-before-NULL and all-real conversion
+before <= partition differ from lazy metadata-selected linear/binary < probes;
+raw NaN, mixed signed/unsigned, missing fields and full flags must remain exact.
+Expose real borrowed input classification and typed search progress in SDK,
+then retire caller transport and emit a genuine same-driver vararg row host.
+No Expr callbacks/fake literals/another SDK program in canonical host; no new
+permanent valid-SQL Unsupported. Preserve finite resources, source identity,
+authenticated capabilities/cancellation, whole-parent scopes and native return
+publication. No push/PR/deploy/subagents, overall goal remains incomplete.
+
+N6x OLD proof captured at95399873/SDK3a7b17c: eager73728 fixedhash
+319a9e8733ea8257; lazy294912 fixedhash242c1ac24fae8178; lazy source960
+fixedhash2bb943c97c73bb21. Test-only baseline patch cached apply-check passed;
+original and independent comparison snapshots preserved. Actual three source
+REDs each refuse/fallback once, and all three actual Ready lookup traps fail
+before replacement. First helper-insertion script failed before writing, so
+n6x-old-vs-interval-values.log is OLD-only evidence, not independent comparison.
+Actual independent comparison found an arity0/1 difference: the original codec
+allows these counts until evaluated-argument admission produces InvalidBatch
+at Invoke, with its exact closed-input-shape reason. Reused that actual SDK
+producer via LocalError::evaluated_argument_shape_mismatch; did not reclassify
+it as ScopeContract or RuntimeInputContract. All369600 independent comparisons
+then passed BEFORE old controllers/wire primitives were changed. Fixed OLD
+hashes are never regenerated from the new API.
+
+New SDK borrowed eager classification/state and NativeIntervalSearch now own
+actual policy/progress. Frontend interval.rs no longer constructs Ready programs,
+identity heads, continuation reports or scoped context adapters. Original cast
+helpers are already direct SDK value operations; no extra cast evaluator is
+needed. Ordinary explicit wire profiles keep original complete validation and
+protocol, sharing classification/search only after proof. Eager state/views and
+demanded conversion work use finite allowances; huge Decimal padding is checked
+before formatting, and skipped probes never inspect payload/work.
+
+Canonical IntervalNative source host snapshots complete FieldTypes and producer
+ordinals, authenticates actual nonlinear probe capabilities, casts only SDK
+requests, and publishes through original SF RT/outer expression flag seams.
+All3 source REDs turn green; 12288 raw-source/metadata cases pass. First full
+frontend run had an additional parent-test refusal: the NEW fixture used
+NOT_NULL schema columns but nullable declarations for another use of the same
+column. Diagnostic PreparedBatchSuite::compile correctly reported complete-row
+binding mismatch. Corrected fixture declarations, retaining all parent/short-
+circuit/error/duplicate/reuse assertions, and the targeted parent test passes.
+No production admission relaxation or permanent unsupported case was added.
+SDK full1076 passes with exact original6 failures/one ignored/zero filtered.
+Provider provenance/resource/cancel/reuse and mixed34-root Projection plus final
+frontend/clippy/lint/fmt/diff gates pending. Do not sign until reconciled.
+
+
+N6x canonical provider provenance/resource/cancel/exact reuse checks pass,
+including actual nonlinear0→2→1 probes, demanded huge Decimal resource errors
+and clone precharge before effects. Final frontend1574 passes/exact inherited4/
+95ignored/zero filtered, all175batch; SDK1076/exact inherited6/one ignored;
+clippy89 unchanged, lint passed. Expanded single34-root Projection encountered
+existing finite equal-share source metadata refusal in OLD slot2 CAST_JSON,
+BEFORE any INTERVAL. Diagnostic records exact LocalResourceLimit source metadata
+cause; do not enlarge policy or recategorize as Unsupported. Final fixture
+preserves complete prior31 roots and adds mixed8 roots spanning arithmetic,
+string, three IN domains and three INTERVAL domains under unchanged limits.
+Projection rerun and final lint/fmt/diffs pending; all temporary print diagnostics
+removed. This is a genuine finite resource envelope, not a new source refusal.
+
+
+N6x FINAL:complete frontend1574 exact inherited4/95ignored/zero filtered,
+all175batch, SDK1076 exact inherited6/one ignored/zero filtered; fixed369600
+original witnesses and actual3source/3worker REDs now green. Scoped clippy89
+unchanged. Final productionProjection25 PASS: original mixed31-root matrix
+intact plus mixed8 roots with new INTERVAL domains, both vectorization flags and
+serial/two workers. Final lint, pinnedfmt14Rustfiles and bothdiffchecks PASS.
+All33239/1413/94325/63902/22122/76871/8779/66738/65566/57106/4322 jobs CLOSED;
+firstProjection34root metadata envelope documented, no production policy change.
+Receipt docs/evidence/no-fallback-n6x.md records independent original proof,
+exact arity provenance, source capabilities and resource/reuse validation.
+Sign coherent local checkpoint without push. Goal/task4 stays ACTIVE; next
+inspect GREATEST/LEAST extremum value/caller/source closure together. Other
+families/global alternate dispatch and final inherited/SQL/server gates remain.

@@ -366,7 +366,7 @@ fn promoted_native_root_view(
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
-        || function.func_name.lowercase() == "in";
+        || matches!(function.func_name.lowercase(), "in" | "interval");
     if native_arithmetic_operation(function.func_name.lowercase()).is_none()
         && !matches!(
             function.func_name.lowercase(),
@@ -1186,7 +1186,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         )
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    function.func_name.lowercase() == "in"
+    matches!(function.func_name.lowercase(), "in" | "interval")
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_arithmetic_operation(function.func_name.lowercase()).is_some()
         || native_character_value_argument(function)
@@ -1205,6 +1205,10 @@ fn resolve_call_in_view(
             .or_else(|| native_arithmetic_operation(function.func_name.lowercase()))
             .or_else(|| {
                 (function.func_name.lowercase() == "in").then_some(SqlBatchHostOperation::InNative)
+            })
+            .or_else(|| {
+                (function.func_name.lowercase() == "interval")
+                    .then_some(SqlBatchHostOperation::IntervalNative)
             })
         {
             if !operation.accepts_arity(function.args.len())
@@ -1940,6 +1944,16 @@ fn preflight_view<'a>(
                             }
                         }
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::IntervalNative)
+                    ) {
+                        budget.array::<hosts::NativeIntervalArgument>(function.args.len())?;
+                        budget.field(sql, 1)?;
+                        for arg in &function.args {
+                            budget.field(arg.static_type().expect("checked INTERVAL source"), 1)?;
+                        }
+                    }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
@@ -2441,6 +2455,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::NullSafeEqNative
                                         | SqlBatchHostOperation::NullIfNative
                                         | SqlBatchHostOperation::InNative
+                                        | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
                                         | SqlBatchHostOperation::XorNative
@@ -2476,6 +2491,39 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::IntervalNative => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, *arity)?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("INTERVAL child ordinal overflow"))?;
+                                for _ in 0..*arity {
+                                    let source = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("INTERVAL source node absent"))?;
+                                    arguments.push(hosts::NativeIntervalArgument {
+                                        node: child,
+                                        field: snapshot_field_type(source.sql),
+                                    });
+                                    child = source.subtree_end;
+                                }
+                                let search = tidb_query_expr::NativeIntervalSearch::new(
+                                    arguments.iter().map(|argument| {
+                                        Some(crate::tikv::interval_field_metadata(&argument.field))
+                                    }),
+                                )
+                                .map_err(crate::tikv::interval_value_error)?;
+                                NativeHostMetadata::Interval(hosts::NativeIntervalMetadata {
+                                    arguments: arguments.into_boxed_slice(),
+                                    search,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("INTERVAL result role missing"))?,
+                                })
+                            }
                             SqlBatchHostOperation::InNative => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, *arity)?;

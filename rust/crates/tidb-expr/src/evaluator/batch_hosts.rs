@@ -28,6 +28,9 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_interval.rs"]
+mod interval_source;
+pub(super) use interval_source::{NativeIntervalArgument, NativeIntervalMetadata};
 #[path = "batch_in.rs"]
 mod in_source;
 pub(super) use in_source::{NativeInArgument, NativeInMetadata};
@@ -98,6 +101,7 @@ impl NativeRawValueOperation {
 
 pub(super) enum NativeHostMetadata {
     In(NativeInMetadata),
+    Interval(NativeIntervalMetadata),
     RawValues {
         operation: NativeRawValueOperation,
         name: Box<str>,
@@ -192,6 +196,7 @@ impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
             Self::In(metadata) => Some(&metadata.result_type),
+            Self::Interval(metadata) => Some(&metadata.result_type),
             Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
             | Self::Selection { result_type, .. }
@@ -211,6 +216,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Interval {
+        search: tidb_query_expr::NativeIntervalSearch,
+    },
     In {
         next: usize,
         tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
@@ -279,6 +287,10 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Interval { search } => Ok(match search.step() {
+                tidb_query_expr::NativeIntervalValueStep::Probe { index, .. } => Some(index),
+                tidb_query_expr::NativeIntervalValueStep::Index(_) => None,
+            }),
             SqlDemand::WindowUnary { .. } => Ok(Some(0)),
             SqlDemand::WindowDecimalFast { next, .. }
             | SqlDemand::WindowArithmetic { next, .. }
@@ -301,7 +313,8 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::In { .. }
+            SqlDemand::Interval { .. }
+            | SqlDemand::In { .. }
             | SqlDemand::WindowUnary { .. }
             | SqlDemand::WindowDecimalFast { .. }
             | SqlDemand::WindowArithmetic { .. }
@@ -1895,6 +1908,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             ));
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::IntervalNative => self.start_interval(&invocation)?,
             SqlBatchHostOperation::InNative => {
                 self.validate_in_start(&invocation)?;
                 SqlDemand::In {
@@ -2260,6 +2274,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::Interval { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("INTERVAL source cannot be wire NULL"));
+            };
+            return self.resume_interval(id, token);
         }
         if matches!(task.demand, SqlDemand::In { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

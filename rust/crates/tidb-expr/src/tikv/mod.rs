@@ -127,7 +127,12 @@ pub(crate) use in_list::{
 };
 pub use in_list::{eval_legacy_in_bytes_in, eval_legacy_in_int_in};
 mod interval;
-pub(crate) use interval::{eval_interval_in, eval_interval_lazy_in};
+#[cfg(test)]
+mod interval_value_tests;
+pub(crate) use interval::{
+    eval_interval_in, eval_interval_lazy_in, interval_field_metadata, interval_value_error,
+    prepare_interval_number_in,
+};
 mod json_sum_crc32;
 pub(crate) use json_sum_crc32::eval_json_sum_crc32_in;
 mod legacy_date_arithmetic;
