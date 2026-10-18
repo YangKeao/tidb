@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7f:468099 original58044483da932cf4;467856actual old/new paired+243hash arity boundaries before bounded-staleness Ready caller retirement/wire delegation. Canonical generic sources, both original casts, statement SafeTS, capability/resource/callback/selection closure integrated. Fullfront1644same3/all222batch, SDK1096same1, Projection26/extra mixed group, focus8, clippy89expr/171allEXACTN7e/lint/fmt12/diffs/unchangedSTRfixtureSHA pass. Receipt evidence/no-fallback-n7f.md. Local signed checkpoint only; no push; global retirement remains open.
+
 - [x] N7e: five actual inherited identity REDs fixed with generated construction snapshots, preserving same-instance pointer identity across codegen units. Focus25pass/0fail/1ignored, codegen20, fullSDK1096remaining1, frontend1637same3/all218batch, Projection26, isolatedbodyorigin1, clippy89expression/171all exacttitles, lint/pinnedformats/diff/fixturehashes pass. Receipt evidence/no-fallback-n7e.md. Local signed checkpoint only, no push; calendar/scanner and global retirement remain open.
 
 - [x] N7d: remove unconditional zero-month/fullzero rejection under relaxed NO_ZERO_DATE; original Go calendar/probe authority and ten parser fixtures. Original844344 d7dd9f9ee5b55431 captured BEFORE fix;826200 unchanged+18144 explicit Go-calendar deltas verified. Real value/source/SDK REDs green. Front1637remaining3/all218batch, SDK1091same6, Projection26, clippy89exacttitles/lint/pinnedfmt5/diff pass. Receipt evidence/no-fallback-n7d.md. Local signed checkpoint, no push; scanner/global retirement remain open.
@@ -133,6 +135,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7f retires another native head/finish Ready program pair and adds canonical generic bounded-staleness source execution. Fixed old behavior, callback authority and original argument-cast order are verified independently. Fullfront1644same3/all222batch, SDK1096same1, Projection26 and exact inherited lint diagnostics pass; global migration and remaining source/PB/oldcaller work remain unfinished.
 
 N7e removes five real SDK dispatch-integrity failures without comparing independent factory pointers. All existing positive worker, resource, source and Projection checks retain their limits and behavior. SDK has1096pass/one inherited STR_TO_DATE worker failure; frontend1637pass/same3fail, datatype baseline564pass/same2fail. Full migration is unfinished, and parser differences remain explicit.
 
@@ -2258,3 +2262,71 @@ closed. No calendar production or test expectations changed, no limits raised,
 no new dispatcher or evaluator. Receipt evidence/no-fallback-n7e.md records
 commands and limitations. SDK local DCO commit940f123; finalize the paired TiDB receipt commit, no push; global task4
 and remaining SDK1/frontend3/datatype2/scanner/source/oldcaller work stay open.
+
+
+### N7f actual bounded-staleness values and canonical source closure
+
+
+The remaining native caller in `tikv/bounded_staleness.rs` encodes typed times,
+executes a head Ready program, decodes a tag and may execute another finish
+program after the original context supplies SafeTS. Replace that protocol with
+actual SDK NativeTemporalValue classification and clamp. Ordinary explicit
+wire/Ready compatibility APIs may remain but must delegate to these same value
+kernels. Preserve every raw core bit and original kind/FSP until the chosen
+result receives DATETIME/FSP3 metadata; FSP3 changes metadata without rounding.
+Do not validate SafeTS calendar fields or eagerly request it. Invalid left
+precedes invalid right, which precedes reversed-range NULL; neither NULL nor
+non-Time admission can invent a SafeTS request. The actual frontend retains
+handle_truncate disposition and owns warning formatting under finite bounds.
+
+Before production changes capture a fixed digest of the old native calls under
+three cache profiles, all truncate levels and varied raw endpoints/SafeTS,
+including zero components, invalid calendar fields and kind/FSP metadata. Add
+an actual Ready-lookup panic RED and generic source fallback RED. Then share
+SDK actual operations, compare every original call while old implementation
+still exists, retire old caller, and add a two-argument source host with actual
+value capabilities. Both sources are evaluated before NULL suppression and
+callbacks. Copy fixed-size times and drop the value-store borrow before calling
+the statement's SafeTS/warning service. Preserve source provenance, occurrence,
+resource/cancellation and publication checks, plus typed Time or native-value
+output according to the caller's declared carrier.
+
+Validate focused history/value/source checks, full frontend/SDK, mixed serial
+and parallel Projection, lint/clippy/pinned formats and exact inherited failure
+lists. No resource limits or failure allowlists are to change. Calendar `%j`
+parser divergence remains separate: changing its accepted day policy requires
+independent Go scanner fixtures and explicit deltas against the frozen history.
+
+
+N7f original capture27882CLOSED101 records468099/hash58044483da932cf4 before any
+production changes. Its hash0 assertion was a capture boundary, not a semantic
+RED. Actual Ready-cache-panic and source(1refusal,1fallback) failures reproduce.
+Added actual SDK value functions beside untouched wire bodies and new frontend
+bounded helper beside untouched caller; paired40439CLOSED0 confirms467856actual
+old/new calls plus243 hash-protected arity boundaries. Only afterward retired
+caller reports/Ready programs and delegated old wire functions to the value
+kernels. Temporary paired assertions removed after old retirement, since a
+new/new comparison would not be independent. Fixed hash and full count remain.
+
+Initial source91494/59806 found invalid preparation descriptors: child sources
+still used typed Time while host declarations expected value capabilities.
+The promoted-root list alone is insufficient; argument_view and native_value_call
+must also admit the exact new family. After correcting both,73549CLOSED0 all7
+focused tests pass, including all8dynamic date modes,3truncate strategies,
+String/YEAR casts, temporal metadata, eager later errors after NULL, CHAR parents,
+empty/2050duplicate selection and stateful SafeTS under both flags. Source
+ownership is cloned only after payload budget checks and detached before all
+original callbacks. Additional metadata field copies are conservatively charged.
+Provider and final full validations remain pending; goal/task4 active.
+
+
+N7f final handles all CLOSED:11419focusall8;93291front1644same3/95ignored/
+0filtered/all222batch;28506SDK1096same1/1ignored/0filtered;5179Projectionall26
+including extra mixed bound/CHAR/IFNULL group in serial/parallel/bothflags;
+5718clippy89expr/171all diagnostic titles EXACTN7e;26407lint0. Pinnedfmt12files
+under both compiler versions, both diff checks and immutable STR history/Go
+fixture hashes+JSON/gzip pass. Receipt evidence/no-fallback-n7f.md final with
+exact commands, scoped proof and limitations. No datatype changes/rerun;564same2
+baseline unchanged. No%j policy/oracle changes, no larger limits or failure
+allowlists. Ready/old caller and source REDs green, no second dispatcher/probe.
+SDK local signed e212b91; finalize paired TiDB implementation/receipt commit only; task4 remainsactive, no push.

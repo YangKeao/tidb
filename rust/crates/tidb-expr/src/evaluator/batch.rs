@@ -364,7 +364,11 @@ fn promoted_native_root_view(
     };
     let row_control = matches!(
         function.func_name.lowercase(),
-        "json_sum_crc32" | "str_to_date" | "timestampdiff" | "sig_timestampdiff"
+        "json_sum_crc32"
+            | "str_to_date"
+            | "timestampdiff"
+            | "sig_timestampdiff"
+            | "tidb_bounded_staleness"
     ) || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
@@ -905,7 +909,11 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
     }
     if matches!(
         function.func_name.lowercase(),
-        "json_sum_crc32" | "str_to_date" | "timestampdiff" | "sig_timestampdiff"
+        "json_sum_crc32"
+            | "str_to_date"
+            | "timestampdiff"
+            | "sig_timestampdiff"
+            | "tidb_bounded_staleness"
     ) || native_charset_operation(function.func_name.lowercase()).is_some()
     {
         // Native producers always consume authentic native source values;
@@ -1221,7 +1229,11 @@ fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharset
 fn native_value_call(function: &ScalarFunction) -> bool {
     matches!(
         function.func_name.lowercase(),
-        "json_sum_crc32" | "str_to_date" | "timestampdiff" | "sig_timestampdiff"
+        "json_sum_crc32"
+            | "str_to_date"
+            | "timestampdiff"
+            | "sig_timestampdiff"
+            | "tidb_bounded_staleness"
     ) || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
@@ -1235,6 +1247,28 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if function.func_name.lowercase() == "tidb_bounded_staleness" {
+        if function.args.len() != 2
+            || function.args.iter().any(|arg| arg.static_type().is_none())
+            || !function.get_static_type().is_some_and(|field| {
+                view.value_role().is_some()
+                    || matches!(
+                        field.eval_type(),
+                        NativeEvalType::Datetime | NativeEvalType::Timestamp
+                    )
+            })
+        {
+            return Err(BatchFailure::admission(
+                "bounded staleness requires complete declarations and exact arity",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::BoundedStalenessNative {
+                typed: view.value_role().is_none(),
+            }),
+            2,
+        ));
+    }
     if timestamp_diff_call(function) {
         if function.args.len() != 3
             || function.args.iter().any(|arg| arg.static_type().is_none())
@@ -2070,6 +2104,17 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::BoundedStalenessNative { .. })
+                    ) {
+                        for argument in &function.args {
+                            budget.field(
+                                argument.static_type().expect("checked bounded argument"),
+                                1,
+                            )?;
+                        }
+                    }
                     if native_arithmetic_operation(function.func_name.lowercase()).is_some() {
                         budget.field(sql, 1)?;
                         for arg in &function.args {
@@ -2645,6 +2690,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                        | SqlBatchHostOperation::BoundedStalenessNative { .. }
                                         | SqlBatchHostOperation::StrToDateNative { .. }
                                         | SqlBatchHostOperation::JsonSumCrc32Native { .. }
                                         | SqlBatchHostOperation::CharsetNative(_)
@@ -2705,6 +2751,30 @@ fn lower_view(
                                         )
                                     }),
                                     stop_on_null,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::BoundedStalenessNative { .. } => {
+                                let first = ordinal.checked_add(1).ok_or_else(|| {
+                                    resource("bounded staleness ordinal overflow")
+                                })?;
+                                let second = checked
+                                    .get(first)
+                                    .ok_or_else(|| {
+                                        binding("bounded staleness first source absent")
+                                    })?
+                                    .subtree_end;
+                                NativeHostMetadata::BoundedStaleness {
+                                    arguments: [first, second],
+                                    argument_types: std::array::from_fn(|i| {
+                                        snapshot_field_type(
+                                            sql.args[i]
+                                                .static_type()
+                                                .expect("checked bounded argument"),
+                                        )
+                                    }),
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),

@@ -26,6 +26,8 @@ use tidb_query_expr::local::{
 
 #[path = "batch_arithmetic_window.rs"]
 mod arithmetic_window;
+#[path = "batch_bounded_staleness.rs"]
+mod bounded_staleness_source;
 #[path = "batch_charset.rs"]
 mod charset_source;
 #[path = "batch_decimal_fast_window.rs"]
@@ -120,6 +122,13 @@ pub(super) enum NativeHostMetadata {
         arguments: [usize; 3],
         argument_types: [FieldType; 3],
         stop_on_null: bool,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: Option<NativeValueRole>,
+    },
+    BoundedStaleness {
+        arguments: [usize; 2],
+        argument_types: [FieldType; 2],
         result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
@@ -235,6 +244,7 @@ impl NativeHostMetadata {
             Self::Extremum(metadata) => Some(&metadata.result_type),
             Self::Charset(metadata) => Some(&metadata.result_type),
             Self::TimestampDiff { result_type, .. }
+            | Self::BoundedStaleness { result_type, .. }
             | Self::StrToDate { result_type, .. }
             | Self::JsonSumCrc32 { result_type, .. }
             | Self::RawValues { result_type, .. }
@@ -259,6 +269,9 @@ enum SqlDemand {
     TimestampDiff {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
+    },
+    BoundedStaleness {
+        first: Option<[u8; native_values::HANDLE_BYTES]>,
     },
     StrToDate {
         first: Option<[u8; native_values::HANDLE_BYTES]>,
@@ -343,7 +356,9 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::TimestampDiff { next, .. } => Ok(Some(*next)),
-            SqlDemand::StrToDate { first } => Ok(Some(usize::from(first.is_some()))),
+            SqlDemand::BoundedStaleness { first } | SqlDemand::StrToDate { first } => {
+                Ok(Some(usize::from(first.is_some())))
+            }
             SqlDemand::JsonSumCrc32 => Ok(Some(0)),
             SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
             SqlDemand::Interval { search } => Ok(match search.step() {
@@ -376,7 +391,9 @@ impl NativeTask {
             SqlDemand::TimestampDiff { .. } => {
                 Err(binding("timestamp diff demand cannot retain byte prefix"))
             }
-            SqlDemand::StrToDate { .. } => Err(binding("date demand cannot retain byte prefix")),
+            SqlDemand::BoundedStaleness { .. } | SqlDemand::StrToDate { .. } => {
+                Err(binding("date demand cannot retain byte prefix"))
+            }
             SqlDemand::JsonSumCrc32 => Err(binding("JSON checksum cannot retain byte prefix")),
             SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
             SqlDemand::Extremum { .. }
@@ -1999,6 +2016,20 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::BoundedStalenessNative { typed } => {
+                let Some(NativeHostMetadata::BoundedStaleness { output_role, .. }) =
+                    self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("bounded descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || invocation.arg_types.len() != 2
+                    || typed != output_role.is_none()
+                {
+                    return Err(binding("bounded source descriptor differs"));
+                }
+                SqlDemand::BoundedStaleness { first: None }
+            }
             SqlBatchHostOperation::StrToDateNative { output } => {
                 let Some(NativeHostMetadata::StrToDate {
                     output: declared,
@@ -2406,6 +2437,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::BoundedStaleness { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("bounded source cannot be wire NULL"));
+            };
+            return self.resume_bounded_staleness(id, token);
         }
         if matches!(task.demand, SqlDemand::StrToDate { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

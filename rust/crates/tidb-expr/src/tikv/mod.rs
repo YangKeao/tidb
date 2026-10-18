@@ -27,7 +27,9 @@ pub(crate) use predicate_value::{
 };
 mod batch;
 mod bounded_staleness;
-pub(crate) use bounded_staleness::eval_bounded_staleness_in;
+pub(crate) use bounded_staleness::{
+    bounded_staleness_bounded, bounded_staleness_cast_arguments, eval_bounded_staleness_in,
+};
 mod case_control;
 mod cast_arg_string;
 mod control_value;
@@ -663,3 +665,6 @@ impl From<LocalError> for SeedError {
 }
 
 type SeedResult<T> = Result<T, SeedError>;
+
+#[cfg(test)]
+mod bounded_staleness_value_tests;

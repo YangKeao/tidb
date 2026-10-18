@@ -3002,8 +3002,59 @@ mod tests {
         let timestamp_diff_mix = std::iter::once(0)
             .chain(timestamp_diff_start..roots.len())
             .collect::<Vec<_>>();
+        let bounded_start = roots.len();
+        let bound = || {
+            call(
+                "tidb_bounded_staleness",
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                vec![
+                    call(
+                        "if",
+                        string.clone(),
+                        vec![
+                            column(0),
+                            Expression::Constant(Constant::new(
+                                Datum::new_string("2020-01-01 00:00:00.123456"),
+                                string.clone(),
+                            )),
+                            Expression::Constant(Constant::new(
+                                Datum::new_string("2023-01-01"),
+                                string.clone(),
+                            )),
+                        ],
+                    ),
+                    Expression::Constant(Constant::new(
+                        Datum::new_string("2022-01-01 00:00:00.654321"),
+                        string.clone(),
+                    )),
+                ],
+            )
+        };
+        roots.push(bound());
+        fields.push(FieldType::new(FieldTypeCode::Datetime).with_decimal(3));
+        roots.push(call("cast_char", string.clone(), vec![bound()]));
+        fields.push(string.clone());
+        roots.push(call(
+            "ifnull",
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            vec![
+                bound(),
+                Expression::Constant(Constant::new(
+                    Datum::Null,
+                    FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                )),
+            ],
+        ));
+        fields.push(FieldType::new(FieldTypeCode::Datetime).with_decimal(3));
+        let bounded_mix = std::iter::once(0)
+            .chain(bounded_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                bounded_mix.iter().map(|&i| roots[i].clone()).collect(),
+                bounded_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
             (
                 timestamp_diff_mix
                     .iter()
