@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6i: shared native static candidate fact and native-value row-root publication independent of function spelling/view label. Original RealABS and non-call budget regressions reproduced before final fixes. Full frontend1489same4/95ignored,130batch,122root+48SQL comparisons, ProductionProjection25 (extended five-root matrix), lint/pinnedfmt/diff pass. SDK unchangedcff06c7. Receipt rust/docs/evidence/no-fallback-n6i.md. Typed output/operand domains and global retirement remain open.
+
 - [x] N6h: control/comparison arithmetic row demand, bounded native batch publication staging and scoped typed controls below window roots. Both native demand/publication defects and the SDK restriction were reproduced before implementation.448 root comparisons,72 SQL additions,126 batch/full1485same4/95ignored, core14window/full1058same6/1ignored, Projection25, lint/scopedclippy89warnings/pinnedfmt/diff pass. SDK signed local cff06c7; receipt rust/docs/evidence/no-fallback-n6h.md. Other batch publication owners and global alternate-driver retirement remain open.
 
 - [x] N6g whole-child unary integration: three explicit unary-window descriptors (integer ABS, integer-source Decimal CAST, source-typed JSON CAST) use the same SDK frame. Core11window/full1055same6/1ignored and scopedclippy89warnings pass. Native providers share the extracted complete source-vector normalization owner with arithmetic;71 actual provider/input-failure comparisons plus108 resource cases and early unsupported-source/large-Decimal formatting guards pass. New root/edge lowering selects these actual phases instead of the former three exclusions. Standalone Decimal CAST priority now has a genuine single-argument window phase over the same strict column-padding import, before the original flag point. Existing122batch tests pass after source integration; new336root/nested native comparisons pass. Full frontend1483same4/95ignored, ProductionProjection24, core1055same6/1ignored, scopedclippy/lint/pinnedfmt/diff pass. Receipt rust/docs/evidence/no-fallback-n6g.md.
@@ -880,3 +882,44 @@ selection exceeds1024. Do not infer their publication/demand contract from the
 control fix. Broader functions, deferred/type-before-value sources, effectful
 multi-output ordering and other callers remain required before alternate
 execution can be removed globally.
+
+### N6i native value publication audit (2026-10-18)
+
+The next native comparison checks eligible Real/Decimal ABS roots that use row
+operand demand despite the outer batch flag. Publication must be selected from
+the actual native batch eligibility and compiled whole-selection contract,
+independently of function spelling or a RootValue versus BulkRoot annotation.
+The N6h control fix only staged one such owner class; that restriction is not a
+final publication architecture. Typed ordinary roots and their>1024 operand
+phases remain a separate required audit: output staging alone cannot repair
+an operand phase order changed by root tiling.
+
+The Real ABS comparison reproduced a successful output prefix on the unified
+route before a late error, while native batch output remained empty. The first
+revision generalized native-value result staging beyond control names. Its
+expanded Real/Decimal ABS and CAST comparisons pass, but source inspection
+found that batch_supported is weaker than actual native candidate eligibility:
+non-deferred constants and columns are rejected by batch_candidate even when
+their storage types are supported. A low-budget2050-occurrence leaf regression
+therefore checks that such roots do not gain needless batch-owned result
+storage. The final rule will share the native static scalar-function candidate
+arm; deferred type observation remains in the original dynamic arm and is not
+replaced with a compile-time guess.
+
+
+N6i final static eligibility is shared with the native candidate owner through
+static_batch_target, after source preflight. Direct constants/columns are not
+mistaken for candidates; the32KiB/2050-occurrence regression now passes for
+both. Actual batch row-root publication and row-mode prefix behavior match
+with preexisting output cells. The initial full1488 result was superseded by
+full1489same4/95ignored with all130 batch cases. Final source has no SDK change.
+Do not retire or complete the goal at this checkpoint: typed ordinary roots,
+controls with non-arithmetic ABS descendants, dynamic sources and ordered
+multi-output execution still need semantic coverage.
+
+
+N6i final validation is complete:25 production Projection tests pass after the
+shared native candidate refactor, including the five-root unary matrix; lint,
+all four changed Rust files' pinned format checks and git diff checks pass.
+There are no active build/test handles. This checkpoint is ready for a local
+signed-off commit; no push is authorized and the overall goal remains active.

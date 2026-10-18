@@ -4781,6 +4781,18 @@ impl EligibleBatch<'_> {
     }
 }
 
+/// The native candidate's pure static-function arm. Storage support alone
+/// does not make constants or columns batch candidates. Closed source owners
+/// may share this fact only after validating the whole source/type shape;
+/// deferred roots retain their context-dependent type-before-value arm below.
+pub(crate) fn static_batch_target(expression: &Expression) -> Option<EvalType> {
+    if !matches!(expression, Expression::ScalarFunction(_)) {
+        return None;
+    }
+    let target = expression.static_type()?.eval_type();
+    batch_supported(expression, target).then_some(target)
+}
+
 /// Admission only, factored without changing the native rule/order. This may
 /// read deferred-wrapper type context; callers must not assume it is a generic
 /// effect-free expression predicate. It never invokes a batch value worker.
@@ -4788,6 +4800,11 @@ pub(crate) fn batch_candidate<'a>(
     expression: &'a Expression,
     ctx: &dyn Columns,
 ) -> Result<Option<EligibleBatch<'a>>, EvalError> {
+    if matches!(expression, Expression::ScalarFunction(_)) {
+        return Ok(
+            static_batch_target(expression).map(|target| EligibleBatch { expression, target })
+        );
+    }
     let mut source = expression;
     while let Expression::Constant(constant) = source {
         let Some(child) = constant.deferred_expr.as_deref() else {

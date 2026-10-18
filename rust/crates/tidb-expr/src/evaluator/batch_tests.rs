@@ -8317,6 +8317,10 @@ fn rewritten_arithmetic_roots_use_canonical_priority_and_bulk_row_profiles() {
         "case when 1 then i + (9223372036854775807 * 2) else 0 end",
         "isnull(i + (9223372036854775807 * 2))",
         "(i + (9223372036854775807 * 2)) = 1",
+        "abs(r*2)",
+        "abs(r*r)",
+        "abs(d*2)",
+        "abs(d*d)",
     ] {
         let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
             panic!("query")
@@ -8607,4 +8611,190 @@ fn native_control_batch_staging_is_bounded_terminal_and_reusable() {
             .map(|row| Datum::Int(if row == 0 { 3 } else { 7 }))
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn native_abs_real_root_keeps_batch_publication_after_late_row_error() {
+    let root = call(
+        "abs",
+        real_ty(),
+        vec![call(
+            "mul",
+            real_ty(),
+            vec![real_column(0), literal(Datum::Real(2.0), real_ty())],
+        )],
+    );
+    let schema = vec![real_ty()];
+    let rows = vec![
+        vec![Datum::Real(1.0)],
+        vec![Datum::Real(f64::MAX)],
+        vec![Datum::Null],
+    ];
+    compare_arithmetic_profile(root, &schema, &rows, &[0, 1]);
+}
+
+#[test]
+fn native_row_value_roots_keep_batch_publication_and_independent_row_demand() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    let real_mul = || {
+        call(
+            "mul",
+            real_ty(),
+            vec![real_column(0), literal(Datum::Real(2.0), real_ty())],
+        )
+    };
+    let decimal_mul = || {
+        call(
+            "mul",
+            decimal.clone(),
+            vec![
+                typed_column(1, &decimal),
+                literal(Datum::Decimal(Decimal::from_int(2)), decimal.clone()),
+            ],
+        )
+    };
+    let roots = [
+        call("abs", real_ty(), vec![real_mul()]),
+        call("abs", decimal.clone(), vec![decimal_mul()]),
+        call("cast_double", real_ty(), vec![decimal_mul()]),
+        call("cast_decimal", decimal.clone(), vec![real_mul()]),
+    ];
+    let schema = vec![real_ty(), decimal.clone()];
+    let rows = vec![
+        vec![
+            Datum::Real(-1.0),
+            Datum::Decimal(Decimal::from_literal("-1.2500")),
+        ],
+        vec![
+            Datum::Real(f64::MAX),
+            Datum::Decimal(Decimal::from_literal(
+                "99999999999999999999999999999999999999999999999999999999999999999",
+            )),
+        ],
+        vec![Datum::Null, Datum::Null],
+    ];
+    let selections = [
+        vec![],
+        vec![0],
+        vec![2, 0, 2],
+        vec![0, 1],
+        vec![1, 0],
+        (0..2050).map(|row| [2, 0, 2][row % 3]).collect(),
+        (0..2050).map(|row| usize::from(row == 2049)).collect(),
+    ];
+    for root in roots {
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
+        }
+    }
+}
+
+#[test]
+fn native_row_value_publication_preserves_existing_output_and_row_failure_prefix() {
+    let root = call(
+        "abs",
+        real_ty(),
+        vec![call(
+            "mul",
+            real_ty(),
+            vec![real_column(0), literal(Datum::Real(2.0), real_ty())],
+        )],
+    );
+    let actual_suite = suite(root.clone());
+    let reference_suite = suite(root);
+    let schema = vec![real_ty()];
+    let rows = vec![vec![Datum::Real(1.0)], vec![Datum::Real(f64::MAX)]];
+    for enabled in [true, false, true, false] {
+        let actual_ctx = ArithmeticProfilesContext::default();
+        let expected_ctx = ArithmeticProfilesContext::default();
+        actual_ctx.enabled.set(enabled);
+        expected_ctx.enabled.set(enabled);
+        let mut input = chunk(&schema, &rows);
+        let mut expected_input = chunk(&schema, &rows);
+        let mut output = output_for(&real_ty());
+        let mut expected_output = output_for(&real_ty());
+        output.append_float64(0, -99.0);
+        expected_output.append_float64(0, -99.0);
+        let actual =
+            actual_suite.run_with_tikv_batch(&actual_ctx, &mut input, &mut output, &schema);
+        let expected =
+            reference_suite.run(&expected_ctx, &mut expected_input, &mut expected_output);
+        assert_eq!(actual, expected);
+        assert!(actual.is_err());
+        assert_eq!(actual_ctx.trace.take(), expected_ctx.trace.take());
+        assert_eq!(output.num_rows(), expected_output.num_rows());
+        assert_eq!(output.num_rows(), if enabled { 1 } else { 2 });
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected_output.column(0).get_raw(row).as_ref()
+            );
+        }
+        let routes = actual_suite.batch_route_snapshot();
+        assert_eq!((routes.fallback, routes.refusals), (0, 0));
+    }
+}
+
+#[test]
+fn native_noncall_roots_do_not_acquire_batch_publication_storage() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(4);
+    let schema = vec![decimal.clone()];
+    let rows = vec![vec![Datum::Decimal(Decimal::from_literal("-1.2500"))]];
+    let selection = vec![0; 2050];
+    for root in [
+        literal(Datum::Decimal(Decimal::from_int(2)), decimal.clone()),
+        typed_column(0, &decimal),
+    ] {
+        // Force a calculated column, so the genuine non-call native route is
+        // tested without the independent direct-column ownership move.
+        let owner = EvaluatorSuite::new(vec![root.clone()], true);
+        let reference = EvaluatorSuite::new(vec![root], true);
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &schema,
+            true,
+            993,
+            limits(),
+            ExecutionLimits::default(),
+            32 * 1024,
+        )
+        .unwrap();
+        prepared.set_window_size(1);
+        let ctx = ArithmeticProfilesContext::default();
+        let reference_ctx = ArithmeticProfilesContext::default();
+        ctx.enabled.set(true);
+        reference_ctx.enabled.set(true);
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(selection.clone()));
+        let mut reference_input = chunk(&schema, &rows);
+        reference_input.set_sel(Some(selection.clone()));
+        let mut output = output_for(&decimal);
+        let mut expected_output = output_for(&decimal);
+        let actual = prepared.run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        );
+        let expected = reference.run(&reference_ctx, &mut reference_input, &mut expected_output);
+        assert!(expected.is_ok());
+        assert!(
+            actual.is_ok(),
+            "non-call row/broadcast route gained batch staging: {actual:?}"
+        );
+        assert_eq!(ctx.trace.take(), reference_ctx.trace.take());
+        assert_eq!(output.num_rows(), expected_output.num_rows());
+        for row in 0..output.num_rows() {
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                expected_output.column(0).get_raw(row).as_ref()
+            );
+        }
+    }
 }

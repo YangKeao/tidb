@@ -2460,7 +2460,35 @@ mod tests {
                 )],
             ),
         ];
-        let fields = vec![integer.clone(), decimal, json];
+        let real = FieldType::new(FieldTypeCode::Double)
+            .with_flen(22)
+            .with_decimal(-1);
+        let mut roots = roots;
+        roots.push(call(
+            "abs",
+            real.clone(),
+            vec![call(
+                "mul",
+                real.clone(),
+                vec![
+                    call("cast_double", real.clone(), vec![column(0)]),
+                    call("cast_double", real.clone(), vec![literal(2)]),
+                ],
+            )],
+        ));
+        roots.push(call(
+            "abs",
+            decimal.clone(),
+            vec![call(
+                "mul",
+                decimal.clone(),
+                vec![
+                    call("cast_decimal", decimal.clone(), vec![column(1)]),
+                    call("cast_decimal", decimal.clone(), vec![literal(2)]),
+                ],
+            )],
+        ));
+        let fields = vec![integer.clone(), decimal.clone(), json, real, decimal];
         for enabled in [true, false] {
             let reference =
                 crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);

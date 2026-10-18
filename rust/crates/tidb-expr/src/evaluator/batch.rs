@@ -2814,15 +2814,14 @@ impl PreparedBatch {
         };
         let window_size = program.max_batch_size();
         Ok(Self {
+            // Eligibility selects the native publication boundary, while the
+            // compiled program independently selects operand demand. A native
+            // value row root may carry either RootValue or BulkRoot metadata;
+            // neither its spelling nor that annotation changes batch atomicity.
             defer_batch_publication: promote
-                && view == Some(NativeView::RootValue)
-                && matches!(root, Expression::ScalarFunction(function)
-                    if native_selection_operation(function).is_some()
-                        || native_comparison_operation(function.func_name.lowercase()).is_some())
-                && crate::scalar_function::batch_supported(
-                    root,
-                    root.static_type().unwrap().eval_type(),
-                ),
+                && source.nodes[0].view.value_role() == Some(NativeValueRole::Output)
+                && !program.requires_whole_selection()
+                && crate::scalar_function::static_batch_target(root).is_some(),
             fast_profile,
             row_profile,
             source,
