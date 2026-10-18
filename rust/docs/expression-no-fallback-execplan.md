@@ -1375,3 +1375,60 @@ All jobs closed. SDK production/datatype unchanged; N6q0 full1068/same6/one
 ignored and clippy89 reused, not rerun. Receipt:docs/evidence/no-fallback-n6s.md.
 Sign locally, no push. Remaining adapter/source/builtin/caller coverage, global
 alternate dispatch removal and final inherited/SQL/server gates still ahead.
+
+
+### N6t Boolean/logical argument-program retirement (2026-10-18, in progress)
+
+Boolean and logical normalized-value entry points still dispatch temporary
+Ready argument programs while canonical providers already use direct shared
+kernels. Capture OLD outputs across all eight Boolean operations, all three
+logical operations and true/false/NULL, explicit demanded/undemanded-right
+markers, no-cache/fresh-cache/reused-cache profiles and repeated passes:720
+cases. Invalid undemanded markers must fail before cache lookup and retain the
+original private ExpressionAdapterFailure Scope/Contract kind/reason; they
+must not be recast as runtime/resource/SQL errors. Verify private cause fields
+inside the adaptation boundary. Then move the exact marker policy to a plain
+value helper, call direct impl_op kernels, and share those helpers with the
+canonical provider after its original conversion/demand. Preserve all original
+truth/warning/source effects. Fullfrontend/Projection/lint/format gates and a
+signed LOCAL runnable checkpoint remain before reporting this stage finished.
+No global completion or SDK production change is implied.
+
+
+N6t OLD720-case witness passes, captured hash8c5608c8b554ec31. A private
+adaptation-boundary test confirms all seven illegal markers retain the exact
+original Scope/Contract cause/reason. The test-only reproduction patch is
+saved against TiDB473b648a/SDK6a36ba0. Before production changes, two new route
+regressions trap actual old Ready-worker lookup for legitimate normalized
+Boolean/logical calls; after migration they must pass without that lookup.
+
+
+N6t both new worker-lookup regressions fail against the old callers at the
+actual cache lookup, proving the secondary program path. Public wrappers and
+the direct predicate value module are now connected; old logical Ready adapter
+removed. The first edit script stopped at a stale canonical-host function name
+(finish_truth is authoritative). Its earlier public-wrapper changes remain;
+finish canonical helper sharing and install the captured OLD fixed hash after
+the current compatibility build closes, then rerun final full gates. No hash
+may be recaptured from the partially switched code.
+
+
+The partial-wrapper compatibility run passes1532 with exactly inherited4 and
+95 ignored; both real old-worker REDs are green. Canonical truth/logical hosts
+now share the same direct helpers after their unchanged source conversion and
+short-circuit demand. The captured OLD hash is now a fixed assertion. Final
+fullfrontend/Projection/lint/format gates follow this completed implementation.
+
+
+### N6t verified outcome (2026-10-18)
+
+Boolean/logical secondary worker routes retired and canonical hosts share
+plain normalized value helpers. OLD720 witnessfixed8c5608c8b554ec31 and actual
+worker-lookup RED-to-green tests pass; original private marker Scope/Contract
+kind/reason retained. Complete frontend1532 pass, exact inherited4/95 ignored/
+zero filtered; all159 batch and prior fixed witnesses pass. Projection25 pass
+(mixed28 roots, both flags, serial/two workers). make lint, pinned formatting
+for eight changed Rust files and both diff checks pass; all jobs closed. SDK
+production/datatype unchanged, so N6q0 full1068/same6/one ignored/clippy89 reused,
+not rerun. Receipt:docs/evidence/no-fallback-n6t.md. Sign LOCAL, no push; other
+adapters and broader source/caller/global dispatch/final SQL gates remain.

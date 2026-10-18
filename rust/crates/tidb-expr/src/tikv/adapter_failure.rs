@@ -186,6 +186,41 @@ mod tests {
     };
 
     #[test]
+    fn illegal_logical_demand_keeps_original_private_scope_cause() {
+        use crate::{EvalError, LogicalArgs, LogicalFunction};
+        for function in [
+            LogicalFunction::And,
+            LogicalFunction::Or,
+            LogicalFunction::Xor,
+        ] {
+            for left in [None, Some(false), Some(true)] {
+                if matches!(
+                    (function, left),
+                    (LogicalFunction::And, Some(false)) | (LogicalFunction::Or, Some(true))
+                ) {
+                    continue;
+                }
+                let Err(EvalError::ExpressionAdapterFailure(failure)) =
+                    crate::eval_logical_ready_in(
+                        function,
+                        LogicalArgs::UndemandedRight { left },
+                        &crate::NoColumns,
+                    )
+                else {
+                    panic!("illegal demand marker must fail its actual scope contract")
+                };
+                assert_eq!(failure.class(), Class::ScopeContract);
+                assert_eq!(failure.origin(), Origin::Scope);
+                let AdapterFailureCause::Scope { kind, reason } = failure.cause.as_ref() else {
+                    panic!("original scope cause missing")
+                };
+                assert_eq!(*kind, ScopeFailureKind::Contract);
+                assert_eq!(*reason, "invalid undemanded logical right argument");
+            }
+        }
+    }
+
+    #[test]
     fn scope_kinds_preserve_reason_without_parsing_it() {
         const REASON: &str = "private identical reason: poisoned reentry 1690 TiKV";
         for (kind, class, message) in [

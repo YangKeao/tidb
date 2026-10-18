@@ -59,6 +59,7 @@ mod json_merge_patch_integration_source;
 mod lane_cache_batch_performance;
 mod lane_cache_performance;
 mod math;
+mod native_predicate_values;
 mod operand_dispatch;
 mod regexp_like;
 mod regexp_vec_cache_source;

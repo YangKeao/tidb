@@ -1394,28 +1394,21 @@ impl<'a> NativeBatchHosts<'a> {
             }
         };
         let truth = match truth {
-            Ok(value) => value.map(i64::from),
+            Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        use tidb_query_expr::impl_op::{
-            int_is_false, int_is_true, is_null, unary_not_int, KeepNullOff, KeepNullOn,
-        };
-        let result = match name.as_ref() {
-            "not" => unary_not_int(truth.as_ref()),
-            "isnull" | "isunknown" => is_null::<i64>(truth.as_ref()),
-            "istrue" => int_is_true::<KeepNullOff>(truth.as_ref()),
-            "istrue_with_null" => int_is_true::<KeepNullOn>(truth.as_ref()),
-            "isfalse" => int_is_false::<KeepNullOff>(truth.as_ref()),
-            "isnottrue" => int_is_true::<KeepNullOff>(truth.as_ref())
-                .and_then(|result| unary_not_int(result.as_ref())),
-            "isnotfalse" => int_is_false::<KeepNullOff>(truth.as_ref())
-                .and_then(|result| unary_not_int(result.as_ref())),
-            "isnotunknown" => {
-                is_null::<i64>(truth.as_ref()).and_then(|result| unary_not_int(result.as_ref()))
-            }
+        let function = match name.as_ref() {
+            "not" => crate::BooleanFunction::UnaryNot,
+            "isnull" | "isunknown" => crate::BooleanFunction::IsNull,
+            "istrue" => crate::BooleanFunction::IsTrue,
+            "istrue_with_null" => crate::BooleanFunction::IsTrueWithNull,
+            "isfalse" => crate::BooleanFunction::IsFalse,
+            "isnottrue" => crate::BooleanFunction::IsNotTrue,
+            "isnotfalse" => crate::BooleanFunction::IsNotFalse,
+            "isnotunknown" => crate::BooleanFunction::IsNotNull,
             _ => return Err(binding("unknown native boolean predicate")),
-        }
-        .map_err(LocalError::Evaluation)?;
+        };
+        let result = crate::tikv::boolean_value(function, truth)?;
         let result = result.map_or(Datum::Null, Datum::Int);
         let result =
             match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
@@ -1498,20 +1491,10 @@ impl<'a> NativeBatchHosts<'a> {
         } else {
             (left, truth)
         };
-        let left = left.map(i64::from);
-        let right = right.map(i64::from);
-        let result = match function {
-            crate::LogicalFunction::And => {
-                tidb_query_expr::impl_op::logical_and(left.as_ref(), right.as_ref())
-            }
-            crate::LogicalFunction::Or => {
-                tidb_query_expr::impl_op::logical_or(left.as_ref(), right.as_ref())
-            }
-            crate::LogicalFunction::Xor => {
-                return Err(binding("XOR is outside this logical source contract"))
-            }
+        if function == crate::LogicalFunction::Xor {
+            return Err(binding("XOR is outside this logical source contract"));
         }
-        .map_err(LocalError::Evaluation)?;
+        let result = crate::tikv::logical_value(function, left, right)?;
         let result = result.map_or(Datum::Null, Datum::Int);
         let result =
             match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {

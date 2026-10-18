@@ -12,15 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Closed ready-argument value dispatch plus private signed-LongLong control/PLUS slices.
+//! Direct native values, closed ready-argument compatibility and private control prototypes.
 //! This alone is not complete migrated-family evidence. No rejection/error can replay native
 //! evaluation. Only immutable lowering results may be shared; a worker compiles
 //! and owns its own non-Sync official TiKV RPN program.
 
-// Control/PLUS prototypes remain private; only the closed ready-argument hooks are active.
+// Control/PLUS prototypes remain private; direct values and compatibility hooks coexist.
 #![allow(dead_code)]
 
 mod adapter_failure;
+mod predicate_value;
+pub(crate) use predicate_value::{
+    boolean_value, evaluate_boolean_in, evaluate_logical_in, logical_value,
+};
 mod batch;
 mod bounded_staleness;
 pub(crate) use bounded_staleness::eval_bounded_staleness_in;
@@ -142,8 +146,8 @@ pub use adapter_failure::{
 };
 pub(crate) use ready_value::{
     eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in,
-    evaluate_logical_in, evaluate_prepared_args_in, evaluate_prepared_args_scoped_in,
-    evaluate_regexp_in, native_time_result_contract_error, EvaluatedBytesResult, RegexpFunction,
+    evaluate_prepared_args_in, evaluate_prepared_args_scoped_in, evaluate_regexp_in,
+    native_time_result_contract_error, EvaluatedBytesResult, RegexpFunction,
 };
 pub use ready_value::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,

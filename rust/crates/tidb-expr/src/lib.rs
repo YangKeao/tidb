@@ -783,29 +783,14 @@ pub enum BooleanFunction {
 ///
 /// `ready` is the already-evaluated truth value, or NULL. Presence-only
 /// callers use `Some(false)` for every non-NULL datum without truth coercion.
-/// The caller retains its own warning/error policy and passes the live context;
-/// the shared driver supplies the answer, including for NULL inputs.
+/// The caller retains its original coercion and warning/error policy. Shared
+/// value kernels supply the answer without argument programs or cache admission.
 pub fn eval_boolean_ready_in(
     function: BooleanFunction,
     ready: Option<bool>,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    let operation = match function {
-        BooleanFunction::UnaryNot => tikv::EvaluatedBytesOp::UnaryNot,
-        BooleanFunction::IsNull => tikv::EvaluatedBytesOp::IsNull,
-        BooleanFunction::IsTrue => tikv::EvaluatedBytesOp::IsTrue,
-        BooleanFunction::IsFalse => tikv::EvaluatedBytesOp::IsFalse,
-        BooleanFunction::IsTrueWithNull => tikv::EvaluatedBytesOp::IsTrueWithNull,
-        BooleanFunction::IsNotNull => tikv::EvaluatedBytesOp::IsNotNull,
-        BooleanFunction::IsNotTrue => tikv::EvaluatedBytesOp::IsNotTrue,
-        BooleanFunction::IsNotFalse => tikv::EvaluatedBytesOp::IsNotFalse,
-    };
-    tikv::evaluate_args_in(
-        operation,
-        ctx,
-        || Ok(tikv::EvaluatedArgs::Int(ready.map(i64::from))),
-        tikv::EvaluatedBytesResult::into_boolean_datum,
-    )
+    tikv::evaluate_boolean_in(function, ready)
 }
 
 /// Closed binary logical operations over frontend-normalized truth values.
@@ -834,15 +819,15 @@ pub enum LogicalArgs {
 
 /// Evaluates a logical operation without choosing or repeating child demand.
 ///
-/// Invalid demand markers fail the adapter contract before worker admission.
+/// Invalid demand markers retain their original adapter contract failure.
 /// A legal undemanded right child uses an explicitly irrelevant representative
 /// inside the closed kernel call; even short-circuit answers come from that call.
 pub fn eval_logical_ready_in(
     function: LogicalFunction,
     arguments: LogicalArgs,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    tikv::evaluate_logical_in(function, arguments, ctx)
+    tikv::evaluate_logical_in(function, arguments)
 }
 
 /// Evaluates PI through the shared no-argument value driver. This seam has
