@@ -19132,6 +19132,7 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
     struct C<'a> {
         store: &'a RefCell<NativeValueStore>,
         events: RefCell<Vec<&'static str>>,
+        panic_zone: Cell<bool>,
     }
     impl Columns for C<'_> {
         fn get(&self, _: &[String]) -> Option<Datum> {
@@ -19152,6 +19153,10 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
         fn time_zone(&self) -> SessionTimeZone {
             drop(self.store.borrow_mut());
             self.events.borrow_mut().push("zone");
+            assert!(
+                !self.panic_zone.replace(false),
+                "original session zone callback"
+            );
             SessionTimeZone::utc()
         }
         fn now(&self) -> Option<(i64, u32, i32)> {
@@ -19170,7 +19175,7 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
         }
     }
     for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
-        for op in [
+        let mut operations = vec![
             O::Microsecond,
             O::Time,
             O::TimeDiff,
@@ -19185,7 +19190,26 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             O::GetFormat,
             O::DateDiff,
             O::ConvertTz,
-        ] {
+            O::Timestamp1,
+            O::Timestamp2,
+            O::TimestampAdd,
+        ];
+        use tidb_query_expr::NativeTimeAddKind as K;
+        for left in [K::Datetime, K::Date, K::Duration, K::Other] {
+            for right in [K::Datetime, K::Date, K::Duration, K::Other] {
+                for row_path in [false, true] {
+                    operations.push(O::AddTime {
+                        kinds: [left, right],
+                        row_path,
+                    });
+                    operations.push(O::SubTime {
+                        kinds: [left, right],
+                        row_path,
+                    });
+                }
+            }
+        }
+        for op in operations {
             let arity = op.arity();
             let field = projected(&native_bytes_type(), true).unwrap();
             let args = vec![field.clone(); arity];
@@ -19199,9 +19223,21 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
+            let original_types = match op {
+                O::AddTime { kinds, .. } | O::SubTime { kinds, .. } => kinds
+                    .into_iter()
+                    .map(|kind| match kind {
+                        K::Datetime => FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+                        K::Date => FieldType::new(FieldTypeCode::Date),
+                        K::Duration => FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+                        K::Other => string_ty(),
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![string_ty(); arity],
+            };
             let metadata = [NativeHostMetadata::DurationConstruction {
                 arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                argument_types: vec![string_ty(); arity].into_boxed_slice(),
+                argument_types: original_types.clone().into_boxed_slice(),
                 operation: op,
                 result_type: string_ty(),
                 output_node: 2,
@@ -19224,6 +19260,7 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             let context = C {
                 store: &store,
                 events: RefCell::new(vec![]),
+                panic_zone: Cell::new(false),
             };
             let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
                 .with_native_values(Some(&store));
@@ -19314,6 +19351,20 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                 }
             }
             let normal = match op {
+                O::AddTime { .. } | O::SubTime { .. } => vec![
+                    Datum::new_string("2020-01-01 10:00:00.123456"),
+                    Datum::new_string("00:00:01.5"),
+                ],
+                O::Timestamp1 => vec![Datum::new_string("20240315.5")],
+                O::Timestamp2 => vec![
+                    Datum::new_string("2020-01-01"),
+                    Datum::new_string("00:00:01.5"),
+                ],
+                O::TimestampAdd => vec![
+                    Datum::new_string("SECOND"),
+                    Datum::Real(1.5),
+                    Datum::new_string("2020-01-01"),
+                ],
                 O::ConvertTz => vec![
                     Datum::new_string("2025-10-26 02:30:00.5"),
                     Datum::new_string("Europe/Paris"),
@@ -19348,6 +19399,24 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             ];
             if matches!(op, O::TimeDiff | O::TimeFormat | O::GetFormat) {
                 cases.push(vec![Datum::Null, Datum::Bytes(vec![0xff; 1 << 20])]);
+            }
+            if matches!(op, O::Timestamp2) {
+                cases.push(vec![Datum::Null, Datum::Bytes(vec![255; 1 << 20])]);
+            }
+            if matches!(
+                op,
+                O::AddTime {
+                    kinds: [_, K::Datetime],
+                    ..
+                } | O::SubTime {
+                    kinds: [_, K::Datetime],
+                    ..
+                }
+            ) {
+                cases.push(vec![
+                    Datum::Bytes(vec![255; 1 << 20]),
+                    Datum::Bytes(vec![255; 1 << 20]),
+                ]);
             }
             for values in cases {
                 context.events.borrow_mut().clear();
@@ -19385,17 +19454,127 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                     op.name(),
                     string_ty(),
                     values
-                        .into_iter()
-                        .map(|v| literal(v, string_ty()))
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .map(|(index, v)| literal(v, original_types[index].clone()))
                         .collect(),
                 );
                 let input = chunk(&[], &[vec![]]);
-                let expected = root.eval(&context, input.get_row(0));
+                let expected = match op {
+                    O::AddTime {
+                        kinds,
+                        row_path: false,
+                    }
+                    | O::SubTime {
+                        kinds,
+                        row_path: false,
+                    } => {
+                        // This provider receives already-evaluated actual values.
+                        // An IF used to simulate a nonconstant source would add
+                        // its own DATE normalization before this boundary. The
+                        // original typed helper accepts the real row-path fact;
+                        // complete computed-source casts are compared separately.
+                        crate::time_fn::add_sub::add_sub_time(
+                            &values,
+                            kinds,
+                            if matches!(op, O::SubTime { .. }) {
+                                -1
+                            } else {
+                                1
+                            },
+                            false,
+                            &context,
+                        )
+                        .and_then(|value| {
+                            crate::tikv::coerce_result_bounded(
+                                op.name(),
+                                &string_ty(),
+                                value,
+                                crate::tikv::duration_construction_value::default_budget(),
+                            )
+                        })
+                    }
+                    _ => root.eval(&context, input.get_row(0)),
+                };
                 assert_eq!(format!("{actual:?}"), format!("{expected:?}"), "{op:?}");
                 assert_eq!(events, *context.events.borrow(), "{op:?}");
                 provider.cancel(&task);
                 let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
                 assert!(reply(&mut provider, &mut ctx, &task, 0, Some(token)).is_err());
+            }
+            if matches!(op, O::Timestamp1 | O::Timestamp2) {
+                // Original session callbacks can unwind. Closing the eager
+                // argument counter before that callback prevents replay.
+                let task = begin(&mut provider, &mut ctx);
+                context.panic_zone.set(true);
+                for index in 0..arity {
+                    let token = insert(
+                        &Datum::new_string(if index == 0 { "2020-01-01" } else { "00:00:01" }),
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        row,
+                    );
+                    if index + 1 < arity {
+                        assert!(matches!(
+                            reply(&mut provider, &mut ctx, &task, index, Some(token)),
+                            Ok(HostStep::NeedArg(_))
+                        ));
+                    } else {
+                        assert!(
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                                &mut provider,
+                                &mut ctx,
+                                &task,
+                                index,
+                                Some(token)
+                            )))
+                            .is_err()
+                        );
+                    }
+                }
+                let token = insert(&Datum::Null, NativeValueRole::CharInput, 2 + arity, row);
+                assert!(reply(&mut provider, &mut ctx, &task, arity - 1, Some(token)).is_err());
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+                let task = begin(&mut provider, &mut ctx);
+                for index in 0..arity {
+                    let token = insert(
+                        &Datum::new_string(if index == 0 { "2020-01-01" } else { "00:00:01" }),
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        row,
+                    );
+                    let step = reply(&mut provider, &mut ctx, &task, index, Some(token)).unwrap();
+                    assert_eq!(matches!(step, HostStep::Ready(_)), index + 1 == arity);
+                }
+                provider.cancel(&task);
+            }
+            if op == O::TimestampAdd {
+                // A terminal third-source cast error precedes even unit text
+                // allocation; the huge first value must not steal that error.
+                context.events.borrow_mut().clear();
+                let task = begin(&mut provider, &mut ctx);
+                let values = [
+                    Datum::Bytes(vec![b'x'; 1 << 20]),
+                    Datum::Null,
+                    Datum::Bytes(vec![255]),
+                ];
+                for (index, value) in values.iter().enumerate() {
+                    let token = insert(value, NativeValueRole::CharInput, 3 + index, row);
+                    let step = reply(&mut provider, &mut ctx, &task, index, Some(token));
+                    if index < 2 {
+                        assert!(matches!(step, Ok(HostStep::NeedArg(_))));
+                    } else {
+                        assert!(step.is_err());
+                    }
+                }
+                assert!(matches!(
+                    provider.take_native_error(),
+                    Some(EvalError::Unsupported(_))
+                ));
+                assert!(context.events.borrow().is_empty());
+                provider.cancel(&task);
             }
             if op == O::ConvertTz {
                 // All three capabilities authenticate before the first cast.
@@ -19748,4 +19927,443 @@ fn native_convert_tz_sources_keep_casts_returns_context_and_eager_errors() {
         2,
         0,
     );
+}
+
+#[test]
+fn native_time_arithmetic_sources_do_not_fallback() {
+    let mut failed = vec![];
+    for name in [
+        "addtime",
+        "subtime",
+        "timestamp1",
+        "timestamp2",
+        "timestampadd",
+    ] {
+        let field = FieldType::new(FieldTypeCode::Datetime).with_decimal(6);
+        let args = match name {
+            "timestamp1" => vec![literal(Datum::new_string("2020-01-01"), string_ty())],
+            "timestampadd" => vec![
+                literal(Datum::new_string("SECOND"), string_ty()),
+                int(1),
+                literal(Datum::new_string("2020-01-01"), string_ty()),
+            ],
+            _ => vec![
+                literal(Datum::new_string("2020-01-01"), string_ty()),
+                literal(Datum::new_string("00:00:01"), string_ty()),
+            ],
+        };
+        let root = call(
+            if name.starts_with("timestamp") && name != "timestampadd" {
+                "timestamp"
+            } else {
+                name
+            },
+            field.clone(),
+            args,
+        );
+        let s = suite(root);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&field);
+        s.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+            .unwrap();
+        let r = s.batch_route_snapshot();
+        if (r.refusals, r.fallback) != (0, 0) {
+            failed.push((name, r));
+        }
+    }
+    assert!(failed.is_empty(), "time arithmetic routes {failed:?}");
+}
+
+#[test]
+fn native_time_arithmetic_sources_keep_static_signatures_casts_returns_context_and_eager_errors() {
+    let mut cases = vec![
+        (
+            ty(),
+            vec![
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(-1),
+                Datum::Int(2024),
+                Datum::Int(i64::MAX),
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::Null,
+                Datum::UInt(0),
+                Datum::UInt(59),
+                Datum::UInt(u64::MAX),
+            ],
+        ),
+        (
+            real_ty(),
+            vec![
+                Datum::Null,
+                Datum::Real(30.0000005),
+                Datum::Real(59.9),
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::INFINITY),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(7),
+            vec![
+                Datum::Null,
+                Datum::Decimal(Decimal::from_literal("30.0000005")),
+                Datum::Decimal(Decimal::from_literal(
+                    "999999999999999999999999999999999999999999999999.25",
+                )),
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::Null,
+                Datum::new_string("2024-02-29 12:34:56.123456"),
+                Datum::new_string("12:34:56.1234567"),
+                Datum::new_string("DATE"),
+                Datum::new_string("USA"),
+                Datum::new_string("%H:%i:%s.%f"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Null, Datum::Int(0), Datum::Int(24), Datum::Int(2024)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Date),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Duration(MySqlDuration::from_nanoseconds(-45678900000000, 6).unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(64),
+            vec![
+                Datum::Null,
+                Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0xff; 8])),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Null,
+                Datum::Json(BinaryJSON::parse("[1,true]").unwrap()),
+            ],
+        ),
+    ];
+    cases.extend([
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Timestamp,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDate),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+    ]);
+    let returns = vec![
+        ty(),
+        string_ty(),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+    ];
+
+    for name in [
+        "addtime",
+        "subtime",
+        "timestamp1",
+        "timestamp2",
+        "timestampadd",
+    ] {
+        let defaults = match name {
+            "timestamp1" => vec![literal(Datum::new_string("20240315.5"), string_ty())],
+            "timestampadd" => vec![
+                literal(Datum::new_string("SECOND"), string_ty()),
+                literal(Datum::Real(1.5), real_ty()),
+                literal(Datum::new_string("2020-01-01"), string_ty()),
+            ],
+            _ => vec![
+                literal(Datum::new_string("2020-01-01 10:00:00.123456"), string_ty()),
+                literal(Datum::new_string("00:00:01.5"), string_ty()),
+            ],
+        };
+        let function = if name == "timestamp1" || name == "timestamp2" {
+            "timestamp"
+        } else {
+            name
+        };
+        for index in 0..defaults.len() {
+            for (source, values) in &cases {
+                // NewDate has no fixed-time physical column in existing Chunk.
+                // Exercise its actual typed value through a computed source over
+                // an integer selection, preserving the original alias metadata.
+                let (schema, rows, argument) = if source.code() == FieldTypeCode::NewDate {
+                    let selector = ty();
+                    (
+                        vec![selector.clone()],
+                        vec![vec![Datum::Int(0)], vec![Datum::Int(1)]],
+                        call(
+                            "if",
+                            source.clone(),
+                            vec![
+                                typed_column(0, &selector),
+                                literal(values[1].clone(), source.clone()),
+                                literal(Datum::Null, source.clone()),
+                            ],
+                        ),
+                    )
+                } else {
+                    (
+                        vec![source.clone()],
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>(),
+                        typed_column(0, source),
+                    )
+                };
+                let selections = [
+                    vec![],
+                    (0..rows.len()).collect(),
+                    vec![rows.len() - 1, 0, rows.len() - 1],
+                ];
+                let mut args = defaults.clone();
+                args[index] = argument;
+                for field in &returns {
+                    let root = call(function, field.clone(), args.clone());
+                    for seed in 0..4 {
+                        for level in 0..3 {
+                            for selection in &selections {
+                                compare_duration_construction_source(
+                                    root.clone(),
+                                    &schema,
+                                    &rows,
+                                    selection,
+                                    seed,
+                                    level,
+                                );
+                            }
+                        }
+                    }
+                    compare_duration_construction_source(
+                        call("cast_char", string_ty(), vec![root]),
+                        &schema,
+                        &rows,
+                        &[rows.len() - 1, 0, rows.len() - 1],
+                        3,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+    let temporal = vec![
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            Datum::Time(Time::from_raw_parts(
+                tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                tidb_datatype::TimeType::DateTime,
+                6,
+            )),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Date),
+            Datum::Time(Time::from_raw_parts(
+                tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                tidb_datatype::TimeType::Date,
+                0,
+            )),
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            Datum::Duration(MySqlDuration::from_nanoseconds(3600000500000, 6).unwrap()),
+        ),
+        (string_ty(), Datum::new_string("2020-01-01 10:00:00")),
+    ];
+    let mut temporal = temporal;
+    temporal.extend([
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            Datum::Time(Time::from_raw_parts(
+                tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                tidb_datatype::TimeType::Timestamp,
+                6,
+            )),
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDate),
+            Datum::Time(Time::from_raw_parts(
+                tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                tidb_datatype::TimeType::Date,
+                0,
+            )),
+        ),
+    ]);
+    for name in ["addtime", "subtime"] {
+        for (left_type, left) in &temporal {
+            for (right_type, right) in &temporal {
+                for field in &returns {
+                    // Literal-only source preserves Go's distinct folding body.
+                    compare_duration_construction_source(
+                        call(
+                            name,
+                            field.clone(),
+                            vec![
+                                literal(left.clone(), left_type.clone()),
+                                literal(right.clone(), right_type.clone()),
+                            ],
+                        ),
+                        &[],
+                        &[vec![]],
+                        &[0],
+                        0,
+                        2,
+                    );
+                    // Nonconstant actual sources select the original vector body.
+                    let (schema, rows, argument) = if left_type.code() == FieldTypeCode::NewDate {
+                        let selector = ty();
+                        (
+                            vec![selector.clone()],
+                            vec![vec![Datum::Int(1)], vec![Datum::Int(0)]],
+                            call(
+                                "if",
+                                left_type.clone(),
+                                vec![
+                                    typed_column(0, &selector),
+                                    literal(left.clone(), left_type.clone()),
+                                    literal(Datum::Null, left_type.clone()),
+                                ],
+                            ),
+                        )
+                    } else {
+                        (
+                            vec![left_type.clone()],
+                            vec![vec![left.clone()], vec![Datum::Null]],
+                            typed_column(0, left_type),
+                        )
+                    };
+                    compare_duration_construction_source(
+                        call(
+                            name,
+                            field.clone(),
+                            vec![argument, literal(right.clone(), right_type.clone())],
+                        ),
+                        &schema,
+                        &rows,
+                        &[1, 0, 0],
+                        1,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+    for (name, args) in [
+        (
+            "addtime",
+            vec![
+                abs(int(i64::MIN)),
+                literal(Datum::Null, FieldType::new(FieldTypeCode::Datetime)),
+            ],
+        ),
+        (
+            "subtime",
+            vec![literal(Datum::Null, string_ty()), abs(int(i64::MIN))],
+        ),
+        (
+            "timestamp",
+            vec![literal(Datum::Null, string_ty()), abs(int(i64::MIN))],
+        ),
+        (
+            "timestampadd",
+            vec![
+                literal(Datum::Null, string_ty()),
+                abs(int(i64::MIN)),
+                literal(Datum::Null, string_ty()),
+            ],
+        ),
+    ] {
+        compare_duration_construction_source(
+            call(name, string_ty(), args),
+            &[],
+            &[vec![]],
+            &[0],
+            2,
+            0,
+        );
+    }
+    for name in ["addtime", "timestamp"] {
+        let source = string_ty();
+        let args = if name == "timestamp" {
+            vec![typed_column(0, &source)]
+        } else {
+            vec![
+                literal(Datum::new_string("10:00:00"), string_ty()),
+                typed_column(0, &source),
+            ]
+        };
+        compare_duration_construction_source(
+            call(name, string_ty(), args),
+            &[source],
+            &[vec![Datum::new_string("bad")]],
+            &vec![0; 2050],
+            2,
+            2,
+        );
+    }
 }

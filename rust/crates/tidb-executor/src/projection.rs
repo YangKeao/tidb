@@ -3434,6 +3434,63 @@ mod tests {
         let timezone_mix = std::iter::once(0)
             .chain(timezone_start..roots.len())
             .collect::<Vec<_>>();
+        let time_arithmetic_start = roots.len();
+        for name in [
+            "addtime",
+            "subtime",
+            "timestamp1",
+            "timestamp2",
+            "timestampadd",
+            "addtime_constant",
+        ] {
+            let field = if name == "timestampadd" {
+                string.clone()
+            } else {
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(6)
+            };
+            let texts = match name {
+                "timestamp1" => vec!["20240315.5"],
+                "timestamp2" => vec!["2020-01-01 10:00:00.123456", "00:00:01.5"],
+                "timestampadd" => vec!["MONTH", "1", "2020-01-31"],
+                _ => vec!["2020-01-01 10:00:00", "2020-01-01 10:00:00"],
+            };
+            let args = texts
+                .into_iter()
+                .enumerate()
+                .map(|(index, text)| {
+                    let value = Expression::Constant(Constant::new(
+                        Datum::new_string(text),
+                        string.clone(),
+                    ));
+                    if index == 0 && name != "addtime_constant" {
+                        call(
+                            "if",
+                            string.clone(),
+                            vec![
+                                column(0),
+                                value,
+                                Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                            ],
+                        )
+                    } else {
+                        value
+                    }
+                })
+                .collect();
+            let function = match name {
+                "timestamp1" | "timestamp2" => "timestamp",
+                "addtime_constant" => "addtime",
+                _ => name,
+            };
+            let root = call(function, field.clone(), args);
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let time_arithmetic_mix = std::iter::once(0)
+            .chain(time_arithmetic_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3447,6 +3504,16 @@ mod tests {
             (
                 timezone_mix.iter().map(|&i| roots[i].clone()).collect(),
                 timezone_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                time_arithmetic_mix
+                    .iter()
+                    .map(|&i| roots[i].clone())
+                    .collect(),
+                time_arithmetic_mix
+                    .iter()
+                    .map(|&i| fields[i].clone())
+                    .collect(),
             ),
             (
                 calendar_mix.iter().map(|&i| roots[i].clone()).collect(),

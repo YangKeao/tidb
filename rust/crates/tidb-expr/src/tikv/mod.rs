@@ -180,8 +180,8 @@ pub use adapter_failure::{
 };
 pub(crate) use ready_value::{
     eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in,
-    evaluate_prepared_args_in, evaluate_prepared_args_scoped_in, evaluate_regexp_in,
-    native_time_result_contract_error, EvaluatedBytesResult, RegexpFunction,
+    evaluate_prepared_args_in, evaluate_regexp_in, native_time_result_contract_error,
+    EvaluatedBytesResult, RegexpFunction,
 };
 pub use ready_value::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
@@ -685,3 +685,6 @@ pub(crate) mod duration_construction_value;
 
 #[cfg(test)]
 pub(crate) mod convert_tz_value_tests;
+
+#[cfg(test)]
+pub(crate) mod time_arithmetic_value_tests;

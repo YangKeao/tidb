@@ -106,18 +106,36 @@ fn precision(v: &Datum, maximum: usize) -> Result<usize, EvalError> {
     crate::time_fn::duration_precision(v)
 }
 pub(crate) enum Pair {
-    Integer { op: O, left: Option<i64> },
-    MakeTime { hour: Option<(i64, bool)> },
-    DateDiff { left: Option<String> },
+    Integer {
+        op: O,
+        left: Option<i64>,
+    },
+    MakeTime {
+        hour: Option<(i64, bool)>,
+    },
+    DateDiff {
+        left: Option<String>,
+    },
     TimeDiff(tidb_query_expr::NativeTimeDiffValue),
     TimeFormat(tidb_query_expr::NativeTimeFormatValue),
     ConvertTz(Option<String>),
+    TimeAdd {
+        left: Option<String>,
+        metadata: tidb_query_expr::NativeTimeAddMetadata,
+        subtract: bool,
+    },
+    Timestamp(tidb_query_expr::NativeTimestampBaseValue),
+    TimestampAddUnit(Option<String>),
 }
 /// Each stage owns actual values and is consumed before conversion can fail or
 /// panic. No executable child, source callback or replayable validity flag lives here.
 pub(crate) enum Prepared {
     Value(Datum),
     Pair(Pair),
+    TimestampAddDate {
+        unit: String,
+        amount: f64,
+    },
     TimeZoneDestination {
         datetime: Option<String>,
         from: Option<String>,
@@ -137,6 +155,10 @@ impl Prepared {
                 .as_ref()
                 .map_or(0, String::capacity)
                 .saturating_add(from.as_ref().map_or(0, String::capacity)),
+            Self::Pair(Pair::TimeAdd { left, .. }) | Self::Pair(Pair::TimestampAddUnit(left)) => {
+                left.as_ref().map_or(0, String::capacity)
+            }
+            Self::TimestampAddDate { unit, .. } => unit.capacity(),
             Self::Pair(Pair::TimeFormat(v)) => v.retained_bytes(),
             _ => 0,
         }
@@ -146,7 +168,9 @@ impl Prepared {
     pub(crate) fn argument(&self) -> Option<(usize, bool)> {
         match self {
             Self::Value(_) => None,
+            Self::Pair(Pair::TimeAdd { .. }) => Some((1, true)),
             Self::Pair(_) => Some((1, false)),
+            Self::TimestampAddDate { .. } => Some((2, true)),
             Self::Third { .. } => Some((2, true)),
             Self::TimeZoneDestination { .. } => Some((2, false)),
         }
@@ -160,6 +184,45 @@ impl Prepared {
         work(maximum, 0)?;
         let result = match self {
             Self::Value(_) => return Err(super::native_time_result_contract_error()),
+            Self::TimestampAddDate { unit, amount } => {
+                let date = text(value, maximum)?;
+                let remaining = maximum
+                    .checked_sub(date.as_ref().map_or(0, String::capacity))
+                    .ok_or_else(resource)?;
+                let result = tidb_query_expr::native_timestamp_add_value(
+                    &unit,
+                    date.as_deref(),
+                    amount,
+                    remaining,
+                )
+                .map_err(error)?;
+                match result {
+                    None => Datum::Null,
+                    Some(tidb_query_expr::NativeTimestampAddValue::Value(value)) => {
+                        Datum::new_string(value)
+                    }
+                    Some(tidb_query_expr::NativeTimestampAddValue::UnknownUnit) => {
+                        return Err(EvalError::Unsupported("TIMESTAMPADD unit"))
+                    }
+                    Some(tidb_query_expr::NativeTimestampAddValue::IncorrectDateTimeInput) => {
+                        let source = date
+                            .as_deref()
+                            .ok_or_else(super::native_time_result_contract_error)?;
+                        work(
+                            remaining,
+                            source.len().checked_add(2048).ok_or_else(resource)?,
+                        )?;
+                        ctx.append_warning(1292, &format!("Incorrect datetime value: '{source}'"));
+                        Datum::Null
+                    }
+                    Some(tidb_query_expr::NativeTimestampAddValue::IncorrectTimeResult(
+                        message,
+                    )) => {
+                        ctx.append_warning(1292, &message);
+                        Datum::Null
+                    }
+                }
+            }
             Self::TimeZoneDestination { datetime, from } => {
                 let to = text(value, maximum)?;
                 let remaining = maximum
@@ -191,6 +254,91 @@ impl Prepared {
                 )
             }
             Self::Pair(pair) => match pair {
+                Pair::TimeAdd {
+                    left,
+                    mut metadata,
+                    subtract,
+                } => {
+                    let right = text(value, maximum)?;
+                    metadata.right_binary =
+                        matches!(value, Datum::BinaryLiteral(_) | Datum::Bit(_));
+                    let remaining = maximum
+                        .checked_sub(right.as_ref().map_or(0, String::capacity))
+                        .ok_or_else(resource)?;
+                    match tidb_query_expr::native_time_add_value(
+                        left.as_deref(),
+                        right.as_deref(),
+                        metadata,
+                        subtract,
+                        remaining,
+                    )
+                    .map_err(error)?
+                    {
+                        None => Datum::Null,
+                        Some(tidb_query_expr::NativeTimeAddValue::Value(value)) => {
+                            Datum::new_string(value)
+                        }
+                        Some(tidb_query_expr::NativeTimeAddValue::Warning(warning)) => {
+                            use tidb_query_expr::NativeTimeAddWarning as W;
+                            let source = if warning == W::TruncatedRight {
+                                right.as_deref()
+                            } else {
+                                left.as_deref()
+                            }
+                            .ok_or_else(super::native_time_result_contract_error)?;
+                            let (label, source) = match warning {
+                                W::TruncatedLeft | W::TruncatedRight => (
+                                    "Truncated incorrect time value",
+                                    tidb_datatype::warning_subject_byte_cap(source),
+                                ),
+                                W::IncorrectTimeLeft => ("Incorrect time value", source),
+                                W::IncorrectDateTimeLeft => ("Incorrect datetime value", source),
+                            };
+                            work(
+                                remaining,
+                                source.len().checked_add(2048).ok_or_else(resource)?,
+                            )?;
+                            ctx.append_warning(1292, &format!("{label}: '{source}'"));
+                            Datum::Null
+                        }
+                    }
+                }
+                Pair::Timestamp(base) => {
+                    let right = text(value, maximum)?;
+                    let remaining = maximum
+                        .checked_sub(right.as_ref().map_or(0, String::capacity))
+                        .ok_or_else(resource)?;
+                    string_datum(base.finish(right.as_deref(), remaining).map_err(error)?)
+                }
+                Pair::TimestampAddUnit(unit) => {
+                    // This is the original full-float parser, not number_arg's
+                    // numeric-prefix/warning controller. NULL unit still demands it.
+                    if matches!(
+                        value,
+                        Datum::Int(_)
+                            | Datum::UInt(_)
+                            | Datum::Real(_)
+                            | Datum::Float32(_)
+                            | Datum::Null
+                    ) {
+                        work(maximum, 0)?;
+                    } else if matches!(value, Datum::Decimal(_)) {
+                        numeric_work(value, maximum, true)?;
+                    } else {
+                        let n = tidb_query_expr::native_string_coercion_work(
+                            value.as_shared_json_input(),
+                        )
+                        .map_err(string_error)?;
+                        work(maximum, n)?;
+                    }
+                    let amount = crate::time_fn::add_sub::number_of(value)?;
+                    match (unit, amount) {
+                        (Some(unit), Some(amount)) => {
+                            return Ok(Self::TimestampAddDate { unit, amount })
+                        }
+                        _ => Datum::Null,
+                    }
+                }
                 Pair::ConvertTz(datetime) => {
                     return Ok(Self::TimeZoneDestination {
                         datetime,
@@ -260,6 +408,61 @@ pub(crate) fn start(
 ) -> Result<Prepared, EvalError> {
     work(maximum, 0)?;
     let v = match op {
+        O::AddTime { kinds, row_path } | O::SubTime { kinds, row_path } => {
+            if kinds[1] == tidb_query_expr::NativeTimeAddKind::Datetime {
+                return Ok(Prepared::Value(Datum::Null));
+            }
+            return Ok(Prepared::Pair(Pair::TimeAdd {
+                left: text(value, maximum)?,
+                metadata: tidb_query_expr::NativeTimeAddMetadata {
+                    left: kinds[0],
+                    right: kinds[1],
+                    row_path,
+                    right_binary: false,
+                },
+                subtract: matches!(op, O::SubTime { .. }),
+            }));
+        }
+        O::Timestamp1 | O::Timestamp2 => {
+            let Some(source) = text(value, maximum)? else {
+                return Ok(Prepared::Value(Datum::Null));
+            };
+            let remaining = maximum
+                .checked_sub(source.capacity())
+                .ok_or_else(resource)?;
+            let is_float = matches!(
+                value,
+                Datum::Int(_)
+                    | Datum::UInt(_)
+                    | Datum::Decimal(_)
+                    | Datum::Real(_)
+                    | Datum::Float32(_)
+            );
+            let zone = ctx.time_zone();
+            match tidb_query_expr::native_timestamp_head_value(
+                &source,
+                is_float,
+                &zone,
+                op == O::Timestamp2,
+                remaining,
+            )
+            .map_err(error)?
+            {
+                tidb_query_expr::NativeTimestampHeadValue::Value(value) => Datum::new_string(value),
+                tidb_query_expr::NativeTimestampHeadValue::NeedRhs(base) => {
+                    return Ok(Prepared::Pair(Pair::Timestamp(base)))
+                }
+                tidb_query_expr::NativeTimestampHeadValue::Warning(message) => {
+                    ctx.append_warning(1292, &message);
+                    Datum::Null
+                }
+            }
+        }
+        O::TimestampAdd => {
+            return Ok(Prepared::Pair(Pair::TimestampAddUnit(text(
+                value, maximum,
+            )?)))
+        }
         O::ConvertTz => return Ok(Prepared::Pair(Pair::ConvertTz(text(value, maximum)?))),
         O::MakeDate | O::PeriodAdd | O::PeriodDiff => {
             return Ok(Prepared::Pair(Pair::Integer {
@@ -382,7 +585,15 @@ pub(crate) fn eval_bounded(
     }
     let mut prepared = start(op, &values[0], ctx, maximum)?;
     while let Some((index, _)) = prepared.argument() {
-        let remaining = if op == O::ConvertTz {
+        let remaining = if matches!(
+            op,
+            O::ConvertTz
+                | O::AddTime { .. }
+                | O::SubTime { .. }
+                | O::Timestamp1
+                | O::Timestamp2
+                | O::TimestampAdd
+        ) {
             maximum
                 .checked_sub(prepared.retained_bytes())
                 .ok_or_else(resource)?
@@ -427,7 +638,7 @@ pub(crate) fn legacy(
 /// Only these first-operand paths report through Columns. Others can safely
 /// operate over an authenticated borrow, with later callback demand explicit.
 pub(crate) fn start_calls_context(op: O) -> bool {
-    matches!(op, O::Time | O::SecToTime)
+    matches!(op, O::Time | O::SecToTime | O::Timestamp1 | O::Timestamp2)
 }
 /// Preserve both original ETString casts before signature-level NULL demand.
 /// Identity actions borrow actual storage; no ignored huge source is copied.
@@ -482,7 +693,31 @@ pub(crate) fn finish_source(
     ctx: &dyn Columns,
     maximum: usize,
 ) -> Result<Datum, EvalError> {
-    let value = if op.temporal_result() {
+    let value = if matches!(
+        op,
+        O::AddTime { .. } | O::SubTime { .. } | O::Timestamp1 | O::Timestamp2
+    ) {
+        use tidb_datatype::FieldTypeCode as F;
+        let timestamp = matches!(op, O::Timestamp1 | O::Timestamp2);
+        let demanded = timestamp || matches!(field.code(), F::Datetime | F::Duration);
+        if demanded && !value.is_null() {
+            let n = tidb_query_expr::native_string_coercion_work(value.as_shared_json_input())
+                .map_err(string_error)?;
+            work(
+                maximum,
+                n.checked_mul(64)
+                    .and_then(|n| n.checked_add(4096))
+                    .ok_or_else(resource)?,
+            )?;
+        }
+        if timestamp || field.code() == F::Datetime {
+            crate::cast::parse_computed_time(&value, ctx, TimeType::DateTime, None)?
+        } else if field.code() == F::Duration {
+            crate::cast::parse_computed_duration(&value, ctx)?
+        } else {
+            value
+        }
+    } else if op.temporal_result() {
         super::finish_temporal_values_bounded(ctx, value, field, maximum)?
     } else {
         value

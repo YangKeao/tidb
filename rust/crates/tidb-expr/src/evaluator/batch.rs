@@ -1241,6 +1241,24 @@ fn native_duration_construction_call(
 ) -> Option<tidb_query_expr::NativeDurationConstructionOperation> {
     use tidb_query_expr::NativeDurationConstructionOperation as O;
     let op = match function.func_name.lowercase() {
+        "addtime" | "subtime" if function.args.len() == 2 => {
+            let kinds = [
+                crate::time_fn::add_sub::kind_from_field_type(function.args[0].static_type()?),
+                crate::time_fn::add_sub::kind_from_field_type(function.args[1].static_type()?),
+            ];
+            let row_path = function
+                .args
+                .iter()
+                .all(|arg| matches!(arg, Expression::Constant(_)));
+            if function.func_name.lowercase() == "subtime" {
+                O::SubTime { kinds, row_path }
+            } else {
+                O::AddTime { kinds, row_path }
+            }
+        }
+        "timestamp" if function.args.len() == 1 => O::Timestamp1,
+        "timestamp" if function.args.len() == 2 => O::Timestamp2,
+        "timestampadd" => O::TimestampAdd,
         "microsecond" => O::Microsecond,
         "time" => O::Time,
         "timediff" => O::TimeDiff,

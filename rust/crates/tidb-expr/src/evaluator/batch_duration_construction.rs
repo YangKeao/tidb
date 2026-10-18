@@ -189,6 +189,45 @@ impl NativeBatchHosts<'_> {
                 ),
             }
         } else {
+            // TIMESTAMPADD's original ETDatetime cast of argument two precedes
+            // body conversion of unit/amount, even after a NULL prefix. Keep
+            // its actual converted value without copying either prefix early.
+            let date = if *operation == O::TimestampAdd {
+                let (original, live) = copy_value(
+                    store,
+                    token_for(2)?,
+                    NativeValueOrigin {
+                        node: arguments[2],
+                        row,
+                    },
+                    base,
+                    self.max_retained_bytes,
+                )?;
+                let cast = crate::tikv::calendar_value::cast_source(
+                    tidb_query_expr::NativeCalendarOperation::Date,
+                    &original,
+                    &argument_types[2],
+                    self.context,
+                    self.max_retained_bytes - live,
+                );
+                drop(original);
+                match cast {
+                    Ok(value) => Some(value),
+                    Err(e) => return self.native_failure(e),
+                }
+            } else {
+                None
+            };
+            let stage_base = date
+                .as_ref()
+                .map(native_payload_bytes)
+                .transpose()?
+                .unwrap_or(0)
+                .checked_mul(2)
+                .and_then(|n| base.checked_add(n))
+                .ok_or_else(|| resource("time arithmetic cast extent overflow"))?;
+            self.check_bytes(stage_base)?;
+            let maximum = self.max_retained_bytes - stage_base;
             let first = if *operation == O::ConvertTz {
                 // Original first ETDatetime cast precedes all signature text
                 // coercions, carrying YEAR and other complete source metadata.
@@ -234,7 +273,7 @@ impl NativeBatchHosts<'_> {
                         node: arguments[0],
                         row,
                     },
-                    base,
+                    stage_base,
                     self.max_retained_bytes,
                 )?;
                 values::start(
@@ -264,11 +303,17 @@ impl NativeBatchHosts<'_> {
                     if index >= arity {
                         return Err(binding("duration value stage exceeds original arity"));
                     }
-                    let held = base
+                    let held = stage_base
                         .checked_add(prepared.retained_bytes())
                         .ok_or_else(|| resource("duration continuation extent overflow"))?;
                     self.check_bytes(held)?;
-                    let next = if callback {
+                    let next = if index == 2 && date.is_some() {
+                        prepared.advance(
+                            date.as_ref().expect("original date cast"),
+                            self.context,
+                            self.max_retained_bytes - held,
+                        )
+                    } else if callback {
                         let (original, live) = copy_value(
                             store,
                             token_for(index)?,

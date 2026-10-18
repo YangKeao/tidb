@@ -66,16 +66,21 @@ pub(crate) use tidb_query_expr::NativeTimeAddKind as TemporalKind;
 /// arm Go itself selects for a string constant.
 pub(crate) fn kind_of(field_type: Option<&FieldType>, value: &Datum) -> TemporalKind {
     if let Some(ft) = field_type {
-        return match ft.code() {
-            FieldTypeCode::Datetime | FieldTypeCode::Timestamp => TemporalKind::Datetime,
-            FieldTypeCode::Date | FieldTypeCode::NewDate => TemporalKind::Date,
-            FieldTypeCode::Duration => TemporalKind::Duration,
-            _ => TemporalKind::Other,
-        };
+        return kind_from_field_type(ft);
     }
     match value {
         Datum::Time(_) => TemporalKind::Datetime,
         Datum::Duration(_) => TemporalKind::Duration,
+        _ => TemporalKind::Other,
+    }
+}
+
+/// The original static signature classifier, shared with canonical source lowering.
+pub(crate) fn kind_from_field_type(ft: &FieldType) -> TemporalKind {
+    match ft.code() {
+        FieldTypeCode::Datetime | FieldTypeCode::Timestamp => TemporalKind::Datetime,
+        FieldTypeCode::Date | FieldTypeCode::NewDate => TemporalKind::Date,
+        FieldTypeCode::Duration => TemporalKind::Duration,
         _ => TemporalKind::Other,
     }
 }
@@ -113,81 +118,15 @@ pub(crate) fn add_sub_time(
     row_path: bool,
     cols: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    use tidb_query_expr::{NativeTimeAddMetadata, NativeTimeAddResult, NativeTimeAddWarning};
-
-    let sources = std::cell::RefCell::new((None, None));
-    crate::tikv::evaluate_prepared_args_in(
+    use tidb_query_expr::NativeDurationConstructionOperation as O;
+    crate::tikv::duration_construction_value::eval(
+        if sign < 0 {
+            O::SubTime { kinds, row_path }
+        } else {
+            O::AddTime { kinds, row_path }
+        },
+        vals,
         cols,
-        || {
-            if vals.len() != 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let metadata = NativeTimeAddMetadata {
-                left: kinds[0],
-                right: kinds[1],
-                row_path,
-                right_binary: matches!(vals[1], Datum::BinaryLiteral(_) | Datum::Bit(_)),
-            }
-            .encode();
-            if kinds[1] == TemporalKind::Datetime {
-                // This signature never coerces either value. Its real static
-                // metadata enters the worker, not a manufactured NULL operand.
-                return Ok((
-                    crate::tikv::EvaluatedBytesOp::TimeAddRightDatetimeNative,
-                    crate::tikv::EvaluatedArgs::Int(Some(metadata)),
-                ));
-            }
-            // Preserve the eager tuple: a NULL left still coerces the right,
-            // while an error on the left prevents right coercion.
-            let (left, right) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?);
-            let args = crate::tikv::EvaluatedArgs::BytesBytesInt(
-                left.as_ref().map(|value| value.as_bytes().to_vec()),
-                right.as_ref().map(|value| value.as_bytes().to_vec()),
-                Some(metadata),
-            );
-            *sources.borrow_mut() = (left, right);
-            let operation = if sign < 0 {
-                crate::tikv::EvaluatedBytesOp::SubTimeNative
-            } else {
-                crate::tikv::EvaluatedBytesOp::AddTimeNative
-            };
-            Ok((operation, args))
-        },
-        |computed| {
-            let Some(bytes) = computed.into_bytes()? else {
-                return Ok(Datum::Null);
-            };
-            let report = tidb_query_expr::decode_native_time_add_result(&bytes)
-                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-            match report {
-                NativeTimeAddResult::Value(value) => Ok(Datum::new_string(value)),
-                NativeTimeAddResult::Warning(warning) => {
-                    let sources = sources.borrow();
-                    let source = match warning {
-                        NativeTimeAddWarning::TruncatedRight => sources.1.as_deref(),
-                        _ => sources.0.as_deref(),
-                    }
-                    .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-                    let message = match warning {
-                        NativeTimeAddWarning::TruncatedLeft
-                        | NativeTimeAddWarning::TruncatedRight => format!(
-                            "Truncated incorrect time value: '{}'",
-                            tidb_datatype::warning_subject_byte_cap(source)
-                        ),
-                        NativeTimeAddWarning::IncorrectTimeLeft => {
-                            format!("Incorrect time value: '{source}'")
-                        }
-                        NativeTimeAddWarning::IncorrectDateTimeLeft => {
-                            format!("Incorrect datetime value: '{source}'")
-                        }
-                    };
-                    // ADDTIME/SUBTIME append even in strict mode; unlike TIME,
-                    // these warnings never consult the truncation policy.
-                    cols.append_warning(1292, &message);
-                    Ok(Datum::Null)
-                }
-            }
-        },
     )
 }
 
@@ -196,142 +135,28 @@ pub(crate) fn add_sub_time(
 /// argument's own; the second argument is a DURATION added to it, and it is
 /// rejected outright when it carries a date part.
 pub(crate) fn timestamp(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
-    use tidb_query_expr::NativeTimestampResult;
-    crate::tikv::evaluate_prepared_args_scoped_in(
+    use tidb_query_expr::NativeDurationConstructionOperation as O;
+    crate::tikv::duration_construction_value::eval(
+        if vals.len() == 1 {
+            O::Timestamp1
+        } else {
+            O::Timestamp2
+        },
+        vals,
         cols,
-        || {
-            if vals.is_empty() || vals.len() > 2 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            let Some(text) = coerce_str(&vals[0])? else {
-                return Ok((Op::TimestampNullNative, EvaluatedArgs::Bytes(None)));
-            };
-            // This is actual source metadata, not a parsed value. The worker
-            // owns the float-string versus ordinary temporal parser decision.
-            let is_float = matches!(
-                vals[0],
-                Datum::Int(_)
-                    | Datum::UInt(_)
-                    | Datum::Decimal(_)
-                    | Datum::Real(_)
-                    | Datum::Float32(_)
-            );
-            Ok((
-                if vals.len() == 1 {
-                    Op::Timestamp1Native
-                } else {
-                    Op::Timestamp2BaseNative
-                },
-                EvaluatedArgs::TemporalParseText {
-                    value: text.into_bytes(),
-                    is_float,
-                    zone: cols.time_zone(),
-                },
-            ))
-        },
-        |computed, scoped_cols| {
-            let Some(bytes) = computed.into_bytes()? else {
-                return Ok(Datum::Null);
-            };
-            let result = tidb_query_expr::decode_native_timestamp_result(&bytes)
-                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-            match result {
-                NativeTimestampResult::Value(value) if vals.len() == 1 => {
-                    Ok(Datum::new_string(value))
-                }
-                NativeTimestampResult::Base(_) if vals.len() == 2 => {
-                    // Preserve both stage ordering and the same owner/scope,
-                    // including a one-shot invocation originating at NoColumns.
-                    // A zero year still demands RHS coercion before its gate.
-                    crate::tikv::evaluate_prepared_args_in(
-                        scoped_cols,
-                        || {
-                            let second = coerce_str(&vals[1])?;
-                            Ok((
-                                Op::Timestamp2AddNative,
-                                EvaluatedArgs::Bytes2(Some(bytes), second.map(String::into_bytes)),
-                            ))
-                        },
-                        |computed| {
-                            Ok(computed
-                                .into_bytes()?
-                                .map_or(Datum::Null, Datum::new_string))
-                        },
-                    )
-                }
-                NativeTimestampResult::Warning { code, message } => {
-                    scoped_cols.append_warning(code, message);
-                    Ok(Datum::Null)
-                }
-                _ => Err(crate::tikv::native_time_result_contract_error()),
-            }
-        },
     )
 }
 
 /// `builtinTimestampAddSig.evalString` + `addUnitToTime`.
 pub(crate) fn timestamp_add(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    use tidb_query_expr::NativeTimestampAddResult;
-
-    let source = std::cell::RefCell::new(None);
-    crate::tikv::evaluate_prepared_args_in(
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::TimestampAdd,
+        vals,
         cols,
-        || {
-            if vals.len() != 3 {
-                return Err(EvalError::Unsupported("bad function arity"));
-            }
-            // A NULL unit still demands the original numeric coercion. Neither
-            // prefix NULL demands the third value's text at this leaf.
-            let (unit, amount) = (coerce_str(&vals[0])?, number_of(&vals[1])?);
-            let amount = amount.map(|value| value.to_bits() as i64);
-            if unit.is_none() || amount.is_none() {
-                return Ok((
-                    crate::tikv::EvaluatedBytesOp::TimestampAddPrefixNullNative,
-                    crate::tikv::EvaluatedArgs::BytesInt(unit.map(String::into_bytes), amount),
-                ));
-            }
-            let text = coerce_str(&vals[2])?;
-            let date = text.as_ref().map(|value| value.as_bytes().to_vec());
-            *source.borrow_mut() = text;
-            Ok((
-                crate::tikv::EvaluatedBytesOp::TimestampAddNative,
-                crate::tikv::EvaluatedArgs::BytesBytesInt(
-                    unit.map(String::into_bytes),
-                    date,
-                    amount,
-                ),
-            ))
-        },
-        |computed| {
-            let Some(bytes) = computed.into_bytes()? else {
-                return Ok(Datum::Null);
-            };
-            let report = tidb_query_expr::decode_native_timestamp_add_result(&bytes)
-                .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-            match report {
-                NativeTimestampAddResult::Value(value) => Ok(Datum::new_string(value)),
-                NativeTimestampAddResult::UnknownUnit => {
-                    Err(EvalError::Unsupported("TIMESTAMPADD unit"))
-                }
-                NativeTimestampAddResult::IncorrectDateTimeInput => {
-                    let source = source.borrow();
-                    let text = source
-                        .as_deref()
-                        .ok_or_else(crate::tikv::native_time_result_contract_error)?;
-                    cols.append_warning(1292, &format!("Incorrect datetime value: '{text}'"));
-                    Ok(Datum::Null)
-                }
-                NativeTimestampAddResult::IncorrectTimeResult(message) => {
-                    cols.append_warning(1292, message);
-                    Ok(Datum::Null)
-                }
-            }
-        },
     )
 }
 
-fn number_of(value: &Datum) -> Result<Option<f64>, EvalError> {
+pub(crate) fn number_of(value: &Datum) -> Result<Option<f64>, EvalError> {
     Ok(match value {
         Datum::Null => None,
         Datum::Int(v) => Some(*v as f64),

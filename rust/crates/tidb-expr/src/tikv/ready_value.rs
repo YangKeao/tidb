@@ -1550,20 +1550,6 @@ pub(crate) fn evaluate_prepared_args_in<T>(
     route_prepared_args_in(ctx, prepare, |computed, _columns| pack(computed))
 }
 
-/// Lend the selected lane cache to a dependent stage after the first worker call
-/// has finished and its result is owned. The existing guard and one-shot cache
-/// remain alive through this callback; no worker borrow crosses it.
-///
-/// Bind directly rather than rediscovering a possibly different cache through
-/// `with_columns`. Callers must use these columns for their dependent stage.
-pub(crate) fn evaluate_prepared_args_scoped_in<T>(
-    ctx: &dyn Columns,
-    prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult, &dyn Columns) -> Result<T, EvalError>,
-) -> Result<T, EvalError> {
-    route_prepared_args_in(ctx, prepare, pack)
-}
-
 fn route_prepared_args_in<T>(
     ctx: &dyn Columns,
     prepare: impl FnOnce() -> Result<(EvaluatedBytesOp, EvaluatedArgs), EvalError>,

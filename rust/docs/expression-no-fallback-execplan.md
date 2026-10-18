@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7p: retire all remaining Ready controllers in time_fn/add_sub.rs (ADDTIME, SUBTIME, TIMESTAMP1/2 and TIMESTAMPADD) and integrate canonical sources. Before edits capture original fresh-cache results/errors/panics/context traces with all static kind pairs/row modes/runtime binary facts, numeric-first TIMESTAMP parsing and late RHS, and TIMESTAMPADD's full-float conversion/NULL prefix/invalid-date-before-unit order. Reproduce Ready/source REDs; add actual SDK owned reports and a consuming actual parsed timestamp base, independently compare while old controllers exist, then retire old controllers and delegate explicit wire codecs to the same actual kernels. Preserve original source casts, constant-only row classification, forced TIMESTAMP DateTime(None), typed ADDTIME return transform and ordinary return conversion. Validate demanded work/diagnostic allocation, ignored huge arguments, complete authentication/terminal invocation cleanup/exclusive callbacks, typed source matrices, full frontend/core/Projection, exact warning/failure lists, lint, both formatters and fixed fixtures; sign local DCO commits only. Global generic/unistore/full-server work remains open.
+
 - [x] N7o: migrate CONVERT_TZ direct and canonical source through actual text operands. Capture independent original fresh-cache observations under isolated UTC/Asia/Shanghai/America/New_York child processes before candidate edits; reproduce Ready and source fallbacks; preserve eager strict three-text conversion, original first ETDatetime source cast/full FieldType, named DST and SYSTEM policies, original Unicode-offset panic, generic temporal result plus ordinary return boundary. Extend existing finite native time-family host with consumed three-operand stages; test provenance/budget/cancellation/panic recovery, mixed Projection, full frontend/core, warning parity, lint and both formatters; sign local commits only. Remaining ADDTIME/SUBTIME/TIMESTAMP/TIMESTAMPADD, generic fallback and unistore work remain global follow-up.
 
 - [x] N7n: retire remaining native duration/construction/period/format/date-difference Ready families, preserve staged coercion/error/result contracts and integrate complete ordinary sources; independently pair before retirement, validate and sign local commits.
@@ -105,6 +107,20 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7p independently paired1345032 original/candidate observations before retiring
+remaining time arithmetic controllers. NativeTimestampBaseValue initially charged
+parsing work for an already-coerced RHS even when zero year rejects before any
+RHS scan. A real0-budget/1MiB test failed Resource, then passed after restoring
+that original early body gate; frontend RHS coercion remains demanded. NewDate
+has no fixed-time physical input column in the existing Chunk, so its unchanged
+type/actual Time cases use computed sources over integer inputs, retaining all
+alias cases. An IF added solely to simulate a provider's false row-path fact
+introduced an extra DATE normalization before the already-evaluated value
+boundary. Provider comparisons now use the original typed helper for that fact;
+the full source matrix separately compares real computed inputs against
+ScalarFunction. The last TIMESTAMP retirement also made its scoped Ready adapter
+and import unused; both are removed, with final warning titles restored exactly.
+
 N7o confirms that CONVERT_TZ has two eager boundaries: the first source
 ETDatetime cast with original FieldType, then all three strict text conversions
 even after NULL. The date parser precedes both zone parsers; both zone parsers
@@ -140,6 +156,17 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: carry original ADDTIME/SUBTIME kind pairs and literal-only row facts
+  through the existing actual-value host; consume typed timestamp bases and owned
+  SQL reports instead of encoded values and nested Ready calls. Preserve
+  TIMESTAMPADD's original third-argument datetime cast before prefix conversion,
+  original full-float amount parsing and all distinct result transforms.
+  Rationale: static signature selection, actual value conversion and expression
+  evaluation are distinct boundaries; merging their work or adding a computed
+  wrapper can change SQL results, callbacks or resource precedence. Charge each
+  demanded parser at its original point and retain the independent old checksum.
+  Date/Author: 2026-10-19 / TiDBEngineer.
+
 - Decision: extend the existing actual time-family host with CONVERT_TZ arity3
   and consuming actual text stages; retain the original pure SDK kernel as the
   sole parser/zone/format owner used by both actual-value and explicit wire entries.
@@ -174,6 +201,21 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7p retires all remaining Ready calls in time_fn/add_sub.rs and the now-unused
+scoped Ready adapter. Four names/five source arities use actual shared kernels
+with original signature, argument cast, callback, short-circuit and return rules.
+All1345032 independent pairs passed before retirement, hash D12EB9991F65CDD5;
+that checksum remains unchanged after the explicit zero-year work correction.
+Final frontend61878 has1716 passes/exact3 inherited failures/95 ignored/all258
+batch; SDK87346 has1123 passes/exact1 inherited/1 ignored; Projection62568 has26
+passes and a new13-root mixed group under both flags/workers0/2. Provider and
+finite-work guards pass; final frontend346 and clippy89 expression/171 all warning
+titles exactly match N7o. Lint, both14-file pinned formatters, unchanged fixtures
+and both diff checks pass. Receipt rust/docs/evidence/no-fallback-n7p.md records
+commands and limitations. This is a local DCO checkpoint with no push. Generic
+fallback, format-source coverage, unistore, malformed/unsupported shapes,
+inherited failures and semantic/full-server validation remain open globally.
 
 N7o closes CONVERT_TZ direct and canonical sources locally. All697356 independent
 old/new comparisons passed before direct retirement; immutable three-timezone
@@ -3042,3 +3084,59 @@ its archive/log is evidence, not a test to regenerate. Resume from current trees
 never rerun applied /tmp/n7o-candidate.py. Only local DCO commits are authorized.
 All global remaining function, fallback, unistore, malformed/unsupported-source,
 semantic and full-server work remains active.
+
+
+## N7p milestone: complete remaining time arithmetic handoffs
+
+The four frontend time_fn/add_sub.rs functions ADDTIME/SUBTIME, TIMESTAMP and
+TIMESTAMPADD now call the actual native value layer in
+rust/crates/tidb-expr/src/tikv/duration_construction_value.rs. All remaining Ready
+calls in that module are gone. The last dependent-stage adapter
+`evaluate_prepared_args_scoped_in` and its re-export are removed; the generic
+Ready compatibility router used by other families is unchanged. Native lowering
+carries original static FieldType kind pairs and constant-only row classification
+for time addition, and original argument types for TIMESTAMPADD's early date cast.
+All children/capabilities are eager before body conversion or callbacks. The
+source host closes demand before any conversion can error or unwind, copies only
+callback-bearing demanded inputs, and retains the actual third-argument datetime
+cast before reading TIMESTAMPADD's prefix. No store borrow spans callbacks.
+
+SDK native_time_add.rs and native_timestamp_add.rs return owned actual text or
+original warning dispositions, with parser-specific finite work checks. Their
+explicit wire workers encode those actual results under the unchanged original
+transport planners. NativeTimestampBaseValue in native_timestamp.rs owns a real
+parsed base and is consumed by RHS finishing; it cannot be replayed after a failed
+conversion. Existing temporal parsers, base duration arithmetic and month policy
+remain authorities. TIMESTAMP numeric-kind selection uses actual Datum kind,
+reads zone only after non-NULL first text and uses first-dot precision. Zero year
+still demands RHS coercion; its actual arithmetic then rejects before scanning
+RHS. ADDTIME/SUBTIME warnings append1292 even in strict mode. Result boundaries
+remain distinct: time addition parses only its original Datetime/Duration returns,
+TIMESTAMP always parses DateTime with no supplied result FSP, and TIMESTAMPADD
+adds no generic time-result parse. All run ordinary return-family conversion once.
+
+Original capture9853 recorded1345032 fresh-cache observations and checksum
+D12EB9991F65CDD5 in an isolated UTC child, including all static kind pairs, row
+paths, sign normalization, runtime kinds and context traces. It reproduced six
+representative Ready guards and all five canonical source refusals/fallbacks.
+Independent actual pair56346 compared all original/candidate outcomes while old
+controllers remained and passed before retirement. The actual paired artifact is
+n7p-actual-independent-pair.log; an earlier similarly named log was an original-only
+compile smoke, not paired proof. Pair/witness/original source archives live in the
+persistent agent workspace evidence/no-fallback/n7p-*. Never regenerate original
+hashes or rerun applied /tmp/n7p-*.py scripts. The permanent fixed witness remains.
+
+To validate from TiDB root, run RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb
+test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr
+--lib time_arithmetic, then the same command without the filter for the complete
+frontend. Use -p tidb-executor --lib projection::tests for mixed serial/parallel
+output. From TiKV root run RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tikv test
+--release --locked --offline -j8 -p tidb_query_expr --lib and the receipt's scoped
+make-run clippy command. Run make lint, both pinned14-file formatters, fixture
+length/hash checks and both git diff --check. Expected final results are exactly
+1716/3/95 frontend with all258 batch,1123/1/1 SDK and26 Projection; failures and
+warning title Counters must match the prior checkpoint exactly. The permanent
+zero-base resource regression must pass at0 work on an already-coerced1MiB RHS,
+while original frontend RHS conversion errors still surface. These checks do not
+certify physical NewDate columns, malformed metadata, full Go packages or server
+SQL. Keep the global goal active after signing this local checkpoint.
