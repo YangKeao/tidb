@@ -89,25 +89,6 @@ pub(super) fn unary_minus_integer(
         .map_err(super::unary_minus_overflow)
 }
 
-/// Select a fixed integer recipe from original operand/profile metadata only.
-/// Call inside preparation so the subtraction mode is read at its demand point.
-pub(super) fn prepare_integer_arithmetic(
-    op: BinaryOp,
-    a: Integer,
-    b: Integer,
-    ctx: &dyn crate::context::Columns,
-    unsigned_result: &std::cell::Cell<bool>,
-) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
-    debug_assert!(matches!(
-        op,
-        BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul
-    ));
-    let (operation, arguments, unsigned, _) =
-        super::arithmetic::prepare_integer(op, a, b, ctx).into_evaluated();
-    unsigned_result.set(unsigned);
-    (operation, arguments)
-}
-
 pub(crate) fn integer_binary(
     op: BinaryOp,
     a: Integer,
@@ -122,19 +103,8 @@ pub(crate) fn integer_binary(
         return super::quotient::integer(op, a, b, ctx);
     }
     if matches!(op, Plus | Minus | Mul) {
-        let unsigned_result = std::cell::Cell::new(false);
-        return crate::tikv::evaluate_prepared_args_in(
-            ctx,
-            || Ok(prepare_integer_arithmetic(op, a, b, ctx, &unsigned_result)),
-            |computed| {
-                let value = if unsigned_result.get() {
-                    computed.into_uint_bits_datum()
-                } else {
-                    computed.into_int_datum()
-                }?;
-                finish_arithmetic_result(op, value, false, ctx)
-            },
-        );
+        return super::arithmetic::prepare_integer(op, a, b, ctx)
+            .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes);
     }
     let bits_a = integer_bits(a);
     let bits_b = integer_bits(b);

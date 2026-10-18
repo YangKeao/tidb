@@ -257,108 +257,6 @@ impl PreparedArithmetic {
             }
         }
     }
-
-    /// Temporary adapter for callers not yet migrated to native HostFrames.
-    pub(super) fn into_evaluated(
-        self,
-    ) -> (
-        crate::tikv::EvaluatedBytesOp,
-        crate::tikv::EvaluatedArgs,
-        bool,
-        bool,
-    ) {
-        use crate::tikv::{EvaluatedArgs as Args, EvaluatedBytesOp as Op};
-        match self {
-            Self::Null => (
-                Op::BinaryArithmeticNullNative,
-                Args::NullWitness(None),
-                false,
-                true,
-            ),
-            Self::Integer {
-                operation,
-                left,
-                right,
-                force_signed,
-            } => {
-                let lu = matches!(left, Integer::Unsigned(_));
-                let ru = matches!(right, Integer::Unsigned(_));
-                let op = match operation {
-                    Operation::Add => match (lu, ru) {
-                        (false, false) => Op::AddIntSsNative,
-                        (false, true) => Op::AddIntSuNative,
-                        (true, false) => Op::AddIntUsNative,
-                        (true, true) => Op::AddIntUuNative,
-                    },
-                    Operation::Subtract => match (lu, ru, force_signed) {
-                        (false, false, _) => Op::SubIntSsNative,
-                        (false, true, false) => Op::SubIntSuNative,
-                        (true, false, false) => Op::SubIntUsNative,
-                        (true, true, false) => Op::SubIntUuNative,
-                        (false, true, true) => Op::SubIntSuForcedNative,
-                        (true, false, true) => Op::SubIntUsForcedNative,
-                        (true, true, true) => Op::SubIntUuForcedNative,
-                    },
-                    Operation::Multiply => {
-                        if lu || ru {
-                            Op::MulIntUnsignedNative
-                        } else {
-                            Op::MulIntSignedNative
-                        }
-                    }
-                    _ => unreachable!("prepared additive operation"),
-                };
-                (
-                    op,
-                    Args::Int2(
-                        Some(integer_bits(left) as i64),
-                        Some(integer_bits(right) as i64),
-                    ),
-                    (lu || ru) && !force_signed,
-                    false,
-                )
-            }
-            Self::Real(op, left, right) => (
-                match op {
-                    Operation::Add => Op::AddRealNative,
-                    Operation::Subtract => Op::SubRealNative,
-                    Operation::Multiply => Op::MulRealNative,
-                    _ => unreachable!("prepared additive operation"),
-                },
-                Args::Ieee754Bits2 {
-                    left: crate::tikv::ReadyIeee754Arg::Value(Some(left.to_bits())),
-                    right: crate::tikv::ReadyIeee754Arg::Value(Some(right.to_bits())),
-                },
-                false,
-                false,
-            ),
-            Self::Decimal(op, left, right) => (
-                match op {
-                    Operation::Add => Op::AddDecimalNative,
-                    Operation::Subtract => Op::SubDecimalNative,
-                    Operation::Multiply => Op::MulDecimalNative,
-                    _ => unreachable!("prepared additive operation"),
-                },
-                Args::Decimal2 {
-                    left: Some(left),
-                    right: Some(right),
-                },
-                false,
-                false,
-            ),
-            Self::Vector(op, left, right) => (
-                match op {
-                    Operation::Add => Op::AddVectorNative,
-                    Operation::Subtract => Op::SubVectorNative,
-                    Operation::Multiply => Op::MulVectorNative,
-                    _ => unreachable!("prepared additive operation"),
-                },
-                Args::NativeVector2(Some(left), Some(right)),
-                false,
-                false,
-            ),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -373,6 +271,7 @@ pub(super) mod tests {
     #[derive(Default)]
     struct Context {
         forced: bool,
+        level: Option<crate::ErrorLevel>,
         observations: RefCell<Vec<String>>,
     }
     impl crate::Columns for Context {
@@ -384,6 +283,10 @@ pub(super) mod tests {
                 .borrow_mut()
                 .push("no_unsigned_subtraction".into());
             self.forced
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.observations.borrow_mut().push("truncate_level".into());
+            self.level.unwrap_or(crate::ErrorLevel::Warn)
         }
         fn append_warning(&self, code: u16, message: &str) {
             self.observations
@@ -437,99 +340,181 @@ pub(super) mod tests {
             Datum::VectorFloat32(VectorFloat32::must_create(vec![])),
         ]
     }
+    fn additive_witness(
+        hash: &mut u64,
+        result: &Result<Datum, EvalError>,
+        observations: &[String],
+    ) {
+        for byte in format!("{result:?}|{observations:?}\n").bytes() {
+            *hash = (*hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
     #[test]
-    fn plain_additive_values_match_registered_program_values_errors_and_observations() {
+    fn plain_additive_callers_match_original_recipe_witness() {
+        let mut hash = 0xcbf29ce484222325;
         let fixtures = fixtures();
         let mut cases = 0;
-        for forced in [false, true] {
-            for unsigned in [[false, false], [false, true], [true, false], [true, true]] {
-                for op in [BinaryOp::Plus, BinaryOp::Minus, BinaryOp::Mul] {
-                    for left in &fixtures {
-                        for right in &fixtures {
-                            let reference = Context {
-                                forced,
-                                ..Context::default()
-                            };
-                            let context = Context {
-                                forced,
-                                ..Context::default()
-                            };
-                            let lhs = crate::expression::Expression::Constant(
-                                crate::constant::Constant::new(
-                                    left.clone(),
-                                    FieldType::new(FieldTypeCode::LongLong)
-                                        .with_unsigned(unsigned[0]),
-                                ),
-                            );
-                            let rhs = crate::expression::Expression::Constant(
-                                crate::constant::Constant::new(
-                                    right.clone(),
-                                    FieldType::new(FieldTypeCode::LongLong)
-                                        .with_unsigned(unsigned[1]),
-                                ),
-                            );
-                            let expected = eval_binary_full(
-                                op,
-                                left.clone(),
-                                right.clone(),
-                                4,
-                                Collation::Binary,
-                                Operands::of(&lhs, &rhs),
-                                &reference,
-                            );
-                            let actual =
-                                prepare(op, left.clone(), right.clone(), unsigned, &context)
-                                    .and_then(|value| value.compute(16 << 20));
-                            assert_eq!(
-                                actual, expected,
-                                "{op:?} {unsigned:?} forced={forced} {left:?} {right:?}"
-                            );
-                            if let (Ok(actual), Ok(expected)) = (&actual, &expected) {
-                                match (actual, expected) {
-                                    (Datum::Real(actual), Datum::Real(expected)) => {
-                                        assert_eq!(actual.to_bits(), expected.to_bits())
-                                    }
-                                    (Datum::Decimal(actual), Datum::Decimal(expected)) => {
-                                        assert_eq!(
-                                            actual.coefficient_bytes(),
-                                            expected.coefficient_bytes()
-                                        );
-                                        assert_eq!(actual.scale(), expected.scale());
-                                        assert_eq!(
-                                            actual.storage_scale(),
-                                            expected.storage_scale()
-                                        );
-                                    }
-                                    (
-                                        Datum::VectorFloat32(actual),
-                                        Datum::VectorFloat32(expected),
-                                    ) => assert_eq!(
-                                        actual
-                                            .elements()
-                                            .iter()
-                                            .map(|v| v.to_bits())
-                                            .collect::<Vec<_>>(),
-                                        expected
-                                            .elements()
-                                            .iter()
-                                            .map(|v| v.to_bits())
-                                            .collect::<Vec<_>>()
+        for level in [
+            crate::ErrorLevel::Warn,
+            crate::ErrorLevel::Error,
+            crate::ErrorLevel::Ignore,
+        ] {
+            for forced in [false, true] {
+                for unsigned in [[false, false], [false, true], [true, false], [true, true]] {
+                    for op in [BinaryOp::Plus, BinaryOp::Minus, BinaryOp::Mul] {
+                        for left in &fixtures {
+                            for right in &fixtures {
+                                let reference = Context {
+                                    forced,
+                                    level: Some(level),
+                                    ..Context::default()
+                                };
+                                let context = Context {
+                                    forced,
+                                    level: Some(level),
+                                    ..Context::default()
+                                };
+                                let lhs = crate::expression::Expression::Constant(
+                                    crate::constant::Constant::new(
+                                        left.clone(),
+                                        FieldType::new(FieldTypeCode::LongLong)
+                                            .with_unsigned(unsigned[0]),
                                     ),
-                                    _ => {}
+                                );
+                                let rhs = crate::expression::Expression::Constant(
+                                    crate::constant::Constant::new(
+                                        right.clone(),
+                                        FieldType::new(FieldTypeCode::LongLong)
+                                            .with_unsigned(unsigned[1]),
+                                    ),
+                                );
+                                let expected = eval_binary_full(
+                                    op,
+                                    left.clone(),
+                                    right.clone(),
+                                    4,
+                                    Collation::Binary,
+                                    Operands::of(&lhs, &rhs),
+                                    &reference,
+                                );
+                                additive_witness(
+                                    &mut hash,
+                                    &expected,
+                                    &reference.observations.borrow(),
+                                );
+                                let actual =
+                                    prepare(op, left.clone(), right.clone(), unsigned, &context)
+                                        .and_then(|value| value.compute(16 << 20));
+                                assert_eq!(
+                                    actual, expected,
+                                    "{op:?} {unsigned:?} forced={forced} {left:?} {right:?}"
+                                );
+                                if let (Ok(actual), Ok(expected)) = (&actual, &expected) {
+                                    match (actual, expected) {
+                                        (Datum::Real(actual), Datum::Real(expected)) => {
+                                            assert_eq!(actual.to_bits(), expected.to_bits())
+                                        }
+                                        (Datum::Decimal(actual), Datum::Decimal(expected)) => {
+                                            assert_eq!(
+                                                actual.coefficient_bytes(),
+                                                expected.coefficient_bytes()
+                                            );
+                                            assert_eq!(actual.scale(), expected.scale());
+                                            assert_eq!(
+                                                actual.storage_scale(),
+                                                expected.storage_scale()
+                                            );
+                                        }
+                                        (
+                                            Datum::VectorFloat32(actual),
+                                            Datum::VectorFloat32(expected),
+                                        ) => assert_eq!(
+                                            actual
+                                                .elements()
+                                                .iter()
+                                                .map(|v| v.to_bits())
+                                                .collect::<Vec<_>>(),
+                                            expected
+                                                .elements()
+                                                .iter()
+                                                .map(|v| v.to_bits())
+                                                .collect::<Vec<_>>()
+                                        ),
+                                        _ => {}
+                                    }
                                 }
+                                assert_eq!(
+                                    *context.observations.borrow(),
+                                    *reference.observations.borrow(),
+                                    "{op:?} {left:?} {right:?}"
+                                );
+                                cases += 1;
                             }
-                            assert_eq!(
-                                *context.observations.borrow(),
-                                *reference.observations.borrow(),
-                                "{op:?} {left:?} {right:?}"
-                            );
-                            cases += 1;
                         }
                     }
                 }
             }
         }
-        assert_eq!(cases, 24 * fixtures.len() * fixtures.len());
+        assert_eq!(cases, 72 * fixtures.len() * fixtures.len());
+        assert_eq!(
+            hash, 0x7246d6c6e2263fe1,
+            "original additive result/context witness"
+        );
+    }
+
+    #[test]
+    fn typed_integer_additive_values_match_original_recipe_witness() {
+        let bits = [0, 1, -1, i64::MIN, i64::MAX, 2, -2];
+        let mut hash = 0xcbf29ce484222325;
+        let mut cases = 0;
+        for forced in [false, true] {
+            for lu in [false, true] {
+                for ru in [false, true] {
+                    for op in [BinaryOp::Plus, BinaryOp::Minus, BinaryOp::Mul] {
+                        for left in bits {
+                            for right in bits {
+                                let a = if lu {
+                                    Integer::Unsigned(left as u64)
+                                } else {
+                                    Integer::Signed(left)
+                                };
+                                let b = if ru {
+                                    Integer::Unsigned(right as u64)
+                                } else {
+                                    Integer::Signed(right)
+                                };
+                                let reference = Context {
+                                    forced,
+                                    ..Context::default()
+                                };
+                                let context = Context {
+                                    forced,
+                                    ..Context::default()
+                                };
+                                let expected = integer_binary(op, a, b, &reference);
+                                let actual = prepare_integer(op, a, b, &context).compute(16 << 20);
+                                assert_eq!(actual, expected, "{op:?} {a:?} {b:?} forced={forced}");
+                                assert_eq!(
+                                    *context.observations.borrow(),
+                                    *reference.observations.borrow()
+                                );
+                                additive_witness(
+                                    &mut hash,
+                                    &expected,
+                                    &reference.observations.borrow(),
+                                );
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 1176);
+        assert_eq!(
+            hash, 0x6e729cf695ab6ca5,
+            "original typed additive result/context witness"
+        );
     }
 
     #[test]

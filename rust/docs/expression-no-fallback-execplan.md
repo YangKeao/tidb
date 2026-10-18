@@ -1276,3 +1276,49 @@ rerun. All build/test handles closed. Receipt:docs/evidence/no-fallback-n6q1.md.
 Sign this runnable source integration locally; no push or global completion.
 Next work includes remaining ready adapters, source/builtin/composition closure,
 other callers, global dispatch retirement and inherited-failure/final SQL gates.
+
+
+### N6r remaining additive adapters (2026-10-18, in progress)
+
+The canonical additive provider already uses direct computed values, but
+ordinary generic and typed-integer callers still build evaluated argument
+programs through PreparedArithmetic::into_evaluated. Capture independent old
+result/context witnesses before removing those two adapter call sites, retaining
+full IEEE bits, Decimal shape and vector elements. The existing32x32 fixture
+matrix covers24,576 combinations; add1176 typed integer signedness/mode/boundary
+comparisons. Preserve fixed old hashes and reproduction patch after switching;
+do not compare only two new helper callers. Keep genuine finite-value budgets
+and terminal resource causes, then fullfrontend/Projection/lint/format gates
+before a signed local runnable checkpoint. Explicit SDK recipe compatibility
+surfaces remain until their own consumers are retired.
+
+
+N6r initial25,752 old-vs-direct comparisons pass. Before switching, expand the
+32x32 generic matrix across Warn/Error/Ignore policies and observe actual
+truncate-level reads:73,728 generic plus1176 typed integer comparisons. The
+initial warning-only hash is preliminary evidence, not the final fixed witness.
+Production adapters are still intact during this capture.
+
+
+N6r deletion-before-switch proof completed:73,728 generic and1176 typed integer
+pairs matched the independently active old programs, including exact f64 bits,
+Decimal representation, vector bits and actual context events. Final OLD hashes
+are7246d6c6e2263fe1 and6e729cf695ab6ca5. Reproduction patch retained against
+TiDB223553c1/SDK6a36ba0. Generic and typed caller adapters now use the direct
+compute entry, and PreparedArithmetic::into_evaluated plus Cells/result packers
+were removed. Fixed old hashes remain asserted in tests; full regression and
+lint are running before signing. SDK production code is unchanged.
+
+
+### N6r verified outcome (2026-10-18)
+
+Deleted remaining generic/typed additive argument-program adapters after74,904
+independent old comparisons; fixed generic/typed witnesses remain active.
+Complete frontend1524 pass, exact same inherited4/95 ignored/zero filtered;
+all159 batch tests and old quotient witnesses pass. Production Projection25
+pass (28 mixed roots, flagsT/F, serial/two workers). make lint, three-file pinned
+formatting and both diff checks pass. All jobs closed. SDK source/datatype is
+unchanged; N6q0 full1068/same6/one ignored/clippy89 is reused, not rerun.
+Receipt:docs/evidence/no-fallback-n6r.md. Sign locally, no push; the global goal
+remains active, with remaining comparison/other adapters and builtin/source
+coverage, alternate dispatch retirement and final inherited/SQL gates ahead.

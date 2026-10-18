@@ -398,30 +398,6 @@ pub(crate) fn eval_binary_arithmetic_null_in(
         })
 }
 
-/// Remaining additive adapter; quotient values use the direct SDK entries.
-fn prepare_binary_arithmetic(
-    op: BinaryOp,
-    left: Datum,
-    right: Datum,
-    _increment: u32,
-    operands: Operands<'_>,
-    ctx: &dyn crate::context::Columns,
-    unsigned_result: &std::cell::Cell<bool>,
-    input_was_null: &std::cell::Cell<bool>,
-) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
-    let (operation, arguments, unsigned, null) = arithmetic::prepare(
-        op,
-        left,
-        right,
-        [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
-        ctx,
-    )?
-    .into_evaluated();
-    unsigned_result.set(unsigned);
-    input_was_null.set(null);
-    Ok((operation, arguments))
-}
-
 fn eval_binary_arithmetic_in(
     op: BinaryOp,
     l: Datum,
@@ -442,43 +418,14 @@ fn eval_binary_arithmetic_in(
         )?
         .compute(op, div_precision_increment, maximum, ctx);
     }
-    use crate::tikv::EvaluatedBytesResult;
-    let unsigned_result = std::cell::Cell::new(false);
-    let input_was_null = std::cell::Cell::new(false);
-    crate::tikv::evaluate_prepared_args_in(
+    arithmetic::prepare(
+        op,
+        l,
+        r,
+        [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
         ctx,
-        || {
-            prepare_binary_arithmetic(
-                op,
-                l,
-                r,
-                div_precision_increment,
-                operands,
-                ctx,
-                &unsigned_result,
-                &input_was_null,
-            )
-        },
-        |computed| {
-            let value = match computed {
-                value @ EvaluatedBytesResult::Int(_) => {
-                    if unsigned_result.get() {
-                        value.into_uint_bits_datum()
-                    } else {
-                        value.into_int_datum()
-                    }
-                }
-                value @ EvaluatedBytesResult::Ieee754Bits(_) => Ok(value
-                    .into_ieee754_bits()?
-                    .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits)))),
-                value @ EvaluatedBytesResult::Decimal { .. } => value.into_decimal_datum(),
-                value @ EvaluatedBytesResult::NativeVector(_) => value.into_native_vector_datum(),
-                // The existing typed packer rejects every other computed kind.
-                other => other.into_int_datum(),
-            }?;
-            finish_arithmetic_result(op, value, input_was_null.get(), ctx)
-        },
-    )
+    )?
+    .compute(tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes)
 }
 
 /// A non-NULL MOD, / or integer DIV pair yields NULL only when the worker found
