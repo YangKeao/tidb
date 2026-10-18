@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6h: control/comparison arithmetic row demand, bounded native batch publication staging and scoped typed controls below window roots. Both native demand/publication defects and the SDK restriction were reproduced before implementation.448 root comparisons,72 SQL additions,126 batch/full1485same4/95ignored, core14window/full1058same6/1ignored, Projection25, lint/scopedclippy89warnings/pinnedfmt/diff pass. SDK signed local cff06c7; receipt rust/docs/evidence/no-fallback-n6h.md. Other batch publication owners and global alternate-driver retirement remain open.
+
 - [x] N6g whole-child unary integration: three explicit unary-window descriptors (integer ABS, integer-source Decimal CAST, source-typed JSON CAST) use the same SDK frame. Core11window/full1055same6/1ignored and scopedclippy89warnings pass. Native providers share the extracted complete source-vector normalization owner with arithmetic;71 actual provider/input-failure comparisons plus108 resource cases and early unsupported-source/large-Decimal formatting guards pass. New root/edge lowering selects these actual phases instead of the former three exclusions. Standalone Decimal CAST priority now has a genuine single-argument window phase over the same strict column-padding import, before the original flag point. Existing122batch tests pass after source integration; new336root/nested native comparisons pass. Full frontend1483same4/95ignored, ProductionProjection24, core1055same6/1ignored, scopedclippy/lint/pinnedfmt/diff pass. Receipt rust/docs/evidence/no-fallback-n6g.md.
 
 - [x] N6f closed arithmetic root integration: closed arithmetic roots select authentic Row/Bulk programs before values, plus a typed Decimal priority stage in the SAME SDK driver before the original per-output flag getter. Pure integer-column CAST layout is shared with the old owner. Native Unsupported alone selects the next semantic phase; errors remain terminal. Root673/fast-source150/window-provider99 comparisons pass, plus exact resource/purpose guards. Complete frontend1478same4/95ignored, Projection23, lint/pinnedfmt/diff passed. General bulk ABS/DecimalCAST/JSONCAST and control wrapping remain next work.
@@ -87,6 +89,10 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Keep native row operand demand separate from native batch output publication. A control/comparison root can require both. Stage final owned results only for the eligible promoted batch owner; global row mode retains its native prefix behavior. SDK/resource/SQL errors stay terminal and discard pending batch output.
+  Rationale: The real native comparison demonstrated successful NULL short-circuiting and a different late-error output prefix; neither changing only the arithmetic kernel nor removing the structural guard preserves both contracts.
+  Date/Author: 2026-10-18 / TiDBEngineer.
 
 
 - Decision: Start by making resource/contract/evaluation preparation failures
@@ -835,3 +841,42 @@ Additional12 rewritten SQL forms and a production mixed-column Projection test
 pass in full frontend1483same4/95ignored, Projection24 and lint. Do not mark the goal
 complete: control wrapping, other functions/callers, dynamic sources and ordered
 effectful multi-output execution still require implementation and retirement.
+
+### N6h control-demand investigation (2026-10-18)
+
+The native comparison reproduced a real mismatch before changing production:
+IF(1, NULL-column + (MAX_INT * 2), 0) succeeds natively but the typed unified
+control subtree evaluates the overflowing RHS. Production control/comparison
+roots with a closed native-value arithmetic subtree now select RootValue;
+explicit old test-consumer policy is unchanged. A second comparison showed that
+native eligible batches defer output publication across those row evaluations,
+while global row mode may retain a successful prefix. PendingNativeOutput
+therefore stages owned final Datums only for these eligible batch roots, under
+checked cell capacity and conservative payload allowance before cloning. SQL,
+SDK and resource failures never publish this pending batch or retry evaluation.
+
+The remaining SDK change must scope typed control operands inside an explicit
+window root, preserving original occurrences and full-parent argument phases.
+Its RED fixtures cover all four selection controls, a logical condition,
+Window→control→Window,2050 occurrences, Fresh/Reuse and failure/resource cleanup.
+Root control and legacy entry limits must remain intact; allowing multiple rows
+in a ControlFrame directly is not the implementation.
+
+
+### N6h verified outcome (2026-10-18)
+
+All new demand/publication/protocol regressions pass. Full frontend1485 and
+core1058 pass with exactly the inherited four/six failure names,95/1ignored;
+these are intentionally reported as non-green full suites. All126 batch and
+14 window protocol tests, production Projection25, lint, scoped clippy and both
+pinned format/diff checks pass. The SDK final test additionally exercises
+Int/Real/Decimal/Time/Duration control outputs through Coalesce→IsNull→Substring
+inside the window graph, including a wide Decimal value. Commit cff06c7 is local
+and signed off. No push is authorized.
+
+The next native comparison must audit output publication for other eligible
+row-demand roots, including ABSReal/Decimal, and ordinary typed roots whose
+selection exceeds1024. Do not infer their publication/demand contract from the
+control fix. Broader functions, deferred/type-before-value sources, effectful
+multi-output ordering and other callers remain required before alternate
+execution can be removed globally.

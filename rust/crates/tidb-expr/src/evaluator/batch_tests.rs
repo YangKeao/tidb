@@ -4401,7 +4401,7 @@ fn native_output_checks_every_handle_before_publishing_any_cell() {
     for bad in [Some(wrong_role), Some(wrong_row), None] {
         let values = VectorValue::Bytes(ChunkedVecBytes::from(vec![Some(good.clone()), bad]));
         let error = worker
-            .write_native_output(values, &[0, 1], &mut output, &store)
+            .write_native_output(values, &[0, 1], &mut output, &store, None)
             .unwrap_err();
         assert!(matches!(
             error.local_error(),
@@ -4412,7 +4412,7 @@ fn native_output_checks_every_handle_before_publishing_any_cell() {
     worker.max_materialization_retained_bytes = 0;
     let values = VectorValue::Bytes(ChunkedVecBytes::from(vec![Some(good)]));
     let error = worker
-        .write_native_output(values, &[0], &mut output, &store)
+        .write_native_output(values, &[0], &mut output, &store, None)
         .unwrap_err();
     assert!(matches!(
         error.local_error(),
@@ -8311,6 +8311,12 @@ fn rewritten_arithmetic_roots_use_canonical_priority_and_bulk_row_profiles() {
         "abs(i-1)+1",
         "cast(i as json)+r",
         "cast((i+1) as decimal(3,1))",
+        "if(1, i + (9223372036854775807 * 2), 0)",
+        "coalesce(i + (9223372036854775807 * 2), 7)",
+        "ifnull(i + (9223372036854775807 * 2), 7)",
+        "case when 1 then i + (9223372036854775807 * 2) else 0 end",
+        "isnull(i + (9223372036854775807 * 2))",
+        "(i + (9223372036854775807 * 2)) = 1",
     ] {
         let Stmt::Query(query) = tidb_parser::parse(&format!("select {sql}")).unwrap() else {
             panic!("query")
@@ -8492,4 +8498,113 @@ fn native_unary_arithmetic_nested_windows_keep_child_phases_before_conversion() 
             compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
         }
     }
+}
+
+#[test]
+fn native_control_roots_keep_selected_arithmetic_null_demand() {
+    let selected = || plus(column(0), mul(column(1), column(2)));
+    let roots = [
+        call("if", ty(), vec![int(1), selected(), int(0)]),
+        call("coalesce", ty(), vec![selected(), int(7)]),
+        call("ifnull", ty(), vec![selected(), int(7)]),
+        call("case", ty(), vec![int(1), selected(), int(0)]),
+        call("if", ty(), vec![int(0), selected(), int(7)]),
+        call("coalesce", ty(), vec![int(7), selected()]),
+        call("ifnull", ty(), vec![int(7), selected()]),
+        call("case", ty(), vec![int(0), selected(), int(7)]),
+        call("and", ty(), vec![selected(), int(0)]),
+        call("or", ty(), vec![selected(), int(1)]),
+        call("and", ty(), vec![int(0), selected()]),
+        call("or", ty(), vec![int(1), selected()]),
+        call("isnull", ty(), vec![selected()]),
+        call("not", ty(), vec![selected()]),
+        call("eq", ty(), vec![selected(), int(1)]),
+        call("nulleq", ty(), vec![selected(), null()]),
+    ];
+    let schema = vec![ty(); 3];
+    let rows = vec![
+        vec![Datum::Null, Datum::Int(i64::MAX), Datum::Int(2)],
+        vec![Datum::Int(1), Datum::Int(i64::MAX), Datum::Int(2)],
+        vec![Datum::Int(2), Datum::Int(3), Datum::Int(4)],
+    ];
+    let selections = [
+        vec![],
+        vec![0],
+        vec![0, 0],
+        vec![1],
+        vec![0, 1],
+        vec![2, 0, 2],
+        (0..2050).map(|index| [2, 0, 2][index % 3]).collect(),
+    ];
+    for root in roots {
+        for selection in &selections {
+            compare_arithmetic_profile(root.clone(), &schema, &rows, selection);
+        }
+    }
+}
+
+#[test]
+fn native_control_batch_staging_is_bounded_terminal_and_reusable() {
+    let root = call("coalesce", ty(), vec![plus(column(0), int(1)), int(7)]);
+    let owner = suite(root);
+    let schema = vec![ty()];
+    let mut prepared = PreparedBatchSuite::compile(
+        &owner,
+        &schema,
+        true,
+        991,
+        limits(),
+        ExecutionLimits::default(),
+        1 << 20,
+    )
+    .unwrap();
+    assert!(prepared.workers[0].defer_batch_publication);
+    let rows = vec![vec![Datum::Int(2)], vec![Datum::Null]];
+    let selection: Vec<_> = (0..2050).map(|row| row % 2).collect();
+    // Enough for the selection, imported values and one result; insufficient
+    // for an owned complete result batch. Failure must leave output empty.
+    prepared.workers[0].max_materialization_retained_bytes = 32 * 1024;
+    let ctx = ArithmeticProfilesContext::default();
+    ctx.enabled.set(true);
+    let mut input = chunk(&schema, &rows);
+    input.set_sel(Some(selection.clone()));
+    let mut output = output_for(&ty());
+    let error = prepared
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.local_error(),
+        Some(LocalError::ResourceLimit(_))
+    ));
+    assert_eq!(output.num_rows(), 0);
+    assert!(
+        prepared.workers[0].windows > 0,
+        "refusal occurs after genuine row execution"
+    );
+    prepared.workers[0].max_materialization_retained_bytes = 1 << 20;
+    prepared
+        .run(
+            &owner,
+            &ctx,
+            &mut EvalContext::default(),
+            &mut input,
+            &mut output,
+            &schema,
+        )
+        .unwrap();
+    assert_eq!(output.num_rows(), selection.len());
+    assert_eq!(
+        values(&output),
+        selection
+            .into_iter()
+            .map(|row| Datum::Int(if row == 0 { 3 } else { 7 }))
+            .collect::<Vec<_>>()
+    );
 }

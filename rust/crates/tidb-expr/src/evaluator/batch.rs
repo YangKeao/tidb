@@ -356,11 +356,14 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
+    let row_control = native_selection_operation(function).is_some()
+        || native_comparison_operation(function.func_name.lowercase()).is_some();
     if native_arithmetic_operation(function.func_name.lowercase()).is_none()
         && !matches!(
             function.func_name.lowercase(),
             "abs" | "cast_decimal" | "cast_json"
         )
+        && !row_control
     {
         return Ok(None);
     }
@@ -368,6 +371,20 @@ fn promoted_native_root_view(
         return Ok(None);
     };
     profile_shape(root, limits)?;
+    if row_control {
+        // Native controls/comparisons invoke their selected operands per row,
+        // even when the outer batch flag is enabled. An eager typed arithmetic
+        // child would evaluate a skipped RHS after NULL and can raise an error.
+        // Keep these subtrees in their genuine row domain in the same driver.
+        return Ok(
+            (contains_native_arithmetic(root, limits.tree.max_depth, &mut {
+                limits.tree.max_nodes
+            }) && native_value_tree_complete(root, limits.tree.max_depth, &mut {
+                limits.tree.max_nodes
+            }))
+            .then_some(NativeView::RootValue),
+        );
+    }
     let target = field.eval_type();
     Ok(if crate::scalar_function::batch_supported(root, target) {
         let view = NativeView::BulkRoot(target);
@@ -2640,7 +2657,17 @@ struct RowProfile {
     source: Arc<BatchSource>,
     program: LocalBatchProgram,
 }
+// Native eligible batches publish only after all rows have succeeded, even
+// when each control subtree itself has row demand. This is output staging,
+// not a second expression executor.
+#[derive(Default)]
+struct PendingNativeOutput {
+    values: Vec<Datum>,
+    payload_bytes: usize,
+}
+
 pub(crate) struct PreparedBatch {
+    defer_batch_publication: bool,
     fast_profile: Option<decimal_fast_source::PreparedFast>,
     row_profile: Option<RowProfile>,
     source: Arc<BatchSource>,
@@ -2787,6 +2814,15 @@ impl PreparedBatch {
         };
         let window_size = program.max_batch_size();
         Ok(Self {
+            defer_batch_publication: promote
+                && view == Some(NativeView::RootValue)
+                && matches!(root, Expression::ScalarFunction(function)
+                    if native_selection_operation(function).is_some()
+                        || native_comparison_operation(function.func_name.lowercase()).is_some())
+                && crate::scalar_function::batch_supported(
+                    root,
+                    root.static_type().unwrap().eval_type(),
+                ),
             fast_profile,
             row_profile,
             source,
@@ -2944,6 +2980,7 @@ impl PreparedBatch {
         selection: &[usize],
         output: &mut Chunk,
         store: &RefCell<NativeValueStore>,
+        mut pending: Option<&mut PendingNativeOutput>,
     ) -> Result<()> {
         let VectorValue::Bytes(values) = values else {
             return Err(binding("native result is not a value handle vector").into());
@@ -2983,7 +3020,41 @@ impl PreparedBatch {
                 NativeValueRole::Output,
                 origin(occurrence, input_row),
             )?;
-            output.append_datum(self.source.output_index, value);
+            if let Some(pending) = pending.as_deref_mut() {
+                let payload_bytes = pending
+                    .payload_bytes
+                    .checked_add(
+                        native_values::native_payload_bytes(value)?
+                            .checked_mul(2)
+                            .ok_or_else(|| resource("pending native payload allowance overflow"))?,
+                    )
+                    .ok_or_else(|| resource("pending native payload total overflow"))?;
+                let count = pending
+                    .values
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| resource("pending native result count overflow"))?;
+                self.accept_retained(
+                    bytes
+                        .checked_add(array_bytes::<Datum>(count)?)
+                        .and_then(|bytes| bytes.checked_add(payload_bytes))
+                        .ok_or_else(|| resource("pending native result size overflow"))?,
+                )?;
+                pending
+                    .values
+                    .try_reserve(1)
+                    .map_err(|_| resource("pending native result reservation failed"))?;
+                self.accept_retained(
+                    bytes
+                        .checked_add(array_bytes::<Datum>(pending.values.capacity())?)
+                        .and_then(|bytes| bytes.checked_add(payload_bytes))
+                        .ok_or_else(|| resource("pending native result capacity overflow"))?,
+                )?;
+                pending.values.push(value.clone());
+                pending.payload_bytes = payload_bytes;
+            } else {
+                output.append_datum(self.source.output_index, value);
+            }
         }
         Ok(())
     }
@@ -3779,6 +3850,8 @@ impl PreparedBatch {
         row_domain: bool,
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
+        let mut pending =
+            (!row_domain && self.defer_batch_publication).then(PendingNativeOutput::default);
         let use_row = row_domain && self.row_profile.is_some();
         let source = Arc::clone(if use_row {
             &self
@@ -3883,11 +3956,17 @@ impl PreparedBatch {
                     native_values
                         .as_ref()
                         .ok_or_else(|| binding("native output has no store"))?,
+                    pending.as_mut(),
                 )?;
             } else {
                 self.write_output(values, selection, output, self.source.output_index)?;
             }
             start = end;
+        }
+        if let Some(pending) = pending {
+            for value in &pending.values {
+                output.append_datum(self.source.output_index, value);
+            }
         }
         Ok(())
     }

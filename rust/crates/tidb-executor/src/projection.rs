@@ -2517,4 +2517,98 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn control_roots_keep_null_arithmetic_demand_in_serial_parallel_projection() {
+        let integer = longlong();
+        let column = |index: usize| {
+            let mut value = Column::new(index as i64 + 1, integer.clone());
+            value.index = index as i64;
+            Expression::Column(value)
+        };
+        let literal =
+            |value| Expression::Constant(Constant::new(Datum::Int(value), integer.clone()));
+        let call = |name: &str, field, args| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let selected = || {
+            call(
+                "plus",
+                integer.clone(),
+                vec![
+                    Expression::Constant(Constant::new(Datum::Null, integer.clone())),
+                    call("mul", integer.clone(), vec![literal(i64::MAX), column(1)]),
+                ],
+            )
+        };
+        let roots = vec![
+            call(
+                "if",
+                integer.clone(),
+                vec![literal(1), selected(), literal(0)],
+            ),
+            call("coalesce", integer.clone(), vec![selected(), column(0)]),
+            call(
+                "case",
+                integer.clone(),
+                vec![literal(1), selected(), literal(0)],
+            ),
+            call("eq", integer.clone(), vec![selected(), column(0)]),
+        ];
+        let fields = vec![integer.clone(); roots.len()];
+        for enabled in [true, false] {
+            let reference =
+                crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+            let suite = EvaluatorSuite::new(roots.clone(), false);
+            let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+            for row in 0..3 {
+                input.append_int64(0, row);
+                input.append_int64(1, row * 2);
+            }
+            let mut expected = Chunk::new_with_capacity(&fields, 0);
+            suite.run(&reference, &mut input, &mut expected).unwrap();
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context =
+                    crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                let (source, _) = NumberSource::new(3, 3);
+                let schema = Schema::new(
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(index, field)| Column::new(index as i64 + 1, field.clone()))
+                        .collect(),
+                );
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(schema, 1, 3, 1024),
+                    roots.clone(),
+                    source,
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                projection.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), expected.num_rows());
+                for row in 0..output.num_rows() {
+                    for column in 0..fields.len() {
+                        assert_eq!(
+                            output.get_row(row).is_null(column),
+                            expected.get_row(row).is_null(column)
+                        );
+                        assert_eq!(
+                            output.column(column).get_raw(row).as_ref(),
+                            expected.column(column).get_raw(row).as_ref(),
+                            "flag={enabled} workers={workers} row={row} column={column}"
+                        );
+                    }
+                }
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
 }
