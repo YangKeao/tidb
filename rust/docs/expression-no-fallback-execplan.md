@@ -1943,3 +1943,41 @@ and remaining limitations. Projection77779 closed0 all25pass/four bounded mixed
 new test typo cast_string, corrected to existingcast_char TESTONLY; production
 unchanged after full checks. Finalfmt/diffs pass. Coherent signed local checkpoint,
 no push. Global fallback/remaining families and inherited failures remain incomplete.
+
+### N7a JSON_SUM_CRC32 actual documents and sources
+
+Signed N6z6263a88b/93d7375 is progress; JSON_SUM_CRC32 still serializes an actual
+parsed document into a separate Ready program which reparses it. Original10926
+value/error/cache observations fixede762b2ff1936744f; never regenerate from new
+code. Old source text/JSON/numeric all match SQL/context then fail1refusal/
+1fallback; actual rejecting-cache trap also fails. Original production/tests and
+test-only reproduction patch retained; cached apply-check at6263a88b passes.
+New actual borrowed-document/input SDK services are added alongside old workers;
+independent OLD-vs-new10926 comparison is running58323 BEFORE wire/caller changes.
+Preserve ordinary document admission (SQL NULL vs JSON null), exact first array
+scalar/homogeneity error, integer/u64/f64 Go-g spelling and wrapping checksum.
+Bound demanded parse/Decimal display/number formatting before work, without
+invented string copies or skipped later work. Invalid UTF-8 precedes parser
+allocation checks. Then retire serialized/report caller, share actual wire
+computation under unchanged ordinary validation/bounds, integrate genuine source
+closure/parents/provenance/resources/cancel/reuse, mixed Projection and final
+full gates. No push/subagents; global goal remains incomplete.
+
+N7a independent10926 proof66501 closed0 BEFOREcaller/wireswitch; originalfixed
+hash unchanged. Afterretirement17707 closed0 all9source/value/provider checks:
+3sourceREDs+Readytrap green, native/typedInt carriers with exact provenance,
+wrong/stale role/node/occurrence before Decimal work, huge parse/display refusal,
+invalidUTF8/unsupportedRaw earlier SQLerror, repeatedcancel/reuse/NULL. Fullfront
+1613pass EXACTsame4/95ignored/0filtered/all201batch; SDK1084same6; Projection25
+fivebounded31/8/9/5/5groups bothflagsworkers0/2 PASS. Lint/pinnedfmt15/bothdiffpass.
+Finalreview caughtfloatformat's fixed Display intermediate (up to327chars) before
+shortGo-goutput; increaseONLYdemandedfloatformatwork128→4096 beforeformat,
+keepInt128, addMAX/minsubnormal+/- actualDisplay>128/refuse128/succeed4096probes.
+No production codec/text semantics changed, no old hash regenerated. FINAL
+fullfront40383 closed1011613pass EXACTsame4/95ignored/0filtered/all201batch,
+SDK13443 closed1011084pass EXACTsame6/1ignored/0filtered, clippy35853 closed0
+89exactdiagnostictitles unchanged, Projection49375 closed0 all25pass fivebounded
+mixedgroups31/8/9/5/5 bothflags workers0/2. Lint/static15Rustfiles/bothdiffpass.
+Guide/receiptN7a final; coherent signed local checkpoint, no push. All jobs closed.
+Global goal remains active with remaining date families/source closure and
+inherited failures pending; no global completion claim.

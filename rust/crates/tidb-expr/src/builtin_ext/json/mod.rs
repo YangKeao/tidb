@@ -389,3 +389,5 @@ pub(crate) fn eval_pb(
         _ => Err(EvalError::Unsupported("unknown JSON protobuf signature")),
     }
 }
+
+pub(crate) use value::coercion_error as json_coercion_error;

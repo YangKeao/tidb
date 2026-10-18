@@ -139,7 +139,9 @@ pub(crate) use interval::{
     prepare_interval_number_in,
 };
 mod json_sum_crc32;
-pub(crate) use json_sum_crc32::eval_json_sum_crc32_in;
+#[cfg(test)]
+mod json_sum_crc32_value_tests;
+pub(crate) use json_sum_crc32::{eval_json_sum_crc32_in, json_sum_crc32_bounded};
 mod legacy_date_arithmetic;
 pub use legacy_date_arithmetic::{
     eval_legacy_date_arithmetic_duration_in, eval_legacy_date_arithmetic_text_in,

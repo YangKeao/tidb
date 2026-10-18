@@ -2855,6 +2855,43 @@ mod tests {
         let charset_mix = std::iter::once(0)
             .chain(charset_start..roots.len())
             .collect::<Vec<_>>();
+        let jsonsum_start = roots.len();
+        let checksum = || {
+            call(
+                "json_sum_crc32",
+                integer.clone(),
+                vec![call(
+                    "if",
+                    string.clone(),
+                    vec![
+                        column(0),
+                        Expression::Constant(Constant::new(
+                            Datum::new_string("[1,2,3]"),
+                            string.clone(),
+                        )),
+                        Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                    ],
+                )],
+            )
+        };
+        roots.push(checksum());
+        fields.push(integer.clone());
+        roots.push(call("plus", integer.clone(), vec![checksum(), column(1)]));
+        fields.push(integer.clone());
+        roots.push(call(
+            "ifnull",
+            integer.clone(),
+            vec![
+                checksum(),
+                Expression::Constant(Constant::new(Datum::Int(7), integer.clone())),
+            ],
+        ));
+        fields.push(integer.clone());
+        roots.push(call("cast_char", string.clone(), vec![checksum()]));
+        fields.push(string.clone());
+        let jsonsum_mix = std::iter::once(0)
+            .chain(jsonsum_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (roots[..31].to_vec(), fields[..31].to_vec()),
@@ -2884,6 +2921,16 @@ mod tests {
                     .map(|&index| roots[index].clone())
                     .collect(),
                 charset_mix
+                    .iter()
+                    .map(|&index| fields[index].clone())
+                    .collect(),
+            ),
+            (
+                jsonsum_mix
+                    .iter()
+                    .map(|&index| roots[index].clone())
+                    .collect(),
+                jsonsum_mix
                     .iter()
                     .map(|&index| fields[index].clone())
                     .collect(),

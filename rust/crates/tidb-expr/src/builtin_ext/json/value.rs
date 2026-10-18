@@ -37,7 +37,7 @@ fn source(field_type: Option<&FieldType>) -> Option<NativeJsonCoercionSource<'_>
     })
 }
 
-fn coercion_error(error: NativeJsonCoercionError) -> EvalError {
+pub(crate) fn coercion_error(error: NativeJsonCoercionError) -> EvalError {
     match error {
         NativeJsonCoercionError::Unsupported(message) => EvalError::Unsupported(message),
         NativeJsonCoercionError::FloatOverflow => EvalError::FloatOverflow,

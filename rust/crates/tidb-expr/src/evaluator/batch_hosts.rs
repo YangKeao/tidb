@@ -30,6 +30,8 @@ mod arithmetic_window;
 mod charset_source;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
+#[path = "batch_json_sum_crc32.rs"]
+mod json_sum_crc32_source;
 pub(super) use charset_source::NativeCharsetMetadata;
 #[path = "batch_extremum.rs"]
 mod extremum_source;
@@ -110,6 +112,12 @@ pub(super) enum NativeHostMetadata {
     Interval(NativeIntervalMetadata),
     Extremum(NativeExtremumMetadata),
     Charset(NativeCharsetMetadata),
+    JsonSumCrc32 {
+        argument_node: usize,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: Option<NativeValueRole>,
+    },
     RawValues {
         operation: NativeRawValueOperation,
         name: Box<str>,
@@ -207,7 +215,8 @@ impl NativeHostMetadata {
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
             Self::Charset(metadata) => Some(&metadata.result_type),
-            Self::RawValues { result_type, .. }
+            Self::JsonSumCrc32 { result_type, .. }
+            | Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
             | Self::Selection { result_type, .. }
             | Self::Comparison { result_type, .. }
@@ -226,6 +235,7 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    JsonSumCrc32,
     Charset {
         source: Option<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -304,6 +314,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::JsonSumCrc32 => Ok(Some(0)),
             SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
             SqlDemand::Interval { search } => Ok(match search.step() {
                 tidb_query_expr::NativeIntervalValueStep::Probe { index, .. } => Some(index),
@@ -332,6 +343,7 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::JsonSumCrc32 => Err(binding("JSON checksum cannot retain byte prefix")),
             SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
             SqlDemand::Extremum { .. }
             | SqlDemand::Interval { .. }
@@ -1929,6 +1941,20 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             ));
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::JsonSumCrc32Native { typed } => {
+                let Some(NativeHostMetadata::JsonSumCrc32 { output_role, .. }) =
+                    self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("JSON checksum descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || invocation.arg_types.len() != 1
+                    || typed != output_role.is_none()
+                {
+                    return Err(binding("JSON checksum source descriptor differs"));
+                }
+                SqlDemand::JsonSumCrc32
+            }
             SqlBatchHostOperation::IntervalNative => self.start_interval(&invocation)?,
             SqlBatchHostOperation::ExtremumNative => self.start_extremum(&invocation)?,
             SqlBatchHostOperation::CharsetNative(_) => self.start_charset(&invocation)?,
@@ -2297,6 +2323,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host reply differs from its demanded argument".into(),
             ));
+        }
+        if matches!(task.demand, SqlDemand::JsonSumCrc32) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("JSON checksum source cannot be wire NULL"));
+            };
+            return self.resume_json_sum_crc32(id, token);
         }
         if matches!(task.demand, SqlDemand::Charset { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

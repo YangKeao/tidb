@@ -12350,3 +12350,303 @@ fn native_charset_context_callback_releases_store_and_gb_default_is_read_after_c
         provider.cancel(&task);
     }
 }
+
+#[test]
+fn native_json_sum_crc32_text_source_requires_canonical_driver() {
+    let field = string_ty();
+    compare_typed_profile(
+        call("json_sum_crc32", ty(), vec![typed_column(0, &field)]),
+        &[field],
+        &[
+            vec![Datum::new_string("[1,2,3]")],
+            vec![Datum::Null],
+            vec![Datum::new_string("[1,\"a\",true]")],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_json_sum_crc32_json_source_requires_canonical_driver() {
+    let field = FieldType::new(FieldTypeCode::Json);
+    compare_typed_profile(
+        call("json_sum_crc32", ty(), vec![typed_column(0, &field)]),
+        &[field],
+        &[
+            vec![Datum::Json(
+                tidb_datatype::BinaryJSON::parse("[1,2,3]").unwrap(),
+            )],
+            vec![Datum::Null],
+            vec![Datum::Json(
+                tidb_datatype::BinaryJSON::parse("null").unwrap(),
+            )],
+        ],
+        &[0, 1, 2],
+    );
+}
+#[test]
+fn native_json_sum_crc32_numeric_source_error_requires_canonical_driver() {
+    compare_typed_profile(
+        call("json_sum_crc32", ty(), vec![column(0)]),
+        &[ty()],
+        &[vec![Datum::Int(1)], vec![Datum::Null]],
+        &[1, 0],
+    );
+}
+
+#[test]
+fn native_json_sum_crc32_parents_keep_partial_output_demands_and_reuse() {
+    let string = string_ty();
+    let inside = || call("json_sum_crc32", ty(), vec![typed_column(0, &string)]);
+    for root in [
+        inside(),
+        call("plus", ty(), vec![inside(), column(1)]),
+        call("ifnull", ty(), vec![inside(), int(7)]),
+    ] {
+        let rows = vec![
+            vec![Datum::new_string("[1,2,3]"), Datum::Int(1)],
+            vec![Datum::Null, Datum::Int(2)],
+            vec![Datum::new_string("[1,\"a\",true]"), Datum::Int(3)],
+        ];
+        for selection in [
+            vec![],
+            vec![0, 1, 0],
+            vec![2],
+            vec![0; 2050],
+            {
+                let mut s = vec![0; 2050];
+                s[2049] = 2;
+                s
+            },
+            vec![1, 2, 0],
+        ] {
+            compare_charset_source_context(
+                root.clone(),
+                &[string.clone(), ty()],
+                &rows,
+                &selection,
+            );
+        }
+    }
+}
+
+#[test]
+fn native_json_sum_crc32_capabilities_resources_and_cancel_reuse_are_terminal() {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    for typed in [false, true] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let output_field = if typed {
+            projected(&ty(), true).unwrap()
+        } else {
+            field.clone()
+        };
+        let args = vec![field.clone()];
+        let operation = SqlBatchHostOperation::JsonSumCrc32Native { typed };
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            operation,
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: output_field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::JsonSumCrc32 {
+            argument_node: 3,
+            result_type: ty(),
+            output_node: 2,
+            output_role: (!typed).then_some(NativeValueRole::Output),
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let insert = |value: &Datum, role, node, row| {
+            store
+                .borrow_mut()
+                .insert_clone(value, role, NativeValueOrigin { node, row })
+                .unwrap()
+        };
+        let stale = insert(&Datum::Int(1), NativeValueRole::CharInput, 3, row);
+        store.borrow_mut().begin_window().unwrap();
+        let huge = Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+            false,
+            vec![b'1'],
+            u32::MAX,
+            0,
+        ));
+        let context = CharsetSourceContext::default();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 8192)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        for bad in [
+            stale,
+            insert(&huge, NativeValueRole::Output, 3, row),
+            insert(&huge, NativeValueRole::CharInput, 8, row),
+            insert(
+                &huge,
+                NativeValueRole::CharInput,
+                3,
+                InputRow {
+                    occurrence: 1,
+                    input_row: 0,
+                },
+            ),
+        ] {
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &output_field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert!(matches!(
+                provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(bad)), 1)
+                    }
+                ),
+                Err(LocalError::BindingContract(_))
+            ));
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+            provider.cancel(&task);
+        }
+        for (value, expected) in [
+            (huge, None),
+            (Datum::Bytes(vec![b' '; 16384]), None),
+            (
+                Datum::Bytes(vec![255; 16384]),
+                Some("invalid UTF-8 string datum"),
+            ),
+            (
+                Datum::Raw(vec![255; 16384]),
+                Some("JSON document requires JSON or string"),
+            ),
+        ] {
+            let first = insert(&value, NativeValueRole::CharInput, 3, row);
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &output_field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let error = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1),
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(error, LocalError::HostContract(_)), "{error:?}");
+            let native = provider.take_native_error().expect("actual terminal error");
+            if let Some(expected) = expected {
+                assert_eq!(native, EvalError::Unsupported(expected))
+            } else {
+                let EvalError::ExpressionRuntimeFailure(error) = native else {
+                    panic!("resource cause")
+                };
+                assert_eq!(
+                    error.class(),
+                    crate::ExpressionRuntimeFailureClass::ResourceLimit
+                );
+                assert_eq!(error.phase(), None);
+            }
+            assert!(provider.take_native_error().is_none());
+            assert!(context.events.borrow().is_empty());
+            provider.cancel(&task);
+            provider.cancel(&task);
+        }
+        for nullable in [true, false, true, false] {
+            let value = if nullable {
+                Datum::Null
+            } else {
+                Datum::new_string("[1,2,3]")
+            };
+            let first = insert(&value, NativeValueRole::CharInput, 3, row);
+            let HostStart::Pending { task, .. } = provider
+                .start(
+                    &mut ctx,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &output_field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let HostStep::Ready(output) = provider
+                .resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(first)), 1),
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("JSON checksum incomplete")
+            };
+            if typed {
+                assert_eq!(
+                    output.get_scalar_ref(0),
+                    ScalarValueRef::Int(if nullable { None } else { Some(&4505025631) })
+                );
+            } else {
+                let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                    panic!("output capability")
+                };
+                assert_eq!(
+                    *store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin { node: 2, row }
+                        )
+                        .unwrap(),
+                    if nullable {
+                        Datum::Null
+                    } else {
+                        Datum::Int(4505025631)
+                    }
+                );
+            }
+            assert!(provider.take_native_error().is_none());
+            assert!(context.events.borrow().is_empty());
+            provider.cancel(&task);
+        }
+    }
+}

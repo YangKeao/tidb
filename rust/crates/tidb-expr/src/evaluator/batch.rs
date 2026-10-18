@@ -362,7 +362,8 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = native_charset_operation(function.func_name.lowercase()).is_some()
+    let row_control = function.func_name.lowercase() == "json_sum_crc32"
+        || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
@@ -900,9 +901,11 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             domain,
         ));
     }
-    if native_charset_operation(function.func_name.lowercase()).is_some() {
-        // Charset producers always consume authentic native source values;
-        // a typed string parent may receive their ETString publication.
+    if function.func_name.lowercase() == "json_sum_crc32"
+        || native_charset_operation(function.func_name.lowercase()).is_some()
+    {
+        // Native producers always consume authentic native source values;
+        // a typed parent receives its original carrier from the same value.
         return NativeView::ValueToken;
     }
     if view.value_role().is_some() && native_value_call(function) {
@@ -1204,7 +1207,8 @@ fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharset
     })
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_charset_operation(function.func_name.lowercase()).is_some()
+    function.func_name.lowercase() == "json_sum_crc32"
+        || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
             "in" | "interval" | "greatest" | "least"
@@ -1217,6 +1221,24 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if function.func_name.lowercase() == "json_sum_crc32" {
+        if function.args.len() != 1
+            || function.args[0].static_type().is_none()
+            || !function.get_static_type().is_some_and(|field| {
+                view.value_role().is_some() || field.eval_type() == NativeEvalType::Int
+            })
+        {
+            return Err(BatchFailure::admission(
+                "JSON checksum requires complete declarations and exact arity",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::JsonSumCrc32Native {
+                typed: view.value_role().is_none(),
+            }),
+            1,
+        ));
+    }
     if let Some(operation) = native_charset_operation(function.func_name.lowercase()) {
         if function.args.len() != operation.arity()
             || function.args.iter().any(|arg| arg.static_type().is_none())
@@ -2520,6 +2542,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::InNative
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
+                                        | SqlBatchHostOperation::JsonSumCrc32Native { .. }
                                         | SqlBatchHostOperation::CharsetNative(_)
                                         | SqlBatchHostOperation::AbsNative
                                         | SqlBatchHostOperation::BitwiseNative(_)
@@ -2556,6 +2579,16 @@ fn lower_view(
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         host_metadata.push(match operation {
+                            SqlBatchHostOperation::JsonSumCrc32Native { .. } => {
+                                NativeHostMetadata::JsonSumCrc32 {
+                                    argument_node: ordinal.checked_add(1).ok_or_else(|| {
+                                        resource("JSON checksum argument ordinal overflow")
+                                    })?,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                }
+                            }
                             SqlBatchHostOperation::CharsetNative(operation) => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, *arity)?;
