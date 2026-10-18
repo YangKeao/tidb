@@ -80,19 +80,10 @@ pub(crate) fn decode_binary_plan(
 /// `FORMAT_BYTES(value)`, ported from `builtinFormatBytesSig.evalString` and
 /// `GetFormatBytes` in `pkg/expression/builtin_info.go` / `util.go`.
 fn format_bytes(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::FormatBytesNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::FormatBytes,
+        std::slice::from_ref(value),
         ctx,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
-                real_arg(value, ctx)?.map(f64::to_bits),
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -101,19 +92,10 @@ fn format_bytes(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalEr
 /// Despite the similarly named MySQL documentation function, TiDB's SQL name
 /// is `FORMAT_NANO_TIME` and its input unit is nanoseconds.
 fn format_nano_time(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::FormatNanoTimeNative,
+    crate::tikv::duration_construction_value::eval(
+        tidb_query_expr::NativeDurationConstructionOperation::FormatNanoTime,
+        std::slice::from_ref(value),
         ctx,
-        || {
-            Ok(crate::tikv::EvaluatedArgs::Ieee754Bits(
-                real_arg(value, ctx)?.map(f64::to_bits),
-            ))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
     )
 }
 
@@ -122,7 +104,7 @@ fn format_nano_time(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, Ev
 /// reach the formatter exactly as they do in TiDB; `NULL` alone propagates,
 /// and an argument with no ETReal reading at all (a vector, say) is the
 /// error TiDB raises rather than a formatted `0 bytes`.
-fn real_arg(value: &Datum, ctx: &dyn crate::Columns) -> Result<Option<f64>, EvalError> {
+pub(crate) fn real_arg(value: &Datum, ctx: &dyn crate::Columns) -> Result<Option<f64>, EvalError> {
     match value {
         Datum::Null => Ok(None),
         _ => to_f64_with_mysql_string(value, ctx).map(Some),

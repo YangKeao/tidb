@@ -3491,6 +3491,38 @@ mod tests {
         let time_arithmetic_mix = std::iter::once(0)
             .chain(time_arithmetic_start..roots.len())
             .collect::<Vec<_>>();
+        let presentation_start = roots.len();
+        for name in ["date_format", "format_bytes", "format_nano_time"] {
+            let value = if name == "date_format" {
+                "2024-02-29 12:34:56.123456"
+            } else {
+                "12abc"
+            };
+            let first = call(
+                "if",
+                string.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::new_string(value), string.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                ],
+            );
+            let mut args = vec![first];
+            if name == "date_format" {
+                args.push(Expression::Constant(Constant::new(
+                    Datum::new_string("%Y-%m-%d %H:%i:%s.%f"),
+                    string.clone(),
+                )));
+            }
+            let root = call(name, string.clone(), args);
+            roots.push(root.clone());
+            fields.push(string.clone());
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let presentation_mix = std::iter::once(0)
+            .chain(presentation_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3511,6 +3543,13 @@ mod tests {
                     .map(|&i| roots[i].clone())
                     .collect(),
                 time_arithmetic_mix
+                    .iter()
+                    .map(|&i| fields[i].clone())
+                    .collect(),
+            ),
+            (
+                presentation_mix.iter().map(|&i| roots[i].clone()).collect(),
+                presentation_mix
                     .iter()
                     .map(|&i| fields[i].clone())
                     .collect(),

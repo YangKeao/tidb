@@ -19193,6 +19193,9 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
             O::Timestamp1,
             O::Timestamp2,
             O::TimestampAdd,
+            O::DateFormat,
+            O::FormatBytes,
+            O::FormatNanoTime,
         ];
         use tidb_query_expr::NativeTimeAddKind as K;
         for left in [K::Datetime, K::Date, K::Duration, K::Other] {
@@ -19351,6 +19354,11 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                 }
             }
             let normal = match op {
+                O::DateFormat => vec![
+                    Datum::new_string("2024-02-29 12:34:56.123456"),
+                    Datum::new_string("%Y-%m-%d %H:%i:%s.%f"),
+                ],
+                O::FormatBytes | O::FormatNanoTime => vec![Datum::Real(2048.0)],
                 O::AddTime { .. } | O::SubTime { .. } => vec![
                     Datum::new_string("2020-01-01 10:00:00.123456"),
                     Datum::new_string("00:00:01.5"),
@@ -19417,6 +19425,14 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                     Datum::Bytes(vec![255; 1 << 20]),
                     Datum::Bytes(vec![255; 1 << 20]),
                 ]);
+            }
+            if matches!(op, O::FormatBytes | O::FormatNanoTime) {
+                cases.push(vec![Datum::VectorFloat32(VectorFloat32::must_create(
+                    vec![0.0; 1 << 18],
+                ))]);
+                cases.push(vec![Datum::Bit(tidb_datatype::BinaryLiteral::from(
+                    vec![1; 1 << 20],
+                ))]);
             }
             for values in cases {
                 context.events.borrow_mut().clear();
@@ -19502,6 +19518,59 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                 provider.cancel(&task);
                 let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
                 assert!(reply(&mut provider, &mut ctx, &task, 0, Some(token)).is_err());
+            }
+
+            if matches!(op, O::FormatBytes | O::FormatNanoTime) {
+                let task = begin(&mut provider, &mut ctx);
+                let token = insert(
+                    &Datum::Real(f64::INFINITY),
+                    NativeValueRole::CharInput,
+                    3,
+                    row,
+                );
+                assert!(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        0,
+                        Some(token)
+                    )))
+                    .is_err()
+                );
+                let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                assert!(reply(&mut provider, &mut ctx, &task, 0, Some(token)).is_err());
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+                let task = begin(&mut provider, &mut ctx);
+                let token = insert(&Datum::Real(2048.0), NativeValueRole::CharInput, 3, row);
+                assert!(matches!(
+                    reply(&mut provider, &mut ctx, &task, 0, Some(token)),
+                    Ok(HostStep::Ready(_))
+                ));
+                provider.cancel(&task);
+            }
+            if op == O::DateFormat {
+                let task = begin(&mut provider, &mut ctx);
+                context.events.borrow_mut().clear();
+                for (index, value) in [Datum::Bytes(vec![255]), Datum::Bytes(vec![b'x'; 1 << 20])]
+                    .iter()
+                    .enumerate()
+                {
+                    let token = insert(value, NativeValueRole::CharInput, 3 + index, row);
+                    let step = reply(&mut provider, &mut ctx, &task, index, Some(token));
+                    if index == 0 {
+                        assert!(matches!(step, Ok(HostStep::NeedArg(_))));
+                    } else {
+                        assert!(step.is_err());
+                    }
+                }
+                assert!(matches!(
+                    provider.take_native_error(),
+                    Some(EvalError::Unsupported(_))
+                ));
+                assert!(context.events.borrow().is_empty());
+                provider.cancel(&task);
             }
             if matches!(op, O::Timestamp1 | O::Timestamp2) {
                 // Original session callbacks can unwind. Closing the eager
@@ -20364,6 +20433,332 @@ fn native_time_arithmetic_sources_keep_static_signatures_casts_returns_context_a
             &vec![0; 2050],
             2,
             2,
+        );
+    }
+}
+
+#[test]
+fn native_presentation_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in ["date_format", "format_bytes", "format_nano_time"] {
+        let args = if name == "date_format" {
+            vec![
+                literal(Datum::new_string("2024-02-29"), string_ty()),
+                literal(Datum::new_string("%Y-%m-%d"), string_ty()),
+            ]
+        } else {
+            vec![literal(Datum::Real(2048.0), real_ty())]
+        };
+        let s = suite(call(name, string_ty(), args));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        s.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+            .unwrap();
+        let route = s.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "presentation sources {failures:?}");
+}
+
+#[test]
+fn native_presentation_sources_keep_casts_context_returns_and_ieee_outcomes() {
+    let mut cases = vec![
+        (
+            ty(),
+            vec![
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(-1),
+                Datum::Int(2024),
+                Datum::Int(i64::MAX),
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::Null,
+                Datum::UInt(0),
+                Datum::UInt(59),
+                Datum::UInt(u64::MAX),
+            ],
+        ),
+        (
+            real_ty(),
+            vec![
+                Datum::Null,
+                Datum::Real(30.0000005),
+                Datum::Real(59.9),
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::INFINITY),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(7),
+            vec![
+                Datum::Null,
+                Datum::Decimal(Decimal::from_literal("30.0000005")),
+                Datum::Decimal(Decimal::from_literal(
+                    "999999999999999999999999999999999999999999999999.25",
+                )),
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::Null,
+                Datum::new_string("2024-02-29 12:34:56.123456"),
+                Datum::new_string("12:34:56.1234567"),
+                Datum::new_string("DATE"),
+                Datum::new_string("USA"),
+                Datum::new_string("%H:%i:%s.%f"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Null, Datum::Int(0), Datum::Int(24), Datum::Int(2024)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Date),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Duration(MySqlDuration::from_nanoseconds(-45678900000000, 6).unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(64),
+            vec![
+                Datum::Null,
+                Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0xff; 8])),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Null,
+                Datum::Json(BinaryJSON::parse("[1,true]").unwrap()),
+            ],
+        ),
+    ];
+    cases.extend([
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Timestamp,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDate),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+    ]);
+    let returns = vec![
+        ty(),
+        string_ty(),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+    ];
+
+    for name in ["date_format", "format_bytes", "format_nano_time"] {
+        let defaults = if name == "date_format" {
+            vec![
+                literal(Datum::new_string("2024-02-29 12:34:56.123456"), string_ty()),
+                literal(Datum::new_string("%Y-%m-%d %H:%i:%s.%f"), string_ty()),
+            ]
+        } else {
+            vec![literal(Datum::Real(2048.0), real_ty())]
+        };
+        for index in 0..defaults.len() {
+            for (source, values) in &cases {
+                let (schema, rows, argument) = if source.code() == FieldTypeCode::NewDate {
+                    let selector = ty();
+                    (
+                        vec![selector.clone()],
+                        vec![vec![Datum::Int(0)], vec![Datum::Int(1)]],
+                        call(
+                            "if",
+                            source.clone(),
+                            vec![
+                                typed_column(0, &selector),
+                                literal(values[1].clone(), source.clone()),
+                                literal(Datum::Null, source.clone()),
+                            ],
+                        ),
+                    )
+                } else {
+                    (
+                        vec![source.clone()],
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>(),
+                        typed_column(0, source),
+                    )
+                };
+                let selections = [
+                    vec![],
+                    (0..rows.len()).collect(),
+                    vec![rows.len() - 1, 0, rows.len() - 1],
+                ];
+                let mut args = defaults.clone();
+                args[index] = argument;
+                for field in &returns {
+                    let root = call(name, field.clone(), args.clone());
+                    for seed in 0..4 {
+                        for level in 0..3 {
+                            for selection in &selections {
+                                compare_presentation_source(
+                                    root.clone(),
+                                    &schema,
+                                    &rows,
+                                    selection,
+                                    seed,
+                                    level,
+                                );
+                            }
+                        }
+                    }
+                    compare_presentation_source(
+                        call("cast_char", string_ty(), vec![root]),
+                        &schema,
+                        &rows,
+                        &[rows.len() - 1, 0, rows.len() - 1],
+                        3,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+    compare_presentation_source(
+        call(
+            "date_format",
+            string_ty(),
+            vec![literal(Datum::Null, string_ty()), abs(int(i64::MIN))],
+        ),
+        &[],
+        &[vec![]],
+        &[0],
+        1,
+        0,
+    );
+    compare_presentation_source(
+        call("format_bytes", string_ty(), vec![abs(int(i64::MIN))]),
+        &[],
+        &[vec![]],
+        &[0],
+        1,
+        0,
+    );
+    for name in ["format_bytes", "format_nano_time"] {
+        let schema = [string_ty()];
+        compare_presentation_source(
+            call(name, string_ty(), vec![typed_column(0, &schema[0])]),
+            &schema,
+            &[vec![Datum::new_string("12abc")]],
+            &vec![0; 2050],
+            2,
+            0,
+        );
+    }
+}
+fn compare_presentation_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    level: usize,
+) {
+    fn outcome<T: std::fmt::Debug>(f: impl FnOnce() -> T) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => format!("{v:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        }
+    }
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let label = format!("{root:?} {schema:?} seed={seed} level={level} selection={selection:?}");
+    let (actual, reference) = (suite(root.clone()), suite(root));
+    for enabled in [false, true, false, true] {
+        let mut ctx = crate::tikv::calendar_value_tests::context(1, seed, level);
+        ctx.reject = true;
+        ctx.enabled.set(enabled);
+        let oldctx = crate::tikv::calendar_value_tests::context(1, seed, level);
+        oldctx.enabled.set(enabled);
+        let (mut input, mut old) = (chunk(schema, rows), chunk(schema, rows));
+        input.set_sel(Some(selection.to_vec()));
+        old.set_sel(Some(selection.to_vec()));
+        let (mut output, mut expected) = (output_for(&field), output_for(&field));
+        assert_eq!(
+            outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, schema)),
+            outcome(|| reference.run(&oldctx, &mut old, &mut expected)),
+            "{label} flag={enabled}"
+        );
+        assert_eq!(*ctx.events.borrow(), *oldctx.events.borrow(), "{label}");
+        assert_eq!(output.num_rows(), expected.num_rows(), "{label}");
+        assert_eq!(output.column(0), expected.column(0), "{label}");
+        let route = actual.batch_route_snapshot();
+        assert_eq!(
+            (route.refusals, route.fallback),
+            (0, 0),
+            "{label} {route:?}"
         );
     }
 }

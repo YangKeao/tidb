@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7q: integrate DATE_FORMAT canonical sources over the existing actual N7j owner and retire FORMAT_BYTES/FORMAT_NANO_TIME Ready handoffs, exposing an actual nullable f64 formatter over the existing scaled primitive. Capture fresh original outcomes/context including thresholds/IEEE/native kinds and source/Ready REDs before edits; pair the candidate while old metric callers/workers remain, then delegate explicit wire workers to the shared actual formatter. Preserve first DATE_FORMAT ETDatetime source cast/full metadata before both eager strict text conversions, NULL/error order, numeric-prefix metric conversion/warnings and original return-family boundary. Borrow callback-free metric kinds so unsupported huge vectors do not copy; copy real string/bytes before their callbacks. Validate provenance, budget/demand/panic recovery, all source kinds, result declarations and mixed Projection, full frontend/SDK, exact warning/failure lists, lint/dual format/immutable fixtures and local DCO commits. Global generic/unistore/semantic/full-server work remains open.
+
 - [x] N7p: retire all remaining Ready controllers in time_fn/add_sub.rs (ADDTIME, SUBTIME, TIMESTAMP1/2 and TIMESTAMPADD) and integrate canonical sources. Before edits capture original fresh-cache results/errors/panics/context traces with all static kind pairs/row modes/runtime binary facts, numeric-first TIMESTAMP parsing and late RHS, and TIMESTAMPADD's full-float conversion/NULL prefix/invalid-date-before-unit order. Reproduce Ready/source REDs; add actual SDK owned reports and a consuming actual parsed timestamp base, independently compare while old controllers exist, then retire old controllers and delegate explicit wire codecs to the same actual kernels. Preserve original source casts, constant-only row classification, forced TIMESTAMP DateTime(None), typed ADDTIME return transform and ordinary return conversion. Validate demanded work/diagnostic allocation, ignored huge arguments, complete authentication/terminal invocation cleanup/exclusive callbacks, typed source matrices, full frontend/core/Projection, exact warning/failure lists, lint, both formatters and fixed fixtures; sign local DCO commits only. Global generic/unistore/full-server work remains open.
 
 - [x] N7o: migrate CONVERT_TZ direct and canonical source through actual text operands. Capture independent original fresh-cache observations under isolated UTC/Asia/Shanghai/America/New_York child processes before candidate edits; reproduce Ready and source fallbacks; preserve eager strict three-text conversion, original first ETDatetime source cast/full FieldType, named DST and SYSTEM policies, original Unicode-offset panic, generic temporal result plus ordinary return boundary. Extend existing finite native time-family host with consumed three-operand stages; test provenance/budget/cancellation/panic recovery, mixed Projection, full frontend/core, warning parity, lint and both formatters; sign local commits only. Remaining ADDTIME/SUBTIME/TIMESTAMP/TIMESTAMPADD, generic fallback and unistore work remain global follow-up.
@@ -107,6 +109,19 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7q confirms that FORMAT_BYTES/FORMAT_NANO_TIME retain the original scientific
+formatter panic on infinities; NaN and negative zero also retain their original
+text. Source tests compare caught panic payloads, complete partial physical output
+columns and context, then reuse the suite under all flags. The obsolete Ready
+cache no longer poisons later invocations. A real1MiB nonzero BinaryLiteral at8KiB
+incorrectly failed Resource after the first independent proof: the original
+converter scans only leading zeros and checks remaining width. Metric-specific
+work now bounds that actual prefix scan, leaving other operations' numeric work
+unchanged. Long nonzero suffixes succeed; unresolved long all-zero prefixes still
+fail before unbounded scanning. The original56016/02F463312450CC05 witness is
+unchanged. DATE_FORMAT's existing actual body was reused, preserving both strict
+text conversions even after NULL and its earlier ETDatetime source cast.
+
 N7p independently paired1345032 original/candidate observations before retiring
 remaining time arithmetic controllers. NativeTimestampBaseValue initially charged
 parsing work for an already-coerced RHS even when zero year rejects before any
@@ -156,6 +171,17 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: expose nullable actual f64 formatting over the existing scaled
+  primitive, retire only the two metric Ready callers, and add three canonical
+  sources through the existing time-family host. Keep original numeric conversion
+  and DATE_FORMAT body owners, earlier full-metadata datetime cast, ordinary return
+  boundary, original infinities panic and exact callback demand.
+  Rationale: native values need no transport interpreter; pure numeric kinds can
+  borrow while only String/Bytes conversion requires a checked copy before context
+  callbacks. The metric-specific prefix work fix corrects a demonstrated Resource
+  mismatch without rewriting the independently frozen SQL witness.
+  Date/Author: 2026-10-19 / TiDBEngineer.
+
 - Decision: carry original ADDTIME/SUBTIME kind pairs and literal-only row facts
   through the existing actual-value host; consume typed timestamp bases and owned
   SQL reports instead of encoded values and nested Ready calls. Preserve
@@ -201,6 +227,18 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7q integrates DATE_FORMAT/FORMAT_BYTES/FORMAT_NANO_TIME canonical sources and
+retires both metric Ready callers. All56016 independent comparisons passed before
+retirement, original hash02F463312450CC05; it remains unchanged after the explicit
+BinaryLiteral prefix-work correction. Final frontend1722/exact3/95ignored and
+all260 batch, SDK1124/exact1/1ignored, Projection26 with new7-root group, all84
+provider operation/fact combinations and both roles pass the scoped contract.
+Frontend346 and clippy89 expression/171 all warning-title Counters match N7p
+exactly. Lint, both pinned11-file formatters, fixtures and both diff checks pass.
+See rust/docs/evidence/no-fallback-n7q.md for commands and limitations. Local DCO
+checkpoint only; generic fallback, unistore, inherited failures, unsupported/
+malformed shapes, semantic audits and full-server SQL gates remain open.
 
 N7p retires all remaining Ready calls in time_fn/add_sub.rs and the now-unused
 scoped Ready adapter. Four names/five source arities use actual shared kernels
@@ -3140,3 +3178,47 @@ zero-base resource regression must pass at0 work on an already-coerced1MiB RHS,
 while original frontend RHS conversion errors still surface. These checks do not
 certify physical NewDate columns, malformed metadata, full Go packages or server
 SQL. Keep the global goal active after signing this local checkpoint.
+
+
+## N7q milestone: date and quantity presentation sources
+
+
+Three canonical sources now execute via the existing DurationConstructionNative
+host in rust/crates/tidb-expr/src/evaluator/batch_duration_construction.rs.
+DATE_FORMAT authenticates both eager capabilities, closes demand, performs the
+original first ETDatetime cast with full FieldType/YEAR metadata, releases its
+source borrow before callbacks and delegates the existing pure N7j actual body
+in tikv/epoch_value.rs. Both strict texts remain demanded even after NULL. It
+adds no generic temporal-result parse; ordinary return-family coercion runs once.
+The two metric sources use original builtin_ext/info.rs::real_arg and SDK
+impl_miscellaneous.rs::native_metric_format_value. Only String/Bytes require
+context callbacks; other authenticated kinds borrow without unnecessary copies.
+The two explicit wire workers retain nullable raw8-byte IEEE754 decoding and
+transport planning, then share the same original formatter and unit tables.
+
+Before retirement, original capture27209 and independent83067 paired56016
+observations with fresh old context/cache in an isolated UTC child, original
+checksum02F463312450CC05. Two Ready and three source guards were RED. Original
+bodies, witness and independent pairs/logs are archived in persistent workspace
+evidence/no-fallback/n7q-*. The current fixed checksum is not new independent
+proof; never regenerate it or rerun applied /tmp/n7q-*.py scripts. The subsequent
+real prefix-budget RED45219 and correction are explicit, with SQL hash unchanged.
+
+From TiDB root run RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test
+--manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib
+presentation, then the same command without presentation. Run the provider filter
+native_duration_construction_capabilities_resources_panic_cleanup_and_exclusive_context
+and -p tidb-executor --lib projection::tests. From TiKV root use RUSTFLAGS=''
+CARGO_BUILD_JOBS=8 ../tools/cargo-tikv test --release --locked --offline -j8
+-p tidb_query_expr --lib and the receipt's scoped make-run clippy command. Run
+make lint and both pinned11-file formatter, immutable fixture and diff gates in
+the receipt. Expect frontend1722/3/95 with260 batch, SDK1124/1/1 and Projection26;
+exact failures and warning Counters must match N7p. Source matrix covers all
+argument positions,13 declared families,8 returns, context/selection/flag changes,
+CHAR parents, eager errors,2050 warnings and original infinity panic prefixes.
+NewDate remains computed/literal over supported physical inputs; malformed-source
+validity and full server SQL are not certified. Keep the global objective active.
+
+Revision N7q: recorded completed presentation migration, independent original
+proof, preserved infinity panic and explicit demanded-prefix resource correction;
+updated all four living sections and continuation gates.

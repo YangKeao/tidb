@@ -136,6 +136,53 @@ impl NativeBatchHosts<'_> {
                 ],
                 maximum,
             )
+        } else if *operation == O::DateFormat {
+            let (original, live) = copy_value(
+                store,
+                token_for(0)?,
+                NativeValueOrigin {
+                    node: arguments[0],
+                    row,
+                },
+                base,
+                self.max_retained_bytes,
+            )?;
+            let cast = crate::tikv::calendar_value::cast_source(
+                tidb_query_expr::NativeCalendarOperation::Date,
+                &original,
+                &argument_types[0],
+                self.context,
+                self.max_retained_bytes - live,
+            );
+            drop(original);
+            match cast {
+                Err(e) => Err(e),
+                Ok(date) => {
+                    let held = native_payload_bytes(&date)?
+                        .checked_mul(2)
+                        .and_then(|n| base.checked_add(n))
+                        .ok_or_else(|| resource("date format cast extent overflow"))?;
+                    self.check_bytes(held)?;
+                    // This owner performs only strict pure text coercion and
+                    // formatting. No context callback spans this format borrow;
+                    // both text conversions remain demanded even after NULL.
+                    let source = store.borrow();
+                    let format = source.get(
+                        token_for(1)?,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin {
+                            node: arguments[1],
+                            row,
+                        },
+                    )?;
+                    crate::tikv::eval_date_format_values_bounded(
+                        self.context,
+                        &date,
+                        format,
+                        self.max_retained_bytes - held,
+                    )
+                }
+            }
         } else if *operation == O::DateDiff {
             // Both original ETDatetime casts precede signature text conversion.
             // A failing left cast must not clone or convert the right payload.
@@ -228,6 +275,18 @@ impl NativeBatchHosts<'_> {
                 .ok_or_else(|| resource("time arithmetic cast extent overflow"))?;
             self.check_bytes(stage_base)?;
             let maximum = self.max_retained_bytes - stage_base;
+            let start_calls_context = {
+                let source = store.borrow();
+                let value = source.get(
+                    token_for(0)?,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin {
+                        node: arguments[0],
+                        row,
+                    },
+                )?;
+                values::start_calls_context(*operation, value)
+            };
             let first = if *operation == O::ConvertTz {
                 // Original first ETDatetime cast precedes all signature text
                 // coercions, carrying YEAR and other complete source metadata.
@@ -265,7 +324,7 @@ impl NativeBatchHosts<'_> {
                         )
                     }
                 }
-            } else if values::start_calls_context(*operation) {
+            } else if start_calls_context {
                 let (original, live) = copy_value(
                     store,
                     token_for(0)?,

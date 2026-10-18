@@ -74,6 +74,42 @@ fn numeric_work(v: &Datum, maximum: usize, display: bool) -> Result<(), EvalErro
             .ok_or_else(resource)?,
     )
 }
+fn metric_numeric_work(value: &Datum, maximum: usize) -> Result<(), EvalError> {
+    match value {
+        Datum::Int(_)
+        | Datum::UInt(_)
+        | Datum::Real(_)
+        | Datum::Float32(_)
+        | Datum::Enum(..)
+        | Datum::Set(..)
+        | Datum::Raw(_)
+        | Datum::VectorFloat32(_)
+        | Datum::MinNotNull
+        | Datum::MaxValue
+        | Datum::Null => work(maximum, 0),
+        Datum::BinaryLiteral(value) | Datum::Bit(value) => {
+            // The original converter trims zeros, then rejects a remaining
+            // width above eight without scanning the nonzero suffix. Admit
+            // that demanded prefix before calling the unchanged converter.
+            work(maximum, 2048)?;
+            let bytes = value.as_bytes();
+            let scan = (maximum - 2048) / 32;
+            let read = match bytes.iter().take(scan).position(|byte| *byte != 0) {
+                Some(index) => index + 1,
+                None if bytes.len() <= scan => bytes.len(),
+                None => return Err(resource()),
+            };
+            work(
+                maximum,
+                read.checked_mul(32)
+                    .and_then(|n| n.checked_add(2048))
+                    .ok_or_else(resource)?,
+            )
+        }
+        _ => numeric_work(value, maximum, true),
+    }
+}
+
 fn integer(v: &Datum, maximum: usize) -> Result<Option<i64>, EvalError> {
     numeric_work(v, maximum, false)?;
     crate::time_fn::int_arg(v)
@@ -408,6 +444,22 @@ pub(crate) fn start(
 ) -> Result<Prepared, EvalError> {
     work(maximum, 0)?;
     let v = match op {
+        O::DateFormat => return Err(super::native_time_result_contract_error()),
+        O::FormatBytes | O::FormatNanoTime => {
+            if value.is_null() {
+                return Ok(Prepared::Value(Datum::Null));
+            };
+            metric_numeric_work(value, maximum)?;
+            let number = crate::builtin_ext::info::real_arg(value, ctx)?;
+            string_datum(
+                tidb_query_expr::native_metric_format_value(
+                    number,
+                    op == O::FormatNanoTime,
+                    maximum,
+                )
+                .map_err(error)?,
+            )
+        }
         O::AddTime { kinds, row_path } | O::SubTime { kinds, row_path } => {
             if kinds[1] == tidb_query_expr::NativeTimeAddKind::Datetime {
                 return Ok(Prepared::Value(Datum::Null));
@@ -573,6 +625,11 @@ pub(crate) fn eval_bounded(
     if values.len() != op.arity() {
         return Err(EvalError::Unsupported("bad function arity"));
     }
+    if op == O::DateFormat {
+        return super::epoch_value::date_format_values_bounded(
+            ctx, &values[0], &values[1], maximum,
+        );
+    }
     if op == O::GetFormat {
         work(maximum, 0)?;
         let Some(kind) = crate::arg_eval_type::eval_string_ref(&values[0])? else {
@@ -637,7 +694,12 @@ pub(crate) fn legacy(
 
 /// Only these first-operand paths report through Columns. Others can safely
 /// operate over an authenticated borrow, with later callback demand explicit.
-pub(crate) fn start_calls_context(op: O) -> bool {
+pub(crate) fn start_calls_context(op: O, value: &Datum) -> bool {
+    if matches!(op, O::FormatBytes | O::FormatNanoTime) {
+        // Only these numeric-prefix conversions consult Columns. Unsupported
+        // large vectors and pure actual numeric kinds must not be copied.
+        return matches!(value, Datum::String(_) | Datum::Bytes(_));
+    }
     matches!(op, O::Time | O::SecToTime | O::Timestamp1 | O::Timestamp2)
 }
 /// Preserve both original ETString casts before signature-level NULL demand.
