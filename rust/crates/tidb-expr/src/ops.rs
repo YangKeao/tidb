@@ -26,6 +26,7 @@ pub(crate) mod arithmetic;
 mod comparison;
 mod integer_coerce;
 mod operand;
+pub(crate) mod quotient;
 mod real_coerce;
 pub(crate) use integer_coerce::integer_binary;
 use integer_coerce::*;
@@ -388,156 +389,37 @@ fn cast_binary_string_operand(
 
 /// A NULL actually observed by a native arithmetic caller; no RHS is invented.
 pub(crate) fn eval_binary_arithmetic_null_in(
-    ctx: &dyn crate::context::Columns,
+    _ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::BinaryArithmeticNullNative,
-        ctx,
-        || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
+    tidb_query_expr::impl_arithmetic::binary_arithmetic_null_native_value(None)
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(|error| {
+            arithmetic::kernel_error(tidb_query_expr::local::LocalError::Evaluation(error))
+        })
 }
 
-/// Preparation preserves the old domain ladder and recursive coercion order.
-/// Only original type/profile metadata selects recipes; no answers are computed.
+/// Remaining additive adapter; quotient values use the direct SDK entries.
 fn prepare_binary_arithmetic(
     op: BinaryOp,
-    l: Datum,
-    r: Datum,
-    div_precision_increment: u32,
+    left: Datum,
+    right: Datum,
+    _increment: u32,
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
     unsigned_result: &std::cell::Cell<bool>,
     input_was_null: &std::cell::Cell<bool>,
 ) -> Result<(crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs), EvalError> {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
-    use BinaryOp::*;
-    if matches!(op, Plus | Minus | Mul) {
-        let (operation, arguments, unsigned, null) = arithmetic::prepare(
-            op,
-            l,
-            r,
-            [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
-            ctx,
-        )?
-        .into_evaluated();
-        unsigned_result.set(unsigned);
-        input_was_null.set(null);
-        return Ok((operation, arguments));
-    }
-    if l.is_range_sentinel() || r.is_range_sentinel() {
-        return Err(EvalError::Unsupported("range sentinel expression operand"));
-    }
-    let l = unsigned_operand(l, operands.lhs);
-    let r = unsigned_operand(r, operands.rhs);
-    let null = || {
-        input_was_null.set(true);
-        Ok((
-            Op::BinaryArithmeticNullNative,
-            EvaluatedArgs::NullWitness(None),
-        ))
-    };
-    // These errors preceded temporal/string conversion and NULL propagation.
-    if matches!(l, Datum::Json(_)) || matches!(r, Datum::Json(_)) {
-        return Err(EvalError::Unsupported("JSON operand"));
-    }
-    // MOD and / reject vectors after JSON but before casts and actual NULL.
-    if matches!(l, Datum::Raw(_) | Datum::VectorFloat32(_))
-        || matches!(r, Datum::Raw(_) | Datum::VectorFloat32(_))
-    {
-        return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind()));
-    }
-    if matches!(l, Datum::Time(_) | Datum::Duration(_))
-        || matches!(r, Datum::Time(_) | Datum::Duration(_))
-    {
-        return prepare_binary_arithmetic(
-            op,
-            numeric_context_value(l),
-            numeric_context_value(r),
-            div_precision_increment,
-            operands,
-            ctx,
-            unsigned_result,
-            input_was_null,
-        );
-    }
-    if matches!(l, Datum::String(_) | Datum::Bytes(_))
-        || matches!(r, Datum::String(_) | Datum::Bytes(_))
-    {
-        return prepare_binary_arithmetic(
-            op,
-            cast_binary_string_operand(op, l, ctx)?,
-            cast_binary_string_operand(op, r, ctx)?,
-            div_precision_increment,
-            operands,
-            ctx,
-            unsigned_result,
-            input_was_null,
-        );
-    }
-    if matches!(l, Datum::Real(_) | Datum::Float32(_))
-        || matches!(r, Datum::Real(_) | Datum::Float32(_))
-    {
-        if l == Datum::Null || r == Datum::Null {
-            return null();
-        }
-        let left = to_f64(l);
-        let right = to_f64(r);
-        let operation = match op {
-            Mod => Op::ModRealNative,
-            Div => Op::DivRealNative,
-            _ => unreachable!("only worker arithmetic families prepare here"),
-        };
-        return Ok((
-            operation,
-            EvaluatedArgs::Ieee754Bits2 {
-                left: crate::tikv::ReadyIeee754Arg::Value(Some(left.to_bits())),
-                right: crate::tikv::ReadyIeee754Arg::Value(Some(right.to_bits())),
-            },
-        ));
-    }
-    // Unlike MOD, non-real / promotes even two integral inputs to Decimal.
-    if op == Div {
-        if l == Datum::Null || r == Datum::Null {
-            return null();
-        }
-        let left = to_decimal(l);
-        let right = to_decimal(r);
-        return Ok((
-            Op::DivDecimalNative,
-            EvaluatedArgs::DecimalDivision {
-                left: Some(crate::tikv::prepare_math_decimal(&left)?),
-                right: Some(crate::tikv::prepare_math_decimal(&right)?),
-                frac_increment: effective_div_precision_increment(div_precision_increment),
-            },
-        ));
-    }
-    if matches!(l, Datum::Decimal(_)) || matches!(r, Datum::Decimal(_)) {
-        if l == Datum::Null || r == Datum::Null {
-            return null();
-        }
-        let left = to_decimal(l);
-        let right = to_decimal(r);
-        let operation = match op {
-            Mod => Op::ModDecimalNative,
-            _ => unreachable!("only worker arithmetic families prepare here"),
-        };
-        return Ok((
-            operation,
-            EvaluatedArgs::Decimal2 {
-                left: Some(crate::tikv::prepare_math_decimal(&left)?),
-                right: Some(crate::tikv::prepare_math_decimal(&right)?),
-            },
-        ));
-    }
-    if l == Datum::Null || r == Datum::Null {
-        return null();
-    }
-    let (a, b) = match (integer_of(&l)?, integer_of(&r)?) {
-        (Some(a), Some(b)) => (a, b),
-        _ => return Err(EvalError::UnsupportedOperandPair(l.kind(), r.kind())),
-    };
-    Ok(prepare_integer_arithmetic(op, a, b, ctx, unsigned_result))
+    let (operation, arguments, unsigned, null) = arithmetic::prepare(
+        op,
+        left,
+        right,
+        [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
+        ctx,
+    )?
+    .into_evaluated();
+    unsigned_result.set(unsigned);
+    input_was_null.set(null);
+    Ok((operation, arguments))
 }
 
 fn eval_binary_arithmetic_in(
@@ -548,7 +430,19 @@ fn eval_binary_arithmetic_in(
     operands: Operands<'_>,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    use crate::tikv::{EvaluatedBytesResult, NativeDecimalDivisionDisposition as Division};
+    if matches!(op, BinaryOp::Mod | BinaryOp::Div) {
+        let maximum = tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes;
+        return quotient::prepare(
+            op,
+            l,
+            r,
+            [operands.lhs.is_unsigned(), operands.rhs.is_unsigned()],
+            maximum,
+            ctx,
+        )?
+        .compute(op, div_precision_increment, maximum, ctx);
+    }
+    use crate::tikv::EvaluatedBytesResult;
     let unsigned_result = std::cell::Cell::new(false);
     let input_was_null = std::cell::Cell::new(false);
     crate::tikv::evaluate_prepared_args_in(
@@ -578,25 +472,6 @@ fn eval_binary_arithmetic_in(
                     .into_ieee754_bits()?
                     .map_or(Datum::Null, |bits| Datum::Real(f64::from_bits(bits)))),
                 value @ EvaluatedBytesResult::Decimal { .. } => value.into_decimal_datum(),
-                EvaluatedBytesResult::DecimalDivision {
-                    value: Some(value),
-                    disposition: Division::Ok,
-                } => Ok(Datum::Decimal(value)),
-                EvaluatedBytesResult::DecimalDivision {
-                    value: Some(value),
-                    disposition: Division::Truncated,
-                } => {
-                    ctx.handle_truncate(&format!("Truncated incorrect DECIMAL value: '{value}'"))?;
-                    Ok(Datum::Decimal(value))
-                }
-                EvaluatedBytesResult::DecimalDivision {
-                    value: Some(_),
-                    disposition: Division::Overflow,
-                } => Err(EvalError::DecimalOverflow),
-                EvaluatedBytesResult::DecimalDivision {
-                    value: None,
-                    disposition: Division::ZeroDivisor,
-                } => Ok(Datum::Null),
                 value @ EvaluatedBytesResult::NativeVector(_) => value.into_native_vector_datum(),
                 // The existing typed packer rejects every other computed kind.
                 other => other.into_int_datum(),
@@ -1344,7 +1219,13 @@ pub(crate) fn decimal_integer_division(
     unsigned: bool,
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::eval_decimal_integer_division_in(a, b, unsigned, ctx)
+    quotient::decimal_integer(
+        a,
+        b,
+        unsigned,
+        tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes,
+        ctx,
+    )
 }
 
 /// Decimal comparisons and remaining arithmetic: an `Int` operand promotes

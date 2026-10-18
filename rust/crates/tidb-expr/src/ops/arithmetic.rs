@@ -153,7 +153,7 @@ fn runtime_error(error: LocalError) -> EvalError {
 fn resource(message: &'static str) -> EvalError {
     runtime_error(LocalError::ResourceLimit(message.into()))
 }
-fn kernel_error(error: LocalError) -> EvalError {
+pub(super) fn kernel_error(error: LocalError) -> EvalError {
     // Follow the actual retained cause from this direct kernel call. This is
     // not a sealed EvaluatedArgs receipt and does not manufacture one.
     if let LocalError::Evaluation(evaluation) = &error {
@@ -362,7 +362,7 @@ impl PreparedArithmetic {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::cell::RefCell;
     use tidb_datatype::{
@@ -391,7 +391,7 @@ mod tests {
                 .push(format!("{code}:{message}"));
         }
     }
-    fn fixtures() -> Vec<Datum> {
+    pub(crate) fn fixtures() -> Vec<Datum> {
         let time = tidb_datatype::parse_datetime(
             "2026-10-18 12:34:56.123456",
             &chrono_tz::UTC,

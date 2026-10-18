@@ -480,4 +480,64 @@ mod tests {
             source = source.source().expect("actual retained decimal cause");
         }
     }
+    #[test]
+    fn direct_quotient_budgets_retain_actual_resource_causes() {
+        use tidb_ast::BinaryOp;
+        use tidb_datatype::{Datum, Decimal};
+        use tidb_query_datatype::codec::mysql::decimal::NativeDecimalError;
+        let context = &crate::NoColumns;
+        let dense = |op| {
+            crate::ops::quotient::prepare(
+                op,
+                Datum::Decimal(Decimal::from_literal("7.0000")),
+                Datum::Int(3),
+                [false; 2],
+                0,
+                context,
+            )
+            .and_then(|value| value.compute(op, 4, 0, context))
+        };
+        let real = crate::ops::quotient::prepare(
+            BinaryOp::Div,
+            Datum::Real(7.0),
+            Datum::Real(3.0),
+            [false; 2],
+            4096,
+            context,
+        )
+        .unwrap()
+        .compute(BinaryOp::Div, 4, usize::MAX, context);
+        let decimal_div = crate::ops::quotient::decimal_integer(
+            &Decimal::from_literal("1.0000"),
+            &Decimal::from_literal("3.0000"),
+            false,
+            0,
+            context,
+        );
+        for result in [
+            dense(BinaryOp::Mod),
+            dense(BinaryOp::Div),
+            real,
+            decimal_div,
+        ] {
+            let Err(crate::EvalError::ExpressionRuntimeFailure(failure)) = result else {
+                panic!("quotient budget must remain an actual terminal cause");
+            };
+            assert_eq!(failure.class(), Class::Evaluation);
+            assert_eq!(failure.phase(), None);
+            let LocalError::Evaluation(error) = failure.local_error() else {
+                panic!("original SDK evaluation discriminant missing");
+            };
+            let mut source: &(dyn std::error::Error + 'static) = error;
+            loop {
+                if let Some(cause) = source.downcast_ref::<NativeDecimalError>() {
+                    assert!(matches!(cause, NativeDecimalError::Resource(_)));
+                    break;
+                }
+                source = source
+                    .source()
+                    .expect("retained actual quotient resource cause");
+            }
+        }
+    }
 }

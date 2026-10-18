@@ -98,39 +98,14 @@ pub(super) fn prepare_integer_arithmetic(
     ctx: &dyn crate::context::Columns,
     unsigned_result: &std::cell::Cell<bool>,
 ) -> (crate::tikv::EvaluatedBytesOp, crate::tikv::EvaluatedArgs) {
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp as Op};
-    if matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul) {
-        let (operation, arguments, unsigned, _) =
-            super::arithmetic::prepare_integer(op, a, b, ctx).into_evaluated();
-        unsigned_result.set(unsigned);
-        return (operation, arguments);
-    }
-    let left_unsigned = matches!(a, Integer::Unsigned(_));
-    let right_unsigned = matches!(b, Integer::Unsigned(_));
-    let left = integer_bits(a) as i64;
-    let right = integer_bits(b) as i64;
-    let force_signed = op == BinaryOp::Minus && ctx.no_unsigned_subtraction();
-    let operation = match op {
-        BinaryOp::Mod => match (left_unsigned, right_unsigned) {
-            (false, false) => Op::ModIntSsNative,
-            (false, true) => Op::ModIntSuNative,
-            (true, false) => Op::ModIntUsNative,
-            (true, true) => Op::ModIntUuNative,
-        },
-        BinaryOp::IntDiv => match (left_unsigned, right_unsigned) {
-            (false, false) => Op::IntDivIntSsNative,
-            (false, true) => Op::IntDivIntSuNative,
-            (true, false) => Op::IntDivIntUsNative,
-            (true, true) => Op::IntDivIntUuNative,
-        },
-        _ => unreachable!("only worker arithmetic families prepare here"),
-    };
-    unsigned_result.set(if op == BinaryOp::Mod {
-        left_unsigned
-    } else {
-        (left_unsigned || right_unsigned) && !force_signed
-    });
-    (operation, EvaluatedArgs::Int2(Some(left), Some(right)))
+    debug_assert!(matches!(
+        op,
+        BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul
+    ));
+    let (operation, arguments, unsigned, _) =
+        super::arithmetic::prepare_integer(op, a, b, ctx).into_evaluated();
+    unsigned_result.set(unsigned);
+    (operation, arguments)
 }
 
 pub(crate) fn integer_binary(
@@ -143,7 +118,10 @@ pub(crate) fn integer_binary(
     if comparison_operation(op).is_some() {
         return eval_comparison_int_in(op, a, b, ctx);
     }
-    if matches!(op, Plus | Minus | Mul | Mod | IntDiv) {
+    if matches!(op, Mod | IntDiv) {
+        return super::quotient::integer(op, a, b, ctx);
+    }
+    if matches!(op, Plus | Minus | Mul) {
         let unsigned_result = std::cell::Cell::new(false);
         return crate::tikv::evaluate_prepared_args_in(
             ctx,

@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N6p: native frontend MOD/division and integer/Decimal DIV ready-argument adapters retired, with one plain value layer and direct shared SDK calls.51388 exact old-adapter comparisons pass before retirement; independent captured witnesses retained afterward. Full frontend1515same4/95ignored(all151batch), Projection25, five new value/resource/cause checks, lint, pinned format and both diff gates pass. SDK production code unchanged; its guide updated. Native quotient root admission and global fallback retirement remain open. Receipt evidence/no-fallback-n6p.md.
+
 - [x] N6n: canonical native unary signs share11 old RPN value kernels, constant promotion and typed overflow. Exact public result coercion and ENUM/SET integer views preserved; CHAR native qualification stays independent of compiled closure.2176 root comparisons+16 valid SET flag comparisons+63 provider cases,151 batch/full frontend1510same4, SDK1062same6,18 protocol/catalog, Projection25/22roots, lint/clippy89/pinnedformats/diff pass. Signed local TiDB66b3323e/TiKVd6f07d4; receipt evidence/no-fallback-n6n.md. Global retirement remains open.
 - [x] N6o: shared quotient value kernels and borrowed Decimal DIV computed outcomes. Core1066same6/frontend1510same4, four new direct expected tests and original wrapper tables, scoped clippy89 inherited warnings, lint, pinned format and both diff checks pass. Source integration remains next.
 
@@ -1158,3 +1160,39 @@ are limited to kernel extraction and adapters; no new frontend roots are
 admitted. Final scoped clippy passes with89 inherited warnings; make lint, pinned SDK
 format and both diff checks pass. All jobs are closed before signing local
 commits and continuing source integration. The global goal remains active.
+
+### N6p frontend quotient adapters (2026-10-18, in progress)
+
+Replace the remaining native MOD, / and integer/Decimal DIV ready-argument
+program adapters with the N6o SDK value entries. First compare the new plain
+preparation/computed outcome policy against the still-existing adapter over
+all original Datum fixtures, source signedness, precision values, strict
+warnings, typed overflow and actual conditional getter traces. Only after
+that differential gate passes, switch the callers and delete their adapters.
+Keep bounded dense Decimal conversion, genuine NULL vs zero-divisor warnings,
+and warning-before-integer-error behavior. Source root admission and full
+row/whole-argument integration remain subsequent work, requiring actual route
+REDs; this step must not silently change bulk demand or native eligibility.
+
+
+N6p pre-retirement differential proof passes51388 cases, including exact
+values/representations and context traces against the still-active old
+adapters. Fixed witnesses captured before deletion preserve an independent
+expectation after the caller switch. The native MOD/division preparation and
+Decimal DIV frame/finisher adapters have now been removed; additive/explicit
+legacy adapters and quotient source-root admission remain open. Full frontend
+1513same4 and Projection25 pass. Added resource checks exposed an incorrect
+new test assumption: the existing opaque boundary classifies only the outer
+SDK Evaluation discriminant and retains NativeDecimalError::Resource inside.
+Keep that contract unchanged; correct the assertion and check actual retained
+causes privately for four quotient refusal paths. Final full suite/lint/format
+and local signed commits follow. See evidence/no-fallback-n6p.md.
+
+
+N6p final checks pass: frontend1515 with exactly the inherited4 failures and
+95 ignored (names mechanically match N6o); all151 batch,25 Projection, three
+old-adapter witnesses, resource behavior and four actual resource-cause checks
+pass. Both lint runs, pinned seven-file format checks and both diff checks
+pass. SDK/datatype production code unchanged and not rerun. All jobs closed.
+Sign local commits, then continue authentic quotient source/root demand
+integration and remaining global coverage; the overall goal is not complete.
