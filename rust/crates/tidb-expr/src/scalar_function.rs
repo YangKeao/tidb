@@ -2504,61 +2504,22 @@ impl ScalarFunction {
             let subtract = name.starts_with("date_sub_");
             if subtract || name.starts_with("date_add_") {
                 let unit = &name["date_add_".len()..];
-                let result_fsp = crate::time_fn::calendar::date_add_result_fsp(
+                let result_fsp = crate::tikv::date_add_result_fsp_checked(
                     unit,
                     self.args[0].static_type(),
                     self.args[1].static_type(),
-                );
-                let mut date = self.args[0].eval(ctx, row)?;
+                )?;
+                let date = self.args[0].eval(ctx, row)?;
                 let amount = self.args[1].eval(ctx, row)?;
-                let result_type = self.get_static_type();
-                if result_type.is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::Duration
-                }) {
-                    return crate::time_fn::add_sub::date_add_duration(
-                        ctx,
-                        unit,
-                        &date,
-                        &amount,
-                        self.args[1].static_type(),
-                        if subtract { -1 } else { 1 },
-                        i64::from(result_fsp.unwrap_or(0)),
-                    );
-                }
-                if result_type.is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::Datetime
-                }) && self.args[0].static_type().is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::Duration
-                }) {
-                    date =
-                        crate::cast::cast_arg_as_datetime(&date, self.args[0].static_type(), ctx)?;
-                }
-                let result = crate::time_fn::calendar::date_add_with_result_fsp(
+                return crate::tikv::date_add_scalar_values_in(
+                    ctx,
                     unit,
-                    &date,
-                    &amount,
+                    &mut [date, amount],
+                    [self.args[0].static_type(), self.args[1].static_type()],
+                    self.get_static_type(),
                     if subtract { -1 } else { 1 },
                     result_fsp,
-                    ctx,
-                )?;
-                let Some(result_type) = result_type else {
-                    return Ok(result);
-                };
-                return match result_type.code() {
-                    tidb_datatype::FieldTypeCode::Date => crate::cast::parse_computed_time(
-                        &result,
-                        ctx,
-                        tidb_datatype::TimeType::Date,
-                        Some(0),
-                    ),
-                    tidb_datatype::FieldTypeCode::Datetime => crate::cast::parse_computed_time(
-                        &result,
-                        ctx,
-                        tidb_datatype::TimeType::DateTime,
-                        Some(result_type.decimal()),
-                    ),
-                    _ => Ok(result),
-                };
+                );
             }
         }
         // Go `builtinDatabaseSig`/`builtinVersionSig` read session state

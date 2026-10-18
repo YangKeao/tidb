@@ -102,18 +102,6 @@ pub(crate) fn add_sub_untyped(
     add_sub_time(vals, kinds, sign, true, cols)
 }
 
-pub(crate) fn date_add_duration(
-    cols: &dyn Columns,
-    unit: &str,
-    date: &Datum,
-    amount: &Datum,
-    amount_type: Option<&FieldType>,
-    sign: i64,
-    result_fsp: i64,
-) -> Result<Datum, EvalError> {
-    crate::tikv::eval_date_add_duration_in(cols, unit, date, amount, amount_type, sign, result_fsp)
-}
-
 /// Go's `getBf4TimeAddSub` + `addTimeFunctionClass.getFunction` /
 /// `subTimeFunctionClass.getFunction`, evaluated.
 ///

@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N7g: remove ordinary DATE_ADD/SUB calendar, AST-default and typed-duration Ready controllers; preserve composite-amount-first versus duration-date-first demand, exact coercion/rounding, unconditional warnings and late overflow disposition. Capture original observations and source/Ready REDs before production edits, then shared actual-value SDK controller, generic date_add_/date_sub_ source integration, finite work/ownership and full validation with signed local commits. Legacy PB date arithmetic is separate and remains explicit pending work.
+
 - [x] N7f:468099 original58044483da932cf4;467856actual old/new paired+243hash arity boundaries before bounded-staleness Ready caller retirement/wire delegation. Canonical generic sources, both original casts, statement SafeTS, capability/resource/callback/selection closure integrated. Fullfront1644same3/all222batch, SDK1096same1, Projection26/extra mixed group, focus8, clippy89expr/171allEXACTN7e/lint/fmt12/diffs/unchangedSTRfixtureSHA pass. Receipt evidence/no-fallback-n7f.md. Local signed checkpoint only; no push; global retirement remains open.
 
 - [x] N7e: five actual inherited identity REDs fixed with generated construction snapshots, preserving same-instance pointer identity across codegen units. Focus25pass/0fail/1ignored, codegen20, fullSDK1096remaining1, frontend1637same3/all218batch, Projection26, isolatedbodyorigin1, clippy89expression/171all exacttitles, lint/pinnedformats/diff/fixturehashes pass. Receipt evidence/no-fallback-n7e.md. Local signed checkpoint only, no push; calendar/scanner and global retirement remain open.
@@ -2330,3 +2332,76 @@ exact commands, scoped proof and limitations. No datatype changes/rerun;564same2
 baseline unchanged. No%j policy/oracle changes, no larger limits or failure
 allowlists. Ready/old caller and source REDs green, no second dispatcher/probe.
 SDK local signed e212b91; finalize paired TiDB implementation/receipt commit only; task4 remainsactive, no push.
+
+
+### N7g ordinary date arithmetic actual values and source execution
+
+
+At the N7f starting point, `tikv/date_arithmetic.rs` serialized both actual
+values, unit and metadata into a head program, then drove step/overflow programs by
+serialized requests. The SDK controller owns the original different calendar
+and duration demand policy; `native_date_arithmetic_helpers.rs` already owns
+pure calendar and duration arithmetic. Replace ordinary native execution with
+an actual SDK controller using borrowed native string/numeric representations,
+owned demanded scratch and typed metadata. Conversions must call the very same
+shared datatype primitives used by original coerce_str, Datum.to_i64 and
+Decimal.parse_mysql, preserving their distinct rounding, raw-coefficient and
+error policies. Statement callbacks are only unconditional warning delivery and
+late overflow disposition, not expression-evaluation callbacks. No new native
+expression walker or alternative signature dispatch is allowed.
+
+Preserve composite-calendar amount-before-date behavior even for NULL dates;
+duration checks the date and supported unit first. Single string amount
+truncation warns before subsequent date demand; SECOND text/Real parse_mysql
+uses the original fixed-word parser and ignores its disposition. Overflow reads
+truncate_level only after actual calendar overflow, with exact1441 outcomes.
+AST default mode must use NoColumns for semantic callbacks, independent of the
+outer statement cache/context; removing the cache wrapper must not change that.
+Check demanded Decimal/float precision/text/parse/result work before allocation,
+using actual value routing rather than eager conversion of suppressed operands.
+
+First freeze original native calendar/default/duration values, raw identities,
+unsupported/overflow errors and getter/warning events under three cache profiles
+and all truncate levels, and reproduce a forbidden Ready lookup plus generic
+source fallback. Keep old bodies independent while comparing the new value
+implementation. Only after that pass retire native reports/programs and make
+explicit wire compatibility share the same actual semantics. Factor the scalar
+function's exact type/FSP/Duration-to-Datetime/pre/post result policy so both
+original row calls and canonical source resume use it once over both eager
+owned operands. Unit is a static keyword encoded in date_add_/date_sub_ names.
+Preserve source capabilities, occurrence, resource refusal, warnings, NULL,
+late-error prefix/publication and cancellation. Validate typed parents, dynamic
+contexts, duplicates, mixed serial/parallel Projection, full frontend/SDK and
+exact inherited failure/lint lists; then sign the coherent local pair without
+pushing. Legacy PB date arithmetic, remaining old callers and the global goal
+stay open.
+
+N7g implementation progress: original2325024/FEEA99CD98022F82 was frozen at
+TiDB49333e87/TiKVe212b91; all2325024 independent old/new observations matched
+in60826 before retiring old callers and wire controller bodies. All nine direct
+entry Ready REDs and generic source refusal/fallback are now green. Actual SDK
+state, wire delegation, shared scalar pre/post policy and canonical eager source
+host are implemented. Source context/provider checks pass all four outputs,
+wrong/stale capability prefixes, callback-exclusive store borrowing, changing
+modes/timezone/clock, late overflow policy mutation and2050duplicates. Reference
+suite scope-binding cache lookup alone is allowed by the test reference context;
+actual source/direct contexts still reject every Ready query.
+
+Two actual WIP API resource defects were independently reproduced: an oversized
+coercion failure could be followed by a NULL replay (11110), and incoming spare
+String capacity was ignored while producing a warning (93651). Failed advances
+now invalidate the state and incoming capacity is charged until transferred or
+dropped. Nonfinite formatting ignores valid fractional precision but the Rust
+formatter still panics for a precision parameter above65535; independent boundary
+probe confirms the inherited panic. The finite API now checks invalid-parameter
+work first while preserving the panic with sufficient budget. Wire compatibility
+remains on its existing private bound/codec policy. Final frontend45587 has1652
+passes with the exact same3 inherited failures/95ignored and all226 batch tests
+passing; SDK58621 has1099 passes with the exact same1 inherited failure/1ignored.
+Projection83008 passes all26 with the new mixed group; clippy60088 retains89
+expression warnings and the exact171-entry all-crate warning-title multiset.
+Lint6348,15 Rust files under both pinned format parsers, both diff checks and
+unchanged original calendar fixture SHA256/lengths pass. No datatype source
+changed or datatype rerun claimed. Receipt `evidence/no-fallback-n7g.md` records
+proof, commands and exact open failures; signed SDK3e94811 is paired with this
+TiDB implementation, without push. Legacy PB arithmetic and the global goal remain pending.

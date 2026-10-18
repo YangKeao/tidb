@@ -369,7 +369,8 @@ fn promoted_native_root_view(
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_charset_operation(function.func_name.lowercase()).is_some()
+    ) || native_date_arithmetic_call(function).is_some()
+        || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
@@ -914,7 +915,8 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_charset_operation(function.func_name.lowercase()).is_some()
+    ) || native_date_arithmetic_call(function).is_some()
+        || native_charset_operation(function.func_name.lowercase()).is_some()
     {
         // Native producers always consume authentic native source values;
         // a typed parent receives its original carrier from the same value.
@@ -1217,6 +1219,15 @@ fn pb_timestamp_diff(function: &ScalarFunction) -> bool {
 fn timestamp_diff_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "timestampdiff" || pb_timestamp_diff(function)
 }
+fn native_date_arithmetic_call(function: &ScalarFunction) -> Option<(&str, i64)> {
+    if function.args.len() != 2 {
+        return None;
+    }
+    let name = function.func_name.lowercase();
+    name.strip_prefix("date_add_")
+        .map(|unit| (unit, 1))
+        .or_else(|| name.strip_prefix("date_sub_").map(|unit| (unit, -1)))
+}
 fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharsetOperation> {
     use tidb_query_expr::NativeCharsetOperation as Op;
     Some(match name {
@@ -1234,7 +1245,8 @@ fn native_value_call(function: &ScalarFunction) -> bool {
             | "timestampdiff"
             | "sig_timestampdiff"
             | "tidb_bounded_staleness"
-    ) || native_charset_operation(function.func_name.lowercase()).is_some()
+    ) || native_date_arithmetic_call(function).is_some()
+        || native_charset_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
             "in" | "interval" | "greatest" | "least"
@@ -1247,6 +1259,35 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if native_date_arithmetic_call(function).is_some() {
+        use tidb_query_expr::local::SqlTemporalOutput as Output;
+        if function.args.iter().any(|arg| arg.static_type().is_none()) {
+            return Err(BatchFailure::admission(
+                "date arithmetic source declarations absent",
+            ));
+        }
+        let result = function
+            .get_static_type()
+            .ok_or_else(|| BatchFailure::admission("date arithmetic result declaration absent"))?;
+        let output = if view.value_role().is_some() {
+            Output::Value
+        } else {
+            match result.code() {
+                FieldTypeCode::Date | FieldTypeCode::Datetime => Output::DateTime,
+                FieldTypeCode::Duration => Output::Duration,
+                _ if result.eval_type() == NativeEvalType::String => Output::Bytes,
+                _ => {
+                    return Err(BatchFailure::admission(
+                        "date arithmetic result carrier is not covered",
+                    ))
+                }
+            }
+        };
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::DateArithmeticNative { output }),
+            2,
+        ));
+    }
     if function.func_name.lowercase() == "tidb_bounded_staleness" {
         if function.args.len() != 2
             || function.args.iter().any(|arg| arg.static_type().is_none())
@@ -2104,6 +2145,18 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if native_date_arithmetic_call(function).is_some() {
+                        let (unit, _) =
+                            native_date_arithmetic_call(function).expect("checked date arithmetic");
+                        budget.add(unit.len())?;
+                        budget.add(unit.len())?;
+                        for arg in &function.args {
+                            budget.field(
+                                arg.static_type().expect("checked date arithmetic argument"),
+                                1,
+                            )?;
+                        }
+                    }
                     if matches!(
                         resolve_call_in_view(function, view)?.0,
                         CallTarget::Host(SqlBatchHostOperation::BoundedStalenessNative { .. })
@@ -2690,6 +2743,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::IntervalNative
                                         | SqlBatchHostOperation::ExtremumNative
                                         | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                        | SqlBatchHostOperation::DateArithmeticNative { .. }
                                         | SqlBatchHostOperation::BoundedStalenessNative { .. }
                                         | SqlBatchHostOperation::StrToDateNative { .. }
                                         | SqlBatchHostOperation::JsonSumCrc32Native { .. }
@@ -2754,6 +2808,41 @@ fn lower_view(
                                     result_type: snapshot_field_type(item.sql),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::DateArithmeticNative { output } => {
+                                let first = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("date arithmetic ordinal overflow"))?;
+                                let second = checked
+                                    .get(first)
+                                    .ok_or_else(|| binding("date arithmetic first source absent"))?
+                                    .subtree_end;
+                                let (unit, sign) =
+                                    native_date_arithmetic_call(sql).ok_or_else(|| {
+                                        binding("date arithmetic source keyword lost")
+                                    })?;
+                                let result_fsp = crate::tikv::date_add_result_fsp_checked(
+                                    unit,
+                                    sql.args[0].static_type(),
+                                    sql.args[1].static_type(),
+                                )?;
+                                NativeHostMetadata::DateArithmetic {
+                                    arguments: [first, second],
+                                    argument_types: std::array::from_fn(|i| {
+                                        snapshot_field_type(
+                                            sql.args[i]
+                                                .static_type()
+                                                .expect("checked date arithmetic source"),
+                                        )
+                                    }),
+                                    unit: unit.into(),
+                                    sign,
+                                    result_fsp,
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role(),
+                                    output,
                                 }
                             }
                             SqlBatchHostOperation::BoundedStalenessNative { .. } => {

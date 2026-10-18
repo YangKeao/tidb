@@ -3049,8 +3049,70 @@ mod tests {
         let bounded_mix = std::iter::once(0)
             .chain(bounded_start..roots.len())
             .collect::<Vec<_>>();
+        let date_arithmetic_start = roots.len();
+        let date_add = |ret: FieldType, duration: bool| {
+            call(
+                if duration {
+                    "date_sub_hour_minute"
+                } else {
+                    "date_add_day"
+                },
+                ret,
+                vec![
+                    if duration {
+                        Expression::Constant(Constant::new(
+                            Datum::new_duration(tidb_datatype::MySqlDuration::from_raw_parts(
+                                3_600_000_000_000,
+                                6,
+                            )),
+                            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+                        ))
+                    } else {
+                        Expression::Constant(Constant::new(
+                            Datum::new_string("2020-02-28 12:34:56.123456"),
+                            string.clone(),
+                        ))
+                    },
+                    if duration {
+                        Expression::Constant(Constant::new(
+                            Datum::new_string("1:02"),
+                            string.clone(),
+                        ))
+                    } else {
+                        column(0)
+                    },
+                ],
+            )
+        };
+        roots.push(date_add(string.clone(), false));
+        fields.push(string.clone());
+        let date_time_type = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+        roots.push(date_add(date_time_type.clone(), false));
+        fields.push(date_time_type.clone());
+        let date_duration_type = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+        roots.push(date_add(date_duration_type.clone(), true));
+        fields.push(date_duration_type);
+        roots.push(call(
+            "cast_char",
+            string.clone(),
+            vec![date_add(date_time_type, false)],
+        ));
+        fields.push(string.clone());
+        let date_arithmetic_mix = std::iter::once(0)
+            .chain(date_arithmetic_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
+            (
+                date_arithmetic_mix
+                    .iter()
+                    .map(|&i| roots[i].clone())
+                    .collect(),
+                date_arithmetic_mix
+                    .iter()
+                    .map(|&i| fields[i].clone())
+                    .collect(),
+            ),
             (
                 bounded_mix.iter().map(|&i| roots[i].clone()).collect(),
                 bounded_mix.iter().map(|&i| fields[i].clone()).collect(),
