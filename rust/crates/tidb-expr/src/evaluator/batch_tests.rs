@@ -22021,3 +22021,882 @@ fn native_grouping_resource_failure_is_terminal_without_fallback_and_later_null_
     assert_eq!((route.refusals, route.fallback), (0, 0));
     assert!(ctx.events.borrow().is_empty());
 }
+
+#[test]
+fn native_wildcard_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in ["like", "ilike"] {
+        let root = call(
+            name,
+            ty(),
+            vec![
+                literal(Datum::new_string("abc"), string_ty()),
+                literal(Datum::new_string("a%"), string_ty()),
+                int(92),
+            ],
+        );
+        let s = suite(root);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&ty());
+        s.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[])
+            .unwrap();
+        let route = s.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "wildcard source {failures:?}");
+}
+
+fn compare_wildcard_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    level: usize,
+) {
+    fn outcome<T: std::fmt::Debug>(f: impl FnOnce() -> T) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => format!("{v:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        }
+    }
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let label = format!("{root:?} {schema:?} seed={seed} level={level} selection={selection:?}");
+    let (actual, reference) = (suite(root.clone()), suite(root));
+    for enabled in [false, true, false, true] {
+        let mut ctx = crate::tikv::wildcard_value_tests::context(1, seed, level);
+        ctx.inner.reject = true;
+        ctx.inner.enabled.set(enabled);
+        let oldctx = crate::tikv::wildcard_value_tests::context(1, seed, level);
+        oldctx.inner.enabled.set(enabled);
+        let (mut input, mut old) = (chunk(schema, rows), chunk(schema, rows));
+        input.set_sel(Some(selection.to_vec()));
+        old.set_sel(Some(selection.to_vec()));
+        let (mut output, mut expected) = (output_for(&field), output_for(&field));
+        assert_eq!(
+            outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, schema)),
+            outcome(|| reference.run(&oldctx, &mut old, &mut expected)),
+            "{label} flag={enabled}"
+        );
+        assert_eq!(
+            *ctx.inner.events.borrow(),
+            *oldctx.inner.events.borrow(),
+            "{label}"
+        );
+        assert_eq!(output.num_rows(), expected.num_rows(), "{label}");
+        assert_eq!(output.column(0), expected.column(0), "{label}");
+        let route = actual.batch_route_snapshot();
+        assert_eq!(
+            (route.refusals, route.fallback),
+            (0, 0),
+            "{label} {route:?}"
+        );
+    }
+}
+#[test]
+fn native_wildcard_sources_keep_types_short_circuit_returns_context_and_output_prefixes() {
+    let mut cases = vec![
+        (
+            ty(),
+            vec![
+                Datum::Null,
+                Datum::Int(0),
+                Datum::Int(-1),
+                Datum::Int(2024),
+                Datum::Int(i64::MAX),
+            ],
+        ),
+        (
+            ty().with_unsigned(true),
+            vec![
+                Datum::Null,
+                Datum::UInt(0),
+                Datum::UInt(59),
+                Datum::UInt(u64::MAX),
+            ],
+        ),
+        (
+            real_ty(),
+            vec![
+                Datum::Null,
+                Datum::Real(30.0000005),
+                Datum::Real(59.9),
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::INFINITY),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(7),
+            vec![
+                Datum::Null,
+                Datum::Decimal(Decimal::from_literal("30.0000005")),
+                Datum::Decimal(Decimal::from_literal(
+                    "999999999999999999999999999999999999999999999999.25",
+                )),
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::Null,
+                Datum::new_string("2024-02-29 12:34:56.123456"),
+                Datum::new_string("12:34:56.1234567"),
+                Datum::new_string("DATE"),
+                Datum::new_string("USA"),
+                Datum::new_string("%H:%i:%s.%f"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![0xff]),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Null, Datum::Int(0), Datum::Int(24), Datum::Int(2024)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Date),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Duration(MySqlDuration::from_nanoseconds(-45678900000000, 6).unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(64),
+            vec![
+                Datum::Null,
+                Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![0xff; 8])),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Null,
+                Datum::Json(BinaryJSON::parse("[1,true]").unwrap()),
+            ],
+        ),
+    ];
+    cases.extend([
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Timestamp,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDate),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+    ]);
+    let returns = vec![
+        ty(),
+        string_ty(),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+    ];
+
+    cases.push((
+        FieldType::new(FieldTypeCode::VectorFloat32),
+        vec![
+            Datum::Null,
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![])),
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 2.0])),
+            {
+                let mut v = VectorFloat32::init(2);
+                v.elements_mut()[0] = f32::from_bits(0x7fc01234);
+                v.elements_mut()[1] = f32::INFINITY;
+                Datum::VectorFloat32(v)
+            },
+        ],
+    ));
+    let mut returns = returns;
+    returns.push(FieldType::new(FieldTypeCode::VectorFloat32));
+
+    cases.extend([
+        (
+            FieldType::new(FieldTypeCode::Enum),
+            vec![
+                Datum::Null,
+                Datum::Enum(
+                    tidb_datatype::MysqlEnum::new("AbC", 92),
+                    tidb_datatype::Collation::Utf8Mb4Bin,
+                ),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Set),
+            vec![
+                Datum::Null,
+                Datum::Set(
+                    tidb_datatype::MysqlSet::new("a%", 92),
+                    tidb_datatype::Collation::Utf8Mb4Bin,
+                ),
+            ],
+        ),
+    ]);
+    let mut returns = returns;
+    returns.push(ty().with_unsigned(true));
+    returns.push(FieldType::new(FieldTypeCode::Json));
+    for ilike in [false, true] {
+        for index in 0..3 {
+            for (source, values) in &cases {
+                let (schema, rows, arg) = if source.code() == FieldTypeCode::NewDate {
+                    (
+                        vec![ty()],
+                        vec![vec![Datum::Int(0)], vec![Datum::Int(1)]],
+                        call(
+                            "if",
+                            source.clone(),
+                            vec![
+                                column(0),
+                                literal(values[1].clone(), source.clone()),
+                                literal(Datum::Null, source.clone()),
+                            ],
+                        ),
+                    )
+                } else {
+                    (
+                        vec![source.clone()],
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>(),
+                        typed_column(0, source),
+                    )
+                };
+                for ret in &returns {
+                    for level in 0..3 {
+                        let mut args = vec![
+                            literal(Datum::new_string("Abcé"), string_ty()),
+                            literal(Datum::new_string("a%"), string_ty()),
+                            int(92),
+                        ];
+                        args[index] = arg.clone();
+                        let root = call(if ilike { "ilike" } else { "like" }, ret.clone(), args);
+                        compare_wildcard_source(
+                            root,
+                            &schema,
+                            &rows,
+                            &[rows.len() - 1, 0, rows.len() - 1],
+                            2,
+                            level,
+                        );
+                    }
+                }
+                let mut args = vec![
+                    literal(Datum::new_string("abc"), string_ty()),
+                    literal(Datum::new_string("a%"), string_ty()),
+                    int(92),
+                ];
+                args[index] = arg;
+                let root = call(if ilike { "ilike" } else { "like" }, ty(), args);
+                compare_wildcard_source(
+                    call("cast_char", string_ty(), vec![root]),
+                    &schema,
+                    &rows,
+                    &[0, rows.len() - 1, 0],
+                    3,
+                    0,
+                );
+            }
+        }
+    }
+    // Left NULL suppresses a later child error; a bad left conversion precedes
+    // pattern NULL. The source path must not merely evaluate all operands.
+    for ilike in [false, true] {
+        let name = if ilike { "ilike" } else { "like" };
+        for args in [
+            vec![
+                literal(Datum::Null, string_ty()),
+                abs(int(i64::MIN)),
+                int(92),
+            ],
+            vec![
+                literal(Datum::MinNotNull, string_ty()),
+                literal(Datum::Null, string_ty()),
+                int(92),
+            ],
+            vec![
+                literal(Datum::new_string("abc"), string_ty()),
+                literal(Datum::Null, string_ty()),
+                abs(int(i64::MIN)),
+            ],
+            vec![
+                literal(Datum::new_string("abc"), string_ty()),
+                literal(Datum::new_string("a%"), string_ty()),
+                abs(int(i64::MIN)),
+            ],
+        ] {
+            compare_wildcard_source(call(name, ty(), args), &[], &[vec![]], &[0], 2, 0);
+        }
+        for collation in crate::tikv::wildcard_value_tests::collations() {
+            let ft = string_ty().with_collation(collation);
+            compare_wildcard_source(
+                call(
+                    name,
+                    ty(),
+                    vec![
+                        typed_column(0, &ft),
+                        literal(Datum::new_string("a%"), ft.clone()),
+                        int(92),
+                    ],
+                ),
+                &[ft],
+                &[
+                    vec![Datum::Null],
+                    vec![Datum::new_string("Abc")],
+                    vec![Datum::Bytes(vec![255])],
+                ],
+                &[1, 0, 2, 1],
+                1,
+                0,
+            );
+        }
+    }
+}
+
+#[test]
+fn native_wildcard_capabilities_callbacks_resources_panic_and_reuse() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use super::native_values::{NativeValueOrigin, NativeValueRole, NativeValueStore};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostCatalog, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+        LocalHostServices,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<&'static str>>,
+        panic_zone: Cell<bool>,
+        panic_id: Cell<bool>,
+        id: Cell<u64>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!()
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("retired LIKE Ready lookup")
+        }
+        fn context_id(&self) -> u64 {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("context");
+            assert!(
+                !self.panic_id.replace(false),
+                "original LIKE context callback"
+            );
+            self.id.get()
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("zone");
+            assert!(
+                !self.panic_zone.replace(false),
+                "original LIKE zone callback"
+            );
+            SessionTimeZone::utc()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("level");
+            crate::ErrorLevel::Warn
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("warning");
+        }
+    }
+    for ilike in [false, true] {
+        for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); 3];
+            let ret = field.clone();
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::LikeNative { ilike },
+                HostSignature {
+                    arg_types: args.clone().into_boxed_slice(),
+                    return_type: ret.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let cache_like = tidb_query_expr::NativeContextCache::new();
+            let cache_ilike = tidb_query_expr::NativeContextCache::new();
+            let policy = tidb_datatype::Collation::Utf8Mb4Bin.native_policy();
+            let invocation = if ilike {
+                tidb_query_expr::NativeLikeInvocation::ilike(policy, Some((&cache_ilike, 0)))
+            } else {
+                tidb_query_expr::NativeLikeInvocation::like(policy, Some((&cache_like, 0)))
+            };
+            let metadata = [NativeHostMetadata::Like {
+                arguments: [3, 4, 5],
+                escape_type: string_ty(),
+                invocation,
+                result_type: ty(),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let foreign = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            foreign.borrow_mut().begin_window().unwrap();
+            let context = C {
+                store: &store,
+                events: RefCell::new(vec![]),
+                panic_zone: Cell::new(false),
+                panic_id: Cell::new(false),
+                id: Cell::new(7),
+            };
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, ctx: &mut EvalContext| {
+                let HostStart::Pending { task, .. } = p
+                    .start(
+                        ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &ret,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         ctx: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    ctx,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            let defaults = vec![
+                Datum::new_string("abc"),
+                Datum::new_string("a%"),
+                Datum::Int(92),
+            ];
+            for index in 0..3 {
+                let mut corrupt = insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                corrupt[0] ^= 1;
+                let foreign_token = foreign
+                    .borrow_mut()
+                    .insert_clone(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin {
+                            node: 3 + index,
+                            row,
+                        },
+                    )
+                    .unwrap();
+                for bad in [
+                    None,
+                    Some(corrupt),
+                    Some(stale.clone()),
+                    Some(foreign_token),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::Output,
+                        3 + index,
+                        row,
+                    )),
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    )),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            occurrence: 0,
+                            input_row: 1,
+                        },
+                    )),
+                ] {
+                    context.events.borrow_mut().clear();
+                    let task = begin(&mut provider, &mut ctx);
+                    for prefix in 0..index {
+                        assert!(matches!(
+                            reply(
+                                &mut provider,
+                                &mut ctx,
+                                &task,
+                                prefix,
+                                Some(insert(
+                                    &defaults[prefix],
+                                    NativeValueRole::CharInput,
+                                    3 + prefix,
+                                    row
+                                ))
+                            ),
+                            Ok(HostStep::NeedArg(_))
+                        ));
+                    }
+                    assert!(matches!(
+                        reply(&mut provider, &mut ctx, &task, index, bad),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(context.events.borrow().is_empty());
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+            }
+            let huge = Datum::new_string("z".repeat(1 << 20));
+            let mut cases = vec![
+                defaults.clone(),
+                vec![
+                    Datum::Null,
+                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                    Datum::Int(92),
+                ],
+                vec![Datum::MinNotNull, Datum::Null, Datum::Int(92)],
+                vec![
+                    Datum::new_string("abc"),
+                    Datum::Null,
+                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                ],
+                vec![
+                    Datum::new_string("abc"),
+                    Datum::new_string("a%"),
+                    Datum::new_string("92xyz"),
+                ],
+                vec![
+                    Datum::new_string("abc"),
+                    Datum::new_string("a%"),
+                    Datum::Enum(
+                        tidb_datatype::MysqlEnum::new("x".repeat(1 << 20), 92),
+                        tidb_datatype::Collation::Utf8Mb4Bin,
+                    ),
+                ],
+                vec![
+                    Datum::new_string("abc"),
+                    Datum::new_string("a%"),
+                    Datum::Set(
+                        tidb_datatype::MysqlSet::new("x".repeat(1 << 20), 92),
+                        tidb_datatype::Collation::Utf8Mb4Bin,
+                    ),
+                ],
+                vec![
+                    Datum::new_string("abc"),
+                    Datum::new_string("a%"),
+                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                ],
+            ];
+            let history_start = cases.len();
+            for (text, pattern) in [("abc", "z%"), ("abc", "z%"), ("zxc", "a%"), ("abc", "a%")] {
+                cases.push(vec![
+                    Datum::new_string(text),
+                    Datum::new_string(pattern),
+                    Datum::Int(92),
+                ]);
+            }
+            let mut reference = crate::tikv::wildcard_value_tests::scalar(
+                ilike,
+                defaults.clone(),
+                &string_ty(),
+                tidb_datatype::Collation::Utf8Mb4Bin,
+            );
+            for (case_index, values) in cases.into_iter().enumerate() {
+                context.id.set(if case_index < history_start {
+                    7
+                } else {
+                    [7, 8, 8, 7][case_index - history_start]
+                });
+                let task = begin(&mut provider, &mut ctx);
+                context.events.borrow_mut().clear();
+                let mut result = None;
+                for (index, value) in values.iter().enumerate() {
+                    match reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        index,
+                        Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
+                    ) {
+                        Ok(HostStep::NeedArg(request)) => assert_eq!(request.index, index + 1),
+                        Ok(HostStep::Ready(output)) => {
+                            let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0)
+                            else {
+                                panic!()
+                            };
+                            result = Some(Ok(store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap()
+                                .clone()));
+                            break;
+                        }
+                        Err(_) => {
+                            result = Some(Err(provider
+                                .take_native_error()
+                                .expect("small or ignored SQL outcome")));
+                            break;
+                        }
+                    }
+                }
+                let events = context.events.borrow().clone();
+                context.events.borrow_mut().clear();
+                reference.args = values
+                    .iter()
+                    .map(|v| literal(v.clone(), string_ty()))
+                    .collect();
+                let input = chunk(&[], &[vec![]]);
+                let expected = reference.eval(&context, input.get_row(0));
+                assert_eq!(format!("{:?}", result.unwrap()), format!("{expected:?}"));
+                assert_eq!(events, *context.events.borrow());
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                )
+                .is_err());
+                provider.cancel(&task);
+            }
+            // All unsupported escape shapes preserve their original error without
+            // copying the large payload, and all actual name views stay authentic.
+            for fail_index in [0, 1, 2] {
+                let task = begin(&mut provider, &mut ctx);
+                for prefix in 0..fail_index {
+                    assert!(matches!(
+                        reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            prefix,
+                            Some(insert(
+                                &defaults[prefix],
+                                NativeValueRole::CharInput,
+                                3 + prefix,
+                                row
+                            ))
+                        ),
+                        Ok(HostStep::NeedArg(_))
+                    ));
+                }
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    fail_index,
+                    Some(insert(
+                        &huge,
+                        NativeValueRole::CharInput,
+                        3 + fail_index,
+                        row
+                    ))
+                )
+                .is_err());
+                provider.take_native_error();
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    fail_index,
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + fail_index,
+                        row
+                    ))
+                )
+                .is_err());
+                provider.cancel(&task);
+            }
+            for zone in [true, false] {
+                let task = begin(&mut provider, &mut ctx);
+                for prefix in 0..2 {
+                    assert!(matches!(
+                        reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            prefix,
+                            Some(insert(
+                                &defaults[prefix],
+                                NativeValueRole::CharInput,
+                                3 + prefix,
+                                row
+                            ))
+                        ),
+                        Ok(HostStep::NeedArg(_))
+                    ));
+                }
+                context.panic_zone.set(zone);
+                context.panic_id.set(!zone);
+                let escape = if zone {
+                    Datum::new_string("92")
+                } else {
+                    Datum::Int(92)
+                };
+                let token = insert(&escape, NativeValueRole::CharInput, 5, row);
+                assert!(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        2,
+                        Some(token)
+                    )))
+                    .is_err()
+                );
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    2,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 5, row))
+                )
+                .is_err());
+                provider.cancel(&task);
+            }
+            let task = begin(&mut provider, &mut ctx);
+            for (index, value) in defaults.iter().enumerate() {
+                let step = reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    index,
+                    Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
+                )
+                .unwrap();
+                assert!(if index < 2 {
+                    matches!(step, HostStep::NeedArg(_))
+                } else {
+                    matches!(step, HostStep::Ready(_))
+                });
+            }
+            provider.cancel(&task);
+        }
+    }
+}
+
+#[test]
+fn native_wildcard_resource_error_never_falls_back_and_same_source_null_recovers() {
+    let schema = [string_ty()];
+    let rows = [
+        vec![Datum::new_string("a".repeat(1 << 20))],
+        vec![Datum::Null],
+    ];
+    for name in ["like", "ilike"] {
+        let actual = suite(call(
+            name,
+            ty(),
+            vec![
+                typed_column(0, &schema[0]),
+                literal(Datum::new_string("%aaab"), string_ty()),
+                int(92),
+            ],
+        ));
+        let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+        ctx.inner.reject = true;
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(vec![0]));
+        let mut output = output_for(&ty());
+        assert!(matches!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+            Err(crate::evaluator::EvaluatorError::Eval(
+                EvalError::ExpressionRuntimeFailure(_)
+            ))
+        ));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        ctx.inner.events.borrow_mut().clear();
+        input.set_sel(Some(vec![1]));
+        let mut output = output_for(&ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        assert!(ctx.inner.events.borrow().is_empty());
+    }
+}

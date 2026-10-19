@@ -56,6 +56,8 @@ mod timestamp_diff_source;
 mod tso_source;
 #[path = "batch_vector.rs"]
 mod vector;
+#[path = "batch_wildcard.rs"]
+mod wildcard;
 pub(super) use charset_source::NativeCharsetMetadata;
 #[path = "batch_extremum.rs"]
 mod extremum_source;
@@ -132,6 +134,14 @@ impl NativeRawValueOperation {
 }
 
 pub(super) enum NativeHostMetadata {
+    Like {
+        arguments: [usize; 3],
+        escape_type: FieldType,
+        invocation: tidb_query_expr::NativeLikeInvocation,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     In(NativeInMetadata),
     Interval(NativeIntervalMetadata),
     Extremum(NativeExtremumMetadata),
@@ -338,6 +348,7 @@ impl NativeHostMetadata {
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
             | Self::Grouping { result_type, .. }
+            | Self::Like { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
@@ -364,6 +375,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Like {
+        pending: Option<crate::tikv::wildcard_value::Prepared>,
+    },
     Grouping {
         consumed: bool,
     },
@@ -478,6 +492,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
             SqlDemand::Grouping { consumed } => Ok(Some(usize::from(*consumed))),
             SqlDemand::TimestampDiff { next, .. }
             | SqlDemand::DurationConstruction { next, .. }
@@ -517,6 +532,7 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
             SqlDemand::Grouping { .. } => Err(binding("GROUPING demand cannot retain byte prefix")),
             SqlDemand::TimestampDiff { .. }
             | SqlDemand::DurationConstruction { .. }
@@ -574,6 +590,11 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::Like { pending } = &self.demand {
+            return bytes
+                .checked_add(pending.as_ref().map_or(0, |p| p.retained_bytes()))
+                .ok_or_else(|| resource("LIKE retained prefix overflow"));
+        }
         if let SqlDemand::In { tokens, .. } | SqlDemand::Extremum { tokens, .. } = &self.demand {
             return bytes
                 .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
@@ -2153,6 +2174,28 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 3],
                 }
             }
+            SqlBatchHostOperation::LikeNative { ilike } => {
+                let Some(NativeHostMetadata::Like {
+                    invocation: value, ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("LIKE descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || invocation.arg_types.len() != 3
+                    || value.kind()
+                        != if ilike {
+                            tidb_query_expr::NativeLikeKind::Ilike
+                        } else {
+                            tidb_query_expr::NativeLikeKind::Like
+                        }
+                {
+                    return Err(binding("LIKE descriptor differs"));
+                }
+                SqlDemand::Like {
+                    pending: Some(crate::tikv::wildcard_value::Prepared::Text),
+                }
+            }
             SqlBatchHostOperation::GroupingNative => {
                 if self.native_values.is_none()
                     || invocation.arg_types.len() != 1
@@ -2773,6 +2816,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("timestamp diff source cannot be wire NULL"));
             };
             return self.resume_timestamp_diff(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Like { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("LIKE source cannot be wire NULL"));
+            };
+            return self.resume_wildcard(id, token);
         }
         if matches!(task.demand, SqlDemand::Grouping { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

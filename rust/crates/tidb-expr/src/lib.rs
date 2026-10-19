@@ -1639,32 +1639,13 @@ pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
             // `None`/`Some(0)`/`Some(byte)` meaning, confirmed via
             // `gorun` for a custom single-byte escape character.
             let arguments = (eval_in(expr, cols)?, eval_in(pattern, cols)?);
-            let value = like::evaluate_like_in(*ilike, cols, || {
-                let (v, p) = match &arguments {
-                    (Datum::Null, _) | (_, Datum::Null) => {
-                        return Ok(tikv::EvaluatedArgs::NullWitness(None));
-                    }
-                    (v, p) => (v, p),
-                };
-                let text = v
-                    .sql_bytes()
-                    .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
-                let pattern = p
-                    .sql_bytes()
-                    .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
-                let collation = tidb_datatype::Collation::Utf8Mb4Bin.native_policy();
-                let invocation = if *ilike {
-                    tidb_query_expr::NativeLikeInvocation::ilike(collation, None)
-                } else {
-                    tidb_query_expr::NativeLikeInvocation::like(collation, None)
-                };
-                Ok(tikv::EvaluatedArgs::Like {
-                    invocation,
-                    text: Some(text),
-                    pattern: Some(pattern),
-                    escape: Some(i64::from(escape.unwrap_or(b'\\'))),
-                })
-            })?;
+            let value = tikv::wildcard_value::ast(
+                *ilike,
+                &arguments.0,
+                &arguments.1,
+                *escape,
+                tikv::wildcard_value::default_budget(),
+            )?;
             negate_if(value, *not, cols)
         }
         // Case-sensitive (utf8mb4_bin) `[NOT] REGEXP`/`RLIKE`, the SAME

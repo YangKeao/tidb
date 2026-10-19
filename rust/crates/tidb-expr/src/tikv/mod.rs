@@ -688,3 +688,7 @@ pub(crate) mod vector_value;
 pub(crate) mod metadata_value_tests;
 
 pub(crate) mod grouping_value;
+
+pub(crate) mod wildcard_value;
+#[cfg(test)]
+pub(crate) mod wildcard_value_tests;

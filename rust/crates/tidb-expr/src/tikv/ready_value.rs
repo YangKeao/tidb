@@ -2322,54 +2322,33 @@ pub enum LegacyLikeArgs {
     },
 }
 
-/// Evaluate legacy LIKE through the caller's lane cache without native matching.
-/// Missing children and an actual NULL witness enter their own closed recipes;
-/// a non-NULL witness is refused before worker admission.
+/// Legacy eager callers retain their own child demand. Only actual present
+/// bytes reach matching; invalid NULL witnesses keep their original contract.
 pub fn eval_legacy_like_in(
     case_insensitive: bool,
     args: LegacyLikeArgs,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<Option<i128>, EvalError> {
-    evaluate_prepared_args_in(
-        ctx,
-        || match args {
-            LegacyLikeArgs::Missing => Ok((
-                EvaluatedBytesOp::LikeMissingLegacyNative,
-                EvaluatedArgs::NoArgs,
-            )),
-            LegacyLikeArgs::NullWitness(value) => {
-                if value.is_some() {
-                    return Err(ReadyValueBoundaryError::Scope {
-                        kind: ScopeFailureKind::Contract,
-                        reason: "legacy LIKE NULL witness contains a value",
-                    }
-                    .into_eval_error());
-                }
-                Ok((
-                    EvaluatedBytesOp::LikeNullIntNative,
-                    EvaluatedArgs::NullWitness(None),
-                ))
-            }
-            LegacyLikeArgs::Values {
-                target,
-                pattern,
-                escape,
-            } => Ok((
-                EvaluatedBytesOp::LikeLegacyNative,
-                EvaluatedArgs::Like {
-                    invocation: NativeLikeInvocation::legacy(case_insensitive),
-                    text: Some(target),
-                    pattern: Some(pattern),
-                    escape: Some(i64::from(escape)),
-                },
-            )),
-        },
-        |computed| match computed.into_boolean_datum()? {
-            Datum::Int(value) => Ok(Some(i128::from(value))),
-            Datum::Null => Ok(None),
-            _ => Err(result_kind_error().into_eval_error()),
-        },
-    )
+    match args {
+        LegacyLikeArgs::Missing | LegacyLikeArgs::NullWitness(None) => Ok(None),
+        LegacyLikeArgs::NullWitness(Some(_)) => Err(ReadyValueBoundaryError::Scope {
+            kind: ScopeFailureKind::Contract,
+            reason: "legacy LIKE NULL witness contains a value",
+        }
+        .into_eval_error()),
+        LegacyLikeArgs::Values {
+            target,
+            pattern,
+            escape,
+        } => super::wildcard_value::value(
+            &NativeLikeInvocation::legacy(case_insensitive),
+            &target,
+            &pattern,
+            escape,
+            super::wildcard_value::default_budget(),
+        )
+        .map(|v| Some(i128::from(v))),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

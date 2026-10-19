@@ -3648,6 +3648,57 @@ mod tests {
         let metadata_mix = std::iter::once(0)
             .chain(metadata_start..roots.len())
             .collect::<Vec<_>>();
+        let wildcard_start = roots.len();
+        for name in ["like", "ilike"] {
+            for mode in 0..3 {
+                let args = match mode {
+                    0 => vec![
+                        column(0),
+                        Expression::Constant(Constant::new(Datum::new_string("%"), string.clone())),
+                        Expression::Constant(Constant::new(Datum::Int(92), integer.clone())),
+                    ],
+                    1 => vec![
+                        call(
+                            "if",
+                            string.clone(),
+                            vec![
+                                column(0),
+                                Expression::Constant(Constant::new(
+                                    Datum::new_string("Abc"),
+                                    string.clone(),
+                                )),
+                                Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                            ],
+                        ),
+                        Expression::Constant(Constant::new(
+                            Datum::new_string("a%"),
+                            string.clone(),
+                        )),
+                        Expression::Constant(Constant::new(Datum::Int(92), integer.clone())),
+                    ],
+                    _ => vec![
+                        Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                        call(
+                            "abs",
+                            integer.clone(),
+                            vec![Expression::Constant(Constant::new(
+                                Datum::Int(i64::MIN),
+                                integer.clone(),
+                            ))],
+                        ),
+                        Expression::Constant(Constant::new(Datum::Int(92), integer.clone())),
+                    ],
+                };
+                let root = call(name, integer.clone(), args);
+                roots.push(root.clone());
+                fields.push(integer.clone());
+                roots.push(call("cast_char", string.clone(), vec![root]));
+                fields.push(string.clone());
+            }
+        }
+        let wildcard_mix = std::iter::once(0)
+            .chain(wildcard_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3787,6 +3838,10 @@ mod tests {
                     .iter()
                     .map(|&index| fields[index].clone())
                     .collect(),
+            ),
+            (
+                wildcard_mix.iter().map(|&i| roots[i].clone()).collect(),
+                wildcard_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
         ];
         // Keep prior matrices intact. Each new heterogeneous suite adds a

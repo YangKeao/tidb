@@ -18,8 +18,7 @@
 use tidb_datatype::Collation;
 use tidb_query_expr::{native_ilike_match, native_like_match, NativeLikeInvocation};
 
-use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp, EvaluatedBytesResult};
-use crate::{Columns, Datum, EvalError};
+use crate::{Columns, EvalError};
 
 pub(crate) use tidb_query_expr::{
     NativeCompiledIlikePattern as CompiledIlikePattern,
@@ -86,65 +85,26 @@ pub fn ilike_match_with_collation(
     )
 }
 
-fn evaluate_like_prepared_in<T>(
-    ilike: bool,
-    ctx: &dyn Columns,
-    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
-    pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
-) -> Result<T, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            let ready = coerce()?;
-            let operation = if matches!(&ready, EvaluatedArgs::NullWitness(None)) {
-                EvaluatedBytesOp::LikeNullIntNative
-            } else if ilike {
-                EvaluatedBytesOp::IlikeNative
-            } else {
-                EvaluatedBytesOp::LikeNative
-            };
-            Ok((operation, ready))
-        },
-        pack,
-    )
-}
-
-/// Preserve frontend demand under the same coercion guard as worker admission.
-pub(crate) fn evaluate_like_in(
-    ilike: bool,
-    ctx: &dyn Columns,
-    coerce: impl FnOnce() -> Result<EvaluatedArgs, EvalError>,
-) -> Result<Datum, EvalError> {
-    evaluate_like_prepared_in(ilike, ctx, coerce, EvaluatedBytesResult::into_boolean_datum)
-}
-
-/// Evaluate a non-NULL LIKE through the caller's worker scope, retaining errors.
+/// Match actual bytes under finite work without a Ready argument program.
 pub fn like_match_with_collation_in(
     text: &[u8],
     pattern: &[u8],
     escape: Option<u8>,
     collation: Collation,
-    ctx: &dyn Columns,
+    _ctx: &dyn Columns,
 ) -> Result<bool, EvalError> {
-    evaluate_like_prepared_in(
-        false,
-        ctx,
-        || {
-            Ok(EvaluatedArgs::Like {
-                invocation: NativeLikeInvocation::like(collation.native_policy(), None),
-                text: Some(text.to_vec()),
-                pattern: Some(pattern.to_vec()),
-                escape: Some(i64::from(escape.unwrap_or(b'\\'))),
-            })
-        },
-        EvaluatedBytesResult::into_nonnull_bool,
+    crate::tikv::wildcard_value::value(
+        &NativeLikeInvocation::like(collation.native_policy(), None),
+        text,
+        pattern,
+        escape.unwrap_or(92),
+        crate::tikv::wildcard_value::default_budget(),
     )
 }
 
-/// Admit an actually observed NULL LIKE operand without fabricating values.
-pub fn like_null_in(ctx: &dyn Columns) -> Result<Option<i64>, EvalError> {
-    let value = evaluate_like_in(false, ctx, || Ok(EvaluatedArgs::NullWitness(None)))?;
-    crate::arg_eval_type::eval_int(&value)
+/// An actual NULL result requires no worker, value encoding or pattern work.
+pub fn like_null_in(_ctx: &dyn Columns) -> Result<Option<i64>, EvalError> {
+    Ok(None)
 }
 
 #[cfg(test)]

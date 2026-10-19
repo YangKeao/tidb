@@ -1843,6 +1843,63 @@ impl ScalarFunction {
         )
     }
 
+    /// Captures live LIKE owner handles and immutable eligibility; no lookup,
+    /// compilation or context access occurs here.
+    pub(crate) fn batch_like_invocation(&self) -> tidb_query_expr::NativeLikeInvocation {
+        let cached = self
+            .args
+            .get(1)
+            .is_some_and(|a| a.const_level() >= ConstLevel::ONLY_IN_CONTEXT)
+            && self
+                .args
+                .get(2)
+                .is_some_and(|a| a.const_level() >= ConstLevel::ONLY_IN_CONTEXT);
+        let collation = self.derived_collation().native_policy();
+        if self.func_name.lowercase() == "ilike" {
+            tidb_query_expr::NativeLikeInvocation::ilike(
+                collation,
+                cached.then_some((&self.ilike_pattern_cache, 0)),
+            )
+        } else {
+            tidb_query_expr::NativeLikeInvocation::like(
+                collation,
+                cached.then_some((&self.like_pattern_cache, 0)),
+            )
+        }
+    }
+
+    pub(crate) fn eval_like_value(
+        &self,
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        use crate::tikv::wildcard_value::{Prepared, Step};
+        let maximum = crate::tikv::wildcard_value::default_budget();
+        let mut state = Prepared::Text;
+        loop {
+            let index = state.argument();
+            let value = self.args[index].eval(ctx, row)?;
+            match state.advance(&value, self.args[index].static_type(), ctx, maximum)? {
+                Step::Need(next) => state = next,
+                Step::Null => return Ok(Datum::Null),
+                Step::Match(values) => {
+                    // Original context read precedes collation/invocation
+                    // construction, and only follows the actual escape cast.
+                    let cached = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT
+                        && self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
+                    let context = if cached { Some(ctx.context_id()) } else { None };
+                    let invocation = self.batch_like_invocation();
+                    let invocation = if let Some(id) = context {
+                        invocation.with_context_id(id)
+                    } else {
+                        invocation
+                    };
+                    return values.evaluate(&invocation, maximum);
+                }
+            }
+        }
+    }
+
     /// Immutable value-kernel handles only; capturing them does not resolve a
     /// pattern or observe the context. The shared driver demands arguments.
     pub(crate) fn batch_regexp_like_invocation(&self) -> tidb_query_expr::NativeRegexpInvocation {
@@ -2270,54 +2327,7 @@ impl ScalarFunction {
         // and stop at NULL. The escape is EvalInt followed by byte(escape),
         // not a range-checked conversion that substitutes a default.
         if (name == "like" || name == "ilike") && self.args.len() == 3 {
-            return crate::like::evaluate_like_in(name == "ilike", ctx, || {
-                let value = self.args[0].eval(ctx, row)?;
-                if value.is_null() {
-                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
-                }
-                let text = value
-                    .sql_bytes()
-                    .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
-                let pattern = self.args[1].eval(ctx, row)?;
-                if pattern.is_null() {
-                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
-                }
-                let pattern = pattern
-                    .sql_bytes()
-                    .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
-                let raw_escape = self.args[2].eval(ctx, row)?;
-                let int_escape =
-                    crate::cast::cast_arg_as_int(&raw_escape, self.args[2].static_type(), ctx)?;
-                let Some(escape) = crate::arg_eval_type::eval_int(&int_escape)? else {
-                    return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
-                };
-                let escape = escape as u8;
-                let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-                let cache_escape = self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-                let context_id = if cache_pattern && cache_escape {
-                    Some(ctx.context_id())
-                } else {
-                    None
-                };
-                let collation = self.derived_collation().native_policy();
-                let invocation = if name == "ilike" {
-                    tidb_query_expr::NativeLikeInvocation::ilike(
-                        collation,
-                        context_id.map(|id| (&self.ilike_pattern_cache, id)),
-                    )
-                } else {
-                    tidb_query_expr::NativeLikeInvocation::like(
-                        collation,
-                        context_id.map(|id| (&self.like_pattern_cache, id)),
-                    )
-                };
-                Ok(crate::tikv::EvaluatedArgs::Like {
-                    invocation,
-                    text: Some(text),
-                    pattern: Some(pattern),
-                    escape: Some(i64::from(escape)),
-                })
-            });
+            return self.eval_like_value(ctx, row);
         }
         // Go's `GETVAR`/`SETVAR` families (`pkg/expression/builtin_other.go`):
         // the variable NAME is a build-time constant, so the rewriter passes

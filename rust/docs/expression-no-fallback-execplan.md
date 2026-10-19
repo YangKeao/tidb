@@ -18,6 +18,12 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-19) N7t original-only capture: 63,513 utility/legacy observations (1952BB7F6D8F1E9B), 34,344 scalar observations (C49CB830518858A9), and 78 cache/AST observations (94085E5905346BCD), before any production candidate changes. Seven representative Ready callers and both canonical LIKE/ILIKE source guards reproduce actual old-route failures. Fixed witnesses are retained; the subsequent candidate comparisons and N7t integration below are now verified.
+
+- [x] (2026-10-20, TiKV091eeaa) N7t0: expose a finite actual-value LIKE/ILIKE/legacy SDK entry over the single original datatype token/backtracking loop, retaining live context-only cache sharing and error/panic semantics. Validate real old-entry kernel comparisons before retiring callers; run affected datatype/core/frontend gates, then sign a self-contained local SDK checkpoint. Ordinary callers and canonical lazy sources remain N7t, not completed by N7t0.
+
+- [x] (2026-10-20) N7t: retire ordinary LIKE/ILIKE, AST/public utility/null and legacy LIKE Ready handoffs and integrate lazy canonical LIKE/ILIKE sources through the existing SDK frame. Preserve ordered child/coercion NULL barriers, original escape ETInt cast with full metadata/callbacks, byte truncation, late context-keyed constant-pattern cache, clone/reset/context behavior, collations/invalid bytes/ASCII ILIKE and distinct Unicode legacy semantics, outer return conversion and output prefixes. Capture original proof/cache history and source/Ready REDs before candidate edits, compare independently before retirement; bound actual demanded wildcard steps in the single existing matcher and cache compilation/folding before work, including warm-cache ignored huge pattern/trailing-percent text. Validate provenance/resources/cache/panic/parallel/multi-output and all touched datatype/frontend/core suites, exact inherited failures/warnings/lint/format/fixtures, sign local DCO commits. Broader unistore walker and generic fallback stay open.
+
 - [x] N7s: remove GROUPING mode/NULL and DATE/TIMESTAMP literal Ready handoffs, expose actual metadata/id and parsed temporal/error values over original pure SDK owners, and integrate GROUPING canonical sources including missing metadata/NULL/argument-error demand. Freeze independent original observations and Ready/source REDs before candidate edits, pair before retirement, share immutable grouping metadata without cloning unused huge marks, retain literal explicit zone/modes/raw precision/hard errors and GROUPING uint bits. Validate metadata/hash/clone behavior, provenance/resources/selection/returns/Projection and full core/frontend/warnings/lint/format/fixtures, sign local DCO commits. Global fallback/unistore work stays open.
 
 - [x] N7r: retire all eight native vector SQL Ready callers and integrate canonical vector sources through the existing SDK frame, with borrowed actual vectors and original conversion/dimension/IEEE/NaN/NULL/error semantics. Capture original outcomes and Ready/source REDs before candidate edits, independently pair before retirement, bound demanded conversion/work/output ownership, validate all provenance and callbacks/cleanup, source metadata/selection/returns and mixed serial/parallel Projection, full frontend/SDK/exact warning and failure lists/lint/dual format/immutable fixtures, then sign local DCO commits. Generic fallback and unistore remain global work.
@@ -113,6 +119,24 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Surprises & Discoveries
 
+N7t independent pairing preserved all97,926 actual utility/legacy/scalar/cache/AST
+comparisons before retirement;9 original Missing/NULL/invalid-null contract cases
+remain fixed witnesses over unchanged contract branches. Original checksums are
+unchanged. Scalar NULL short-circuit and AST eager-both-child semantics require
+separate controllers. Escapes can read the session zone even for hybrid ordinals,
+so detach authentic shared GoString headers and release store borrows before
+casting; do not deep-copy or format ignored names. Source/provider tests verify
+mutable callback reborrowing and consumed-state panic/replay cleanup. An initial
+Projection test insertion shifted the old clock cohort away from its index0
+fixture configuration; appending the new cohort corrected only the test order.
+
+N7t cache lookup is keyed only by context id. A warm owner may ignore a newly
+supplied pattern/escape, and trailing percent may skip a huge target suffix.
+Length-product work gates would therefore reject work the original matcher does
+not perform. ILIKE still demands whole-target ASCII folding, and legacy input
+validation replaces a whole operand with empty after its first definite UTF-8
+error. The finite entry must preserve those different demanded prefixes.
+
 N7s independently paired10416 GROUPING and12960 typed-literal observations
 before retiring six Ready routes. The first GROUPING source omitted the outer
 ScalarFunction::eval return-family conversion because its inner signature returns
@@ -200,6 +224,14 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: use consuming actual SQL byte/escape stages in one dedicated LikeNative host, preserving the original lazy scalar versus eager AST split, late eligible context id and ordinary return conversion once. Retain invalid legacy NULL witness error construction exactly and keep explicit wire workers/old unistore traversal separate.
+  Rationale: strict byte coercion and escape callbacks have observable demand/ownership order. The original captures, independent pairs and provenance/callback/resource matrices pass without changing frozen witnesses or widening allowances.
+  Date/Author: 2026-10-20, TiDBEngineer.
+
+- Decision: implement N7t0 as an independently verifiable actual-value SDK step before retiring old LIKE callers. Bound iterations in the existing single matcher, not a second wildcard implementation. Gate cold compilation inside the cache constructor and match the same retained Arc. Keep source/Ready retirement tests explicitly pending until N7t integration.
+  Rationale: independent old-entry comparisons remain executable during migration; actual-work budgets preserve ignored warm patterns and trailing-percent targets.
+  Date/Author: 2026-10-20, TiDBEngineer.
+
 - Decision: share validated GROUPING metadata through immutable Arc snapshots,
   defer metadata errors/work until after non-NULL strict Int/UInt reading, and use
   a dedicated GroupingNative identity on the existing SDK frame. Keep the outer
@@ -282,6 +314,38 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7t retires ordinary LIKE/ILIKE, AST LIKE, public utility/NULL and legacy LIKE
+Ready handoffs, with canonical lazy sources over the existing frame and actual
+capabilities. All97,926 independent pairs passed before retirement; the original
+97,935-observation witnesses (including9 unchanged null contracts) remain fixed.
+Final focus10 passes and frontend1748/exact3 inherited/95ignored includes all272
+batch tests green. SDK1130/exact1 inherited/1ignored and26 Projection pass their
+scope, including a new13-root mix under both flags/workers0/2. Datatype production
+is unchanged since signed N7t0's565/exact2 inherited validation. Frontend346 and
+clippy89 expression/171 all warning-title Counters remain exact; lint, both pinned
+14-file formats, fixtures and diffs pass. Provider tests include all96 bad-capability
+cases, genuine context7/8 cache history, exclusive callbacks, huge authentic hybrid
+names, terminal resource/panic replay refusal and recovery. The first Projection
+failure was a corrected test-cohort ordering mistake; no production behavior was
+changed for that failure. SDK source descriptor checkpoint is
+388976edbb60d5c426eeeb72118b1c3d171c08b7. Receipt
+rust/docs/evidence/no-fallback-n7t.md records commands, captures, gates and limits.
+Global generic fallback, other Ready families, old unistore traversal, malformed/
+unsupported/PB shapes, inherited failures, semantic audits and full-server SQL
+remain open. Local DCO checkpoints only; no push or package-port completion.
+
+N7t0 is signed locally in TiKV091eeaa82aaf1f45ef653f42ac027b5a8b02fb7e.
+The finite actual-value wildcard entry passed156674 direct comparisons, plus
+63504 independent old utility/legacy pairs before any caller retirement. All
+three original witnesses remain unchanged. Full SDK1130/exact1 inherited,
+datatype565/exact2 inherited and26 Projection pass the scoped checks. Frontend
+1743 passes retain the original3 failures plus2 deliberately pending LIKE Ready/
+source migration guards; these two are not inherited failures or completed work.
+Clippy89 expression/171 all and frontend346 warning-title Counters match N7s.
+Lint, both5-file formatters, fixtures and diffs pass after DCO. The frontend proof
+and plan remain uncommitted pending N7t source integration; SDK worktree is clean.
+No push, frontend migration or global no-fallback completion is claimed.
 
 N7s retires GROUPING's three mode routes/NULL route and both typed temporal
 literal Ready callers. Canonical GROUPING accepts absent metadata until an actual
@@ -3427,3 +3491,100 @@ validity and full server SQL are not certified. Keep the full objective active.
 Revision N7s: recorded grouping/literal ownership, independent proofs, actual
 return-boundary and budget RED corrections, preserved hash contracts and final
 scoped validation across all four living sections.
+
+
+### N7t original baseline preparation (2026-10-19)
+
+Original source archives are retained in the agent workspace under
+`evidence/no-fallback/n7t-before-*.rs`. Run from the TiDB root:
+
+    RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib wildcard_ -- --nocapture
+
+The original capture is `evidence/no-fallback/n7t-original-capture.log` in the
+agent workspace. Three original-observation tests pass with the fixed counts
+and hashes in Progress. The seven-route Ready rejection test and the two-source
+route test fail intentionally against the original implementation: both LIKE
+and ILIKE report prepared=0, fallback=1, Admission refusal. These failures are
+migration evidence, not inherited failures and not an implementation checkpoint.
+A preceding build failure caused by a test-only Chunk namespace and AST numeric
+variant has been fixed; it is not behavioral evidence. Production LIKE/ILIKE,
+SDK and datatype code remain unchanged. Preserve these original witnesses;
+implement and compare independently before retiring any old caller. No N7t
+migration commit or full validation is claimed.
+
+Plan update: record original LIKE/ILIKE baseline and genuine old-route failures
+before implementing the pending N7t milestone; the human-facing completed versus
+remaining summary was sent in the existing Raft thread.
+
+
+### N7t0 actual wildcard SDK entry (2026-10-20, signed SDK checkpoint)
+
+`tidb_query_datatype::codec::collation::pattern` now has optional finite steps
+in its single existing token/backtracking loop. Unlimited compatibility wrappers
+retain their old results. Raw, compiled and native-collation bounded wrappers
+return `None` only for quota exhaustion, keeping actual false and collation errors
+distinct. No alternate algorithm or predecoded target buffer is introduced.
+
+`NativeLikeInvocation::evaluate_bounded` consumes actual text/pattern/escape with
+a finite logical allowance; `NativeLikeValueError::Resource` is terminal failure,
+not SQL NULL or an alternate evaluator request. Cache construction checks occur
+inside `get_or_init_cache` to avoid charging ignored racing hits. Matching retains
+the same resolved Arc; owner Clone still resets caches and invocation Clone still
+shares. `with_context_id` binds late metadata without cache access. ILIKE charges
+its original full folds; legacy validates a bounded prefix before its original
+simple-Unicode lowering, so a definite invalid prefix ignores an unused suffix.
+This allowance covers demanded work and visible ownership, not physical peak
+memory or allocation-failure handling.
+
+Run core tests from the TiKV root with the pinned wrapper and release/locked/
+offline flags documented in Concrete Steps, filter `finite_like`. Run frontend
+`wildcard_ -- --nocapture` to retain all original hashes and compare 63,504
+actual kernel observations against still-existing old entry points. The two
+old-route migration guards should still fail at this SDK-only step; they must
+not be counted as inherited failures or omitted from the remaining scope.
+Before signing this SDK step, run full datatype/core/frontend suites and exact
+failure lists, clippy, lint, dual formatters and immutable fixture checks.
+Ordinary scalar/AST/legacy Ready retirement and canonical sources remain pending.
+
+N7t0 revision: record signed SDK-only checkpoint, independent kernel proof and exact pending frontend guards. Ordinary scalar/AST/legacy caller retirement and canonical sources remain next.
+
+
+### N7t verified lazy wildcard sources (2026-10-20)
+
+Frontend `tikv/wildcard_value.rs` consumes actual Text/Pattern/Escape states;
+`ScalarFunction::eval_like_value` demands each next child only after successful
+coercion. NativeHostMetadata::Like captures three source ordinals, full escape
+FieldType, actual shared NativeLikeInvocation cache handles and original result/
+output metadata. SqlDemand::Like takes its pending state before fallible work;
+`evaluator/batch_wildcard.rs` reinstalls a state only after Need succeeds. Text/
+pattern coercion is pure, while bounded authentic escape values are detached and
+store borrows released before casts and the late context callback. Match through
+the same finite SDK owner, then apply ordinary return-family conversion once.
+Preparation performs no SQL evaluation, cache resolution or context access.
+
+Run the frontend wildcard filter and full suites using the receipt commands.
+Original captures and archived pair sources are persistent-workspace artifacts,
+not test regeneration inputs. All ten focused checks pass; original Ready/source
+REDs are now green. Full source checks cover16 declarations and11 return families,
+three argument positions, both modes, four flag runs, three truncation levels,
+selection/duplicates, CHAR parents and physical prefixes under errors/panics.
+Provider checks cover both roles/modes/all demanded positions,8 invalid capability
+classes, actual shared huge names, original unsupported-vector errors and exclusive
+context callbacks. Changing context7/8 and pattern values verifies actual cache
+rebinding; failures/panics cannot replay and later invocations recover. A full
+source1MiB backtracking Resource never falls back and later NULL succeeds on the
+same prepared suite. NewDate remains a computed-source test because existing
+Chunk cannot physically store that alias; no physical NewDate coverage is claimed.
+Projection adds13 heterogeneous roots under both flags and workers0/2.
+
+Final full frontend1748/exact3 inherited and SDK1130/exact1 inherited retain their
+failure lists; all272 batch and26 Projection pass. Front346 and clippy89/171 warning
+Counters match prior signed gates exactly. Datatype565/exact2 was validated at
+N7t0 and is unchanged in the source step. Lint, dual14-file format checks, immutable
+STR_TO_DATE fixtures and diffs pass. The read-only workspace checker
+`evidence/no-fallback/n7t-final-check.py` must pass before and after DCO. Generic
+fallback, remaining families and broader unistore/full-server work stay open.
+
+Revision N7t: recorded original witnesses and independent pairing, consuming lazy
+source/AST distinction, callback/cache/resource contracts, full gates, corrected
+test-cohort ordering and the explicit remaining global scope.
