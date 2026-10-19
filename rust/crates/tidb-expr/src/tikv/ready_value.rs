@@ -803,11 +803,6 @@ impl EvaluatedBytesResult {
         }
     }
 
-    /// Reconstruct identity exclusively from the worker's actual nullable bytes.
-    pub(crate) fn into_identity_datum(self) -> Result<Datum, EvalError> {
-        super::identity_value::decode(self.into_bytes()?)
-    }
-
     /// Represent only the worker's computed JSON text as native BinaryJSON.
     /// JSON `null` is a present document; only absent computed bytes are SQL NULL.
     pub(crate) fn into_json_datum(self) -> Result<Datum, EvalError> {

@@ -41,29 +41,9 @@ pub(crate) fn dispatch_in(
         ("UUID", []) => Some(uuid_v1()),
         ("UUID_V4", []) => Some(uuid_v4()),
         ("UUID_V7", []) => Some(uuid_v7()),
-        ("ANY_VALUE", [value]) => Some(crate::tikv::evaluate_prepared_args_in(
-            ctx,
-            || {
-                Ok((
-                    crate::tikv::EvaluatedBytesOp::AnyValueNative,
-                    crate::tikv::prepare_datum_identity_args(value)?,
-                ))
-            },
-            crate::tikv::EvaluatedBytesResult::into_identity_datum,
-        )),
-        // Callers already evaluated both operands in their original order.
-        // The name is label metadata, not an input to the scalar identity;
-        // preserve every Datum kind without coercing or encoding that name.
-        ("NAME_CONST", [_, value]) => Some(crate::tikv::evaluate_prepared_args_in(
-            ctx,
-            || {
-                Ok((
-                    crate::tikv::EvaluatedBytesOp::NameConstNative,
-                    crate::tikv::prepare_datum_identity_args(value)?,
-                ))
-            },
-            crate::tikv::EvaluatedBytesResult::into_identity_datum,
-        )),
+        ("ANY_VALUE", [value]) => Some(crate::tikv::identity_actual::copy(value)),
+        // Both children have already run; the name is never coerced here.
+        ("NAME_CONST", [_, value]) => Some(crate::tikv::identity_actual::copy(value)),
         ("IS_UUID", [value]) => Some(is_uuid(value, ctx)),
         ("UUID_VERSION", [value]) => Some(uuid_version(value, ctx)),
         ("UUID_TIMESTAMP", [value]) => Some(uuid_timestamp(value, ctx)),

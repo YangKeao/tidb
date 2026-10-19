@@ -46,6 +46,8 @@ mod epoch_source;
 mod extract_source;
 #[path = "batch_grouping.rs"]
 mod grouping;
+#[path = "batch_identity.rs"]
+mod identity;
 #[path = "batch_json_sum_crc32.rs"]
 mod json_sum_crc32_source;
 #[path = "batch_str_to_date.rs"]
@@ -134,6 +136,14 @@ impl NativeRawValueOperation {
 }
 
 pub(super) enum NativeHostMetadata {
+    Identity {
+        arguments: Box<[usize]>,
+        name_const: bool,
+        probe: Option<Datum>,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     Like {
         arguments: [usize; 3],
         escape_type: FieldType,
@@ -347,6 +357,7 @@ impl NativeHostMetadata {
             | Self::Calendar { result_type, .. }
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
+            | Self::Identity { result_type, .. }
             | Self::Grouping { result_type, .. }
             | Self::Like { result_type, .. }
             | Self::Tso { result_type, .. }
@@ -375,6 +386,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Identity {
+        next: usize,
+    },
     Like {
         pending: Option<crate::tikv::wildcard_value::Prepared>,
     },
@@ -493,6 +507,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
+            SqlDemand::Identity { next } => Ok(Some(*next)),
             SqlDemand::Grouping { consumed } => Ok(Some(usize::from(*consumed))),
             SqlDemand::TimestampDiff { next, .. }
             | SqlDemand::DurationConstruction { next, .. }
@@ -533,6 +548,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
+            SqlDemand::Identity { .. } => Err(binding("identity cannot retain a wire prefix")),
             SqlDemand::Grouping { .. } => Err(binding("GROUPING demand cannot retain byte prefix")),
             SqlDemand::TimestampDiff { .. }
             | SqlDemand::DurationConstruction { .. }
@@ -2196,6 +2212,35 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     pending: Some(crate::tikv::wildcard_value::Prepared::Text),
                 }
             }
+            SqlBatchHostOperation::ValueIdentityNative { name_const } => {
+                let Some(NativeHostMetadata::Identity {
+                    arguments,
+                    name_const: declared,
+                    probe,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("identity descriptor absent"));
+                };
+                let arity = 1 + usize::from(name_const);
+                if self.native_values.is_none()
+                    || *declared != name_const
+                    || arguments.len() != arity
+                    || invocation.arg_types.len() != arity
+                {
+                    return Err(binding("identity descriptor differs"));
+                }
+                let maximum = self
+                    .max_retained_bytes
+                    .checked_sub(self.retained_bytes()?)
+                    .ok_or_else(|| resource("identity probe allowance exhausted"))?;
+                // Original signature prefix, before ANY child demand. No store
+                // borrow or expression evaluation is retained in this metadata.
+                if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                    return self.native_failure(error);
+                }
+                SqlDemand::Identity { next: 0 }
+            }
             SqlBatchHostOperation::GroupingNative => {
                 if self.native_values.is_none()
                     || invocation.arg_types.len() != 1
@@ -2822,6 +2867,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("LIKE source cannot be wire NULL"));
             };
             return self.resume_wildcard(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Identity { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("identity source cannot be wire NULL"));
+            };
+            return self.resume_identity(id, token);
         }
         if matches!(task.demand, SqlDemand::Grouping { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

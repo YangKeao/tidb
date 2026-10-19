@@ -121,6 +121,8 @@ pub(crate) use extract::{
 mod extremum;
 pub(crate) use extremum::{eval_extremum_in, eval_extremum_values_bounded};
 mod from_unixtime;
+pub(crate) mod identity_actual;
+#[cfg(test)]
 mod identity_value;
 mod if_control;
 mod if_null;
@@ -273,13 +275,6 @@ pub(crate) fn prepare_char_args(values: &[Option<i64>]) -> Result<EvaluatedArgs,
             error, None,
         ))
     })
-}
-
-/// Encode one actual native datum in the existing identity representation.
-pub(crate) fn prepare_datum_identity_args(
-    value: &tidb_datatype::Datum,
-) -> Result<EvaluatedArgs, crate::EvalError> {
-    identity_value::encode(value).map(EvaluatedArgs::Bytes)
 }
 
 /// Transfer the actual bytes and original unpadded collation metadata.
@@ -692,3 +687,6 @@ pub(crate) mod grouping_value;
 pub(crate) mod wildcard_value;
 #[cfg(test)]
 pub(crate) mod wildcard_value_tests;
+
+#[cfg(test)]
+pub(crate) mod misc_identity_value_tests;

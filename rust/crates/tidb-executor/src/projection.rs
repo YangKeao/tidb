@@ -3699,6 +3699,40 @@ mod tests {
         let wildcard_mix = std::iter::once(0)
             .chain(wildcard_start..roots.len())
             .collect::<Vec<_>>();
+        let identity_start = roots.len();
+        for name in ["any_value", "name_const"] {
+            for choice in 0..4 {
+                let value = match choice {
+                    0 => column(0),
+                    1 => Expression::Constant(Constant::new(Datum::Null, integer.clone())),
+                    2 => call(
+                        "if",
+                        integer.clone(),
+                        vec![
+                            column(0),
+                            column(0),
+                            Expression::Constant(Constant::new(Datum::Int(-1), integer.clone())),
+                        ],
+                    ),
+                    _ => call("abs", integer.clone(), vec![column(0)]),
+                };
+                let mut args = vec![value];
+                if name == "name_const" {
+                    args.insert(
+                        0,
+                        Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                    );
+                }
+                let root = call(name, integer.clone(), args);
+                roots.push(root.clone());
+                fields.push(integer.clone());
+                roots.push(call("cast_char", string.clone(), vec![root]));
+                fields.push(string.clone());
+            }
+        }
+        let identity_mix = std::iter::once(0)
+            .chain(identity_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3842,6 +3876,10 @@ mod tests {
             (
                 wildcard_mix.iter().map(|&i| roots[i].clone()).collect(),
                 wildcard_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                identity_mix.iter().map(|&i| roots[i].clone()).collect(),
+                identity_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
         ];
         // Keep prior matrices intact. Each new heterogeneous suite adds a

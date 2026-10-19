@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20) N7u: retire ANY_VALUE/NAME_CONST Ready identity framing and integrate actual native-value identity sources over the same frame, preserving all19 raw representations, outer result-family conversion, ANY_VALUE unfoldability and NAME_CONST's eager first-expression demand without coercing its ignored name. Capture/freeze original direct/scalar outcomes and Ready/source REDs before candidate edits; independently compare before retirement; bound actual copies without formatting huge raw precision or cloning unused names, validate capabilities/resources/selection/output prefixes/mixed Projection and full gates, then sign local DCO commits. No generic fallback/unistore completion is implied.
+
 - [x] (2026-10-19) N7t original-only capture: 63,513 utility/legacy observations (1952BB7F6D8F1E9B), 34,344 scalar observations (C49CB830518858A9), and 78 cache/AST observations (94085E5905346BCD), before any production candidate changes. Seven representative Ready callers and both canonical LIKE/ILIKE source guards reproduce actual old-route failures. Fixed witnesses are retained; the subsequent candidate comparisons and N7t integration below are now verified.
 
 - [x] (2026-10-20, TiKV091eeaa) N7t0: expose a finite actual-value LIKE/ILIKE/legacy SDK entry over the single original datatype token/backtracking loop, retaining live context-only cache sharing and error/panic semantics. Validate real old-entry kernel comparisons before retiring callers; run affected datatype/core/frontend gates, then sign a self-contained local SDK checkpoint. Ordinary callers and canonical lazy sources remain N7t, not completed by N7t0.
@@ -118,6 +120,29 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N7u expanded sources additionally exposed malformed Decimal return-conversion
+order: a computed raw coefficient originally panics before huge unused scale,
+but the shared work estimator initially rejected scale first. The identity-only
+return adapter now bounds the coefficient prefix and invokes the real original
+coerce_function_result for invalid UTF-8; no synthetic panic or changed witness.
+The first full run also caught three existing exact typed ANY_VALUE paths blocked
+by unconditional native interception. Restrict interception/argument tokens/probe
+metadata to actual-value views; preserve their original same-frame SDK RPN recipes.
+All three old assertions and the source regression pass in the final full run.
+
+N7u's first independent comparison exposed a real hidden prefix: every generic
+ScalarFunction calls uservar_name on its stored first Constant.value before
+checking whether its name is a variable function, and before evaluating children.
+A malformed Decimal therefore panics before ANY_VALUE's actual identity body;
+NAME_CONST can likewise probe its ignored name. The first candidate omitted this
+prefix and failed. The corrected candidate bounds and calls the original real
+formatter in this exact phase; invalid coefficient UTF-8 still reaches the same
+panic before unused huge scale. Original checksums were not rewritten. All234315
+independent pairs then passed while both old callers remained. Compile-only test
+import errors are not behavioral REDs.
+
+
 
 N7t independent pairing preserved all97,926 actual utility/legacy/scalar/cache/AST
 comparisons before retirement;9 original Missing/NULL/invalid-null contract cases
@@ -224,6 +249,29 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: keep exact existing typed ANY_VALUE SDK recipes and intercept only
+  actual-value views for the new host. Give malformed Decimal return conversion
+  a bounded genuine coefficient-validation prefix before visible-scale work.
+  Rationale: full-run regressions identified real existing typed provider and
+  ROUND-parent contracts; the malformed source pair establishes original panic
+  order. Neither fix adds another expression evaluator or weakens assertions.
+  Date/Author:2026-10-20/TiDBEngineer.
+
+- Decision: retain the original constant-first uservar-name formatting probe for
+  these two scalar signatures, separately from their opaque actual identity body.
+  Snapshot only the original stored Constant header, budget its real copied
+  extent before cloning, and execute its bounded probe before any child demand.
+  NAME_CONST still evaluates/authenticates both children eagerly and never coerces
+  its ignored name in the body. Use the datatype's existing Clone primitive,
+  not a new identity codec, kernel answer DTO or interpreter. Keep the public SDK
+  wire identity ABI unchanged and historical frontend codec test-only.
+  Rationale:234315 independent original comparisons, including genuine malformed
+  coefficient panic ordering, establish the existing contract. A global uservar
+  probe cleanup would change unrelated behavior and is outside this migration.
+  Date/Author:2026-10-20/TiDBEngineer.
+
+
+
 - Decision: use consuming actual SQL byte/escape stages in one dedicated LikeNative host, preserving the original lazy scalar versus eager AST split, late eligible context id and ordinary return conversion once. Retain invalid legacy NULL witness error construction exactly and keep explicit wire workers/old unistore traversal separate.
   Rationale: strict byte coercion and escape callbacks have observable demand/ownership order. The original captures, independent pairs and provenance/callback/resource matrices pass without changing frozen witnesses or widening allowances.
   Date/Author: 2026-10-20, TiDBEngineer.
@@ -314,6 +362,25 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7u retires both ordinary ANY_VALUE/NAME_CONST Ready callers and their private
+identity framing forwarders; historical codec tests and explicit SDK wire ABI stay.
+Original3213/60F023D7530726AF and231102/E5E2EFBE8F3E3F49 witnesses are unchanged;
+all234315 genuine independent pairs passed before retirement. Dedicated native
+identity sources preserve the bounded original constant-first probe, eager ignored
+name demand, opaque actual Clone and one original return-family conversion. Exact
+typed ANY_VALUE recipes remain original SDK RPN kernels in the same frame.
+Final focus8, frontend1756/exact3/95ignored/all276batch, SDK1130/exact1/1ignored,
+Projection26/new17-root cohort/bothflags/workers0/2 all verified. Frontend346 and
+clippy89-expression/171-overall warning-title counters match N7t; lint, dual13-file
+formats, immutable fixtures and read-only counts/hash/diff checks pass. Datatype
+unchanged since signed N7t0 full565/exact2 baseline, explicitly reused. SDK signed
+locally da0bf55a60f0da96d70f52f425823cdc0178d94a; frontend receipt no-fallback-n7u.md
+contains final evidence. No push, complete Go-package port or global completion.
+Typed NAME_CONST parent expansion, generic fallback, other Ready families,
+unistore, malformed/PB/deferred coverage and semantic/full-server gates stay open.
+
+
 
 N7t retires ordinary LIKE/ILIKE, AST LIKE, public utility/NULL and legacy LIKE
 Ready handoffs, with canonical lazy sources over the existing frame and actual
@@ -3588,3 +3655,43 @@ fallback, remaining families and broader unistore/full-server work stay open.
 Revision N7t: recorded original witnesses and independent pairing, consuming lazy
 source/AST distinction, callback/cache/resource contracts, full gates, corrected
 test-cohort ordering and the explicit remaining global scope.
+
+
+## N7u: actual ANY_VALUE and NAME_CONST transport
+
+The actual helper in rust/crates/tidb-expr/src/tikv/identity_actual.rs uses the
+original Datum Clone, preserving all19 representations and raw floating bits,
+Decimal coefficient/scale/storage/shape, time/duration metadata, opaque JSON and
+mutated vector values. Only actual deep-copied byte/vector payloads are charged;
+immutable String/Enum/Set headers share their original backing. Identity itself
+never formats, parses or normalizes. The separate bounded scalar probe retains
+the original first-Constant prefix before child evaluation.
+
+ValueIdentityNative in SDK local/host.rs is closed to arity1/2 and native-capability
+Bytes carriers. Frontend batch_identity.rs authenticates every demanded value,
+advances before any fallible copy/coercion/panic, discards only the evaluated
+NAME_CONST name, copies the selected actual value under a callback-free borrow,
+releases it and applies the ordinary return-family conversion once. Output is
+minted with the actual producer/row/occurrence/role. Start probes immutable compiler
+metadata before argument0; preparation itself never formats or evaluates. Existing
+parameter/deferred source admission remains outside this family checkpoint.
+
+Evidence before retirement: n7u-original-capture-fixed.log and n7u-original-frozen.log
+freeze3213/60F023D7530726AF and231102/E5E2EFBE8F3E3F49; n7u-independent-pair-probe.log
+reports234315 genuine independent comparisons. Its exit101 consists only of the
+still-red Ready/source guards. Pair tests/candidate/scalar sources were archived
+as n7u-independent-*.rs before retirement. Do not rerun applied integration scripts
+or replace original hashes. Final focus8passes. Fullfrontend1756/exact3/95ignored/all276batch and SDK1130/
+exact1/1ignored, final Projection26 after the selector fix, clippy89expr/171all
+exact titles, frontend346 exact titles, lint, dual13-file formats, fixed fixtures
+and all read-only counts/hash/diff checks pass. SDK signed locallyda0bf55; the
+frontend receipt rust/docs/evidence/no-fallback-n7u.md has full commands/logs and
+limits. Source metadata/probe/actual input interception applies only to actual
+value views; exact prior typed ANY_VALUE recipes stay the original same-frame
+SDK kernels. Typed NAME_CONST parents and other broader coverage remain open.
+No push, whole-Go-package transcreation, generic fallback retirement or full-server
+SQL validation is claimed here.
+
+Revision N7u final: recorded original/probe and return-order evidence,234315
+independent pairs before retirement, restored unchanged typed SDK recipes,
+consuming actual identity sources and all final gates. Global work remains open.

@@ -1843,6 +1843,16 @@ impl ScalarFunction {
         )
     }
 
+    /// The literal header the original uservar-name probe reads before any
+    /// argument evaluation. Deferred/parameter Constants retain their real
+    /// stored header here; this is not their eventual evaluated operand.
+    pub(crate) fn identity_constant_probe(&self) -> Option<&Datum> {
+        match self.args.first()? {
+            Expression::Constant(value) => Some(&value.value),
+            _ => None,
+        }
+    }
+
     /// Captures live LIKE owner handles and immutable eligibility; no lookup,
     /// compilation or context access occurs here.
     pub(crate) fn batch_like_invocation(&self) -> tidb_query_expr::NativeLikeInvocation {
@@ -2341,7 +2351,20 @@ impl ScalarFunction {
         // Go's `builtinSet*VarSig` returns NULL WITHOUT touching the existing
         // variable when the value is NULL -- unlike top-level `SET @x = NULL`,
         // which clears it.
-        if let Some(var) = self.uservar_name() {
+        let identity = matches!(
+            (self.func_name.lowercase(), self.args.len()),
+            ("any_value", 1) | ("name_const", 2)
+        );
+        let var = if identity {
+            crate::tikv::identity_actual::probe(
+                self.identity_constant_probe(),
+                crate::tikv::identity_actual::default_budget(),
+            )?;
+            None
+        } else {
+            self.uservar_name()
+        };
+        if let Some(var) = var {
             if let Some(kind) = name.strip_prefix("getvar_") {
                 if self.args.len() == 1 {
                     let value = ctx.get_uservar(&var).unwrap_or(Datum::Null);
