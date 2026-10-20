@@ -20,6 +20,7 @@ impl EagerArgument {
 #[derive(Debug)]
 pub(crate) struct EagerValueKernel {
     func_name: tidb_ast::CiString,
+    overflow_expression: Option<super::math_diagnostic::MathDiagnostic>,
     ret_type: Option<FieldType>,
     args: Box<[EagerArgument]>,
     regexp_cache: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
@@ -44,6 +45,7 @@ impl EagerValueKernel {
         );
         Self {
             func_name: function.func_name.clone(),
+            overflow_expression: None,
             ret_type: function.ret_type.clone(),
             args: function
                 .args
@@ -63,6 +65,27 @@ impl EagerValueKernel {
                 .regexp_replace_instruction_cache
                 .share_for_invocation(),
             json_modify_path_cache: function.json_modify_path_cache.share_for_invocation(),
+        }
+    }
+    pub(crate) fn with_math_diagnostic(
+        mut self,
+        expression: Option<super::math_diagnostic::MathDiagnostic>,
+    ) -> Self {
+        self.overflow_expression = expression;
+        self
+    }
+    pub(crate) fn source_math_error(&self, error: EvalError) -> EvalError {
+        let value = match (self.name(), &error) {
+            ("abs", EvalError::IntOverflow) => "BIGINT",
+            ("cot" | "exp" | "pow" | "power", EvalError::FloatOverflow) => "DOUBLE",
+            _ => return error,
+        };
+        match &self.overflow_expression {
+            Some(expression) => match expression.render() {
+                Ok(expression) => EvalError::DataOutOfRange { value, expression },
+                Err(error) => error,
+            },
+            None => error,
         }
     }
     fn get_static_type(&self) -> Option<&FieldType> {
@@ -306,6 +329,11 @@ impl EagerValueKernel {
 }
 
 pub(crate) fn supports(function: &ScalarFunction) -> bool {
+    super::argument_policy::classify(function)
+        == super::argument_policy::ArgumentPolicy::CommonEager
+}
+/// These original common bodies take precedence over the stricter typed registry.
+pub(crate) fn prefers_common_body(function: &ScalarFunction) -> bool {
     function.pb_builtin.is_none()
         && matches!(
             function.func_name.lowercase(),

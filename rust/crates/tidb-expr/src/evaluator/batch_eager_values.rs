@@ -151,7 +151,7 @@ impl NativeBatchHosts<'_> {
             crate::scalar_function::eager_values::audit_work_result(kernel.eval_in(
                 self.context,
                 ready,
-                std::convert::identity,
+                |error| kernel.source_math_error(error),
             ))
         });
         // Every original callback ran without a storage Ref. It may have changed

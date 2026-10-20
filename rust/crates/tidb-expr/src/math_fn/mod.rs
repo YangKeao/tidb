@@ -473,6 +473,9 @@ fn sign_decimal_representative(value: &tidb_datatype::Decimal) -> f64 {
 /// statement warning sink that the string case raises 1292 on; every other
 /// kind converts exactly and raises nothing.
 pub(crate) fn numeric_arg(v: &Datum, ctx: &dyn Columns) -> Result<Option<f64>, EvalError> {
+    if matches!(v, Datum::Decimal(_)) {
+        crate::scalar_function::eager_values::charge_string_work(v)?;
+    }
     match v {
         Datum::Null => Ok(None),
         Datum::String(_) | Datum::Bytes(_) => Ok(Some(to_f64_with_mysql_string(v, ctx)?)),

@@ -2086,7 +2086,10 @@ fn format_number_text(
         Datum::Null => None,
         Datum::Int(n) => Some(n.to_string()),
         Datum::UInt(n) => Some(n.to_string()),
-        Datum::Decimal(n) => Some(n.to_string()),
+        Datum::Decimal(n) => {
+            crate::scalar_function::eager_values::charge_string_work(value)?;
+            Some(n.to_string())
+        }
         Datum::Real(n) => Some(n.to_string()),
         // `FORMAT` requests ETReal for everything else, and that is the
         // NUMERIC reading of the argument, never its text: captured from
@@ -2650,5 +2653,38 @@ mod cast_in_union_tests {
         let result =
             crate::func::eval_func_values("cast_unsigned_in_union", &[Datum::Int(7)], &ctx);
         assert_eq!(result.unwrap().unwrap(), Datum::UInt(7));
+    }
+}
+
+#[cfg(test)]
+mod format_work_tests {
+    use super::*;
+    #[test]
+    fn format_decimal_text_is_charged_only_when_requested() {
+        let value = Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+            false,
+            vec![b'1'; 4097],
+            4096,
+            4096,
+        ));
+        let result = tidb_query_expr::local::with_value_kernel_work_limit(256, || {
+            format_number_text(&value, &crate::NoColumns)
+        });
+        assert!(matches!(
+            result,
+            Err(EvalError::ExpressionRuntimeFailure(_))
+        ));
+        let precision = tidb_query_expr::local::with_value_kernel_work_limit(256, || {
+            format_precision(&value, &crate::NoColumns)
+        });
+        assert!(precision.is_ok());
+        assert_eq!(
+            tidb_query_expr::local::with_value_kernel_work_limit(256, || format_number_text(
+                &Datum::Null,
+                &crate::NoColumns
+            ))
+            .unwrap(),
+            None
+        );
     }
 }

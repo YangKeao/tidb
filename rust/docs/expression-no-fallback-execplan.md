@@ -18,6 +18,10 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20 N10) Original policy2308/common2036/names328/BC3F1FF91A278C16 captured/rerun and independently classified before integration. All2036 common source recipes,1699 actual non-niladic NULL call shapes,6 dead-unknown controls and70 original-renderer comparisons pass. Common default preserves dedicated/typed priorities, original prefix probes and actual math diagnostics/work. Fullfront1814/exact3/95/all308batch, Projection26 includingnew11rootcohort, exact346warningtitles, lint/dual14fmt/immutableowners/fixtures/read-onlychecker pass. Local checkpoint only; immediately continue N11 early/session/ordered/global closure.
+
+- [x] (N10 preparation) Executed original early/common phase for 328 names and 2,308 arity cases: 2,036 common, BC3F1FF91A278C16. Unchanged rerun and all 2,308 independent metadata-classifier comparisons pass before source-policy changes.
+
 - [x] (2026-10-20 N9)796554/B0601ED2964A5721 original observations and independent pairs before common-body retirement;54 genuine actual-vector Admission guards. Metadata-only shared eager body, live cache handles, variadic actual host and lazy statement-worker reuse integrated.17x11 source matrix/0-4args/118 bad capabilities/callbacks/resources/strict ignored scale/actual error-cause identity pass; final focus10. Full frontend1802/exact3/95ignored/all301batch, SDK1141/exact1/1ignored, Projection26 with final11-root cohort; exact346/17/clippy89expr171overall warnings, lint/dual21fmt/fixtures/checker pass. Local checkpoint only; continue broader demand/source closure.
 
 - [x] (2026-10-20) N7z compression:75816 independent pairs before retirement,85 immutable original encoder frames, original direct6318/51EC3B8C9ED75F51 and scalar69498/4EBAC72F3EA6BB39 retained. Three ordinary Ready callers retired, native unary source integrated and original wire/actual decoder owners consolidated. Expanded7 and Projection26 pass; full frontend1792/exact3/95ignored/all294batch, SDK1136/exact1/1ignored, clippy/lint/format/fixtures and exact warning checks recorded in final receipt. Local DCO checkpoint only; continue overall work immediately.
@@ -136,6 +140,11 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N10 actual1699-case corpus found protocol LOGICAND/LOGICOR names had been given logical source behavior despite original scalar Unsupported after eager children. Source selection now distinguishes the protocol alias from the actual binary operator metadata; NULL/non-NULL comparisons preserve the original error. No fixture or original error expectation was changed to conceal the mismatch.
+- N10 upfront common math diagnostic formatting would reserve unused visible Decimal scale in a dead branch. The genuine dead-EXP regression reproduced this; diagnostic-only raw facts now render through original helpers only on an actual overflow. Existing dedicated ABS protocol is kept. The broader root policy also preserves already proved typed closures; all original four-kernel and Duration-nanosecond provider assertions pass.
+
+- N10: The first stored constant is probed after early policies even for ordinary non-variable calls. Common source broadening therefore needs a per-host prefix rather than only an eager-body adapter. FORMAT directly displays Decimal in its number-text preparation; the string coercion hook does not protect that actual allocation. A safe 4,096-scale regression is being run before fixing the missing demanded-work charge.
 
 N9's full input matrix proved that the old typed UPPER path was not semantically
 complete for invalid UTF-8 bytes. Ordinary eager roots therefore use the original
@@ -376,6 +385,11 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- N10 final: keep the old54 common names only as an original-coercion priority, not an admission whitelist; choose remaining common actual hosts after dedicated recipes. Preserve complete typed closures where their static carrier proof already holds; nontrivial first stored constants select native phases to retain original probe panics/work. Typed protocol aliases cannot replace the original scalar meaning.
+- N10 validation: reuse the unchanged clean SDK7df75c9 N9 tests/clippy instead of rebuilding it. Actual final frontend, Projection, lint and dual-format/checker gates cover this frontend-only checkpoint. Two former fallback/admission assertions now assert genuine preparation and, for malformed PLUS, the original demanded failure; all other original/inherited assertions remain.
+
+- N10: Classify original demand by name, exact arity and PB metadata; preserve dedicated actual kernels where their complete source recipe already exists, and use common-value hosts for remaining eager bodies. Unsupported runtime names must fail only when demanded in the same driver. No execution fallback or alternate expression interpreter is introduced.
+
 - Decision (2026-10-20 N9): extract the original common eager policy into facts
   and live cache handles, with no executable children or old evaluator callback.
   Preserve explicit typed registry paths, while ordinary eager sources use
@@ -594,6 +608,10 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+- N10 complete as a local checkpoint: all required frontend gates and independent semantic witnesses pass with exact original failures/warnings; no SDK source, push or release changes. The common source body and original scalar interpreter code are byte-identical to N9; only metadata/source selection and demanded formatting work changed. Overall task is still active. Continue early session/value/metadata adapters, ordered effects, deferred/PB/public/unistore sources and eventual generic Admission deletion without a new prompt.
+
+- Historical N10 preparation began with the original policy witness and classifier only; common-source/prefix/diagnostic integration and its complete gates are now recorded above. Overall fallback retirement remains open; checkpoints are not stopping points.
 
 N9 independent comparisons and the original witness pass before retirement.
 The shared eager body now handles ordinary and new native sources from the same

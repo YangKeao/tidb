@@ -6409,3 +6409,10 @@ pub(crate) fn eager_value_phases_for_test() -> usize {
 }
 
 pub(crate) mod eager_values;
+
+#[cfg(test)]
+pub(crate) mod eager_policy_tests;
+
+pub(crate) mod argument_policy;
+
+pub(crate) mod math_diagnostic;

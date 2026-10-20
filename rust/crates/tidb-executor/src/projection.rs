@@ -3952,6 +3952,46 @@ mod tests {
         let eager_values_mix = std::iter::once(0)
             .chain(eager_values_start..roots.len())
             .collect::<Vec<_>>();
+        let common_policy_start = roots.len();
+        let real = FieldType::new(FieldTypeCode::Double);
+        for name in ["sin", "acos", "round", "pow", "dead_unknown"] {
+            let value = call(
+                "if",
+                real.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::Real(0.5), real.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, real.clone())),
+                ],
+            );
+            let root = if name == "dead_unknown" {
+                call(
+                    "if",
+                    real.clone(),
+                    vec![
+                        Expression::Constant(Constant::new(Datum::Int(0), integer.clone())),
+                        call("__unregistered_eager__", real.clone(), vec![]),
+                        value,
+                    ],
+                )
+            } else {
+                let mut args = vec![value];
+                if matches!(name, "round" | "pow") {
+                    args.push(Expression::Constant(Constant::new(
+                        Datum::Int(2),
+                        integer.clone(),
+                    )));
+                }
+                call(name, real.clone(), args)
+            };
+            roots.push(root.clone());
+            fields.push(real.clone());
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let common_policy_mix = std::iter::once(0)
+            .chain(common_policy_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -4123,6 +4163,16 @@ mod tests {
             (
                 eager_values_mix.iter().map(|&i| roots[i].clone()).collect(),
                 eager_values_mix
+                    .iter()
+                    .map(|&i| fields[i].clone())
+                    .collect(),
+            ),
+            (
+                common_policy_mix
+                    .iter()
+                    .map(|&i| roots[i].clone())
+                    .collect(),
+                common_policy_mix
                     .iter()
                     .map(|&i| fields[i].clone())
                     .collect(),

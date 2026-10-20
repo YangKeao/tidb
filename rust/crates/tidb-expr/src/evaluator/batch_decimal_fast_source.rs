@@ -496,6 +496,7 @@ pub(super) fn compile(
         facts,
         hosts: Some(hosts),
         host_metadata: metadata.into_boxed_slice(),
+        host_probes: Box::new([]),
         needs_native_values: true,
         limits,
     });

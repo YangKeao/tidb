@@ -238,6 +238,11 @@ pub(crate) fn to_f64_with_mysql_string(
     v: &Datum,
     ctx: &dyn crate::context::Columns,
 ) -> Result<f64, EvalError> {
+    if matches!(v, Datum::Decimal(_)) {
+        // The existing Decimal-to-real owner displays the visible coefficient.
+        // Charge that actual demand, never unused scale metadata at admission.
+        crate::scalar_function::eager_values::charge_string_work(v)?;
+    }
     match v {
         Datum::String(s) => bytes_to_f64(s.bytes(), ctx),
         Datum::Bytes(s) => bytes_to_f64(s, ctx),
@@ -325,5 +330,21 @@ pub(super) fn f64_to_i64(f: f64) -> Option<i64> {
         Some(f as i64)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod numeric_work_tests {
+    use super::*;
+    #[test]
+    fn common_policy_decimal_numeric_display_is_bounded_at_demand() {
+        let value = Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'; 4097], 4096, 4096));
+        let result = tidb_query_expr::local::with_value_kernel_work_limit(256, || {
+            to_f64_with_mysql_string(&value, &crate::NoColumns)
+        });
+        assert!(matches!(
+            result,
+            Err(EvalError::ExpressionRuntimeFailure(_))
+        ));
     }
 }

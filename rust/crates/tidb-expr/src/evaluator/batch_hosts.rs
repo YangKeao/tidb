@@ -825,6 +825,7 @@ pub(super) struct NativeBatchHosts<'a> {
     catalog: HostCatalog,
     context: &'a dyn Columns,
     metadata: &'a [NativeHostMetadata],
+    constant_probes: &'a [Option<Datum>],
     native_values: Option<&'a RefCell<NativeValueStore>>,
     slots: Vec<TaskSlot>,
     generation: u64,
@@ -841,6 +842,7 @@ impl<'a> NativeBatchHosts<'a> {
         Self {
             catalog,
             metadata,
+            constant_probes: &[],
             native_values: None,
             context,
             slots: Vec::new(),
@@ -854,6 +856,10 @@ impl<'a> NativeBatchHosts<'a> {
         values: Option<&'a RefCell<NativeValueStore>>,
     ) -> Self {
         self.native_values = values;
+        self
+    }
+    pub(super) fn with_constant_probes(mut self, probes: &'a [Option<Datum>]) -> Self {
+        self.constant_probes = probes;
         self
     }
     pub(super) fn take_native_error(&mut self) -> Option<EvalError> {
@@ -2256,6 +2262,22 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             return Err(LocalError::HostContract(
                 "SQL host invocation differs from its catalog signature".into(),
             ));
+        }
+        if !self.constant_probes.is_empty() {
+            if self.constant_probes.len() != self.metadata.len() {
+                return Err(binding("source prefix descriptor count differs"));
+            }
+            let probe = self
+                .constant_probes
+                .get(invocation.slot.index())
+                .ok_or_else(|| binding("source prefix slot absent"))?;
+            let maximum = self
+                .max_retained_bytes
+                .checked_sub(self.retained_bytes()?)
+                .ok_or_else(|| resource("source prefix allowance exhausted"))?;
+            if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                return self.native_failure(error);
+            }
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {

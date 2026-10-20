@@ -1472,7 +1472,7 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
     .is_err());
     let root = call("plus", ty(), vec![int(1)]);
     assert!(PreparedBatch::compile(
-        &suite(root),
+        &suite(root.clone()),
         &[],
         true,
         1,
@@ -1480,7 +1480,8 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         ExecutionLimits::default(),
         65536
     )
-    .is_err());
+    .is_ok());
+    compare_eager_source(root, &[], &[vec![]], &[0], 0, 0);
 }
 
 #[test]
@@ -2271,7 +2272,8 @@ fn integer_identities_preserve_first_argument_flags_and_all_bits() {
         .unwrap();
     assert_eq!(values(&actual), vec![Datum::Int(i64::MAX)]);
     let route = suite.batch_route_snapshot();
-    assert_eq!((route.prepared, route.fallback, route.refusals), (0, 1, 1));
+    // The original f64 signature now has its own actual-value host recipe.
+    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
 }
 
 #[test]
@@ -26291,6 +26293,9 @@ fn eager_scalar_string_work_resource_is_terminal_and_same_source_null_recovers()
         "JSON_ARRAY",
         "JSON_OBJECT",
         "JSON_DEPTH",
+        "FORMAT",
+        "SIN",
+        "ACOS",
     ] {
         let huge = literal(
             Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
@@ -26736,4 +26741,180 @@ fn eager_scalar_invalid_byte_parent_keeps_original_coercion_error() {
         0,
         0,
     );
+}
+
+#[test]
+fn common_policy_unknown_and_numeric_actual_sources_do_not_fallback() {
+    for (name, args) in [
+        ("__unregistered_eager__", vec![]),
+        ("acos", vec![Datum::Real(0.5)]),
+        ("sin", vec![Datum::Real(0.5)]),
+        ("exp", vec![Datum::Real(1000.0)]),
+        ("pow", vec![Datum::Real(-2.0), Datum::Real(0.5)]),
+        ("cot", vec![Datum::Int(0)]),
+        ("ceil", vec![Datum::Decimal(Decimal::from_literal("1.5"))]),
+        ("abs", vec![Datum::Null, Datum::Null]),
+        ("concat", vec![]),
+        ("logicand", vec![Datum::Int(0), Datum::Int(1)]),
+        ("logicor", vec![Datum::Int(1), Datum::Int(0)]),
+    ] {
+        let args = args
+            .into_iter()
+            .map(|v| {
+                let f = crate::tikv::misc_identity_value_tests::field(&v);
+                literal(v, f)
+            })
+            .collect();
+        compare_eager_source(call(name, string_ty(), args), &[], &[vec![]], &[0], 0, 0);
+    }
+}
+
+#[test]
+fn common_policy_constant_probe_precedes_isnull_and_respects_early_skip() {
+    // Invalid coefficient UTF-8 is an original formatter panic. ISNULL reaches
+    // the stored-name probe; truth tests return before that probe.
+    let value = || {
+        literal(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![255], 0, 0)),
+            FieldType::new(FieldTypeCode::NewDecimal),
+        )
+    };
+    for name in ["isnull", "isnotnull", "istrue", "isfalse"] {
+        compare_eager_source(call(name, ty(), vec![value()]), &[], &[vec![]], &[0], 0, 0);
+    }
+}
+
+fn isolate_common_corpus(which: &str) -> bool {
+    const KEY: &str = "TIDB_COMMON_SOURCE_CORPUS";
+    if std::env::var(KEY).as_deref() == Ok(which) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("evaluator::batch::tests::{which}"),
+            "--nocapture",
+        ])
+        .env(KEY, which)
+        .output()
+        .unwrap();
+    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+    assert!(output.status.success());
+    true
+}
+#[test]
+fn common_policy_registry_and_bad_arities_have_actual_source_recipes() {
+    if isolate_common_corpus("common_policy_registry_and_bad_arities_have_actual_source_recipes") {
+        return;
+    }
+
+    use crate::scalar_function::{
+        argument_policy::{classify, ArgumentPolicy},
+        eager_policy_tests::{arities, function, names},
+    };
+    let mut count = 0;
+    let mut failures = Vec::new();
+    for name in names() {
+        for n in arities(&name) {
+            let f = function(&name, n);
+            if classify(&f) != ArgumentPolicy::CommonEager {
+                continue;
+            }
+            count += 1;
+            // The recipe proof is independent of the remaining outer ordered-effect
+            // scheduling gate; malformed GETVAR arities still have eager semantics.
+            let actual = suite(Expression::ScalarFunction(f));
+            if let Err(error) = lower_view(&actual, 0, &[], true, 93, limits(), None) {
+                failures.push((name.clone(), n, error));
+            }
+        }
+    }
+    assert_eq!(count, 2036);
+    assert!(failures.is_empty(), "common source recipes: {failures:?}");
+    eprintln!("COMMON EAGER ACTUAL SOURCE RECIPES {count}");
+}
+
+#[test]
+fn common_policy_dead_unsupported_calls_stay_undemanded_in_same_driver() {
+    let bad = || call("__unregistered_eager__", ty(), vec![]);
+    for root in [
+        call("if", ty(), vec![int(0), bad(), int(7)]),
+        call("ifnull", ty(), vec![int(7), bad()]),
+        call("coalesce", ty(), vec![int(7), bad()]),
+        call("and", ty(), vec![int(0), bad()]),
+        call("or", ty(), vec![int(1), bad()]),
+        call("case", ty(), vec![int(0), bad(), int(7)]),
+    ] {
+        compare_eager_source(root, &[], &[vec![]], &[0], 0, 0);
+    }
+}
+
+#[test]
+fn common_policy_format_null_ignores_unused_precision_display() {
+    let huge = literal(
+        Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+        FieldType::new(FieldTypeCode::NewDecimal),
+    );
+    compare_eager_source(
+        call("format", string_ty(), vec![null(), huge]),
+        &[],
+        &[vec![]],
+        &[0],
+        0,
+        0,
+    );
+}
+
+#[test]
+fn common_policy_dead_math_diagnostic_does_not_format_unused_decimal() {
+    let huge = literal(
+        Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+        FieldType::new(FieldTypeCode::NewDecimal),
+    );
+    let bad = call("exp", real_ty(), vec![huge]);
+    compare_eager_source(
+        call(
+            "if",
+            real_ty(),
+            vec![int(0), bad, literal(Datum::Real(7.0), real_ty())],
+        ),
+        &[],
+        &[vec![]],
+        &[0],
+        0,
+        0,
+    );
+}
+
+#[test]
+fn common_policy_registered_eager_calls_match_original_on_actual_null_rows() {
+    if isolate_common_corpus(
+        "common_policy_registered_eager_calls_match_original_on_actual_null_rows",
+    ) {
+        return;
+    }
+
+    use crate::scalar_function::{
+        argument_policy::{classify, ArgumentPolicy},
+        eager_policy_tests::{arities, function, names},
+    };
+    let mut pairs = 0;
+    for name in names() {
+        // User-variable calls still need the pending ordered-suite adapter.
+        // Niladic clock/random sources have their separate deterministic proofs.
+        if name.starts_with("getvar") || name == "setvar" {
+            continue;
+        }
+        for n in arities(&name).into_iter().filter(|&n| n > 0) {
+            let f = function(&name, n);
+            if classify(&f) != ArgumentPolicy::CommonEager {
+                continue;
+            }
+            compare_eager_source(Expression::ScalarFunction(f), &[], &[vec![]], &[0, 0], 0, 0);
+            pairs += 1;
+        }
+    }
+    assert_eq!(pairs, 1699);
+    eprintln!("COMMON EAGER ACTUAL NULL SOURCE COMPARISONS {pairs}");
 }

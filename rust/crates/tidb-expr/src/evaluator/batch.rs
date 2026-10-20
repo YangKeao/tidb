@@ -436,7 +436,27 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::Column(_) => NativeView::RootValue,
-        Expression::ScalarFunction(f) if crate::scalar_function::eager_values::supports(f) => {
+        Expression::ScalarFunction(f)
+            if crate::scalar_function::eager_values::prefers_common_body(f)
+                || (crate::scalar_function::eager_values::supports(f)
+                    && (!typed_source_tree_complete(
+                        root,
+                        NativeView::Typed,
+                        limits.max_depth,
+                        &mut { limits.max_nodes },
+                    ) || f.identity_constant_probe().is_some_and(|v| {
+                        !matches!(
+                            v,
+                            Datum::Null
+                                | Datum::Int(_)
+                                | Datum::UInt(_)
+                                | Datum::Real(_)
+                                | Datum::Float32(_)
+                                | Datum::String(_)
+                                | Datum::Bytes(_)
+                        )
+                    }))) =>
+        {
             NativeView::RootValue
         }
         Expression::ScalarFunction(function)
@@ -754,6 +774,7 @@ struct BatchSource {
     facts: BatchFacts,
     hosts: Option<HostCatalog>,
     host_metadata: Box<[NativeHostMetadata]>,
+    host_probes: Box<[Option<Datum>]>,
     needs_native_values: bool,
     limits: BatchSourceLimits,
 }
@@ -1518,11 +1539,81 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_arithmetic_operation(function.func_name.lowercase()).is_some()
         || native_character_value_argument(function)
 }
+fn host_has_embedded_probe(operation: SqlBatchHostOperation) -> bool {
+    matches!(
+        operation,
+        SqlBatchHostOperation::EagerValuesNative
+            | SqlBatchHostOperation::CryptoNative(_)
+            | SqlBatchHostOperation::CompressionNative(_)
+            | SqlBatchHostOperation::ByteUnaryNative(_)
+            | SqlBatchHostOperation::MiscNative { .. }
+            | SqlBatchHostOperation::ValueIdentityNative { .. }
+    )
+}
+fn source_prefix_probe<'a>(
+    function: &'a ScalarFunction,
+    operation: SqlBatchHostOperation,
+) -> Option<&'a Datum> {
+    if host_has_embedded_probe(operation)
+        || crate::scalar_function::argument_policy::classify(function)
+            == crate::scalar_function::argument_policy::ArgumentPolicy::BeforeNameProbe
+    {
+        None
+    } else {
+        function.identity_constant_probe()
+    }
+}
 fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
-    if crate::scalar_function::eager_values::supports(function) && view.value_role().is_some() {
+    let resolved = resolve_specific_call_in_view(function, view);
+    let common = crate::scalar_function::eager_values::supports(function);
+    // Protocol aliases are not scalar operator names. The original scalar
+    // body eagerly demands their arguments and then reports Unsupported.
+    let protocol_alias = common
+        && crate::scalar_function::binary_op_for_name(function.func_name.lowercase()).is_none()
+        && matches!(
+            native_selection_operation(function),
+            Some(SqlBatchHostOperation::AndNative | SqlBatchHostOperation::OrNative)
+        );
+    if protocol_alias && view.value_role().is_none() {
+        return Err(BatchFailure::admission(
+            "scalar protocol alias requires its original common body",
+        ));
+    }
+    if view.value_role().is_some()
+        && common
+        && (protocol_alias
+            || matches!(
+                &resolved,
+                Ok((CallTarget::Kernel(_), _))
+                    | Err(BatchFailure {
+                        kind: FailureKind::Admission(_)
+                    })
+            ))
+    {
+        if function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "common eager source requires original declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            function.args.len(),
+        ));
+    }
+    resolved
+}
+fn resolve_specific_call_in_view(
+    function: &ScalarFunction,
+    view: NativeView,
+) -> Result<(CallTarget, usize)> {
+    if crate::scalar_function::eager_values::prefers_common_body(function)
+        && view.value_role().is_some()
+    {
         if function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none())
         {
@@ -2559,6 +2650,17 @@ fn preflight_view<'a>(
                 if matches!(resolve_call_in_view(function, view)?.0, CallTarget::Host(_)) {
                     budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
                     budget.array::<NativeHostMetadata>(1)?;
+                    budget.array::<Option<Datum>>(1)?;
+                    let CallTarget::Host(operation) = resolve_call_in_view(function, view)?.0
+                    else {
+                        unreachable!()
+                    };
+                    if let Some(probe) = source_prefix_probe(function, operation) {
+                        budget.add(
+                            crate::tikv::identity_actual::copy_extent(probe)
+                                .map_err(|_| resource("source prefix probe copy overflow"))?,
+                        )?;
+                    }
                     if function.func_name.lowercase() == "cast_char" {
                         budget.add(sql.charset_name().len())?;
                         if matches!(
@@ -2639,9 +2741,10 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
-                    if crate::scalar_function::eager_values::supports(function)
-                        && view.value_role().is_some()
-                    {
+                    if matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
+                    ) {
                         budget
                             .array::<crate::scalar_function::eager_values::EagerArgument>(arity)?;
                         budget.array::<usize>(arity)?;
@@ -3008,7 +3111,7 @@ fn preflight_view<'a>(
     // conversion, source capture, formatting or immutable metadata snapshot.
     for item in &checked {
         if item.view.value_role().is_some()
-            && matches!(item.node, Expression::ScalarFunction(function) if function.func_name.lowercase()=="abs")
+            && matches!(item.node, Expression::ScalarFunction(function) if matches!(resolve_call_in_view(function,item.view)?.0,CallTarget::Host(SqlBatchHostOperation::AbsNative)))
         {
             if let Some(bytes) = item.math_render_bound {
                 budget.add(
@@ -3017,6 +3120,41 @@ fn preflight_view<'a>(
                         .ok_or_else(|| resource("math diagnostic copy allowance overflow"))?,
                 )?;
             }
+        }
+    }
+    // Common math owns only raw diagnostic facts at preparation. Visible
+    // Decimal scale is charged only if an actual error demands its rendering.
+    for (index, item) in checked.iter().enumerate() {
+        let Expression::ScalarFunction(f) = item.node else {
+            continue;
+        };
+        if !matches!(
+            f.func_name.lowercase(),
+            "cot" | "exp" | "pow" | "power" | "abs"
+        ) || item.math_render_bound.is_none()
+            || !matches!(
+                resolve_call_in_view(f, item.view)?.0,
+                CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
+            )
+        {
+            continue;
+        }
+        budget.array::<crate::scalar_function::math_diagnostic::MathDiagnosticPart>(
+            item.subtree_end - index,
+        )?;
+        for source in &checked[index..item.subtree_end] {
+            let bytes = match source.node {
+                Expression::Constant(c) => c
+                    .literal_value()
+                    .map(crate::tikv::identity_actual::copy_extent)
+                    .transpose()
+                    .map_err(|_| resource("diagnostic literal copy overflow"))?
+                    .unwrap_or(0),
+                Expression::Column(c) => c.orig_name.len(),
+                Expression::CorrelatedColumn(c) => c.column.orig_name.len(),
+                Expression::ScalarFunction(f) => f.func_name.lowercase().len(),
+            };
+            budget.add(bytes)?;
         }
     }
     for (index, item) in checked.iter().enumerate() {
@@ -3322,6 +3460,7 @@ fn lower_view(
     let checked = preflight_view(root, row_schema, limits, view)?;
     let mut host_entries = Vec::new();
     let mut host_metadata = Vec::new();
+    let mut host_probes = Vec::new();
     let mut nodes = Vec::new();
     let mut bindings = Vec::new();
     let mut schema = Vec::new();
@@ -3454,6 +3593,8 @@ fn lower_view(
                         let slot = host_entries.len();
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
+                        reserve(&mut host_probes, 1)?;
+                        host_probes.push(source_prefix_probe(sql, operation).cloned());
                         host_metadata.push(match operation {
                             SqlBatchHostOperation::TimestampDiffNative { stop_on_null, .. } => {
                                 let mut arguments = [0; 3];
@@ -3539,7 +3680,10 @@ fn lower_view(
                                 for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("eager child absent"))?.subtree_end;}
                                 NativeHostMetadata::EagerValues{
                                     arguments:arguments.into_boxed_slice(),
-                                    kernel:crate::scalar_function::eager_values::EagerValueKernel::capture(sql),
+                                    kernel:crate::scalar_function::eager_values::EagerValueKernel::capture(sql).with_math_diagnostic(
+                                        if matches!(sql.func_name.lowercase(),"abs"|"cot"|"exp"|"pow"|"power") && item.math_render_bound.is_some() {
+                                            crate::scalar_function::math_diagnostic::MathDiagnostic::capture(sql,item.subtree_end-ordinal)
+                                        } else {None}),
                                     probe:sql.identity_constant_probe().cloned(),
                                     result_type:snapshot_field_type(item.sql),output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("eager output view absent"))?,
@@ -4469,6 +4613,7 @@ fn lower_view(
         facts,
         hosts,
         host_metadata: host_metadata.into_boxed_slice(),
+        host_probes: host_probes.into_boxed_slice(),
         needs_native_values,
         limits,
     }))
@@ -5816,6 +5961,7 @@ impl PreparedBatch {
                 self.max_materialization_retained_bytes,
             )
             .with_native_values(native_values.as_ref())
+            .with_constant_probes(&source.host_probes)
         });
         // Explicit whole programs receive the complete selection. Other
         // programs use bounded driver windows in the same canonical route;
