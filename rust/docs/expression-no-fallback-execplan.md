@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-21 N14 generic leaves) Original values/errors 16,416 / E7DC6852B12EF799, projection phases 640 / 702A47B62B6F8FC5, empty-row precedence 48 / F3F48F4224A0ECED, long selection 40 / 9EFE344B4321EE4F and hybrid consumer 1,824 / 53D70540CA7421FF captured, frozen and rerun. Independent pre-retirement 16,416 plus 1,368 hybrid pairs pass; executed original/candidate sources archived before sharing conversion/read owners.
+- [x] (2026-10-21 N14 generic leaves) Context/deferred hosts use the existing SDK frame and real source capabilities. Actual declared 15,048 x two flags, hybrid 1,824 x two flags and 544 generic phase/long cases pass, as do authentication/callback/recovery checks. Decimal scale-growth resource regression reproduced and bounded original kernel integrated. Final frontend 1,853/exact prior 3/95/all333batch/exact346warnings, Projection26, datatypeDecimal39, lint and dual13fmt/checker pass. Typed dynamic, diagnostic re-demand, optional/PB, cached and public seams remain explicit work; overall execution continues.
+
 - [x] (2026-10-21 N13) Original 129,855 / E1A91F4419B7C00E and supplementary explicit-collation/child-demand 3,540 / F069242CF30A6838 were captured, frozen, rerun and independently compared against the actual old scalar before retirement. All nineteen native-value parent Admission gaps reproduced before integration; executed old/candidate sources archived.
 - [x] (2026-10-21 N13) Shared early string metadata/value owners use the same EagerValuesNative frame, preserving ignored extras/missing-argument effects. Actual source 129,855 x two flags and 3,540 x four flags plus dead/empty/ignored checks pass. Strict formatter billing and Resource-tag defects reproduced before correction; broad validation also fixed typed-call identity and metadata footprint regressions. Final full frontend 1,839/exact prior 3/95/all 325 batch/exact 346 warnings, Projection26/lint/dual ten-file formatting and reconstruction checker pass. See evidence/no-fallback-n13.md; continue cached/leaf/stateful/public seams.
 
@@ -150,6 +153,11 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N14 expanded actual-source tests caught a shared publication helper applying ordinary scalar declaration requirements to ContextValue results. Context nodes now publish their already-finished consumer view; raw root broadcasts bypass the scalar enum view. A separate finite scale-growth test reproduced unbounded deferred Decimal rounding; the existing shared rounding kernel now accepts the actual remaining allowance before allocation.
+- N14 root Constant shortcuts preserve raw Enum/Set even with ENUM_SET_AS_INT, whereas ordinary Expression evaluation takes the integer view. Deferred-root batch admission may read a parameter solely for type before even an empty input; eligible typed paths can then ignore the parameter and evaluate the deferred child. These require separate consumer profiles, rather than generic substitution.
+
+- N14 original inspection: ParamMarker wins over DeferredExpr, but deferred presence still triggers conversion and per-row root scheduling. Unordered root parameters without a deferred expression read once and broadcast the whole selected chunk even when vectorization is off; nested/ordered parameters read on demand. NULL and Decimal deferred results skip timezone/type-flag getters. Original empty-row errors check missing column type, negative index, then bounds.
 
 - N13 broad validation found two integration regressions before checkpoint: newly available string value producers promoted an already proved typed STRCMP subtree, changing compiled call ordinals, and an inline optional EarlyString enlarged metadata for an unrelated calendar Projection until its fixed budget refused preparation. Keep existing typed closure/phases and box only actual early metadata, charging that allocation at preflight; do not change the existing identity assertion or metadata ceiling.
 
@@ -414,6 +422,14 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: Model generic context reads and deferred conversion as boxed metadata over the existing EagerValuesNative protocol. Preserve raw root broadcasting in a bounded invocation cache, generic row publication and the original unsupported-child root type probe. Leave typed dynamic and mathematical diagnostic re-demand as explicit Admission gaps until their original phases are proved and implemented.
+  Rationale: those consumers differ in parameter priority, read counts and error-side effects. A generic descriptor must not silently replace their contract. No expression callback or nested driver is stored in the metadata.
+  Date/Author: 2026-10-21 / ExpressionReuseEngineer.
+
+- Decision: Establish dynamic leaf and root scheduling facts before cached-list demand, because cached FIND_IN_SET constructors execute their list on an empty row and serialize initialization before any list effects.
+  Rationale: simply adding a cache lookup followed by child demand would change row semantics and race once-only constructor effects. Use the existing SDK driver with explicit context/deferred boundaries and bounded live state.
+  Date/Author: 2026-10-21 / ExpressionReuseEngineer.
+
 - Decision: Store EarlyString behind an optional Box and reserve its size only for actual early hosts. If a tree containing an early string function already has a closed typed source, retain that source rather than promoting it solely because new value producers exist.
   Rationale: preserve previously proved call identities/phases and avoid charging unrelated hosts for newly added inline metadata. Both regressions were reproduced by existing full/Projection checks before correction.
   Date/Author: 2026-10-21 / ExpressionReuseEngineer.
@@ -660,6 +676,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+- N14 generic integration follows local N13 4e9248b1. Five original corpora and both independent pre-retirement comparisons are fixed; actual declared/hybrid/phase sources pass after correcting the observed publication omission. Finite Decimal work and complete frontend1,853/exact3/95/all333batch/exact346warnings, Projection26, datatypeDecimal39, lint and dual13fmt/checker pass. SDK remains unchanged; typed dynamic, diagnostic re-demand, cache, optional/PB and public fallback retirement continue as part of the same overall task.
 
 - N13 is complete as a local checkpoint after N12 c0dab105: both independent pre-retirement proofs and frozen witnesses are preserved; actual sources cover 129,855 x two flags and 3,540 x four flags plus empty/dead/ignored boundaries. Final full frontend 1,839/exact prior 3/95/all 325 batch/exact 346 warnings, Projection26/lint/dual ten-file formatting and reconstruction checker pass after fixing observed formatter, Resource-category, typed-identity and metadata regressions. Evidence: evidence/no-fallback-n13.md. SDK source is unchanged at 7df75c9. Continue the overall task directly.
 

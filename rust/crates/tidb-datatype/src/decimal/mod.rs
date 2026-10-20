@@ -1035,6 +1035,21 @@ impl Decimal {
         self.round_or_truncate_to_scale(target_scale, true)
     }
 
+    /// The same rounding kernel with a finite allowance for native conversion,
+    /// scale growth and the returned coefficient. No SQL scale clamp is added.
+    pub fn try_round_to_scale(
+        &self,
+        target_scale: i32,
+        limit: usize,
+    ) -> Result<Decimal, NativeDecimalError> {
+        self.try_round_or_truncate_to_scale_with_storage(
+            target_scale,
+            true,
+            target_scale.max(0) as u32,
+            limit,
+        )
+    }
+
     /// Ports `MyDecimal.Round(..., ModeCeiling)` exactly.
     ///
     /// Despite its name, the source mode is not mathematical ceiling: its
@@ -1129,12 +1144,27 @@ impl Decimal {
         round: bool,
         storage_scale: u32,
     ) -> Decimal {
-        self.try_to_shared_math(usize::MAX)
+        self.try_round_or_truncate_to_scale_with_storage(
+            target_scale,
+            round,
+            storage_scale,
+            usize::MAX,
+        )
+        .expect("shared native decimal rounding failed")
+    }
+
+    fn try_round_or_truncate_to_scale_with_storage(
+        &self,
+        target_scale: i32,
+        round: bool,
+        storage_scale: u32,
+        limit: usize,
+    ) -> Result<Decimal, NativeDecimalError> {
+        self.try_to_shared_math(limit)
             .and_then(|value| {
-                value.try_native_round_with_storage(target_scale, round, storage_scale, usize::MAX)
+                value.try_native_round_with_storage(target_scale, round, storage_scale, limit)
             })
-            .and_then(|value| Self::try_from_shared_math(&value, usize::MAX))
-            .expect("shared native decimal rounding failed")
+            .and_then(|value| Self::try_from_shared_math(&value, limit))
     }
 }
 

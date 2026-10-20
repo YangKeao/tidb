@@ -245,47 +245,10 @@ impl Constant {
         } else {
             return Ok(self.value.clone());
         };
-        if self.deferred_expr.is_none() || value.is_null() {
+        if self.deferred_expr.is_none() {
             return Ok(value);
         }
-        let target = self.ret_type.as_ref().ok_or_else(|| {
-            (
-                value.clone(),
-                EvalError::Unsupported("deferred constant has no result type"),
-            )
-        })?;
-        if let Datum::Decimal(value) = value {
-            // Go adjustDecimal only pads a short fraction. It neither
-            // narrows precision nor rounds away existing fractional digits.
-            return Ok(Datum::Decimal(
-                if i64::from(value.precision_and_frac().1) < target.decimal() {
-                    value.round_to_scale(target.decimal() as i32)
-                } else {
-                    value
-                },
-            ));
-        }
-        let warnings = ConversionWarnings(ctx);
-        let zone = ctx.time_zone();
-        let context = tidb_datatype::ConversionContext::new(
-            ctx.type_flags(),
-            tidb_datatype::ConversionLocation::from_time_zone(&zone),
-            &warnings,
-        );
-        let converted = value
-            .convert_to_in_context(target, &context, &zone)
-            .map_err(|_| {
-                (
-                    value.clone(),
-                    EvalError::Unsupported(
-                        "deferred conversion diagnostic routing is not yet ported",
-                    ),
-                )
-            })?;
-        if let Some(error) = converted.error {
-            return Err((value, EvalError::Conversion(error)));
-        }
-        Ok(converted.value)
+        crate::context_value::finish_deferred_value(value, self.ret_type.as_ref(), ctx)
     }
 
     /// Go `HashCode` (= `getHashCode(false)`), cached on first call:

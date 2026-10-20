@@ -475,11 +475,7 @@ impl CorrelatedColumn {
     /// Go dereferences the `Data` pointer; a not-yet-bound column yields NULL.
     #[must_use]
     pub fn eval(&self) -> Datum {
-        self.data.as_ref().map_or(Datum::Null, |data| {
-            data.read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        })
+        crate::context_value::read_correlated(self.data.as_ref())
     }
 
     /// Go's correlated typed entrypoints read the live binding. Only hybrid

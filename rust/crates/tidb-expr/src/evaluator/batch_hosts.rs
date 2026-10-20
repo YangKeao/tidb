@@ -145,6 +145,12 @@ impl NativeRawValueOperation {
 mod eager_values_source;
 
 pub(super) enum NativeHostMetadata {
+    ContextValue {
+        descriptor: Box<crate::context_value::ContextValue>,
+        argument: Option<usize>,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     EagerValues {
         arguments: Box<[usize]>,
         kernel: crate::scalar_function::eager_values::EagerValueKernel,
@@ -443,6 +449,9 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    ContextValue {
+        consumed: bool,
+    },
     UserVariableRead {
         name: String,
         consumed: bool,
@@ -589,6 +598,9 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::ContextValue { consumed } => {
+                Ok((!*consumed && self.arity == 1).then_some(0))
+            }
             SqlDemand::UserVariableRead { .. } => Ok(None),
             SqlDemand::UserVariableWrite { consumed, .. } => Ok((!*consumed).then_some(1)),
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
@@ -637,6 +649,9 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::ContextValue { .. } => {
+                Err(binding("context values cannot buffer a wire prefix"))
+            }
             SqlDemand::UserVariableRead { .. } | SqlDemand::UserVariableWrite { .. } => {
                 Err(binding("user variable cannot buffer a wire prefix"))
             }
@@ -851,6 +866,8 @@ pub(super) struct NativeBatchHosts<'a> {
     generation: u64,
     max_retained_bytes: usize,
     native_error: Option<EvalError>,
+    constant_root_shortcut: bool,
+    root_value: Option<Datum>,
 }
 impl<'a> NativeBatchHosts<'a> {
     pub(super) fn new(
@@ -869,7 +886,13 @@ impl<'a> NativeBatchHosts<'a> {
             generation: 0,
             max_retained_bytes,
             native_error: None,
+            constant_root_shortcut: false,
+            root_value: None,
         }
+    }
+    pub(super) fn with_constant_root_shortcut(mut self, enabled: bool) -> Self {
+        self.constant_root_shortcut = enabled;
+        self
     }
     pub(super) fn with_native_values(
         mut self,
@@ -950,7 +973,15 @@ impl<'a> NativeBatchHosts<'a> {
             .iter()
             .filter_map(|slot| slot.task.as_ref())
             .try_fold(
-                array_bytes::<TaskSlot>(self.slots.capacity())?,
+                array_bytes::<TaskSlot>(self.slots.capacity())?
+                    .checked_add(
+                        self.root_value
+                            .as_ref()
+                            .map(native_payload_bytes)
+                            .transpose()?
+                            .unwrap_or(0),
+                    )
+                    .ok_or_else(|| resource("context broadcast retained extent overflow"))?,
                 |bytes, task| {
                     bytes
                         .checked_add(task.retained_bytes()?)
@@ -1124,12 +1155,20 @@ impl<'a> NativeBatchHosts<'a> {
         // enclosing Expression.Eval applies this immutable result view next.
         // Host slots provide O(1) declaration access without a tree callback,
         // a per-row metadata scan or an extra source-schema allocation.
-        let field = self
+        let metadata = self
             .metadata
             .get(self.task(id)?.slot.index())
-            .and_then(NativeHostMetadata::result_type)
-            .ok_or_else(|| binding("native SQL result lacks its declaration"))?;
-        let result = crate::expression::apply_enum_set_integer_view(result, Some(field));
+            .ok_or_else(|| binding("native SQL result lacks its metadata"))?;
+        let result = if matches!(metadata, NativeHostMetadata::ContextValue { .. }) {
+            // Context leaves already applied their consumer's expression view.
+            // A root Constant broadcast deliberately publishes the raw Datum.
+            result
+        } else {
+            let field = metadata
+                .result_type()
+                .ok_or_else(|| binding("native SQL result lacks its declaration"))?;
+            crate::expression::apply_enum_set_integer_view(result, Some(field))
+        };
         let store = self
             .native_values
             .ok_or_else(|| binding("native result has no value store"))?;
@@ -2306,45 +2345,62 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
-                let Some(NativeHostMetadata::EagerValues {
-                    arguments,
-                    kernel,
-                    probe,
+                if let Some(NativeHostMetadata::ContextValue {
+                    descriptor,
+                    argument,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("eager values descriptor absent"));
-                };
-                if self.native_values.is_none() || arguments.len() != invocation.arg_types.len() {
-                    return Err(binding("eager values descriptor differs"));
-                }
-                let maximum = self
-                    .max_retained_bytes
-                    .checked_sub(self.retained_bytes()?)
-                    .ok_or_else(|| resource("eager probe allowance exhausted"))?;
-                let name = match crate::tikv::identity_actual::probe_name(probe.as_ref(), maximum) {
-                    Ok(name) => name,
-                    Err(e) => return self.native_failure(e),
-                };
-                match (kernel.user_variable(), name) {
-                    (
-                        Some(crate::scalar_function::user_variable::UserVariableAction::Get(_)),
-                        Some(name),
-                    ) => SqlDemand::UserVariableRead {
-                        name,
-                        consumed: false,
-                    },
-                    (
-                        Some(crate::scalar_function::user_variable::UserVariableAction::Set),
-                        Some(name),
-                    ) => SqlDemand::UserVariableWrite {
-                        name,
-                        consumed: false,
-                    },
-                    _ => SqlDemand::EagerValues {
-                        next: 0,
-                        tokens: Vec::new(),
-                    },
+                {
+                    if self.native_values.is_none()
+                        || usize::from(descriptor.demands_child()) != invocation.arg_types.len()
+                        || argument.is_some() != descriptor.demands_child()
+                    {
+                        return Err(binding("context descriptor arity differs"));
+                    }
+                    SqlDemand::ContextValue { consumed: false }
+                } else {
+                    let Some(NativeHostMetadata::EagerValues {
+                        arguments,
+                        kernel,
+                        probe,
+                        ..
+                    }) = self.metadata.get(invocation.slot.index())
+                    else {
+                        return Err(binding("eager values descriptor absent"));
+                    };
+                    if self.native_values.is_none() || arguments.len() != invocation.arg_types.len()
+                    {
+                        return Err(binding("eager values descriptor differs"));
+                    }
+                    let maximum = self
+                        .max_retained_bytes
+                        .checked_sub(self.retained_bytes()?)
+                        .ok_or_else(|| resource("eager probe allowance exhausted"))?;
+                    let name =
+                        match crate::tikv::identity_actual::probe_name(probe.as_ref(), maximum) {
+                            Ok(name) => name,
+                            Err(e) => return self.native_failure(e),
+                        };
+                    match (kernel.user_variable(), name) {
+                        (
+                            Some(crate::scalar_function::user_variable::UserVariableAction::Get(_)),
+                            Some(name),
+                        ) => SqlDemand::UserVariableRead {
+                            name,
+                            consumed: false,
+                        },
+                        (
+                            Some(crate::scalar_function::user_variable::UserVariableAction::Set),
+                            Some(name),
+                        ) => SqlDemand::UserVariableWrite {
+                            name,
+                            consumed: false,
+                        },
+                        _ => SqlDemand::EagerValues {
+                            next: 0,
+                            tokens: Vec::new(),
+                        },
+                    }
                 }
             }
 
@@ -3056,6 +3112,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             || (matches!(
                 demand,
                 SqlDemand::EagerValues { .. }
+                    | SqlDemand::ContextValue { .. }
                     | SqlDemand::Clock
                     | SqlDemand::Tso
                     | SqlDemand::Epoch { .. }
@@ -3087,6 +3144,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 task,
             };
             let result = if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::ContextValue { .. }
+            ) {
+                guard.provider.finish_context_value(&guard.task, None)
+            } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::EagerValues { .. }
             ) {
@@ -3188,6 +3250,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("crypto source cannot be wire NULL"));
             };
             return self.resume_crypto(id, token);
+        }
+        if matches!(task.demand, SqlDemand::ContextValue { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("context operand cannot be wire NULL"));
+            };
+            return self.finish_context_value(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::UserVariableWrite { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -3893,3 +3961,6 @@ mod tests {
         }
     }
 }
+
+#[path = "batch_context_value.rs"]
+mod context_value_source;

@@ -724,3 +724,6 @@ pub(crate) mod user_variable_tests;
 
 #[cfg(test)]
 pub(crate) mod early_string_tests;
+
+#[cfg(test)]
+pub(crate) mod dynamic_leaf_tests;

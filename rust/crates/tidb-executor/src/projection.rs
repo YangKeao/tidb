@@ -4113,6 +4113,38 @@ mod tests {
         let early_mix = std::iter::once(0)
             .chain(early_start..roots.len())
             .collect::<Vec<_>>();
+        let context_start = roots.len();
+        let context_parameter = || {
+            let mut c = Constant::new(Datum::Int(99), integer.clone());
+            c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
+            Expression::Constant(c)
+        };
+        let mut deferred = Constant::new(Datum::Int(99), integer.clone());
+        deferred.deferred_expr = Some(Box::new(column(0)));
+        let correlated = Expression::CorrelatedColumn(tidb_expr::column::CorrelatedColumn {
+            column: Column::new(1, integer.clone()),
+            data: Some(Arc::new(std::sync::RwLock::new(Datum::Int(17)))),
+        });
+        for root in [
+            context_parameter(),
+            Expression::Constant(deferred),
+            correlated,
+        ] {
+            roots.push(root);
+            fields.push(integer.clone());
+        }
+        let context_mix = std::iter::once(0)
+            .chain(context_start..roots.len())
+            .collect::<Vec<_>>();
+        roots.push(call(
+            "setvar",
+            integer.clone(),
+            vec![variable_name(), context_parameter()],
+        ));
+        fields.push(integer.clone());
+        let ordered_context_mix = std::iter::once(0)
+            .chain(context_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -4313,10 +4345,26 @@ mod tests {
                 early_mix.iter().map(|&i| roots[i].clone()).collect(),
                 early_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
+            (
+                context_mix.iter().map(|&i| roots[i].clone()).collect(),
+                context_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                ordered_context_mix
+                    .iter()
+                    .map(|&i| roots[i].clone())
+                    .collect(),
+                ordered_context_mix
+                    .iter()
+                    .map(|&i| fields[i].clone())
+                    .collect(),
+            ),
         ];
-        let session_configuration = configurations.len() - 3;
-        let variable_configuration = configurations.len() - 2;
-        let early_configuration = configurations.len() - 1;
+        let session_configuration = configurations.len() - 5;
+        let variable_configuration = configurations.len() - 4;
+        let early_configuration = configurations.len() - 3;
+        let context_configuration = configurations.len() - 2;
+        let ordered_context_configuration = configurations.len() - 1;
         let with_session = |context: crate::StmtContext| {
             context
                 .with_session_state(Some("dbé会话".into()), Some("8.0-session".into()))
@@ -4348,6 +4396,11 @@ mod tests {
                 } else {
                     reference
                 };
+                let reference = if configuration >= context_configuration {
+                    reference.with_prepared_params(vec![Datum::Int(7)].into())
+                } else {
+                    reference
+                };
                 let suite = EvaluatorSuite::new(roots.clone(), false);
                 let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
                 for row in 0..3 {
@@ -4375,6 +4428,11 @@ mod tests {
                     };
                     let context = if configuration == session_configuration {
                         with_session(context)
+                    } else {
+                        context
+                    };
+                    let context = if configuration >= context_configuration {
+                        context.with_prepared_params(vec![Datum::Int(7)].into())
                     } else {
                         context
                     };
@@ -4415,6 +4473,12 @@ mod tests {
                         assert_eq!(
                             tidb_expr::Columns::get_uservar(&context, "early"),
                             tidb_expr::Columns::get_uservar(&reference, "early")
+                        );
+                    }
+                    if configuration == ordered_context_configuration {
+                        assert_eq!(
+                            tidb_expr::Columns::get_uservar(&context, "X"),
+                            tidb_expr::Columns::get_uservar(&reference, "X")
                         );
                     }
                     if configuration == variable_configuration {

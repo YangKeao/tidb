@@ -498,6 +498,9 @@ pub(super) fn compile(
         host_metadata: metadata.into_boxed_slice(),
         host_probes: Box::new([]),
         needs_native_values: true,
+        constant_root_shortcut: false,
+        context_row_only: false,
+        root_type_probe: None,
         limits,
     });
     Ok(PreparedFast {

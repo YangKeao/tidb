@@ -415,7 +415,8 @@ fn signed_int_family_reuses_the_same_batch_substrate() {
             | SourceKind::DecimalFastInput(_)
             | SourceKind::Constant { .. }
             | SourceKind::NativeConstant { .. }
-            | SourceKind::Column { .. } => None,
+            | SourceKind::Column { .. }
+            | SourceKind::ContextValue { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -28186,5 +28187,672 @@ fn early_string_dead_empty_and_ignored_metadata_never_format() {
             ],
         );
         compare_early_string_extra(child, 1);
+    }
+}
+
+#[test]
+fn dynamic_leaf_actual_sources_do_not_fallback() {
+    use crate::tikv::dynamic_leaf_tests as proof;
+    let mut failures = vec![];
+    for kind in proof::KINDS {
+        let binding = std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(7)));
+        let root = proof::expression(kind, 0, &Datum::Int(7), Some(&ty()), Some(binding));
+        let owner = suite(root);
+        let ctx = proof::Context::new(0, Datum::Int(7));
+        let mut input = proof::input(false);
+        let mut output = output();
+        let _ = session_read_outcome(|| {
+            owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let route = owner.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((kind, route));
+        }
+    }
+    assert!(failures.is_empty(), "dynamic leaf sources {failures:?}");
+}
+
+#[test]
+fn dynamic_leaf_root_literal_shortcut_keeps_original_enum_set_value() {
+    for (code, value) in [
+        (
+            FieldTypeCode::Enum,
+            Datum::new_enum(tidb_datatype::MysqlEnum::new("é", 7), Collation::Utf8Mb4Bin),
+        ),
+        (
+            FieldTypeCode::Set,
+            Datum::new_set(tidb_datatype::MysqlSet::new("a,b", 3), Collation::Binary),
+        ),
+    ] {
+        let field = FieldType::new(code).with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT);
+        let root = literal(value, field.clone());
+        let actual = suite(root.clone());
+        let reference = suite(root);
+        let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+        let old = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+        let (mut input, mut oldinput) =
+            (chunk(&[], &[vec![], vec![]]), chunk(&[], &[vec![], vec![]]));
+        let (mut output, mut expected) = (output_for(&field), output_for(&field));
+        assert_eq!(
+            session_read_outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[])),
+            session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected)),
+            "{code:?} root constant shortcut must retain raw datum"
+        );
+        assert_eq!(output.column(0), expected.column(0));
+        assert_eq!(ctx.snapshot(), old.snapshot());
+        assert_eq!(actual.batch_route_snapshot().fallback, 0);
+    }
+}
+
+fn compare_dynamic_leaf_source(
+    actual: &EvaluatorSuite,
+    reference: &EvaluatorSuite,
+    ctx: &crate::tikv::dynamic_leaf_tests::Context,
+    old: &crate::tikv::dynamic_leaf_tests::Context,
+    fields: &[FieldType],
+    nullable: bool,
+    selection: Option<Vec<usize>>,
+    prefix: bool,
+    label: &str,
+) {
+    use crate::tikv::dynamic_leaf_tests as proof;
+    let (mut input, mut oldinput) = (proof::input(nullable), proof::input(nullable));
+    input.set_sel(selection.clone());
+    oldinput.set_sel(selection.clone());
+    let (mut output, mut expected) = (
+        Chunk::new_with_capacity(fields, 0),
+        Chunk::new_with_capacity(fields, 0),
+    );
+    if prefix {
+        for i in 0..fields.len() {
+            output.append_null(i);
+            expected.append_null(i);
+        }
+    }
+    let got =
+        session_read_outcome(|| actual.run_with_tikv_batch(ctx, &mut input, &mut output, &[ty()]));
+    let want = session_read_outcome(|| reference.run(old, &mut oldinput, &mut expected));
+    assert_eq!(got, want, "outcome {label}");
+    assert_eq!(ctx.snapshot(), old.snapshot(), "context {label}");
+    for i in 0..fields.len() {
+        assert_eq!(output.column(i), expected.column(i), "column {i} {label}");
+    }
+    assert_eq!(input.sel(), selection.as_deref(), "selection {label}");
+}
+
+#[test]
+fn dynamic_leaf_actual_declared_sources_keep_values_errors_state_and_reuse() {
+    if isolate_common_corpus(
+        "dynamic_leaf_actual_declared_sources_keep_values_errors_state_and_reuse",
+    ) {
+        return;
+    }
+    use crate::tikv::dynamic_leaf_tests as proof;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut cases = 0;
+        for kind in proof::KINDS {
+            for ret in crate::tikv::eager_scalar_value_tests::types() {
+                for profile in 0..4 {
+                    for (vi, value) in crate::tikv::session_read_tests::values()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        for order in if kind.starts_with("param") {
+                            vec![-1, 0, 1, i64::MAX]
+                        } else {
+                            vec![0]
+                        } {
+                            let make = || {
+                                proof::expression(
+                                    kind,
+                                    order,
+                                    &value,
+                                    Some(&ret),
+                                    Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                        value.clone(),
+                                    ))),
+                                )
+                            };
+                            let actual = suite(make());
+                            for enabled in [false, true] {
+                                let reference = suite(make());
+                                let ctx = proof::Context::new(profile, value.clone());
+                                let old = proof::Context::new(profile, value.clone());
+                                ctx.enabled.set(enabled);
+                                old.enabled.set(enabled);
+                                let label = format!("{kind} ret={ret:?} profile={profile} vi={vi} order={order} flag={enabled}");
+                                compare_dynamic_leaf_source(
+                                    &actual,
+                                    &reference,
+                                    &ctx,
+                                    &old,
+                                    std::slice::from_ref(&ret),
+                                    true,
+                                    Some(vec![2, 0, 2]),
+                                    true,
+                                    &label,
+                                );
+                                let route = actual.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.refusals, route.fallback),
+                                    (0, 0),
+                                    "{label} {route:?}"
+                                );
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 15048);
+        eprintln!("DYNAMIC LEAF ACTUAL DECLARED {cases} x2 flags");
+    });
+}
+
+#[test]
+fn dynamic_leaf_actual_generic_projection_phases_and_long_broadcast() {
+    if isolate_common_corpus("dynamic_leaf_actual_generic_projection_phases_and_long_broadcast") {
+        return;
+    }
+    use crate::tikv::dynamic_leaf_tests as proof;
+    let mut cases = 0;
+    for long in [false, true] {
+        // Typed dynamic arithmetic and optional metadata have distinct contracts
+        // and remain explicit migration gaps; do not count their fallback as native.
+        for which in [0, 1, 3, 4, 5, 6, 7, 8] {
+            for profile in if long { vec![0, 3] } else { (0..4).collect() } {
+                for nullable in if long { vec![true] } else { vec![false, true] } {
+                    let selections = if long {
+                        vec![Some((0..2050).map(|i| [2, 0, 2][i % 3]).collect())]
+                    } else {
+                        vec![None, Some(vec![2, 0, 2]), Some(vec![1, 0, 2]), Some(vec![])]
+                    };
+                    for selection in selections {
+                        let binding = std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(900)));
+                        let (roots, fields) =
+                            proof::phase_program(which, std::sync::Arc::clone(&binding));
+                        let actual = EvaluatorSuite::new(roots, false);
+                        for enabled in [false, true] {
+                            // Fresh independent context and binding on each invocation;
+                            // the prepared source is reused across vector flags.
+                            *binding.write().unwrap() = Datum::Int(900);
+                            let oldbinding =
+                                std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(900)));
+                            let (roots, _) =
+                                proof::phase_program(which, std::sync::Arc::clone(&oldbinding));
+                            let reference = EvaluatorSuite::new(roots, false);
+                            let mut ctx = proof::Context::new(profile, Datum::Int(0));
+                            let mut old = proof::Context::new(profile, Datum::Int(0));
+                            ctx.sequential = true;
+                            old.sequential = true;
+                            ctx.binding = Some(std::sync::Arc::clone(&binding));
+                            old.binding = Some(oldbinding);
+                            ctx.enabled.set(enabled);
+                            old.enabled.set(enabled);
+                            let label = format!("phase={which} long={long} nullable={nullable} p={profile} flag={enabled}");
+                            compare_dynamic_leaf_source(
+                                &actual,
+                                &reference,
+                                &ctx,
+                                &old,
+                                &fields,
+                                nullable,
+                                selection.clone(),
+                                false,
+                                &label,
+                            );
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.refusals, route.fallback),
+                                (0, 0),
+                                "{label} {route:?}"
+                            );
+                            if long && which < 2 {
+                                assert_eq!(ctx.calls.get(), which + 1, "{label}");
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 544);
+    eprintln!("DYNAMIC LEAF ACTUAL GENERIC PHASES {cases}");
+}
+
+#[test]
+fn dynamic_leaf_actual_hybrid_sources_keep_root_consumer_contract() {
+    if isolate_common_corpus("dynamic_leaf_actual_hybrid_sources_keep_root_consumer_contract") {
+        return;
+    }
+    use crate::tikv::dynamic_leaf_tests as proof;
+    let mut cases = 0;
+    for code in [FieldTypeCode::Enum, FieldTypeCode::Set, FieldTypeCode::Bit] {
+        for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+            let field = FieldType::new(code).with_flags(flags);
+            for kind in ["literal", "param", "param_deferred", "correlated"] {
+                for profile in 0..4 {
+                    for (vi, value) in crate::tikv::session_read_tests::values()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let make = || {
+                            if kind == "literal" {
+                                proof::literal(value.clone(), field.clone())
+                            } else {
+                                proof::expression(
+                                    kind,
+                                    0,
+                                    &value,
+                                    Some(&field),
+                                    Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                        value.clone(),
+                                    ))),
+                                )
+                            }
+                        };
+                        let actual = suite(make());
+                        for enabled in [false, true] {
+                            let reference = suite(make());
+                            let ctx = proof::Context::new(profile, value.clone());
+                            let old = proof::Context::new(profile, value.clone());
+                            ctx.enabled.set(enabled);
+                            old.enabled.set(enabled);
+                            let label = format!(
+                                "{kind} {code:?} flags={flags} p={profile} vi={vi} flag={enabled}"
+                            );
+                            compare_dynamic_leaf_source(
+                                &actual,
+                                &reference,
+                                &ctx,
+                                &old,
+                                std::slice::from_ref(&field),
+                                true,
+                                Some(vec![2, 0, 2]),
+                                true,
+                                &label,
+                            );
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.refusals, route.fallback),
+                                (0, 0),
+                                "{label} {route:?}"
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 1824);
+    eprintln!("DYNAMIC LEAF ACTUAL HYBRID {cases} x2 flags");
+}
+
+#[test]
+fn dynamic_leaf_host_authentication_callbacks_consumption_and_recovery() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+        LocalHostServices,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        action: Cell<u8>,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented contextual input")
+        }
+        fn param_value(&self, order: usize) -> std::result::Result<Datum, crate::EvalError> {
+            assert_eq!(order, 0);
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("param");
+            if self.action.replace(0) == 1 {
+                panic!("context param callback");
+            }
+            Ok(Datum::Int(7))
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            let mut values = self.store.borrow_mut();
+            self.events.borrow_mut().push("zone");
+            match self.action.replace(0) {
+                1 => panic!("context zone callback"),
+                2 => values.begin_window().unwrap(),
+                _ => (),
+            }
+            tidb_datatype::SessionTimeZone::utc()
+        }
+        fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("flags");
+            tidb_datatype::DEFAULT_STATEMENT_FLAGS
+        }
+    }
+    let mut rejected = 0;
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for deferred in [false, true] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); usize::from(deferred)];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::EagerValuesNative,
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::ContextValue {
+                descriptor: Box::new(crate::context_value::ContextValue {
+                    read: if deferred {
+                        crate::context_value::ContextRead::Deferred
+                    } else {
+                        crate::context_value::ContextRead::Parameter(0)
+                    },
+                    target: Some(ty()),
+                    convert_deferred: deferred,
+                    root_broadcast: false,
+                }),
+                argument: deferred.then_some(3),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign = foreign
+                .insert_clone(
+                    &Datum::Int(7),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            let ctx = C {
+                store: &store,
+                action: Cell::new(0),
+                events: RefCell::new(vec![]),
+            };
+            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8192)
+                .with_native_values(Some(&store));
+            let mut eval = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                p.start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         eval: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    eval,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            if !deferred {
+                for _ in 0..64 {
+                    ctx.action.set(1);
+                    assert!(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| begin(
+                            &mut p, &mut eval
+                        )))
+                        .is_err()
+                    );
+                    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                }
+                let HostStart::Ready(v) = begin(&mut p, &mut eval).unwrap() else {
+                    panic!("immediate param demanded a child")
+                };
+                let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                    panic!()
+                };
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(token, role, NativeValueOrigin { node: 2, row })
+                        .unwrap(),
+                    &Datum::Int(7)
+                );
+                assert_eq!(ctx.events.borrow().len(), 65);
+                continue;
+            }
+            let pending = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                let HostStart::Pending { task, request } = begin(p, eval).unwrap() else {
+                    panic!()
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let good = insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row);
+            let mut corrupt = good.clone();
+            corrupt[0] ^= 1;
+            let mut short = good.clone();
+            short.pop();
+            let mut long = good;
+            long.push(0);
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(short),
+                Some(long),
+                Some(stale),
+                Some(foreign),
+                Some(insert(&Datum::Int(7), NativeValueRole::Output, 3, row)),
+                Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row)),
+                Some(insert(
+                    &Datum::Int(7),
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                )),
+                Some(insert(
+                    &Datum::Int(7),
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 0,
+                        input_row: 1,
+                    },
+                )),
+            ] {
+                let task = pending(&mut p, &mut eval);
+                assert!(reply(&mut p, &mut eval, &task, 0, bad).is_err());
+                assert!(ctx.events.borrow().is_empty());
+                p.cancel(&task);
+                p.cancel(&task);
+                rejected += 1;
+            }
+            let task = pending(&mut p, &mut eval);
+            assert!(reply(
+                &mut p,
+                &mut eval,
+                &task,
+                1,
+                Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            p.cancel(&task);
+            rejected += 1;
+            for action in [0, 1, 2, 0] {
+                ctx.events.borrow_mut().clear();
+                ctx.action.set(action);
+                let token = insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row);
+                let task = pending(&mut p, &mut eval);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    reply(&mut p, &mut eval, &task, 0, Some(token.clone()))
+                }));
+                match action {
+                    1 => assert!(result.is_err()),
+                    2 => assert!(result.unwrap().is_err()),
+                    _ => {
+                        let HostStep::Ready(v) = result.unwrap().unwrap() else {
+                            panic!()
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                            panic!()
+                        };
+                        assert_eq!(
+                            store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap(),
+                            &Datum::Int(7)
+                        );
+                    }
+                }
+                let before = ctx.events.borrow().clone();
+                assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
+                assert_eq!(*ctx.events.borrow(), before);
+                p.cancel(&task);
+                p.cancel(&task);
+                assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+            }
+        }
+    }
+    assert_eq!(rejected, 22);
+}
+
+#[test]
+fn dynamic_leaf_deferred_decimal_work_is_bounded_before_growth() {
+    let mut field = FieldType::new(FieldTypeCode::NewDecimal);
+    field.set_decimal(1_000_000);
+    let descriptor = crate::context_value::ContextValue {
+        read: crate::context_value::ContextRead::Deferred,
+        target: Some(field),
+        convert_deferred: true,
+        root_broadcast: false,
+    };
+    let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+    let result = tidb_query_expr::local::with_value_kernel_work_limit(65536, || {
+        descriptor.finish_expression(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1', b'2'], 1, 1)),
+            &ctx,
+        )
+    });
+    assert!(
+        matches!(result,Err((_,crate::EvalError::ExpressionRuntimeFailure(ref e))) if e.class()==crate::tikv::ExpressionRuntimeFailureClass::ResourceLimit)
+    );
+    assert!(ctx.events.borrow().is_empty());
+    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+}
+
+#[test]
+fn dynamic_leaf_resource_failures_are_terminal_and_same_worker_null_recovers() {
+    use crate::tikv::dynamic_leaf_tests as proof;
+    for kind in ["param", "param_deferred", "correlated"] {
+        let mut field = if kind == "param_deferred" {
+            FieldType::new(FieldTypeCode::NewDecimal)
+        } else {
+            string_ty()
+        };
+        let value = if kind == "param_deferred" {
+            field.set_decimal(1_000_000);
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1', b'2'], 1, 1))
+        } else {
+            Datum::new_string("a".repeat(1_000_000))
+        };
+        let binding = std::sync::Arc::new(std::sync::RwLock::new(value.clone()));
+        let root = proof::expression(
+            kind,
+            0,
+            &Datum::Int(0),
+            Some(&field),
+            Some(std::sync::Arc::clone(&binding)),
+        );
+        let owner = suite(root);
+        let schema = [ty()];
+        let mut worker = PreparedBatch::compile_calculation(
+            &owner,
+            0,
+            &schema,
+            true,
+            94,
+            limits(),
+            ExecutionLimits::default(),
+            65536,
+        )
+        .unwrap();
+        let input = proof::input(false);
+        let mut output = output_for(&field);
+        let ctx = proof::Context::new(0, value);
+        worker
+            .validate_invocation(&owner, &input, &output, &schema)
+            .unwrap();
+        let result = worker.execute_profile(
+            &ctx,
+            &mut EvalContext::default(),
+            &input,
+            &mut output,
+            true,
+            None,
+        );
+        assert_eq!(
+            result
+                .expect_err("contextual work bypassed finite budget")
+                .refusal(),
+            BatchRefusal::Resource,
+            "{kind}"
+        );
+        assert_eq!(output.num_rows(), 0);
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+        *binding.write().unwrap() = Datum::Null;
+        let ctx = proof::Context::new(0, Datum::Null);
+        worker
+            .validate_invocation(&owner, &input, &output, &schema)
+            .unwrap();
+        worker
+            .execute_profile(
+                &ctx,
+                &mut EvalContext::default(),
+                &input,
+                &mut output,
+                true,
+                None,
+            )
+            .unwrap();
+        assert_eq!(output.num_rows(), 3);
+        for row in 0..3 {
+            assert!(output.column(0).is_null(row), "{kind}");
+        }
+        assert!(
+            ctx.events.borrow().iter().all(|e| e.starts_with("param:")),
+            "{kind}"
+        );
     }
 }
