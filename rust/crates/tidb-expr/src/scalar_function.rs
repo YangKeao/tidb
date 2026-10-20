@@ -2358,6 +2358,8 @@ impl ScalarFunction {
             .is_some_and(|op| op.accepts_arity(self.args.len()))
             || (self.args.len() == 1
                 && crate::tikv::byte_unary_value::operation(self.func_name.lowercase()).is_some())
+            || (self.args.len() == 1
+                && crate::tikv::compression_value::operation(self.func_name.lowercase()).is_some())
             || crate::tikv::crypto_value::operation(self.func_name.lowercase())
                 .is_some_and(|op| op.arity() == self.args.len());
         let var = if identity {

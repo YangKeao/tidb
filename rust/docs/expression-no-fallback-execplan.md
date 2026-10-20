@@ -18,6 +18,10 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20) N7z compression:75816 independent pairs before retirement,85 immutable original encoder frames, original direct6318/51EC3B8C9ED75F51 and scalar69498/4EBAC72F3EA6BB39 retained. Three ordinary Ready callers retired, native unary source integrated and original wire/actual decoder owners consolidated. Expanded7 and Projection26 pass; full frontend1792/exact3/95ignored/all294batch, SDK1136/exact1/1ignored, clippy/lint/format/fixtures and exact warning checks recorded in final receipt. Local DCO checkpoint only; continue overall work immediately.
+
+- [ ] (2026-10-20 continuous overall execution) N8: remove the nested single-operation Ready VM through one validated generated-kernel dispatch, independently compare before switching; then cover remaining value-body/source gaps, generic Admission dispatch and old public/unistore traversals. No stage is a stopping point.
+
 - [x] (2026-10-20) N7y: original42912/C0AA6D5E6AB8F921 and472032/6B9F95BC40BDD875 frozen/rerun; all514944 independent pairs pass and six executed sources archived before ordinary MD5/SHA/SHA1/SHA2 Ready retirement. Existing actual CryptoNative frame and original owners now handle all eight operations. Expanded source/provider/ignored-payload/resource/recovery checks pass, including236 bad capabilities; last nine-root digest Projection cohort passes. Full frontend1784/exact3/95ignored/all290batch; SDK1134/exact1/1ignored; Projection26; warning Counters346/17/clippy89expr171total unchanged; lint/dual9fmt/fixtures/read-only checker pass. SDK local DCOe177f16 and matching frontend checkpoint record this milestone; global scope stays open.
 
 - [x] (2026-10-20) N7x: preserve 418392 pre-retirement independent pairs and original hashes, retire ordinary SM3/PASSWORD/ENCODE/DECODE Ready handoffs, integrate actual eager native sources, and finish expanded types/returns/selection/provider/callback/resource/NULL-recovery tests plus last nine-root mixed Projection cohort. Full frontend1780/exact3/95ignored/all289batch, SDK1133/exact1/1ignored, Projection26; warning-title Counters346/17/clippy89expr171total unchanged. Lint, both pinned15-file format checks, fixtures, archived original-owner comparison and read-only final checker pass. SDK local DCO28a69df and matching frontend checkpoint record this milestone; global fallback/unistore/full-server work remains open.
@@ -128,6 +132,15 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N7z's full build exposed a now-unused UncompressOutcome re-export; remove it and
+rerun the frontend to preserve the exact warning baseline. Its old cache witness
+also correctly failed after ordinary UNCOMPRESSED_LENGTH stopped using Ready.
+Keep a genuine explicit-wire cross-chunk cache test and add an ordinary-call
+zero-worker check with the original output assertions. Neither original hashes
+nor inherited failure sets change.
+
+The owner must continue until the OVERALL fallback-removal task is complete; user978e47ae explicitly rejects stopping after a function-family checkpoint. N7z UNCOMPRESS uses strict incremental inflate and distinguishes corruption/output-limit SQL warnings from resource refusal. UNCOMPRESSED_LENGTH reads only its header and warns for nonempty inputs of at most four bytes; callbacks must be outside store borrows. Large declared lengths and unused suffixes must not cause allocations/scans that the original decoder did not demand.
 
 N7y independent proof is complete:514944 direct/scalar real old/new comparisons
 pass, and original hashes remain unchanged. Executed tests/frontend/original-
@@ -322,6 +335,18 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision (2026-10-20): N7z shares the original encoder/header and one actual
+  incremental decoder between wire and native callers only after independent
+  proof. Distinguish finite resources from genuine decoder SQL dispositions.
+  Next investigate direct validated generated-kernel dispatch for all remaining
+  Ready recipes before implementing broader source coverage; do not add another
+  expression-tree evaluator. The human978e47ae requires continuous execution
+  through the overall objective; local checkpoints do not release task #4.
+
+- Decision: treat all subsequent family commits as checkpoints and continue executing the global plan without waiting for further human continue prompts. Finish compression while maintaining a concrete inventory of remaining ordinary Ready callers, generic Admission fallback and the unistore walker.
+  Rationale: user978e47ae requires overall completion; previous N7x/y stops were incorrect.
+  Date/Author: 2026-10-20, ExpressionReuseEngineer.
+
 - Decision: extend the established actual CryptoNative frame for the remaining deterministic digest family, retaining separate SHA/SHA1 spelling and the original hash_input/encryption_int_argument/SDK algorithms. Preserve original implementation and executed sources through independent comparisons.
   Rationale: this removes the remaining digest Ready transport without introducing another evaluator or duplicating SQL conversion policies.
   Date/Author: 2026-10-20, ExpressionReuseEngineer.
@@ -511,6 +536,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+Overall task remains active. N7z is the compression checkpoint; the next work removes nested Ready execution and closes remaining source and traversal gaps. Checkpoints are not stopping points.
 
 N7y is complete as a local digest checkpoint after514944 independent comparisons
 and six executed archives before caller retirement. Actual CryptoNative sources
@@ -4085,3 +4112,13 @@ expanded eight-operation source/provider/unused-payload coverage and final full
 gates, original-owner archive equality, SDK ownership guide and final receipt.
 Preserve all prior commits and unrelated BUILD.bazel; no global completion or
 publication authorization is implied.
+
+
+## N7z and remaining global retirement
+
+Capture original compression semantics with the existing raw-value matrix and immutable compressed frames produced by the untouched original Go-compatible encoder. Freeze actual observed direct/scalar hashes and retain genuine Ready/source guard failures. Keep old controllers and decoder loops intact while comparing actual candidates; archive executed originals/candidates before consolidating shared kernels and retiring callers. New actual APIs must report genuine decoder dispositions rather than private wire envelopes; budget demanded incremental input/output work, preserve ignored suffixes and large untrusted declared lengths, and never emit corruption warnings for resource failure. A unary native source consumes its body before callbacks and reauthenticates capabilities afterward. Validate full types/returns/selection/parents/physical prefixes, provenance/replay/callback mutation/panic, resources and same-source recovery, then full suites/Projection/lint/clippy/format/fixtures and a local DCO checkpoint.
+
+Continue after that checkpoint to the remaining string/packet/compare/JSON/lib Ready callers, then unsupported/deferred/PB and effectful source closure, non-projection/unistore integration and deletion of generic Admission self.run dispatch. Keep value kernels and one SDK frame; do not replace fallback with a callback into an old expression-tree evaluator. Completion requires no executable alternate traversal/dispatch for previously supported expressions, retained SQL demand/side effects/diagnostic contents and actual caller/full-server validation. Refresh performance only on the final unified implementation. No push is authorized.
+
+
+Revision N7z final: original proof, shared decoder, source/provider/resource gates, explicit-wire cache preservation and ordinary zero-worker regression are recorded in rust/docs/evidence/no-fallback-n7z.md. Continue N8 immediately after the local signed checkpoint.

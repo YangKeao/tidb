@@ -81,72 +81,27 @@ pub(crate) fn dispatch(
 /// a stream ending in ASCII space from being changed by SQL trailing-space
 /// handling, matching TiDB's public format.
 fn compress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::CompressGoNative,
+    crate::tikv::compression_value::eval(
+        tidb_query_expr::NativeCompressionOperation::Compress,
+        arg,
         ctx,
-        || sql_string_bytes(arg),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
+        crate::tikv::identity_actual::default_budget(),
     )
 }
-
-/// `UNCOMPRESS(payload)`. Port of `builtinUncompressSig.evalString`. The 4-byte
-/// little-endian prefix records the original length and the remainder is a zlib
-/// stream. Empty input yields an empty string; NULL remains NULL without a
-/// warning. A too-short/corrupted payload, an undecodable stream, or a stored
-/// length below the decompressed length yields NULL with the original warning.
 fn uncompress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    use crate::tikv::UncompressOutcome;
-
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::UncompressNative,
+    crate::tikv::compression_value::eval(
+        tidb_query_expr::NativeCompressionOperation::Uncompress,
+        arg,
         ctx,
-        || sql_string_bytes(arg),
-        |computed| {
-            // Only the completed kernel disposition produces SQL warnings;
-            // carrier-contract and resource failures propagate without one.
-            Ok(match computed.into_uncompress()? {
-                UncompressOutcome::Null => Datum::Null,
-                UncompressOutcome::Value(bytes) => Datum::new_string(bytes),
-                UncompressOutcome::Corrupt => {
-                    ctx.append_warning(1259, "ZLIB: Input data corrupted");
-                    Datum::Null
-                }
-                UncompressOutcome::OutputLimit => {
-                    ctx.append_warning(
-                        1258,
-                        "ZLIB: Not enough room in the output buffer (probably, length of uncompressed data was corrupted)",
-                    );
-                    Datum::Null
-                }
-            })
-        },
+        crate::tikv::identity_actual::default_budget(),
     )
 }
-
-/// `UNCOMPRESSED_LENGTH(payload)`. Port of
-/// `builtinUncompressedLengthSig.evalInt`: returns the 4-byte little-endian
-/// prefix as the original length. NULL yields NULL; empty or too-short/corrupted
-/// input yields 0.
 fn uncompressed_length(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::UncompressedLengthNative,
+    crate::tikv::compression_value::eval(
+        tidb_query_expr::NativeCompressionOperation::Length,
+        arg,
         ctx,
-        || {
-            let payload = sql_string_bytes(arg)?;
-            if let Some(bytes) = payload.as_ref() {
-                if !bytes.is_empty() && bytes.len() <= 4 {
-                    ctx.append_warning(1259, "ZLIB: Input data corrupted");
-                }
-            }
-            // NULL, empty, and short inputs still reach the kernel unchanged;
-            // only the original corruption diagnostic belongs to the caller.
-            Ok(payload)
-        },
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
+        crate::tikv::identity_actual::default_budget(),
     )
 }
 

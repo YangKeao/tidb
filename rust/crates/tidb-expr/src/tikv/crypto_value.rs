@@ -63,7 +63,7 @@ pub(crate) fn before_body(op: O, ctx: &dyn Columns) {
         );
     }
 }
-fn input<'a>(
+pub(super) fn input<'a>(
     value: &'a Datum,
     hash: bool,
     maximum: usize,
@@ -106,7 +106,7 @@ fn input<'a>(
     check(owned.as_ref().map_or(0, Vec::capacity), maximum)?;
     Ok(owned.map(Cow::Owned))
 }
-fn held(input: &Option<Cow<'_, [u8]>>) -> usize {
+pub(super) fn held(input: &Option<Cow<'_, [u8]>>) -> usize {
     match input {
         Some(Cow::Owned(v)) => v.capacity(),
         _ => 0,

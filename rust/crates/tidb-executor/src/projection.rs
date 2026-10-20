@@ -3871,6 +3871,39 @@ mod tests {
         let digest_mix = std::iter::once(0)
             .chain(digest_start..roots.len())
             .collect::<Vec<_>>();
+        let compression_start = roots.len();
+        for name in ["compress", "uncompress", "uncompressed_length"] {
+            let payload = if name == "compress" {
+                Datum::new_string("")
+            } else {
+                Datum::Bytes(vec![
+                    5, 0, 0, 0, 120, 156, 202, 72, 205, 201, 201, 7, 4, 0, 0, 255, 255, 6, 44, 2,
+                    21,
+                ])
+            };
+            let value = call(
+                "if",
+                string.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(payload, string.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                ],
+            );
+            let field = if name == "uncompressed_length" {
+                integer.clone()
+            } else {
+                string.clone()
+            };
+            let root = call(name, field.clone(), vec![value]);
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let compression_mix = std::iter::once(0)
+            .chain(compression_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -4034,6 +4067,10 @@ mod tests {
             (
                 digest_mix.iter().map(|&i| roots[i].clone()).collect(),
                 digest_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                compression_mix.iter().map(|&i| roots[i].clone()).collect(),
+                compression_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
         ];
         // Keep prior matrices intact. Each new heterogeneous suite adds a

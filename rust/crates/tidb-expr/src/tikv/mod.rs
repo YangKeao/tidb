@@ -213,7 +213,6 @@ pub(crate) use tidb_query_expr::local::{
     NativeSearchPolicy, OutputDisposition, PreparedConcatArgs, PreparedExportSetArgs,
     PreparedFieldArgs, PreparedFindInSetKeys, PreparedMakeSetArgs, ReadyBytesArg, ReadyConvBaseArg,
     ReadyDecimalArg, ReadyFieldIntArg, ReadyIeee754Arg, ReadyIntArg, ReadySubstringI128,
-    UncompressOutcome,
 };
 use tidb_query_expr::local::{
     field_bytes_equal as field_bytes_equal_local,
@@ -708,3 +707,8 @@ pub(crate) mod crypto_value;
 
 #[cfg(test)]
 pub(crate) mod digest_value_tests;
+
+#[cfg(test)]
+pub(crate) mod compression_value_tests;
+
+pub(crate) mod compression_value;

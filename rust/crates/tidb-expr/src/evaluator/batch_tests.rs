@@ -25511,3 +25511,555 @@ fn native_digest_actual_sources_do_not_fallback() {
     }
     assert!(failures.is_empty(), "crypto actual source {failures:?}");
 }
+
+#[test]
+fn native_compression_actual_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in crate::tikv::compression_value_tests::NAMES {
+        let args = vec![literal(
+            Datum::VectorFloat32(VectorFloat32::init(0)),
+            FieldType::new(FieldTypeCode::VectorFloat32),
+        )];
+        let actual = suite(call(name, string_ty(), args));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "crypto actual source {failures:?}");
+}
+
+#[test]
+fn compression_actual_sources_keep_types_returns_context_and_prefixes() {
+    let returns = [
+        ty(),
+        ty().with_unsigned(true),
+        real_ty(),
+        FieldType::new(FieldTypeCode::Float),
+        string_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Json),
+        FieldType::new(FieldTypeCode::VectorFloat32),
+    ];
+    let mut sources = misc_native_source_types();
+    for (field, values) in &mut sources {
+        if field.code() == FieldTypeCode::VarString {
+            let frames: Vec<Vec<u8>> = serde_json::from_str(include_str!(
+                "../tikv/testdata/compression_original_n7z.json"
+            ))
+            .unwrap();
+            values.extend(frames.into_iter().map(Datum::Bytes));
+        }
+    }
+    for (field, values) in sources {
+        for ret in &returns {
+            for name in crate::tikv::compression_value_tests::NAMES {
+                for position in 0..3 {
+                    let schema = if field.code() == FieldTypeCode::NewDate {
+                        vec![]
+                    } else {
+                        vec![field.clone()]
+                    };
+                    let rows = if schema.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>()
+                    };
+                    let value = if position == 0 || schema.is_empty() {
+                        literal(values.last().unwrap().clone(), field.clone())
+                    } else {
+                        typed_column(0, &field)
+                    };
+                    let value = if position == 2 {
+                        call(
+                            "if",
+                            field.clone(),
+                            vec![int(1), value, literal(Datum::Null, field.clone())],
+                        )
+                    } else {
+                        value
+                    };
+                    let selection = (0..rows.len())
+                        .rev()
+                        .chain([0, rows.len() - 1, 0])
+                        .collect::<Vec<_>>();
+                    for profile in 0..3 {
+                        for level in 0..3 {
+                            compare_wildcard_source(
+                                call(name, ret.clone(), vec![value.clone()]),
+                                &schema,
+                                &rows,
+                                &selection,
+                                profile,
+                                level,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for name in crate::tikv::compression_value_tests::NAMES {
+        compare_wildcard_source(
+            call(
+                name,
+                string_ty(),
+                vec![call("abs", ty(), vec![int(i64::MIN)])],
+            ),
+            &[],
+            &[vec![]],
+            &[0, 0],
+            0,
+            0,
+        );
+        for computed in [false, true] {
+            let field = FieldType::new(FieldTypeCode::NewDecimal);
+            let mut value = literal(
+                crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+                field.clone(),
+            );
+            if computed {
+                value = call(
+                    "if",
+                    field.clone(),
+                    vec![int(1), value, literal(Datum::Null, field)],
+                );
+            }
+            compare_wildcard_source(
+                call(name, string_ty(), vec![value]),
+                &[],
+                &[vec![]],
+                &[0],
+                0,
+                0,
+            );
+        }
+    }
+}
+
+#[test]
+fn compression_actual_capabilities_warnings_callbacks_resources_and_recovery() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+            LocalHostServices,
+        },
+        NativeCompressionOperation as O,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<String>>,
+        action: Cell<u8>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented compression source")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::tikv::ReadyValueCache> {
+            panic!("retired compression Ready")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            panic!("pure compression cannot read zone")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("pure compression cannot read truncation policy")
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            let mut store = self.store.borrow_mut();
+            self.events
+                .borrow_mut()
+                .push(format!("warning:{code}:{message}"));
+            match self.action.replace(0) {
+                1 => panic!("original compression warning panic"),
+                2 => store.begin_window().unwrap(),
+                _ => (),
+            }
+        }
+    }
+    fn outcome(f: impl FnOnce() -> std::result::Result<Datum, EvalError>) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => format!("{v:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        }
+    }
+    let mut rejected = 0;
+    let frames: Vec<Vec<u8>> = serde_json::from_str(include_str!(
+        "../tikv/testdata/compression_original_n7z.json"
+    ))
+    .unwrap();
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for op in [O::Compress, O::Uncompress, O::Length] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = [field.clone()];
+            let ret = if op == O::Length { ty() } else { string_ty() };
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::CompressionNative(op),
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::Compression {
+                argument: 3,
+                operation: op,
+                probe: None,
+                result_type: ret.clone(),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |value: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(value, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign_token = foreign
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            let ctx = C {
+                store: &store,
+                events: RefCell::new(vec![]),
+                action: Cell::new(0),
+            };
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 2 << 20)
+                .with_native_values(Some(&store));
+            let mut eval = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, c: &mut EvalContext| {
+                let HostStart::Pending { task, request } = p
+                    .start(
+                        c,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         c: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    c,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            let mut corrupt = good.clone();
+            corrupt[0] ^= 1;
+            let mut short = good.clone();
+            short.pop();
+            let mut long = good;
+            long.push(0);
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(short),
+                Some(long),
+                Some(stale),
+                Some(foreign_token),
+                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                )),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 0,
+                        input_row: 1,
+                    },
+                )),
+            ] {
+                let task = begin(&mut provider, &mut eval);
+                assert!(matches!(
+                    reply(&mut provider, &mut eval, &task, 0, bad),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert!(ctx.events.borrow().is_empty());
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+                provider.cancel(&task);
+                rejected += 1;
+            }
+            let task = begin(&mut provider, &mut eval);
+            assert!(reply(
+                &mut provider,
+                &mut eval,
+                &task,
+                1,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            provider.cancel(&task);
+            rejected += 1;
+            let mut cases = crate::tikv::compression_value_tests::values();
+            if op != O::Compress {
+                let mut suffix = frames[15].clone();
+                suffix.extend_from_slice(&vec![255; 1 << 20]);
+                cases.push(Datum::Bytes(suffix));
+                let mut header = frames[15].clone();
+                header[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+                cases.push(Datum::Bytes(header));
+                cases.push(Datum::Bytes(vec![255; 1 << 20]));
+            }
+            for value in cases {
+                ctx.events.borrow_mut().clear();
+                let task = begin(&mut provider, &mut eval);
+                let actual = outcome(|| {
+                    match reply(
+                        &mut provider,
+                        &mut eval,
+                        &task,
+                        0,
+                        Some(insert(&value, NativeValueRole::CharInput, 3, row)),
+                    ) {
+                        Ok(HostStep::Ready(v)) => {
+                            let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                                panic!()
+                            };
+                            Ok(store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap()
+                                .clone())
+                        }
+                        Err(_) => Err(provider
+                            .take_native_error()
+                            .expect("bounded compression value or genuine original error")),
+                        _ => panic!(),
+                    }
+                });
+                let events = ctx.events.borrow().clone();
+                ctx.events.borrow_mut().clear();
+                let expected = outcome(|| {
+                    crate::builtin_ext::crypto::dispatch(
+                        &op.name().to_ascii_uppercase(),
+                        &[value],
+                        &ctx,
+                    )
+                    .unwrap()
+                    .and_then(|v| {
+                        crate::scalar_function::coerce_function_result(op.name(), Some(&ret), v)
+                    })
+                });
+                assert_eq!(
+                    actual, expected,
+                    "compression provider {op:?} role={role:?}"
+                );
+                assert_eq!(events, *ctx.events.borrow());
+                let _ = provider.take_native_error();
+                assert!(reply(
+                    &mut provider,
+                    &mut eval,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                )
+                .is_err());
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+            if op != O::Compress {
+                for action in [1, 2] {
+                    ctx.events.borrow_mut().clear();
+                    ctx.action.set(action);
+                    let task = begin(&mut provider, &mut eval);
+                    let token = insert(&Datum::Bytes(vec![1]), NativeValueRole::CharInput, 3, row);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        reply(&mut provider, &mut eval, &task, 0, Some(token))
+                    }));
+                    if action == 1 {
+                        assert!(result.is_err());
+                    } else {
+                        assert!(matches!(result, Ok(Err(LocalError::BindingContract(_)))));
+                    }
+                    assert_eq!(ctx.events.borrow().len(), 1);
+                    assert!(reply(
+                        &mut provider,
+                        &mut eval,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    )
+                    .is_err());
+                    assert_eq!(ctx.events.borrow().len(), 1);
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                    let task = begin(&mut provider, &mut eval);
+                    assert!(matches!(
+                        reply(
+                            &mut provider,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        ),
+                        Ok(HostStep::Ready(_))
+                    ));
+                    provider.cancel(&task);
+                }
+            }
+            ctx.events.borrow_mut().clear();
+            let demanding = match op {
+                O::Compress => Datum::Bytes(vec![b'x'; 1 << 20]),
+                O::Uncompress => Datum::Bytes(
+                    tidb_query_expr::native_compress_actual_value(
+                        Some(&vec![b'x'; 1 << 20]),
+                        8 << 20,
+                    )
+                    .unwrap()
+                    .unwrap(),
+                ),
+                O::Length => {
+                    Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1))
+                }
+            };
+            let task = begin(&mut provider, &mut eval);
+            assert!(reply(
+                &mut provider,
+                &mut eval,
+                &task,
+                0,
+                Some(insert(&demanding, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            assert!(matches!(
+                provider.take_native_error(),
+                Some(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert!(
+                ctx.events.borrow().is_empty(),
+                "resource failure cannot invent a zlib warning"
+            );
+            assert!(reply(
+                &mut provider,
+                &mut eval,
+                &task,
+                0,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            provider.cancel(&task);
+            let task = begin(&mut provider, &mut eval);
+            assert!(matches!(
+                reply(
+                    &mut provider,
+                    &mut eval,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                ),
+                Ok(HostStep::Ready(_))
+            ));
+            provider.cancel(&task);
+            if op == O::Length {
+                ctx.events.borrow_mut().clear();
+                assert!(matches!(
+                    crate::tikv::compression_value::eval(op, &Datum::Bytes(vec![1]), &ctx, 0),
+                    Err(EvalError::ExpressionRuntimeFailure(_))
+                ));
+                assert_eq!(
+                    ctx.events.borrow().len(),
+                    1,
+                    "original short-header warning precedes body refusal"
+                );
+            }
+        }
+    }
+    assert_eq!(rejected, 66);
+}
+
+#[test]
+fn compression_actual_resource_is_terminal_and_same_source_null_recovers() {
+    let schema = [ty()];
+    let rows = [vec![Datum::Int(1)], vec![Datum::Int(0)]];
+    let field = FieldType::new(FieldTypeCode::NewDecimal);
+    for name in crate::tikv::compression_value_tests::NAMES {
+        let huge = literal(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+            field.clone(),
+        );
+        let value = call(
+            "if",
+            field.clone(),
+            vec![column(0), huge, literal(Datum::Null, field.clone())],
+        );
+        let actual = suite(call(name, string_ty(), vec![value]));
+        let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+        ctx.inner.reject = true;
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(vec![0]));
+        let mut output = output_for(&string_ty());
+        assert!(matches!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+            Err(crate::evaluator::EvaluatorError::Eval(
+                EvalError::ExpressionRuntimeFailure(_)
+            ))
+        ));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        ctx.inner.events.borrow_mut().clear();
+        input.set_sel(Some(vec![1]));
+        let mut output = output_for(&string_ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        assert!(ctx.inner.events.borrow().is_empty());
+    }
+}

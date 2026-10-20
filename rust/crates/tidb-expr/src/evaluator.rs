@@ -1040,6 +1040,35 @@ mod tests {
     // ASCII now has its own actual-value assertion below and creates no Ready worker.
     #[test]
     fn evaluator_suite_reuses_ready_value_worker_across_chunks() {
+        // Retained explicit wire-cache protocol; ordinary header evaluation
+        // has its separate zero-Ready regression below.
+        let suite = EvaluatorSuite::new(vec![], false);
+        for (input_value, expected) in [
+            (b"\x01\0\0\0x".as_slice(), 1),
+            (b"\x02\0\0\0x".as_slice(), 2),
+        ] {
+            let mut input = Chunk::new_with_capacity(&[string()], 1);
+            input.append_bytes(0, input_value);
+            let mut output = Chunk::new_with_capacity(&[longlong()], 1);
+            let value = suite
+                .ready_value_cache
+                .with_columns(&NoColumns, |ctx| {
+                    crate::tikv::evaluate_bytes_in(
+                        crate::tikv::EvaluatedBytesOp::UncompressedLengthNative,
+                        ctx,
+                        || Ok(Some(input.get_row(0).get_bytes(0).to_vec())),
+                        crate::tikv::EvaluatedBytesResult::into_int_datum,
+                    )
+                })
+                .unwrap();
+            output.append_datum(0, &value);
+            assert_eq!(output.get_row(0).get_int64(0), expected);
+            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 1);
+        }
+    }
+
+    #[test]
+    fn evaluator_suite_uncompressed_length_keeps_values_across_chunks_without_ready_worker() {
         let mut column = Column::new(1, string());
         column.index = 0;
         let expression = Expression::ScalarFunction(ScalarFunction::new(
@@ -1057,7 +1086,7 @@ mod tests {
             let mut output = Chunk::new_with_capacity(&[longlong()], 1);
             suite.run(&NoColumns, &mut input, &mut output).unwrap();
             assert_eq!(output.get_row(0).get_int64(0), expected);
-            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 1);
+            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 0);
         }
     }
 

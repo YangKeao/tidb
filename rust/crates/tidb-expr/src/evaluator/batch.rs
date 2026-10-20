@@ -376,6 +376,7 @@ fn promoted_native_root_view(
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
         || native_crypto_call(function).is_some()
+        || native_compression_call(function).is_some()
         || native_byte_unary_call(function).is_some()
         || native_misc_call(function).is_some()
         || native_identity_call(function)
@@ -935,6 +936,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
         || (native_crypto_call(function).is_some() && view.value_role().is_some())
+        || (native_compression_call(function).is_some() && view.value_role().is_some())
         || (native_byte_unary_call(function).is_some() && view.value_role().is_some())
         || (native_misc_call(function).is_some() && view.value_role().is_some())
         || (native_identity_call(function) && view.value_role().is_some())
@@ -1206,6 +1208,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
         || native_crypto_call(function).is_some()
+        || native_compression_call(function).is_some()
         || native_byte_unary_call(function).is_some()
         || native_misc_call(function).is_some()
         || native_identity_call(function)
@@ -1454,6 +1457,13 @@ fn native_crypto_call(function: &ScalarFunction) -> Option<tidb_query_expr::Nati
     crate::tikv::crypto_value::operation(function.func_name.lowercase())
         .filter(|op| op.arity() == function.args.len())
 }
+fn native_compression_call(
+    function: &ScalarFunction,
+) -> Option<tidb_query_expr::NativeCompressionOperation> {
+    (function.args.len() == 1)
+        .then(|| crate::tikv::compression_value::operation(function.func_name.lowercase()))
+        .flatten()
+}
 fn native_byte_unary_call(
     function: &ScalarFunction,
 ) -> Option<tidb_query_expr::NativeByteUnaryOperation> {
@@ -1486,6 +1496,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
         || native_crypto_call(function).is_some()
+        || native_compression_call(function).is_some()
         || native_byte_unary_call(function).is_some()
         || native_misc_call(function).is_some()
         || native_identity_call(function)
@@ -1517,6 +1528,21 @@ fn resolve_call_in_view(
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::CryptoNative(operation)),
             function.args.len(),
+        ));
+    }
+    if let Some(operation) =
+        native_compression_call(function).filter(|_| view.value_role().is_some())
+    {
+        if function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "compression requires original native declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::CompressionNative(operation)),
+            1,
         ));
     }
     if let Some(operation) =
@@ -2605,6 +2631,16 @@ fn preflight_view<'a>(
                             )?;
                         }
                     }
+                    if native_compression_call(function).is_some() && view.value_role().is_some() {
+                        budget.field(sql, 1)?;
+                        budget.array::<Option<Datum>>(1)?;
+                        if let Some(v) = function.identity_constant_probe() {
+                            budget.add(
+                                crate::tikv::identity_actual::copy_extent(v)
+                                    .map_err(|_| resource("compression probe copy overflow"))?,
+                            )?;
+                        }
+                    }
                     if native_byte_unary_call(function).is_some() && view.value_role().is_some() {
                         budget.field(sql, 1)?;
                         budget.array::<Option<Datum>>(1)?;
@@ -3322,6 +3358,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::DurationConstructionNative(_)
                                         | SqlBatchHostOperation::VectorNative(_)
                                         | SqlBatchHostOperation::CryptoNative(_)
+                                        | SqlBatchHostOperation::CompressionNative(_)
                                         | SqlBatchHostOperation::ByteUnaryNative(_)
                                         | SqlBatchHostOperation::MiscNative { .. }
                                         | SqlBatchHostOperation::ValueIdentityNative { .. }
@@ -3446,6 +3483,20 @@ fn lower_view(
                                         .view
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
+                                }
+                            }
+                            SqlBatchHostOperation::CompressionNative(operation) => {
+                                NativeHostMetadata::Compression {
+                                    argument: ordinal
+                                        .checked_add(1)
+                                        .ok_or_else(|| resource("compression child overflow"))?,
+                                    operation,
+                                    probe: sql.identity_constant_probe().cloned(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role().ok_or_else(|| {
+                                        binding("compression output view missing")
+                                    })?,
                                 }
                             }
                             SqlBatchHostOperation::ByteUnaryNative(operation) => {

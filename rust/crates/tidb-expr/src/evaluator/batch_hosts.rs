@@ -150,6 +150,14 @@ pub(super) enum NativeHostMetadata {
         output_node: usize,
         output_role: NativeValueRole,
     },
+    Compression {
+        argument: usize,
+        operation: tidb_query_expr::NativeCompressionOperation,
+        probe: Option<Datum>,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     ByteUnary {
         argument: usize,
         operation: tidb_query_expr::NativeByteUnaryOperation,
@@ -388,6 +396,7 @@ impl NativeHostMetadata {
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
             | Self::Crypto { result_type, .. }
+            | Self::Compression { result_type, .. }
             | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
             | Self::Identity { result_type, .. }
@@ -418,10 +427,16 @@ impl NativeHostMetadata {
     }
 }
 
+#[path = "batch_compression.rs"]
+mod compression_source;
+
 enum SqlDemand {
     Crypto {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
+    },
+    Compression {
+        consumed: bool,
     },
     ByteUnary {
         consumed: bool,
@@ -552,7 +567,9 @@ impl NativeTask {
         match &self.demand {
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
             SqlDemand::Crypto { next, .. } => Ok(Some(*next)),
-            SqlDemand::ByteUnary { consumed } => Ok(Some(usize::from(*consumed))),
+            SqlDemand::Compression { consumed } | SqlDemand::ByteUnary { consumed } => {
+                Ok(Some(usize::from(*consumed)))
+            }
             SqlDemand::Misc { next, .. } => Ok(Some(*next)),
             SqlDemand::Identity { next } => Ok(Some(*next)),
             SqlDemand::Grouping { consumed } => Ok(Some(usize::from(*consumed))),
@@ -596,6 +613,9 @@ impl NativeTask {
         match &mut self.demand {
             SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
             SqlDemand::Crypto { .. } => Err(binding("crypto cannot buffer a wire prefix")),
+            SqlDemand::Compression { .. } => {
+                Err(binding("compression cannot buffer a wire prefix"))
+            }
             SqlDemand::ByteUnary { .. } => Err(binding("byte unary cannot buffer a wire prefix")),
             SqlDemand::Misc { .. } => Err(binding("misc cannot buffer a wire prefix")),
             SqlDemand::Identity { .. } => Err(binding("identity cannot retain a wire prefix")),
@@ -2291,6 +2311,30 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     tokens: [None; 2],
                 }
             }
+            SqlBatchHostOperation::CompressionNative(operation) => {
+                let Some(NativeHostMetadata::Compression {
+                    operation: declared,
+                    probe,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("compression descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || operation != *declared
+                    || invocation.arg_types.len() != 1
+                {
+                    return Err(binding("compression descriptor differs"));
+                }
+                let maximum = self
+                    .max_retained_bytes
+                    .checked_sub(self.retained_bytes()?)
+                    .ok_or_else(|| resource("compression probe allowance exhausted"))?;
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                    return self.native_failure(e);
+                }
+                SqlDemand::Compression { consumed: false }
+            }
             SqlBatchHostOperation::ByteUnaryNative(operation) => {
                 let Some(NativeHostMetadata::ByteUnary {
                     operation: declared,
@@ -3006,6 +3050,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("crypto source cannot be wire NULL"));
             };
             return self.resume_crypto(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Compression { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("compression source cannot be wire NULL"));
+            };
+            return self.resume_compression(id, token);
         }
         if matches!(task.demand, SqlDemand::ByteUnary { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
