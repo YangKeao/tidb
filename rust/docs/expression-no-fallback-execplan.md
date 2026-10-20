@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20) N7w: capture/freeze original ASCII/LTRIM/RTRIM byte-unary observations and Ready/source guards before production edits, expose finite actual byte results over single original SDK owners, independently pair before retirement, integrate actual canonical sources with original signature casts/probes/return boundary and binary output policy. Validate full gates and signed local checkpoint; global scope stays open.
+
 - [x] (2026-10-20) N7v: capture/freeze original seven UUID/shard/Vitess misc callers and source/Ready guards, expose actual finite SDK values over the original pure owners, independently compare before retiring eight Ready handoffs, preserve signature probes/eager children/distinct optional-flag phases/typed errors and exact Decimal/UInt bits. Integrate dedicated native sources through the same frame, validate demand/provenance/resources/panic/recovery/returns/Projection/full gates and sign local DCO checkpoints. Generic/unistore/global gates stay open.
 
 - [x] (2026-10-20) N7u: retire ANY_VALUE/NAME_CONST Ready identity framing and integrate actual native-value identity sources over the same frame, preserving all19 raw representations, outer result-family conversion, ANY_VALUE unfoldability and NAME_CONST's eager first-expression demand without coercing its ignored name. Capture/freeze original direct/scalar outcomes and Ready/source REDs before candidate edits; independently compare before retirement; bound actual copies without formatting huge raw precision or cloning unused names, validate capabilities/resources/selection/output prefixes/mixed Projection and full gates, then sign local DCO commits. No generic fallback/unistore completion is implied.
@@ -122,6 +124,23 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N7w final full run initially had1771/exact4: only the old cache architecture
+witness was new, not a SQL value/demand regression. After preserving that cache
+assertion on a surviving worker and adding explicit zero-Ready ASCII coverage,
+the full suite has1773 with precisely the original3 failures. Both cache checks
+pass; the earlier run is archived separately.
+
+N7w integration: existing cache protocol tests still require the explicit ASCII
+wire helper. Keep that exact helper PRIVATE and cfg(test), with no production
+reexport/caller, rather than removing or weakening old cache assertions. The
+initial missing-helper errors were compile-only; no SQL behavior delta occurred.
+
+
+N7w inventory: ASCII uses general expression coerce_str_bytes, while trim bodies
+require already-cast ETString actual byte kinds through arg_eval_type::eval_string.
+Both trim only U+0020 bytes, retain invalid UTF-8, and derive binary output from
+the actual input. These are distinct body policies despite one-byte-input shape.
 
 N7v final audit: signed old frontend80aaa96d/SDKda0bf55 reproduced the same
 real-day231102/E060 drift as the new code. Identical default-OFF test clock input
@@ -275,6 +294,27 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+Decision N7w final: preserve the suite cross-chunk Ready reuse assertion using
+the still-explicit UNCOMPRESSED_LENGTH worker, and separately require ASCII to
+retain its original65/66 results with zero Ready workers. This follows caller
+retirement while retaining the old cache contract; no new Ready call is added.
+Date/author:2026-10-20, TiDBEngineer.
+
+Decision N7w integration: after original4023/C717C464D28B4353 and486783/
+B3CF56F72DC700B1 were frozen/rerun, compare all490806 original/candidate results
+while the original workers remain intact. Only after passing/archive, consolidate
+trim_space_bytes as the sole original scan owner for wire and actual calls.
+Preserve genuine ETString identity headers without copying an unused payload;
+non-identity scalar kinds retain their real original cast. Date/author:2026-10-20,
+TiDBEngineer.
+
+Decision N7w baseline: retain the original three routes unchanged while capturing
+actual direct and scalar observations across all raw kinds,11 source declarations,
+11 result declarations and three context/truncation profiles. Use an explicit
+test-only UTC date input to avoid the original daily witness issue. Pair the
+new candidate before removing any original worker/body. Date/author:2026-10-20,
+TiDBEngineer.
+
 Decision N7v final: preserve all frozen expected checksums and default production
 clock behavior; expose only an explicitly enabled development clock scope, use
 the original captured date, and validate the same harness on signed old and new
@@ -420,6 +460,15 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7w now retires all three ordinary Ready callers and integrates consuming actual
+byte-unary sources. Independent490806 real old/new comparisons passed before
+retirement/consolidation and executed sources were archived; fixed witnesses do
+not renew that proof. Seven expanded frontend checks pass. Complete frontend1773/exact3/95ignored/all285batch, SDK1132/exact1/1ignored and
+Projection26 with the7-root cohort now pass their final gates; front346/SDK17/
+clippy89expr171all warning Counters are unchanged. Lint, dual18-file formatters,
+fixtures/diffs/read-only checker pass. Local DCO checkpoint only; global work
+remains open.
 
 N7v completed eight ordinary Ready handoffs/seven canonical sources with416556
 independent comparisons, exact frozen witnesses, full frontend1765/exact3,
@@ -3828,3 +3877,75 @@ Revision N7v final: record416556 independent pairs before retirement, consuming
 actual ownership/demand, two large-payload RED fixes, identical old/new controlled
 clock replay without changing historical hashes or production defaults, all final
 gates and local DCO checkpoint. Global remaining scope stays open.
+
+
+## N7w: byte-unary actual operands
+
+Current original entrypoints are string_fn::ascii in rust/crates/tidb-expr/src/
+string_fn.rs and trimmed in builtin_ext/string2.rs. They route through Ready
+ASCII/LTrim/RTrim workers. New byte_unary_value_tests.rs captures genuine direct
+results and scalar calls with11 source declarations and11 result declarations,
+including whitespace, invalid UTF-8, binary/hybrid and malformed raw values. It
+also captures Columns events and panic payloads. Tests run in an isolated UTC
+child; only the explicit development conversion clock is supplied. Read-only
+original snapshots are n7w-before-{string2,string-fn,scalar,sdk}.rs in the agent
+evidence directory.
+
+Run the original capture from the frontend root with
+RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path
+rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib byte_unary_
+-- --nocapture. Record actual counts and hashes, freeze expected assertions and
+rerun the original; both route guards must reproduce their actual existing
+behavior before candidate edits. Then expose actual SDK ASCII and borrowed trim
+bytes with finite work. Preserve original pure owners as the final sole algorithm
+and independently compare old/candidate before retirement. Native sources must
+use authenticated actual inputs in the existing frame, consume before failure,
+release store borrows across callbacks, retain original signature casts and
+first-Constant probe, preserve binary output/ordinary return conversion, and
+validate resources/replay/recovery/selection/parents/mixed Projection/full gates.
+Keep earlier exact typed SDK recipes in their existing same-frame route.
+
+Revision N7w baseline: added the next bounded byte-unary milestone and original
+witness/guard plan; production source and SDK workers are unchanged.
+
+
+N7w implementation update: native_byte_unary_value.rs calls the original ASCII
+owner and borrows trim results from the single trim_space_bytes owner. The
+frontend byte_unary_value.rs separates general ASCII coercion, direct trim's
+already-cast ETString boundary and scalar trim's original pure cast action.
+ByteUnaryNative metadata stores the actual argument ordinal, probe, operation,
+return field and producer role. Prepare budgets before probe cloning; start
+probes before argument0; resume authenticates and consumes demand before body
+work/panic and performs ordinary return conversion once. Existing exact typed
+SDK source recipes retain their same-frame handling. No expression callback or
+marker is retained in a value kernel.
+
+Final focused n7w-provider-focus.log passes7: original hashes/Ready guard, all
+three source guards,17 declarations/11 returns/three argument positions/four
+flags/three profiles and truncation levels/reversed selected duplicates/error
+prefixes;54 bad capabilities across roles, consuming error/panic/replay/cancel
+behavior, actual1MiB Raw/Bytes ASCII under128KiB body budget and genuine large
+format-work Resource followed by SAME prepared NULL recovery. The new7-root
+Projection cohort is appended last, preserving the original clock setup index.
+SDK tests cover NULL/empty/invalid bytes/U+0020-only scans/Unicode/borrow identity
+and finite limits. Final frontend1773/exact3/95ignored/all285batch, SDK1132/exact1/1ignored and
+Projection26 pass. The first frontend run exposed an old suite cache test tied
+to ASCII creating a Ready worker. Its cache reuse count1 assertion now uses
+surviving UNCOMPRESSED_LENGTH headers; a separate ASCII test preserves the old
+A/B65/66 results and requires zero Ready workers. Both pass. Front346/SDK17/
+clippy89expr171all warning-title Counters, lint, both pinned formatters over18
+files, immutable fixtures, both diff gates and read-only checker pass. Datatype
+sources/clock harness are unchanged; reuse N7v wrapper515/exact2/default-OFF
+production checks and SDKdatatype565/exact2, as distinct suites. See
+rust/docs/evidence/no-fallback-n7w.md for exact commands and evidence.
+
+Revision N7w integration: record actual independent proof, the test-only wire
+helper decision, consuming native source design and expanded focused validation;
+full regression checks are still running.
+
+
+Revision N7w final: record490806 independent pairs before retirement, single
+original trim ownership, consuming actual sources, preserved cache contracts,
+full1773/exact3 and1132/exact1/Projection26 gates, warning Counters/lint/dual
+formats/fixtures/checker and local DCO checkpoint. Global fallback/unistore and
+full-server work remains open.

@@ -2468,8 +2468,10 @@ pub(crate) fn evaluate_bytes_in(
     evaluate_args_in(operation, ctx, || coerce().map(EvaluatedArgs::Bytes), pack)
 }
 
-/// Compatible ASCII-only entry into the shared closed operation router.
-pub(crate) fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+// Only the legacy cache protocol tests exercise this explicit wire entry.
+// Ordinary ASCII executes actual bytes and cannot reach this test-only helper.
+#[cfg(test)]
+fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     evaluate_bytes_in(
         EvaluatedBytesOp::Ascii,
         ctx,

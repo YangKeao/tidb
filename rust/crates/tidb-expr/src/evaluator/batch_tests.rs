@@ -24261,3 +24261,472 @@ fn misc_native_hash_unused_vector_payload_keeps_original_small_body_work() {
         assert_eq!(actual, expected, "ignored vector payload {op:?}");
     }
 }
+
+#[test]
+fn native_byte_unary_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in crate::tikv::byte_unary_value_tests::NAMES {
+        let v = Datum::Bytes(b" x ".to_vec());
+        let ty = crate::tikv::misc_identity_value_tests::field(&v);
+        let actual = suite(call(name, string_ty(), vec![literal(v, ty)]));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "byte unary source {failures:?}");
+}
+
+#[test]
+fn byte_unary_sources_keep_signature_casts_raw_bytes_binary_results_types_context_and_prefixes() {
+    let returns = [
+        ty(),
+        ty().with_unsigned(true),
+        real_ty(),
+        FieldType::new(FieldTypeCode::Float),
+        string_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Json),
+        FieldType::new(FieldTypeCode::VectorFloat32),
+    ];
+    let mut sources = misc_native_source_types();
+    for (field, values) in &mut sources {
+        if field.code() == FieldTypeCode::VarString {
+            values.extend([
+                Datum::new_string("  65  "),
+                Datum::Bytes(b"  \xff  ".to_vec()),
+                Datum::new_string("\t x\n"),
+                Datum::new_string("\u{a0}中\u{2003}"),
+            ]);
+        }
+    }
+    for (field, values) in sources {
+        for ret in &returns {
+            for name in crate::tikv::byte_unary_value_tests::NAMES {
+                for position in 0..3 {
+                    let schema = if field.code() == FieldTypeCode::NewDate {
+                        vec![]
+                    } else {
+                        vec![field.clone()]
+                    };
+                    let rows = if schema.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>()
+                    };
+                    let value = if position == 0 || schema.is_empty() {
+                        literal(values.last().unwrap().clone(), field.clone())
+                    } else {
+                        typed_column(0, &field)
+                    };
+                    let value = if position == 2 {
+                        call(
+                            "if",
+                            field.clone(),
+                            vec![int(1), value, literal(Datum::Null, field.clone())],
+                        )
+                    } else {
+                        value
+                    };
+                    let selection = (0..rows.len())
+                        .rev()
+                        .chain([0, rows.len() - 1, 0])
+                        .collect::<Vec<_>>();
+                    for profile in 0..3 {
+                        for level in 0..3 {
+                            compare_wildcard_source(
+                                call(name, ret.clone(), vec![value.clone()]),
+                                &schema,
+                                &rows,
+                                &selection,
+                                profile,
+                                level,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for name in crate::tikv::byte_unary_value_tests::NAMES {
+        compare_wildcard_source(
+            call(
+                name,
+                string_ty(),
+                vec![call("abs", ty(), vec![int(i64::MIN)])],
+            ),
+            &[],
+            &[vec![]],
+            &[0, 0],
+            0,
+            0,
+        );
+        for computed in [false, true] {
+            let field = FieldType::new(FieldTypeCode::NewDecimal);
+            let mut value = literal(
+                crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+                field.clone(),
+            );
+            if computed {
+                value = call(
+                    "if",
+                    field.clone(),
+                    vec![int(1), value, literal(Datum::Null, field)],
+                );
+            }
+            compare_wildcard_source(
+                call(name, string_ty(), vec![value]),
+                &[],
+                &[vec![]],
+                &[0],
+                0,
+                0,
+            );
+        }
+    }
+}
+
+#[test]
+fn byte_unary_capabilities_consumption_panics_resources_ignored_suffix_and_recovery() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+            LocalHostServices,
+        },
+        NativeByteUnaryOperation as O,
+    };
+    struct C;
+    impl crate::Columns for C {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented byte unary source")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::tikv::ReadyValueCache> {
+            panic!("retired byte unary Ready")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            panic!("pure byte unary must not read zone")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("pure byte unary must not read truncation policy")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            panic!("pure byte unary must not invent warning")
+        }
+    }
+    fn outcome(f: impl FnOnce() -> std::result::Result<Datum, EvalError>) -> Vec<u8> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(Ok(v)) => format!("VALUE:{v:?}").into_bytes(),
+            Ok(Err(e)) => format!("ERROR:{e:?}").into_bytes(),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            )
+            .into_bytes(),
+        }
+    }
+    let mut bad_caps = 0;
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for op in [O::Ascii, O::LTrim, O::RTrim] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = [field.clone()];
+            let ret = if op == O::Ascii { ty() } else { string_ty() };
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::ByteUnaryNative(op),
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::ByteUnary {
+                argument: 3,
+                operation: op,
+                probe: None,
+                result_type: ret.clone(),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let foreign = RefCell::new(NativeValueStore::new(4096).unwrap());
+            foreign.borrow_mut().begin_window().unwrap();
+            let foreign_token = foreign
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            let context = C;
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, c: &mut EvalContext| {
+                let HostStart::Pending { task, request } = p
+                    .start(
+                        c,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         c: &mut EvalContext,
+                         t: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    c,
+                    t,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            let mut corrupt = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            corrupt[0] ^= 1;
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(stale),
+                Some(foreign_token),
+                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                )),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 0,
+                        input_row: 1,
+                    },
+                )),
+            ] {
+                let task = begin(&mut provider, &mut ctx);
+                assert!(matches!(
+                    reply(&mut provider, &mut ctx, &task, 0, bad),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
+                provider.cancel(&task);
+                bad_caps += 1;
+            }
+            let task = begin(&mut provider, &mut ctx);
+            assert!(reply(
+                &mut provider,
+                &mut ctx,
+                &task,
+                1,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            provider.cancel(&task);
+            bad_caps += 1;
+            let mut cases = vec![
+                Datum::Null,
+                Datum::Int(7),
+                Datum::Real(f64::NAN),
+                Datum::Bytes(b"  \xff\0 ".to_vec()),
+                Datum::new_string(b"  \xff\0 "),
+                Datum::new_string("\u{a0}中\u{2003}"),
+                Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![255])),
+                Datum::Enum(
+                    tidb_datatype::MysqlEnum::new("  65  ", 1),
+                    Collation::Binary,
+                ),
+                Datum::Set(
+                    tidb_datatype::MysqlSet::new("  65  ", 3),
+                    Collation::Utf8Mb4Bin,
+                ),
+                crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+            ];
+            if op == O::Ascii {
+                cases.push(Datum::Bytes(vec![255; 1 << 20]));
+                cases.push(Datum::Raw(vec![255; 1 << 20]));
+            }
+            for value in cases {
+                let task = begin(&mut provider, &mut ctx);
+                let token = insert(&value, NativeValueRole::CharInput, 3, row);
+                let actual =
+                    outcome(
+                        || match reply(&mut provider, &mut ctx, &task, 0, Some(token)) {
+                            Ok(HostStep::Ready(v)) => {
+                                let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                                    panic!()
+                                };
+                                Ok(store
+                                    .borrow()
+                                    .get(token, role, NativeValueOrigin { node: 2, row })
+                                    .unwrap()
+                                    .clone())
+                            }
+                            Err(_) => Err(provider
+                                .take_native_error()
+                                .expect("bounded byte unary small result")),
+                            _ => panic!(),
+                        },
+                    );
+                let expected = outcome(|| {
+                    let value = if op == O::Ascii {
+                        value.clone()
+                    } else {
+                        crate::cast::cast_arg_as_string(&value, None, &context)?
+                    };
+                    crate::tikv::byte_unary_value_tests::direct(
+                        &op.name().to_ascii_uppercase(),
+                        value,
+                        &context,
+                    )
+                    .and_then(|v| {
+                        crate::scalar_function::coerce_function_result(op.name(), Some(&ret), v)
+                    })
+                });
+                assert_eq!(actual, expected, "byte unary provider {op:?} role={role:?}");
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                )
+                .is_err());
+                let _ = provider.take_native_error();
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+            let task = begin(&mut provider, &mut ctx);
+            let huge = Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1));
+            assert!(reply(
+                &mut provider,
+                &mut ctx,
+                &task,
+                0,
+                Some(insert(&huge, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            assert!(matches!(
+                provider.take_native_error(),
+                Some(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert!(reply(
+                &mut provider,
+                &mut ctx,
+                &task,
+                0,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            provider.cancel(&task);
+            let task = begin(&mut provider, &mut ctx);
+            let HostStep::Ready(v) = reply(
+                &mut provider,
+                &mut ctx,
+                &task,
+                0,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row)),
+            )
+            .unwrap() else {
+                panic!()
+            };
+            let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                panic!()
+            };
+            assert!(store
+                .borrow()
+                .get(token, role, NativeValueOrigin { node: 2, row })
+                .unwrap()
+                .is_null());
+            provider.cancel(&task);
+        }
+    }
+    assert_eq!(bad_caps, 54);
+}
+
+#[test]
+fn byte_unary_resource_is_terminal_and_same_source_null_recovers() {
+    let schema = [ty()];
+    let rows = [vec![Datum::Int(1)], vec![Datum::Int(0)]];
+    let field = FieldType::new(FieldTypeCode::NewDecimal);
+    for name in crate::tikv::byte_unary_value_tests::NAMES {
+        let huge = literal(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+            field.clone(),
+        );
+        let value = call(
+            "if",
+            field.clone(),
+            vec![column(0), huge, literal(Datum::Null, field.clone())],
+        );
+        let actual = suite(call(name, string_ty(), vec![value]));
+        let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+        ctx.inner.reject = true;
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(vec![0]));
+        let mut output = output_for(&string_ty());
+        assert!(matches!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+            Err(crate::evaluator::EvaluatorError::Eval(
+                EvalError::ExpressionRuntimeFailure(_)
+            ))
+        ));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        ctx.inner.events.borrow_mut().clear();
+        input.set_sel(Some(vec![1]));
+        let mut output = output_for(&string_ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        assert!(ctx.inner.events.borrow().is_empty());
+    }
+}

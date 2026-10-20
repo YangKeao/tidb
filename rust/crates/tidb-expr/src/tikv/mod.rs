@@ -181,7 +181,7 @@ pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
 pub(crate) use ready_value::{
-    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_ascii_in, evaluate_bytes_in,
+    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_bytes_in,
     evaluate_prepared_args_in, evaluate_regexp_in, native_time_result_contract_error,
     EvaluatedBytesResult, RegexpFunction,
 };
@@ -695,3 +695,8 @@ pub(crate) mod misc_identity_value_tests;
 pub(crate) mod misc_value_tests;
 
 pub(crate) mod misc_value;
+
+#[cfg(test)]
+pub(crate) mod byte_unary_value_tests;
+
+pub(crate) mod byte_unary_value;

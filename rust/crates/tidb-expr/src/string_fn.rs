@@ -232,12 +232,16 @@ mod case_convert_tests {
 }
 
 /// `ASCII(s)` preserves native arity and byte coercion, then delegates every
-/// successful value (including NULL) to the closed TiKV C4 worker.
-pub(crate) fn ascii(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+/// successful value (including NULL) to the actual shared ASCII kernel.
+pub(crate) fn ascii(vals: &[Datum], _ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("bad function arity"));
     }
-    crate::tikv::evaluate_ascii_in(&vals[0], ctx)
+    crate::tikv::byte_unary_value::body(
+        tidb_query_expr::NativeByteUnaryOperation::Ascii,
+        &vals[0],
+        crate::tikv::identity_actual::default_budget(),
+    )
 }
 
 /// `BIT_LENGTH(s)`: count evaluated bytes and multiply by eight. This follows

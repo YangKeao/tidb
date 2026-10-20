@@ -120,14 +120,14 @@ fn translate(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalErro
 /// `hex(ltrim(b))` over a `bit(8)` holding `b'11111111'` is `FF`; both were
 /// hard errors under the previous UTF-8 coercion.
 fn ltrim(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    trimmed(value, crate::tikv::EvaluatedBytesOp::LTrim, ctx)
+    trimmed(value, tidb_query_expr::NativeByteUnaryOperation::LTrim, ctx)
 }
 
 /// `RTRIM(str)`, ported from `builtinRTrimSig.evalString` in
 /// `pkg/expression/builtin_string.go`; it has the same ETString and
 /// U+0020-only contract as [`ltrim`].
 fn rtrim(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    trimmed(value, crate::tikv::EvaluatedBytesOp::RTrim, ctx)
+    trimmed(value, tidb_query_expr::NativeByteUnaryOperation::RTrim, ctx)
 }
 
 /// The shared half of [`ltrim`] and [`rtrim`]: read the `types.ETString`
@@ -135,23 +135,13 @@ fn rtrim(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
 /// Go's `SetBinFlagOrBinStr(argType, bf.tp)` sets the higher return descriptor.
 fn trimmed(
     value: &Datum,
-    operation: crate::tikv::EvaluatedBytesOp,
-    ctx: &dyn crate::Columns,
+    operation: tidb_query_expr::NativeByteUnaryOperation,
+    _ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
+    crate::tikv::byte_unary_value::body(
         operation,
-        ctx,
-        || crate::arg_eval_type::eval_string(value),
-        |result| {
-            let bytes = result.into_bytes()?;
-            Ok(bytes.map_or(Datum::Null, |bytes| {
-                if is_binary_str(value) {
-                    Datum::new_bytes(bytes)
-                } else {
-                    Datum::new_string(bytes)
-                }
-            }))
-        },
+        value,
+        crate::tikv::identity_actual::default_budget(),
     )
 }
 

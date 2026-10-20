@@ -1036,8 +1036,33 @@ mod tests {
         }
     }
 
+    // Keep the executor-lane cache contract on a still-explicit wire worker.
+    // ASCII now has its own actual-value assertion below and creates no Ready worker.
     #[test]
     fn evaluator_suite_reuses_ready_value_worker_across_chunks() {
+        let mut column = Column::new(1, string());
+        column.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("uncompressed_length"),
+            longlong(),
+            vec![Expression::Column(column)],
+        ));
+        let suite = EvaluatorSuite::new(vec![expression], false);
+        for (input_value, expected) in [
+            (b"\x01\0\0\0x".as_slice(), 1),
+            (b"\x02\0\0\0x".as_slice(), 2),
+        ] {
+            let mut input = Chunk::new_with_capacity(&[string()], 1);
+            input.append_bytes(0, input_value);
+            let mut output = Chunk::new_with_capacity(&[longlong()], 1);
+            suite.run(&NoColumns, &mut input, &mut output).unwrap();
+            assert_eq!(output.get_row(0).get_int64(0), expected);
+            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 1);
+        }
+    }
+
+    #[test]
+    fn evaluator_suite_ascii_keeps_values_across_chunks_without_ready_worker() {
         let mut column = Column::new(1, string());
         column.index = 0;
         let expression = Expression::ScalarFunction(ScalarFunction::new(
@@ -1052,7 +1077,7 @@ mod tests {
             let mut output = Chunk::new_with_capacity(&[longlong()], 1);
             suite.run(&NoColumns, &mut input, &mut output).unwrap();
             assert_eq!(output.get_row(0).get_int64(0), expected);
-            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 1);
+            assert_eq!(suite.ready_value_cache.prepared_worker_count(), 0);
         }
     }
 

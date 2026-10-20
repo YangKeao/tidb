@@ -28,6 +28,8 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_bounded_staleness.rs"]
 mod bounded_staleness_source;
+#[path = "batch_byte_unary.rs"]
+mod byte_unary;
 #[path = "batch_calendar.rs"]
 mod calendar_source;
 #[path = "batch_charset.rs"]
@@ -138,6 +140,14 @@ impl NativeRawValueOperation {
 }
 
 pub(super) enum NativeHostMetadata {
+    ByteUnary {
+        argument: usize,
+        operation: tidb_query_expr::NativeByteUnaryOperation,
+        probe: Option<Datum>,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     Misc {
         arguments: Box<[usize]>,
         operation: tidb_query_expr::NativeMiscOperation,
@@ -367,6 +377,7 @@ impl NativeHostMetadata {
             | Self::Calendar { result_type, .. }
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
+            | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
             | Self::Identity { result_type, .. }
             | Self::Grouping { result_type, .. }
@@ -397,6 +408,9 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    ByteUnary {
+        consumed: bool,
+    },
     Misc {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
@@ -522,6 +536,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
+            SqlDemand::ByteUnary { consumed } => Ok(Some(usize::from(*consumed))),
             SqlDemand::Misc { next, .. } => Ok(Some(*next)),
             SqlDemand::Identity { next } => Ok(Some(*next)),
             SqlDemand::Grouping { consumed } => Ok(Some(usize::from(*consumed))),
@@ -564,6 +579,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
+            SqlDemand::ByteUnary { .. } => Err(binding("byte unary cannot buffer a wire prefix")),
             SqlDemand::Misc { .. } => Err(binding("misc cannot buffer a wire prefix")),
             SqlDemand::Identity { .. } => Err(binding("identity cannot retain a wire prefix")),
             SqlDemand::Grouping { .. } => Err(binding("GROUPING demand cannot retain byte prefix")),
@@ -2229,6 +2245,30 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     pending: Some(crate::tikv::wildcard_value::Prepared::Text),
                 }
             }
+            SqlBatchHostOperation::ByteUnaryNative(operation) => {
+                let Some(NativeHostMetadata::ByteUnary {
+                    operation: declared,
+                    probe,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("byte unary descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || operation != *declared
+                    || invocation.arg_types.len() != 1
+                {
+                    return Err(binding("byte unary descriptor differs"));
+                }
+                let maximum = self
+                    .max_retained_bytes
+                    .checked_sub(self.retained_bytes()?)
+                    .ok_or_else(|| resource("byte unary probe allowance exhausted"))?;
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                    return self.native_failure(e);
+                }
+                SqlDemand::ByteUnary { consumed: false }
+            }
             SqlBatchHostOperation::MiscNative { operation, arity } => {
                 let Some(NativeHostMetadata::Misc {
                     arguments,
@@ -2914,6 +2954,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("LIKE source cannot be wire NULL"));
             };
             return self.resume_wildcard(id, token);
+        }
+        if matches!(task.demand, SqlDemand::ByteUnary { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("byte unary source cannot be wire NULL"));
+            };
+            return self.resume_byte_unary(id, token);
         }
         if matches!(task.demand, SqlDemand::Misc { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
