@@ -23,6 +23,8 @@ pub(crate) struct EagerValueKernel {
     overflow_expression: Option<super::math_diagnostic::MathDiagnostic>,
     ret_type: Option<FieldType>,
     session_read: Option<super::session_read::SessionRead>,
+    user_variable: Option<super::user_variable::UserVariableAction>,
+    last_insert_id: bool,
     args: Box<[EagerArgument]>,
     regexp_cache: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
     regexp_replace_instruction_cache:
@@ -33,6 +35,9 @@ pub(crate) struct EagerValueKernel {
 impl EagerValueKernel {
     pub(crate) fn name(&self) -> &str {
         self.func_name.lowercase()
+    }
+    pub(crate) fn user_variable(&self) -> Option<super::user_variable::UserVariableAction> {
+        self.user_variable
     }
     pub(crate) fn capture(function: &ScalarFunction) -> Self {
         let cache_facts = matches!(
@@ -49,6 +54,10 @@ impl EagerValueKernel {
             overflow_expression: None,
             ret_type: function.ret_type.clone(),
             session_read: super::session_read::SessionRead::for_function(function),
+            user_variable: super::user_variable::UserVariableAction::for_function(function),
+            last_insert_id: function.pb_builtin.is_none()
+                && function.func_name.lowercase() == "last_insert_id"
+                && function.args.len() == 1,
             args: function
                 .args
                 .iter()
@@ -106,6 +115,13 @@ impl EagerValueKernel {
         );
         if let Some(operation) = self.session_read {
             return operation.eval(ctx);
+        }
+        if self.last_insert_id {
+            return super::user_variable::record_last_insert_id(
+                vals.into_iter().next().expect("last insert id operand"),
+                self.args[0].static_type(),
+                ctx,
+            );
         }
         let name = self.func_name.lowercase();
         let upper = name.to_ascii_uppercase();
@@ -337,6 +353,10 @@ pub(crate) fn supports(function: &ScalarFunction) -> bool {
     super::argument_policy::classify(function)
         == super::argument_policy::ArgumentPolicy::CommonEager
         || super::session_read::SessionRead::for_function(function).is_some()
+        || super::user_variable::UserVariableAction::for_function(function).is_some()
+        || (function.pb_builtin.is_none()
+            && function.func_name.lowercase() == "last_insert_id"
+            && function.args.len() == 1)
 }
 /// These original common bodies take precedence over the stricter typed registry.
 pub(crate) fn prefers_common_body(function: &ScalarFunction) -> bool {

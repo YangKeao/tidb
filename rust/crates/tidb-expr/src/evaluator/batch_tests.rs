@@ -27245,3 +27245,615 @@ fn session_read_immediate_callback_unwind_releases_task_and_keeps_exclusive_borr
         }
     }
 }
+
+#[test]
+fn user_variable_actual_sources_and_ordered_suite_do_not_fallback() {
+    use crate::tikv::user_variable_tests as proof;
+    let ctx = proof::Context::new(1, Datum::Int(42));
+    let mut failures = vec![];
+    for name in ["getvar_int", "setvar", "last_insert_id"] {
+        let root = Expression::ScalarFunction(proof::scalar_function(
+            name,
+            &ty(),
+            &Datum::new_string("x"),
+            &Datum::Int(7),
+        ));
+        let actual = suite(root);
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output();
+        let _ = actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    let (roots, fields) = proof::program(0);
+    let actual = EvaluatorSuite::new(roots, false);
+    let mut input = proof::input(false);
+    let mut output = Chunk::new_with_capacity(&fields, 0);
+    let _ = actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[proof::int_type()]);
+    let route = actual.batch_route_snapshot();
+    if (route.refusals, route.fallback) != (0, 0) {
+        failures.push(("ordered", route));
+    }
+    assert!(failures.is_empty(), "user-variable sources {failures:?}");
+}
+
+#[test]
+fn user_variable_actual_scalar_sources_keep_values_state_and_selection() {
+    if isolate_common_corpus("user_variable_actual_scalar_sources_keep_values_state_and_selection")
+    {
+        return;
+    }
+    use crate::tikv::user_variable_tests as proof;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut cases = 0;
+        for profile in 0..3 {
+            for ret in crate::tikv::eager_scalar_value_tests::types() {
+                for (vi, value) in crate::tikv::session_read_tests::values()
+                    .into_iter()
+                    .enumerate()
+                {
+                    let calls = proof::headers()
+                        .into_iter()
+                        .flat_map(|header| {
+                            proof::KINDS
+                                .iter()
+                                .map(|kind| format!("getvar_{kind}"))
+                                .chain(std::iter::once("setvar".into()))
+                                .map(move |name| (name, header.clone()))
+                        })
+                        .chain(std::iter::once(("last_insert_id".into(), Datum::Null)));
+                    for (name, header) in calls {
+                        let f = proof::scalar_function(&name, &ret, &header, &value);
+                        let root = Expression::ScalarFunction(f);
+                        let (actual, reference) = (suite(root.clone()), suite(root));
+                        for enabled in [false, true] {
+                            let initial = if name == "setvar" || name == "last_insert_id" {
+                                Datum::Int(42)
+                            } else {
+                                value.clone()
+                            };
+                            let (ctx, oldctx) = (
+                                proof::Context::new(profile, initial.clone()),
+                                proof::Context::new(profile, initial),
+                            );
+                            ctx.enabled.set(enabled);
+                            oldctx.enabled.set(enabled);
+                            let (mut input, mut oldinput) = (
+                                chunk(&[], &[vec![], vec![], vec![]]),
+                                chunk(&[], &[vec![], vec![], vec![]]),
+                            );
+                            input.set_sel(Some(vec![2, 0, 2]));
+                            oldinput.set_sel(Some(vec![2, 0, 2]));
+                            let (mut output, mut expected) = (output_for(&ret), output_for(&ret));
+                            output.append_null(0);
+                            expected.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+                            });
+                            let want = session_read_outcome(|| {
+                                reference.run(&oldctx, &mut oldinput, &mut expected)
+                            });
+                            assert_eq!(got,want,"{name} p={profile} ret={ret:?} vi={vi} header={header:?} flag={enabled}");
+                            assert_eq!(
+                                ctx.snapshot(),
+                                oldctx.snapshot(),
+                                "{name} p={profile} ret={ret:?} vi={vi} header={header:?}"
+                            );
+                            assert_eq!(
+                                output.column(0),
+                                expected.column(0),
+                                "{name} ret={ret:?} vi={vi}"
+                            );
+                            assert_eq!(input.sel(), Some(&[2, 0, 2][..]));
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.refusals, route.fallback),
+                                (0, 0),
+                                "{name}: {route:?}"
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 57057);
+        eprintln!("USER VARIABLE ACTUAL SCALAR SOURCE MATRIX {cases}");
+    });
+}
+
+#[test]
+fn user_variable_ordered_sources_keep_exact_original_output_and_flag_order() {
+    if isolate_common_corpus(
+        "user_variable_ordered_sources_keep_exact_original_output_and_flag_order",
+    ) {
+        return;
+    }
+    use crate::tikv::user_variable_tests as proof;
+    let mut cases = 0;
+    for which in 0..9 {
+        for profile in 0..3 {
+            for nullable in [false, true] {
+                for selection in [None, Some(vec![2, 0, 2]), Some(vec![1, 0, 2]), Some(vec![])] {
+                    for enabled in [false, true] {
+                        let (roots, fields) = proof::program(which);
+                        let actual = EvaluatorSuite::new(roots.clone(), false);
+                        let reference =
+                            EvaluatorSuite::new(roots, which == 7 && selection.is_some());
+                        let (ctx, oldctx) = (
+                            proof::Context::new(profile, Datum::Int(0)),
+                            proof::Context::new(profile, Datum::Int(0)),
+                        );
+                        ctx.enabled.set(enabled);
+                        oldctx.enabled.set(enabled);
+                        let (mut input, mut oldinput) =
+                            (proof::input(nullable), proof::input(nullable));
+                        input.set_sel(selection.clone());
+                        oldinput.set_sel(selection.clone());
+                        let (mut output, mut expected) = (
+                            Chunk::new_with_capacity(&fields, 0),
+                            Chunk::new_with_capacity(&fields, 0),
+                        );
+                        let got = session_read_outcome(|| {
+                            actual.run_with_tikv_batch(
+                                &ctx,
+                                &mut input,
+                                &mut output,
+                                &[proof::int_type()],
+                            )
+                        });
+                        let want = session_read_outcome(|| {
+                            reference.run(&oldctx, &mut oldinput, &mut expected)
+                        });
+                        assert_eq!(got,want,"program={which} p={profile} nullable={nullable} sel={selection:?} flag={enabled}");
+                        assert_eq!(
+                            ctx.snapshot(),
+                            oldctx.snapshot(),
+                            "program={which} sel={selection:?}"
+                        );
+                        assert_eq!(
+                            proof::chunk_frame(&output),
+                            proof::chunk_frame(&expected),
+                            "program={which} sel={selection:?}"
+                        );
+                        assert_eq!(input.sel(), selection.as_deref());
+                        let route = actual.batch_route_snapshot();
+                        assert_eq!(
+                            (route.refusals, route.fallback),
+                            (0, 0),
+                            "program={which} {route:?}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 432);
+    eprintln!("USER VARIABLE ORDERED ACTUAL SOURCE MATRIX {cases}");
+}
+
+#[test]
+fn user_variable_host_demand_credentials_callbacks_and_recovery() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+        LocalHostServices,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        action: Cell<u8>,
+        events: RefCell<Vec<String>>,
+        value: RefCell<Datum>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented variable input")
+        }
+        fn get_uservar(&self, name: &str) -> Option<Datum> {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push(format!("get:{name}"));
+            if self.action.replace(0) == 1 {
+                panic!("variable read callback")
+            }
+            Some(self.value.borrow().clone())
+        }
+        fn set_uservar(&self, name: &str, value: Datum) {
+            let mut storage = self.store.borrow_mut();
+            self.events.borrow_mut().push(format!("set:{name}"));
+            *self.value.borrow_mut() = value;
+            match self.action.replace(0) {
+                1 => panic!("variable write callback"),
+                2 => storage.begin_window().unwrap(),
+                _ => (),
+            }
+        }
+    }
+    let mut rejected = 0;
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for name in ["getvar_int", "setvar"] {
+            let write = name == "setvar";
+            let arity = if write { 2 } else { 1 };
+            let f = crate::tikv::user_variable_tests::scalar_function(
+                name,
+                &ty(),
+                &Datum::new_string("X"),
+                &Datum::Int(7),
+            );
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); arity];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::EagerValuesNative,
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::EagerValues {
+                arguments: (3..3 + arity).collect(),
+                kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
+                probe: Some(Datum::new_string("X")),
+                result_type: ty(),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign = foreign
+                .insert_clone(
+                    &Datum::Int(7),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 4, row },
+                )
+                .unwrap();
+            let ctx = C {
+                store: &store,
+                action: Cell::new(0),
+                events: RefCell::new(vec![]),
+                value: RefCell::new(Datum::Int(7)),
+            };
+            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8192)
+                .with_native_values(Some(&store));
+            let mut eval = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                p.start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         eval: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    eval,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            if !write {
+                for _ in 0..64 {
+                    ctx.action.set(1);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        begin(&mut p, &mut eval)
+                    }));
+                    assert!(result.is_err());
+                    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                }
+                let HostStart::Ready(v) = begin(&mut p, &mut eval).unwrap() else {
+                    panic!("stored-name read demanded its unused child")
+                };
+                let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                    panic!()
+                };
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(token, role, NativeValueOrigin { node: 2, row })
+                        .unwrap(),
+                    &Datum::Int(7)
+                );
+                assert!(ctx.events.borrow().iter().all(|e| e == "get:X"));
+                continue;
+            }
+            let pending = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                let HostStart::Pending { task, request } = begin(p, eval).unwrap() else {
+                    panic!()
+                };
+                assert_eq!(request.index, 1);
+                task
+            };
+            let good = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
+            let mut corrupt = good.clone();
+            corrupt[0] ^= 1;
+            let mut short = good.clone();
+            short.pop();
+            let mut long = good;
+            long.push(0);
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(short),
+                Some(long),
+                Some(stale),
+                Some(foreign),
+                Some(insert(&Datum::Int(7), NativeValueRole::Output, 4, row)),
+                Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row)),
+                Some(insert(
+                    &Datum::Int(7),
+                    NativeValueRole::CharInput,
+                    4,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                )),
+                Some(insert(
+                    &Datum::Int(7),
+                    NativeValueRole::CharInput,
+                    4,
+                    InputRow {
+                        occurrence: 0,
+                        input_row: 1,
+                    },
+                )),
+            ] {
+                let task = pending(&mut p, &mut eval);
+                assert!(reply(&mut p, &mut eval, &task, 1, bad).is_err());
+                assert!(ctx.events.borrow().is_empty());
+                p.cancel(&task);
+                p.cancel(&task);
+                rejected += 1;
+            }
+            let task = pending(&mut p, &mut eval);
+            assert!(reply(
+                &mut p,
+                &mut eval,
+                &task,
+                0,
+                Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row))
+            )
+            .is_err());
+            p.cancel(&task);
+            rejected += 1;
+            for action in [0, 1, 2, 0] {
+                ctx.events.borrow_mut().clear();
+                ctx.action.set(action);
+                let token = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
+                let task = pending(&mut p, &mut eval);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    reply(&mut p, &mut eval, &task, 1, Some(token.clone()))
+                }));
+                match action {
+                    1 => assert!(result.is_err()),
+                    2 => assert!(result.unwrap().is_err()),
+                    _ => {
+                        let HostStep::Ready(v) = result.unwrap().unwrap() else {
+                            panic!()
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                            panic!()
+                        };
+                        let values = store.borrow();
+                        assert_eq!(
+                            values
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap(),
+                            &Datum::Int(7)
+                        );
+                        assert!(values
+                            .get(token, role, NativeValueOrigin { node: 3, row })
+                            .is_err());
+                    }
+                }
+                assert_eq!(*ctx.events.borrow(), vec!["set:X"]);
+                assert!(reply(&mut p, &mut eval, &task, 1, Some(token)).is_err());
+                p.cancel(&task);
+                p.cancel(&task);
+                assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+            }
+            ctx.events.borrow_mut().clear();
+            let task = pending(&mut p, &mut eval);
+            let token = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &task, 1, Some(token)).unwrap(),
+                HostStep::Ready(_)
+            ));
+            assert!(ctx.events.borrow().is_empty());
+        }
+    }
+    assert_eq!(rejected, 22);
+}
+
+#[test]
+fn user_variable_resource_is_terminal_and_same_worker_null_recovers() {
+    use crate::tikv::user_variable_tests as proof;
+    let schema = [string_ty()];
+    for name in ["getvar_string", "setvar"] {
+        let root = if name == "setvar" {
+            call(
+                name,
+                string_ty(),
+                vec![
+                    literal(Datum::new_string("x"), string_ty()),
+                    typed_column(0, &string_ty()),
+                ],
+            )
+        } else {
+            call(
+                name,
+                string_ty(),
+                vec![literal(Datum::new_string("x"), string_ty())],
+            )
+        };
+        let owner = suite(root);
+        let mut worker = PreparedBatch::compile(
+            &owner,
+            &schema,
+            true,
+            93,
+            limits(),
+            ExecutionLimits::default(),
+            65536,
+        )
+        .unwrap();
+        let ctx = proof::Context::new(1, Datum::Bytes(vec![255; 1 << 20]));
+        let mut input = chunk(&schema, &[vec![Datum::Bytes(vec![255; 1 << 20])]]);
+        let mut output = output_for(&string_ty());
+        worker
+            .validate_invocation(&owner, &input, &output, &schema)
+            .unwrap();
+        let error = worker
+            .execute_profile(
+                &ctx,
+                &mut EvalContext::default(),
+                &input,
+                &mut output,
+                true,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.refusal(), BatchRefusal::Resource);
+        assert!(matches!(
+            error.into_evaluator_error(),
+            EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(_))
+        ));
+        assert_eq!(output.num_rows(), 0);
+        if name == "setvar" {
+            assert!(ctx.events.borrow().is_empty());
+        }
+        ctx.events.borrow_mut().clear();
+        ctx.vars.borrow_mut().insert("x".into(), Datum::Null);
+        input = chunk(&schema, &[vec![Datum::Null]]);
+        let mut output = output_for(&string_ty());
+        worker
+            .validate_invocation(&owner, &input, &output, &schema)
+            .unwrap();
+        worker
+            .execute_profile(
+                &ctx,
+                &mut EvalContext::default(),
+                &input,
+                &mut output,
+                true,
+                None,
+            )
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        if name == "setvar" {
+            assert!(ctx.events.borrow().is_empty());
+        }
+    }
+}
+
+#[test]
+fn user_variable_ordered_error_and_panic_keep_input_selection_and_alias_owners() {
+    use crate::tikv::user_variable_tests as proof;
+    struct C {
+        panic: Cell<bool>,
+        value: Cell<i64>,
+        calls: Cell<usize>,
+    }
+    impl Columns for C {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented ordered input")
+        }
+        fn get_uservar(&self, _: &str) -> Option<Datum> {
+            Some(Datum::Int(self.value.get()))
+        }
+        fn set_uservar(&self, _: &str, value: Datum) {
+            self.calls.set(self.calls.get() + 1);
+            let Datum::Int(value) = value else { panic!() };
+            self.value.set(value);
+            if self.panic.get() {
+                panic!("ordered write callback");
+            }
+        }
+        fn enable_vectorized_expression(&self) -> bool {
+            panic!("ordered projection must not query vectorization")
+        }
+    }
+    let roots = vec![
+        column(0),
+        call(
+            "setvar",
+            ty(),
+            vec![literal(Datum::new_string("x"), string_ty()), column(0)],
+        ),
+        column(0),
+        call(
+            "getvar_int",
+            ty(),
+            vec![literal(Datum::new_string("x"), string_ty())],
+        ),
+    ];
+    let owner = EvaluatorSuite::new(roots, false);
+    let schema = [ty()];
+    let ctx = C {
+        panic: Cell::new(true),
+        value: Cell::new(0),
+        calls: Cell::new(0),
+    };
+    let mut input = proof::input(false);
+    input.set_sel(Some(vec![2, 0, 2]));
+    let mut output = Chunk::new_with_capacity(&[ty(), ty(), ty(), ty()], 0);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+    }));
+    assert!(result.is_err());
+    assert_eq!(input.sel(), Some(&[2, 0, 2][..]));
+    assert_eq!(input.column(0).rows(), 3);
+    assert_eq!(ctx.calls.get(), 1);
+    assert_eq!(ctx.value.get(), 3);
+    ctx.panic.set(false);
+    let mut output = Chunk::new_with_capacity(&[ty(), ty(), ty(), ty()], 0);
+    owner
+        .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+        .unwrap();
+    assert_eq!(ctx.calls.get(), 4);
+    assert_eq!(input.sel(), Some(&[2, 0, 2][..]));
+    assert!(output.columns_share_identity(0, &output, 2));
+    assert_eq!(output.column(0).rows(), 3);
+    let route = owner.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0));
+    // Empty selection reaches neither getter nor setter and keeps aliases valid.
+    input.set_sel(Some(vec![]));
+    let mut empty = Chunk::new_with_capacity(&[ty(), ty(), ty(), ty()], 0);
+    owner
+        .run_with_tikv_batch(&ctx, &mut input, &mut empty, &schema)
+        .unwrap();
+    assert_eq!(ctx.calls.get(), 4);
+    assert_eq!(empty.column(0).rows(), 0);
+}

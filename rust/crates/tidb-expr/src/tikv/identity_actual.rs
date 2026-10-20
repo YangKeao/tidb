@@ -41,7 +41,14 @@ pub(crate) fn copy(value: &Datum) -> Result<Datum, EvalError> {
 /// whose ignored formatting result can still panic before child evaluation.
 /// This is separate from the actual identity body and never evaluates a child.
 pub(crate) fn probe(value: Option<&Datum>, maximum: usize) -> Result<(), EvalError> {
-    let Some(value) = value else { return Ok(()) };
+    probe_name(value, maximum).map(|_| ())
+}
+/// Same original formatting operation, retaining its name only when demanded.
+pub(crate) fn probe_name(
+    value: Option<&Datum>,
+    maximum: usize,
+) -> Result<Option<String>, EvalError> {
+    let Some(value) = value else { return Ok(None) };
     if maximum == usize::MAX {
         return Err(resource());
     }
@@ -59,8 +66,7 @@ pub(crate) fn probe(value: Option<&Datum>, maximum: usize) -> Result<(), EvalErr
             return Err(resource());
         }
         if std::str::from_utf8(v.coefficient_bytes()).is_err() {
-            let _ = value.sql_string();
-            return Ok(());
+            return Ok(value.sql_string().ok());
         }
     }
     let work = match tidb_query_expr::native_byte_coercion_work(value.as_shared_json_input()) {
@@ -72,8 +78,7 @@ pub(crate) fn probe(value: Option<&Datum>, maximum: usize) -> Result<(), EvalErr
     if work > maximum {
         return Err(resource());
     }
-    let _ = value.sql_string();
-    Ok(())
+    Ok(value.sql_string().ok())
 }
 
 pub(crate) fn default_budget() -> usize {

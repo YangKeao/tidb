@@ -718,3 +718,6 @@ pub(crate) mod eager_scalar_value_tests;
 
 #[cfg(test)]
 pub(crate) mod session_read_tests;
+
+#[cfg(test)]
+pub(crate) mod user_variable_tests;

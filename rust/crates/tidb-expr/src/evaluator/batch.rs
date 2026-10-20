@@ -4741,13 +4741,17 @@ impl PreparedBatch {
             .calculated
             .get(calculated_slot)
             .ok_or_else(|| BatchFailure::admission("batch calculation slot missing"))?;
-        let view = if promote {
+        let ordered = !suite.program.vectorizable;
+        let view = if ordered {
+            Some(NativeView::RootValue)
+        } else if promote {
             promoted_native_root_view(root, source_limits)?
         } else {
             None
         };
-        let pair = matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()));
-        let fast = promote && decimal_fast_source::possible(root);
+        let pair = !ordered
+            && matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()));
+        let fast = !ordered && promote && decimal_fast_source::possible(root);
         let groups = 1 + usize::from(pair) + usize::from(fast);
         let limits = if groups > 1 {
             BatchSourceLimits {
@@ -4817,7 +4821,8 @@ impl PreparedBatch {
             // compiled program independently selects operand demand. Both
             // typed carriers and native-value capabilities need the same native
             // publication boundary when their root is not already whole.
-            defer_batch_publication: promote
+            defer_batch_publication: !ordered
+                && promote
                 && !program.requires_whole_selection()
                 && crate::scalar_function::static_batch_target(root).is_some(),
             fast_profile,
@@ -6069,7 +6074,7 @@ fn projection_output_count(program: &EvaluatorProgram) -> Result<usize> {
         })
 }
 
-/// A complete pure projection: one shared program per calculated output and
+/// A complete projection: one shared program per calculated output and
 /// direct-column ownership transfer only after every calculation succeeds.
 /// There is no nested EvaluatorSuite or native expression value callback.
 pub(crate) struct PreparedBatchSuite {
@@ -6090,11 +6095,22 @@ impl PreparedBatchSuite {
         execution: ExecutionLimits,
         max_materialization_retained_bytes: usize,
     ) -> Result<Self> {
-        if !suite.program.vectorizable {
-            return Err(BatchFailure::admission(
-                "projection requires ordered effectful evaluation",
-            ));
-        }
+        let view_bytes = if suite.program.vectorizable {
+            0
+        } else {
+            row_schema
+                .len()
+                .checked_mul(
+                    size_of::<tidb_chunk::column::Column>()
+                        + size_of::<tidb_chunk::ColumnHandle>()
+                        + 128,
+                )
+                .and_then(|n| n.checked_add(size_of::<Chunk>() + size_of::<usize>()))
+                .ok_or_else(|| resource("ordered row view extent overflow"))?
+        };
+        let worker_materialization = max_materialization_retained_bytes
+            .checked_sub(view_bytes)
+            .ok_or_else(|| resource("ordered row view materialization policy exceeded"))?;
         let count = suite.program.calculated.len();
         let groups = count
             .checked_add(1)
@@ -6138,7 +6154,7 @@ impl PreparedBatchSuite {
                 unit,
                 calculation_limits,
                 execution,
-                max_materialization_retained_bytes / count.max(1),
+                worker_materialization / count.max(1),
                 true,
             )?;
             remaining_nodes = remaining_nodes
@@ -6238,22 +6254,54 @@ impl PreparedBatchSuite {
         for worker in &mut self.workers {
             worker.validate_invocation(suite, input, output, row_schema)?;
         }
-        for worker in &mut self.workers {
-            if worker.execute_decimal_priority(native_ctx, ctx, input, output)? {
-                continue;
+        if !self.owner.vectorizable {
+            // A one-row selection view shares physical column owners. The
+            // caller's selection survives error and unwind without restoration.
+            // Bound the view's headers, lazy Arc owners and singleton selection
+            // before allocating; column payloads are never cloned here.
+            // This fixed shared-view allowance was reserved from the suite's
+            // materialization policy before dividing it among the workers.
+            let mut row_view = Chunk::new_empty(row_schema);
+            for index in 0..row_schema.len() {
+                row_view.set_col(index, input.column_handle(index));
             }
-            // The original getter belongs to this output and occurs only
-            // after its Decimal priority stage declined, even for empty input.
-            let vectorized = native_ctx.enable_vectorized_expression();
-            worker.execute_profile(
-                native_ctx,
-                ctx,
-                input,
-                output,
-                !vectorized,
-                #[cfg(test)]
-                None,
-            )?;
+            row_view.set_num_virtual_rows(input.physical_rows());
+            for logical in 0..input.num_rows() {
+                let physical = input.sel().map_or(logical, |rows| rows[logical]);
+                row_view.set_sel(Some(vec![physical]));
+                for worker in &mut self.workers {
+                    worker.validate_invocation(suite, &row_view, output, row_schema)?;
+                    // Original ordered evaluation has neither the bulk Decimal
+                    // priority stage nor a vectorization property getter.
+                    worker.execute_profile(
+                        native_ctx,
+                        ctx,
+                        &row_view,
+                        output,
+                        true,
+                        #[cfg(test)]
+                        None,
+                    )?;
+                }
+            }
+        } else {
+            for worker in &mut self.workers {
+                if worker.execute_decimal_priority(native_ctx, ctx, input, output)? {
+                    continue;
+                }
+                // The original getter belongs to this output and occurs only
+                // after its Decimal priority stage declined, even for empty input.
+                let vectorized = native_ctx.enable_vectorized_expression();
+                worker.execute_profile(
+                    native_ctx,
+                    ctx,
+                    input,
+                    output,
+                    !vectorized,
+                    #[cfg(test)]
+                    None,
+                )?;
+            }
         }
         if let Some(helper) = &suite.column_swap_helper {
             if input.sel().is_some() {

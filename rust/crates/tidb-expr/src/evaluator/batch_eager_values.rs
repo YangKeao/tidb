@@ -187,3 +187,130 @@ impl NativeBatchHosts<'_> {
             .map(HostStep::Ready)
     }
 }
+
+impl NativeBatchHosts<'_> {
+    /// A stored-name read has no argument demand. A stored-name assignment
+    /// demands only argument 1. Neither path enters an expression evaluator.
+    pub(super) fn finish_user_variable(
+        &mut self,
+        id: &HostTaskId,
+        token: Option<&[u8]>,
+    ) -> LocalResult<HostStep> {
+        let task = self.task(id)?;
+        let (row, slot) = (task.row, task.slot);
+        let write = match (&task.demand, token) {
+            (
+                SqlDemand::UserVariableRead {
+                    consumed: false, ..
+                },
+                None,
+            ) => false,
+            (
+                SqlDemand::UserVariableWrite {
+                    consumed: false, ..
+                },
+                Some(_),
+            ) => true,
+            _ => return Err(binding("user variable demand consumed or differs")),
+        };
+        let Some(NativeHostMetadata::EagerValues {
+            arguments,
+            kernel,
+            result_type,
+            output_node,
+            output_role,
+            ..
+        }) = self.metadata.get(slot.index())
+        else {
+            return Err(binding("user variable metadata absent"));
+        };
+        let store = self
+            .native_values
+            .ok_or_else(|| binding("user variable store absent"))?;
+        let origin = NativeValueOrigin {
+            node: if write { arguments[1] } else { *output_node },
+            row,
+        };
+        let base = self.retained_bytes()?;
+        let copied = if let Some(token) = token {
+            let values = store.borrow();
+            native_payload_bytes(values.get(token, NativeValueRole::CharInput, origin)?)?
+                .checked_mul(3)
+                .and_then(|n| n.checked_add(std::mem::size_of::<Datum>()))
+                .ok_or_else(|| resource("user variable argument extent overflow"))?
+        } else {
+            0
+        };
+        let live = base
+            .checked_add(copied)
+            .ok_or_else(|| resource("user variable live extent overflow"))?;
+        self.check_bytes(live)?;
+        // All external credentials are authenticated before consuming the task.
+        // Mark it consumed before any context callback, conversion or unwind.
+        let name = match &mut self.slots[id.slot]
+            .task
+            .as_mut()
+            .expect("validated variable task")
+            .demand
+        {
+            SqlDemand::UserVariableRead { name, consumed }
+            | SqlDemand::UserVariableWrite { name, consumed } => {
+                *consumed = true;
+                std::mem::take(name)
+            }
+            _ => unreachable!(),
+        };
+        let maximum = self.max_retained_bytes - live;
+        let action = kernel
+            .user_variable()
+            .ok_or_else(|| binding("user variable action absent"))?;
+        let value = if let Some(token) = token {
+            // Release the store borrow BEFORE the setter callback. A callback
+            // can mutably borrow or invalidate the storage without a Ref panic.
+            let value =
+                store
+                    .borrow()
+                    .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
+            tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+                crate::scalar_function::eager_values::audit_work_result(action.write(
+                    self.context,
+                    &name,
+                    value,
+                ))
+            })
+        } else {
+            tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+                crate::scalar_function::eager_values::audit_work_result(
+                    action.read(self.context, &name),
+                )
+            })
+        };
+        if let Some(token) = token {
+            store
+                .borrow()
+                .get(token, NativeValueRole::CharInput, origin)?;
+        }
+        let value = match value {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        let held = native_payload_bytes(&value)?
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(base))
+            .ok_or_else(|| resource("user variable result extent overflow"))?;
+        self.check_bytes(held)?;
+        // The setter already stored the raw value. Return conversion can fail
+        // or panic afterward; neither outcome rolls back that original effect.
+        let value = match crate::tikv::identity_actual::coerce_result(
+            kernel.name(),
+            result_type,
+            value,
+            self.max_retained_bytes - held,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+            .map(HostStep::Ready)
+    }
+}

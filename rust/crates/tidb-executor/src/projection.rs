@@ -4014,6 +4014,44 @@ mod tests {
         let session_read_mix = std::iter::once(0)
             .chain(session_read_start..roots.len())
             .collect::<Vec<_>>();
+        let variable_start = roots.len();
+        let variable_name =
+            || Expression::Constant(Constant::new(Datum::new_string("X"), string.clone()));
+        let read_variable = || call("getvar_int", integer.clone(), vec![variable_name()]);
+        for root in [
+            call("setvar", integer.clone(), vec![variable_name(), column(0)]),
+            read_variable(),
+            call(
+                "setvar",
+                integer.clone(),
+                vec![
+                    variable_name(),
+                    call(
+                        "plus",
+                        integer.clone(),
+                        vec![
+                            read_variable(),
+                            Expression::Constant(Constant::new(Datum::Int(1), integer.clone())),
+                        ],
+                    ),
+                ],
+            ),
+            read_variable(),
+            call("last_insert_id", integer.clone(), vec![column(0)]),
+            call(
+                "last_insert_id",
+                integer.clone().with_unsigned(true),
+                vec![],
+            ),
+        ] {
+            fields.push(root.static_type().unwrap().clone());
+            roots.push(root);
+        }
+        roots.push(call("cast_char", string.clone(), vec![read_variable()]));
+        fields.push(string.clone());
+        let variable_mix = std::iter::once(0)
+            .chain(variable_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -4206,8 +4244,13 @@ mod tests {
                     .map(|&i| fields[i].clone())
                     .collect(),
             ),
+            (
+                variable_mix.iter().map(|&i| roots[i].clone()).collect(),
+                variable_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
         ];
-        let session_configuration = configurations.len() - 1;
+        let session_configuration = configurations.len() - 2;
+        let variable_configuration = configurations.len() - 1;
         let with_session = |context: crate::StmtContext| {
             context
                 .with_session_state(Some("dbé会话".into()), Some("8.0-session".into()))
@@ -4302,6 +4345,16 @@ mod tests {
                         }
                     }
                     assert_eq!(context.take_warnings(), warnings);
+                    if configuration == variable_configuration {
+                        assert_eq!(
+                            tidb_expr::Columns::get_uservar(&context, "X"),
+                            tidb_expr::Columns::get_uservar(&reference, "X")
+                        );
+                        assert_eq!(
+                            tidb_expr::Columns::last_insert_id(&context),
+                            tidb_expr::Columns::last_insert_id(&reference)
+                        );
+                    }
                     if workers == 0 {
                         let route = projection.evaluator_suite.batch_route_snapshot();
                         assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));

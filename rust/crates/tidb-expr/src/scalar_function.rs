@@ -2371,26 +2371,15 @@ impl ScalarFunction {
         } else {
             self.uservar_name()
         };
-        if let Some(var) = var {
-            if let Some(kind) = name.strip_prefix("getvar_") {
-                if self.args.len() == 1 {
-                    let value = ctx.get_uservar(&var).unwrap_or(Datum::Null);
-                    // The name fixed the DECLARED type from what the session
-                    // held when the statement was built; an assignment earlier
-                    // in the same statement may since have stored another kind
-                    // (Go has the same build-time/run-time seam), so the value
-                    // is converted onto the declared type rather than trusted
-                    // to match it.
-                    return uservar_as_kind(kind, value, ctx);
+        if let (Some(var), Some(action)) =
+            (var, user_variable::UserVariableAction::for_function(self))
+        {
+            return match action {
+                user_variable::UserVariableAction::Get(_) => action.read(ctx, &var),
+                user_variable::UserVariableAction::Set => {
+                    action.write(ctx, &var, self.args[1].eval(ctx, row)?)
                 }
-            }
-            if name == "setvar" && self.args.len() == 2 {
-                let value = self.args[1].eval(ctx, row)?;
-                if !value.is_null() {
-                    ctx.set_uservar(&var, value.clone());
-                }
-                return Ok(value);
-            }
+            };
         }
         // Go `builtinRegexpLikeSig`: both operands are stringified, NULL in
         // either propagates, and `NOT REGEXP` is a separate unary NOT wrapped
@@ -2580,17 +2569,7 @@ impl ScalarFunction {
         // argument).
         if name == "last_insert_id" && self.args.len() == 1 {
             let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let cast = crate::cast::cast_arg_as_int(&value, self.args[0].static_type(), ctx)?;
-            let recorded = match cast {
-                crate::Datum::Int(i) => i as u64,
-                crate::Datum::UInt(u) => u,
-                _ => return Err(EvalError::Unsupported("LAST_INSERT_ID argument")),
-            };
-            ctx.set_last_insert_id(recorded);
-            return Ok(Datum::Int(recorded as i64));
+            return user_variable::record_last_insert_id(value, self.args[0].static_type(), ctx);
         }
         // Go `builtinTrim*Sig`: the name carries the direction and the second
         // argument is the string to remove.
@@ -6337,3 +6316,5 @@ pub(crate) mod argument_policy;
 pub(crate) mod math_diagnostic;
 
 pub(crate) mod session_read;
+
+pub(crate) mod user_variable;

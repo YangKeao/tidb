@@ -443,6 +443,14 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    UserVariableRead {
+        name: String,
+        consumed: bool,
+    },
+    UserVariableWrite {
+        name: String,
+        consumed: bool,
+    },
     EagerValues {
         next: usize,
         tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
@@ -581,6 +589,8 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::UserVariableRead { .. } => Ok(None),
+            SqlDemand::UserVariableWrite { consumed, .. } => Ok((!*consumed).then_some(1)),
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
             SqlDemand::EagerValues { next, .. } | SqlDemand::Crypto { next, .. } => Ok(Some(*next)),
             SqlDemand::Compression { consumed } | SqlDemand::ByteUnary { consumed } => {
@@ -627,6 +637,9 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::UserVariableRead { .. } | SqlDemand::UserVariableWrite { .. } => {
+                Err(binding("user variable cannot buffer a wire prefix"))
+            }
             SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
             SqlDemand::EagerValues { .. } => {
                 Err(binding("eager values cannot buffer a wire prefix"))
@@ -695,6 +708,13 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::UserVariableRead { name, .. }
+        | SqlDemand::UserVariableWrite { name, .. } = &self.demand
+        {
+            return bytes
+                .checked_add(name.capacity())
+                .ok_or_else(|| resource("user variable name extent overflow"));
+        }
         if let SqlDemand::Like { pending } = &self.demand {
             return bytes
                 .checked_add(pending.as_ref().map_or(0, |p| p.retained_bytes()))
@@ -895,6 +915,11 @@ impl<'a> NativeBatchHosts<'a> {
                 self.slots.len() - 1
             }
         };
+        let first_argument = if matches!(demand, SqlDemand::UserVariableWrite { .. }) {
+            1
+        } else {
+            0
+        };
         let task = NativeTask {
             slot: host_slot,
             row,
@@ -915,7 +940,7 @@ impl<'a> NativeBatchHosts<'a> {
         Ok(HostStart::Pending {
             task: HostTaskId { slot, generation },
             request: HostArgRequest {
-                index: 0,
+                index: first_argument,
                 mode: ArgMode::Fresh,
             },
         })
@@ -2282,7 +2307,10 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
                 let Some(NativeHostMetadata::EagerValues {
-                    arguments, probe, ..
+                    arguments,
+                    kernel,
+                    probe,
+                    ..
                 }) = self.metadata.get(invocation.slot.index())
                 else {
                     return Err(binding("eager values descriptor absent"));
@@ -2294,12 +2322,29 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     .max_retained_bytes
                     .checked_sub(self.retained_bytes()?)
                     .ok_or_else(|| resource("eager probe allowance exhausted"))?;
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
-                    return self.native_failure(e);
-                }
-                SqlDemand::EagerValues {
-                    next: 0,
-                    tokens: Vec::new(),
+                let name = match crate::tikv::identity_actual::probe_name(probe.as_ref(), maximum) {
+                    Ok(name) => name,
+                    Err(e) => return self.native_failure(e),
+                };
+                match (kernel.user_variable(), name) {
+                    (
+                        Some(crate::scalar_function::user_variable::UserVariableAction::Get(_)),
+                        Some(name),
+                    ) => SqlDemand::UserVariableRead {
+                        name,
+                        consumed: false,
+                    },
+                    (
+                        Some(crate::scalar_function::user_variable::UserVariableAction::Set),
+                        Some(name),
+                    ) => SqlDemand::UserVariableWrite {
+                        name,
+                        consumed: false,
+                    },
+                    _ => SqlDemand::EagerValues {
+                        next: 0,
+                        tokens: Vec::new(),
+                    },
                 }
             }
 
@@ -3007,13 +3052,14 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate = matches!(
-            demand,
-            SqlDemand::EagerValues { .. }
-                | SqlDemand::Clock
-                | SqlDemand::Tso
-                | SqlDemand::Epoch { .. }
-        ) && invocation.arg_types.is_empty();
+        let immediate = matches!(demand, SqlDemand::UserVariableRead { .. })
+            || (matches!(
+                demand,
+                SqlDemand::EagerValues { .. }
+                    | SqlDemand::Clock
+                    | SqlDemand::Tso
+                    | SqlDemand::Epoch { .. }
+            ) && invocation.arg_types.is_empty());
         let start = self.install_task(
             invocation.slot,
             invocation.row,
@@ -3045,6 +3091,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 SqlDemand::EagerValues { .. }
             ) {
                 guard.provider.finish_eager_values(&guard.task)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::UserVariableRead { .. }
+            ) {
+                guard.provider.finish_user_variable(&guard.task, None)
             } else if matches!(guard.provider.task(&guard.task)?.demand, SqlDemand::Clock) {
                 guard.provider.resume_clock(&guard.task, None)
             } else if matches!(guard.provider.task(&guard.task)?.demand, SqlDemand::Tso) {
@@ -3137,6 +3188,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("crypto source cannot be wire NULL"));
             };
             return self.resume_crypto(id, token);
+        }
+        if matches!(task.demand, SqlDemand::UserVariableWrite { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("user variable operand cannot be wire NULL"));
+            };
+            return self.finish_user_variable(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::EagerValues { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

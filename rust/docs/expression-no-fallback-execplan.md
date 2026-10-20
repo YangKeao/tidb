@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-21 N12) Original scalar/state 57,057 / DF2895EE82065D7E and ordered output 432 / 695ADB35A928374D captured, frozen and rerun unchanged. Genuine four-route source Admission guard reproduced; independent 57,057 scalar pairs passed before retiring the original effects bodies; executed sources archived.
+- [x] (2026-10-21 N12) Stored-name read/write demand uses the existing EagerValuesNative frame; LAST_INSERT_ID(value) shares the proven value owner; original row-major suite scheduling uses shared physical column views. Actual source 57,057 cases x two flags and all 432 ordered cases pass; callbacks/authentication/resources/recovery/selection/alias checks pass. Full frontend 1,831/exact prior 3/95/all 320 batch/exact 346 warnings, Projection26/lint/dual eleven-file formatting and final reconstruction checker pass. See evidence/no-fallback-n12.md; continue the overall task.
+
 - [x] (2026-10-21 N11 niladic session reads) Original1760/33F3607B995E80CC captured/frozen/rerun; independent1760 pairs and14 actual SourceAdmission RED before retirement. Shared context-only value owner integrated in ordinary scalar and existing zero-argument host. Actual1760 source matrix/live7profiles/dead/empty/resourceNULLrecovery and128 callback panic/recovery cases pass; immediate orphan-task bug reproduced before scope-guard fix. Fullfront1822/exact3/95/all314batch/346warnings, Projection26(new11rootcohort), lint/dual8fmt/fixtures/shared-owner/checker pass. Local checkpoint; overall effects/ordered/global work continues.
 
 - [x] (2026-10-21 N11 initial scope) Capture, independent proof and shared niladic owner/source integration completed above. Continue remaining early/session-write/ordered/global gaps; no checkpoint pause.
@@ -144,6 +147,13 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N12 full validation preserves every inherited failure/warning, while ordered programs no longer refuse preparation. The same singleton-view source survives a real assignment callback panic with original input selection intact; resource errors remain terminal and recover with NULL on the same worker.
+
+- N12 source-matrix fixture initially inspected fixed-width cells with get_raw after permissive original return conversion had produced incompatible raw Datum bytes. That inspection itself panicked outside the protected execution. Compare complete Column storage, as the existing N11 source matrix does, to preserve both execution outcomes without inventing extra cell decoding. Ordered integer/string fixtures retain their frozen frame format.
+
+- N12 preparation: the original stored constant name is read directly without evaluating its expression. Failed name formatting falls into the original common eager body; it must not be retried as a variable lookup using the evaluated name. SETVAR skips NULL writes, and its write precedes outer return conversion. The original user-variable suite is row-major and does not read the vector switch; LAST_INSERT_ID without user-variable roots retains the existing column-major decision.
+- N12 ordered reference: the legacy optimized direct-column swap refuses non-nil selection vectors. Selected direct-alias fixtures use the working general row evaluator, while unselected fixtures retain normal optimization. This establishes values/state/order independently of the already supported native selected-column copy policy.
 
 - N11 callback proof: an immediate host task was installed before the caller could receive its handle; a context panic leaked unreachable tasks across service reuse. The corrected string callback fixture reproduced byte-cap failure after repeated real panics. A guard now owns cancellation until start returns, including success/error/unwind; 128 panics and fresh recovery pass without changing the original panic.
 - N11 source coverage uses the canonical worker/profile. The historical mandatory typed test consumer correctly rejected a niladic session call before execution; the resource fixture now exercises the production profile rather than changing that existing consumer's contract.
@@ -394,6 +404,12 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: N12 keeps a single EagerValuesNative catalog and SDK frame. Immutable user-variable selectors choose either immediate context read, demand of argument 1 only, or the original common eager body if stored-name formatting fails. Ordered suites use singleton selection views sharing column owners; the caller selection is never overwritten.
+  Rationale: preserve original demand, write-before-return-conversion state and exact program.vectorizable scheduling without a second expression interpreter or callback.
+  Date/Author: 2026-10-21 / ExpressionReuseEngineer.
+
+- N12 initial: freeze exact scalar/state and ordered-output witnesses before implementing variable actions. Include uppercase variable names to preserve delegated context-key semantics, malformed headers before any lookup, variable-kind changes, unsigned identifier bits, NULL non-writes and side effects surviving a result error. Reuse the same SDK host catalog/driver and existing value casts; keep expression evaluation out of production metadata callbacks.
+
 - N11 final: store only the SessionRead selector in EagerValueKernel, and call the same context-only helper from the ordinary scalar entrance. Exact zero-arity/non-PB eligibility preserves malformed/common and PB behavior. Keep the original common body unchanged after the new guard and defer result-family conversion to its original boundary.
 - N11 lifecycle: use one immediate-task cancellation guard for existing eager/clock/TSO/epoch branches. Never catch or replace the callback panic; release unexposed task ownership during unwind. Keep SDK sources/baselines unchanged and validate the affected frontend/Projection scopes completely.
 
@@ -622,6 +638,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+- N12 is complete as a local checkpoint after N11 1ad03fd3: 57,057 independent pre-retirement pairs and frozen scalar/ordered witnesses are preserved; actual source 57,057 x two flags and all 432 ordered cases pass. Full frontend 1,831/exact prior 3/95/all 320 batch/exact 346 warnings, Projection26/lint/dual eleven-file formatting and final checker pass. Evidence: evidence/no-fallback-n12.md. SDK sources remain unchanged at 7df75c9. Continue early typed/cached functions and remaining leaf/public/fallback seams without another prompt.
 
 - N11 niladic session reads and immediate-task cleanup are complete as a local checkpoint, with original witness/independent pre-retirement proof, actual source matrices and exact prior failure/warning sets. All final builds are terminal. The overall task continues with user-variable/session effects and ordered output, then remaining early/leaf/public/unistore/fallback closure; no new prompt is needed.
 
