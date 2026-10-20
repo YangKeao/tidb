@@ -3817,6 +3817,33 @@ mod tests {
         let byte_unary_mix = std::iter::once(0)
             .chain(byte_unary_start..roots.len())
             .collect::<Vec<_>>();
+        let crypto_start = roots.len();
+        for name in ["sm3", "password", "encode", "decode"] {
+            let value = call(
+                "if",
+                string.clone(),
+                vec![
+                    column(0),
+                    Expression::Constant(Constant::new(Datum::new_string(""), string.clone())),
+                    Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                ],
+            );
+            let mut args = vec![value];
+            if matches!(name, "encode" | "decode") {
+                args.push(Expression::Constant(Constant::new(
+                    Datum::new_string("password"),
+                    string.clone(),
+                )));
+            }
+            let root = call(name, string.clone(), args);
+            roots.push(root.clone());
+            fields.push(string.clone());
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let crypto_mix = std::iter::once(0)
+            .chain(crypto_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3972,6 +3999,10 @@ mod tests {
             (
                 byte_unary_mix.iter().map(|&i| roots[i].clone()).collect(),
                 byte_unary_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                crypto_mix.iter().map(|&i| roots[i].clone()).collect(),
+                crypto_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
         ];
         // Keep prior matrices intact. Each new heterogeneous suite adds a

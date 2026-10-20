@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20) N7x: preserve 418392 pre-retirement independent pairs and original hashes, retire ordinary SM3/PASSWORD/ENCODE/DECODE Ready handoffs, integrate actual eager native sources, and finish expanded types/returns/selection/provider/callback/resource/NULL-recovery tests plus last nine-root mixed Projection cohort. Full frontend1780/exact3/95ignored/all289batch, SDK1133/exact1/1ignored, Projection26; warning-title Counters346/17/clippy89expr171total unchanged. Lint, both pinned15-file format checks, fixtures, archived original-owner comparison and read-only final checker pass. SDK local DCO28a69df and matching frontend checkpoint record this milestone; global fallback/unistore/full-server work remains open.
+
 - [x] (2026-10-20) N7w: capture/freeze original ASCII/LTRIM/RTRIM byte-unary observations and Ready/source guards before production edits, expose finite actual byte results over single original SDK owners, independently pair before retirement, integrate actual canonical sources with original signature casts/probes/return boundary and binary output policy. Validate full gates and signed local checkpoint; global scope stays open.
 
 - [x] (2026-10-20) N7v: capture/freeze original seven UUID/shard/Vitess misc callers and source/Ready guards, expose actual finite SDK values over the original pure owners, independently compare before retiring eight Ready handoffs, preserve signature probes/eager children/distinct optional-flag phases/typed errors and exact Decimal/UInt bits. Integrate dedicated native sources through the same frame, validate demand/provenance/resources/panic/recovery/returns/Projection/full gates and sign local DCO checkpoints. Generic/unistore/global gates stay open.
@@ -124,6 +126,21 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N7x final: the expanded provider test initially passed lowercase SDK operation
+names into the uppercase frontend dispatch oracle, producing a test-only None
+unwrap. Correcting that lookup restored the expected comparison; no production
+change was required. The full frontend passes1780 with precisely the prior3
+failures and all289 batch tests. Both frozen crypto witnesses still pass.
+Callback tests confirm exclusive store borrowing, warning panic consumption,
+generation mutation rejection and fresh-call recovery. NULL data skips a huge
+password's body conversion while its child and capability are still demanded.
+
+N7x inventory: PASSWORD emits warning1681 before hash coercion and NULL
+handling. ENCODE/DECODE first coerce data, then skip password coercion when data
+is NULL; all child EXPRESSIONS are still eager in ordinary ScalarFunction. Hash
+and SQLCrypt byte helpers use distinct original sentinel/error subjects and
+actual other.to_bytes policies; do not replace them with generic string coercion.
 
 N7w final full run initially had1771/exact4: only the old cache architecture
 witness was new, not a SQL value/demand regression. After preserving that cache
@@ -294,6 +311,25 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: finish the existing four-function N7x milestone before migrating another family; append its Projection cohort last and retain the original clock setup index. Preserve historical original/pair evidence and run current source/provider tests independently of those witnesses.
+  Rationale: the handoff integrated production code but left source and callback contracts unverified.
+  Date/Author: 2026-10-20, ExpressionReuseEngineer.
+
+Decision handoff2026-10-20: preserve both current worktrees and the79 TiDB/68 TiKV
+local commits ahead of their freshly checked fork branch tips. Transfer unfinished
+task4 and uncommitted N7x to ExpressionReuseEngineer, following the new dedicated
+owner arrangement. Do not push, clean/reset, rerun already applied integration
+scripts, or mark the global objective complete. TiDBEngineer performs handoff
+documentation only and thereafter answers necessary handoff questions.
+
+Decision N7x baseline: retain all original frontend functions and SDK
+password_native/sm3_native/get_native_sql_encode/get_native_sql_decode owners
+unchanged while capturing direct/scalar results, context events and panic
+payloads. Freeze only actual observed checksums, rerun originals, then add finite
+actual candidates and compare independently before retirement. Use the explicit
+existing development-only UTC input for deterministic conversion tests.
+Date/author:2026-10-20, TiDBEngineer.
+
 Decision N7w final: preserve the suite cross-chunk Ready reuse assertion using
 the still-explicit UNCOMPRESSED_LENGTH worker, and separately require ASCII to
 retain its original65/66 results with zero Ready workers. This follows caller
@@ -460,6 +496,21 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7x is complete as a local four-function checkpoint. SM3/PASSWORD/ENCODE/DECODE
+ordinary calls and canonical sources use actual finite SDK values over the same
+original pure owners. Independent418392 comparisons and original direct34866/
+51014D84299C1F50 and scalar383526/96AFB40E405F1DF7 observations remain preserved.
+The successor completed the expanded source/provider/callback/recovery tests,
+full frontend1780/exact3/95ignored/all289batch and Projection26 including the last
+nine-root cohort. SDK1133/exact1/1ignored and clippy89expr171total terminal gates
+remain valid because no SDK source changed during successor validation. Warning
+Counters346/17 and clippy are unchanged; lint/dual15fmt/fixtures/checker pass.
+Receipt rust/docs/evidence/no-fallback-n7x.md records commands, authorship handoff,
+original evidence and exact inherited failures. Preserve all earlier commits and
+the unrelated BUILD.bazel; no push is authorized. Other Ready families, generic
+fallback, unistore, unsupported/deferred sources, inherited failures and Go/full-
+server/performance validation remain open. Task4 continues with the dedicated owner.
 
 N7w now retires all three ordinary Ready callers and integrates consuming actual
 byte-unary sources. Independent490806 real old/new comparisons passed before
@@ -3949,3 +4000,48 @@ original trim ownership, consuming actual sources, preserved cache contracts,
 full1773/exact3 and1132/exact1/Projection26 gates, warning Counters/lint/dual
 formats/fixtures/checker and local DCO checkpoint. Global fallback/unistore and
 full-server work remains open.
+
+
+## N7x: deterministic crypto actual operands
+
+The original frontend entrypoints are hash_unary, password_hash and sql_crypt
+in rust/crates/tidb-expr/src/builtin_ext/crypto.rs. SM3/PASSWORD use hash_input;
+ENCODE/DECODE use sql_string_bytes. Keep their exact byte conversions, native
+PASSWORD warning and binary-but-Text results. SDK impl_encryption.rs already
+owns the four pure deterministic functions used by explicit wire workers. Add
+finite actual APIs over these owners without traversing expressions, serializing
+markers or selecting another execution driver. Preserve prior exact typed
+recipes in the same frame. PASSWORD callbacks must occur outside store borrows;
+all required actual argument capabilities authenticate and body demand consumes
+before warning, conversion, error or panic. SQLCrypt's body NULL barriers never
+remove the original eager child-expression demand.
+
+Original capture is complete; the historical command from the frontend root was:
+RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path
+rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib crypto_actual_
+-- --nocapture. New crypto_value_tests.rs captures149 raw values, twelve password
+shapes for both binary functions, three context/truncation profiles,11 scalar
+return declarations, actual identity/error/panic and event observations. Read
+actual counts/checksums from output, freeze/rerun, and preserve genuine Ready
+and source guard failures. Then independently compare all original/candidate
+calls before retiring any original function, retaining executed source snapshots.
+Validate metadata/provenance, actual byte work and output ownership, callback
+mutation/panic and NULL/warning order, terminal resources and same prepared
+source recovery, full source/parent/selection/return matrices, mixed Projection
+appended last, full frontend/core/exact warning and failure lists/lint/dual format
+and immutable fixtures before signing local DCO commits. No push is authorized.
+
+Revision N7x baseline: record the next deterministic crypto scope, original
+warning/demand policies, untouched source snapshots and original witness gates.
+
+
+Revision handoff2026-10-20: record partial N7x integration and exact terminal
+validation, unchanged signed heads, outstanding gates and transfer to the
+dedicated project owner. This is documentation of preserved work, not an N7x
+completion or publication checkpoint.
+
+
+Revision N7x final: successor validation completed all expanded and full gates,
+retained original hashes/archives and exact inherited failures, and added the
+SDK ownership guide and final receipt. The two local DCO checkpoints preserve
+all prior local commits; global no-fallback completion is not claimed.

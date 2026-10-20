@@ -700,3 +700,8 @@ pub(crate) mod misc_value;
 pub(crate) mod byte_unary_value_tests;
 
 pub(crate) mod byte_unary_value;
+
+#[cfg(test)]
+pub(crate) mod crypto_value_tests;
+
+pub(crate) mod crypto_value;

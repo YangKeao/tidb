@@ -36,6 +36,8 @@ mod calendar_source;
 mod charset_source;
 #[path = "batch_clock.rs"]
 mod clock_source;
+#[path = "batch_crypto.rs"]
+mod crypto;
 #[path = "batch_date_arithmetic.rs"]
 mod date_arithmetic_source;
 #[path = "batch_decimal_fast_window.rs"]
@@ -140,6 +142,14 @@ impl NativeRawValueOperation {
 }
 
 pub(super) enum NativeHostMetadata {
+    Crypto {
+        arguments: Box<[usize]>,
+        operation: tidb_query_expr::NativeCryptoOperation,
+        probe: Option<Datum>,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     ByteUnary {
         argument: usize,
         operation: tidb_query_expr::NativeByteUnaryOperation,
@@ -377,6 +387,7 @@ impl NativeHostMetadata {
             | Self::Calendar { result_type, .. }
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
+            | Self::Crypto { result_type, .. }
             | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
             | Self::Identity { result_type, .. }
@@ -408,6 +419,10 @@ impl NativeHostMetadata {
 }
 
 enum SqlDemand {
+    Crypto {
+        next: usize,
+        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
+    },
     ByteUnary {
         consumed: bool,
     },
@@ -536,6 +551,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
+            SqlDemand::Crypto { next, .. } => Ok(Some(*next)),
             SqlDemand::ByteUnary { consumed } => Ok(Some(usize::from(*consumed))),
             SqlDemand::Misc { next, .. } => Ok(Some(*next)),
             SqlDemand::Identity { next } => Ok(Some(*next)),
@@ -579,6 +595,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
+            SqlDemand::Crypto { .. } => Err(binding("crypto cannot buffer a wire prefix")),
             SqlDemand::ByteUnary { .. } => Err(binding("byte unary cannot buffer a wire prefix")),
             SqlDemand::Misc { .. } => Err(binding("misc cannot buffer a wire prefix")),
             SqlDemand::Identity { .. } => Err(binding("identity cannot retain a wire prefix")),
@@ -2245,6 +2262,35 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     pending: Some(crate::tikv::wildcard_value::Prepared::Text),
                 }
             }
+            SqlBatchHostOperation::CryptoNative(operation) => {
+                let Some(NativeHostMetadata::Crypto {
+                    operation: declared,
+                    arguments,
+                    probe,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("crypto descriptor absent"));
+                };
+                if self.native_values.is_none()
+                    || operation != *declared
+                    || arguments.len() != operation.arity()
+                    || invocation.arg_types.len() != arguments.len()
+                {
+                    return Err(binding("crypto descriptor differs"));
+                }
+                let maximum = self
+                    .max_retained_bytes
+                    .checked_sub(self.retained_bytes()?)
+                    .ok_or_else(|| resource("crypto probe allowance exhausted"))?;
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                    return self.native_failure(e);
+                }
+                SqlDemand::Crypto {
+                    next: 0,
+                    tokens: [None; 2],
+                }
+            }
             SqlBatchHostOperation::ByteUnaryNative(operation) => {
                 let Some(NativeHostMetadata::ByteUnary {
                     operation: declared,
@@ -2954,6 +3000,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("LIKE source cannot be wire NULL"));
             };
             return self.resume_wildcard(id, token);
+        }
+        if matches!(task.demand, SqlDemand::Crypto { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("crypto source cannot be wire NULL"));
+            };
+            return self.resume_crypto(id, token);
         }
         if matches!(task.demand, SqlDemand::ByteUnary { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

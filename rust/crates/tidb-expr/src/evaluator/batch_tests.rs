@@ -24730,3 +24730,649 @@ fn byte_unary_resource_is_terminal_and_same_source_null_recovers() {
         assert!(ctx.inner.events.borrow().is_empty());
     }
 }
+
+#[test]
+fn native_crypto_actual_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in crate::tikv::crypto_value_tests::NAMES {
+        let mut args = vec![literal(Datum::new_string("value"), string_ty())];
+        if matches!(name, "ENCODE" | "DECODE") {
+            args.push(literal(Datum::new_string("password"), string_ty()));
+        }
+        let actual = suite(call(name, string_ty(), args));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "crypto actual source {failures:?}");
+}
+
+#[test]
+fn crypto_actual_sources_keep_types_returns_eager_children_context_and_prefixes() {
+    let returns = [
+        ty(),
+        ty().with_unsigned(true),
+        real_ty(),
+        FieldType::new(FieldTypeCode::Float),
+        string_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Json),
+        FieldType::new(FieldTypeCode::VectorFloat32),
+    ];
+    for (field, values) in misc_native_source_types() {
+        for ret in &returns {
+            for name in crate::tikv::crypto_value_tests::NAMES {
+                let arity = crate::tikv::crypto_value::operation(name).unwrap().arity();
+                for argument in 0..arity {
+                    for position in 0..3 {
+                        let schema = if field.code() == FieldTypeCode::NewDate {
+                            vec![]
+                        } else {
+                            vec![field.clone()]
+                        };
+                        let rows = if schema.is_empty() {
+                            vec![vec![]]
+                        } else {
+                            values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>()
+                        };
+                        let value = if position == 0 || schema.is_empty() {
+                            literal(values.last().unwrap().clone(), field.clone())
+                        } else {
+                            typed_column(0, &field)
+                        };
+                        let value = if position == 2 {
+                            call(
+                                "if",
+                                field.clone(),
+                                vec![int(1), value, literal(Datum::Null, field.clone())],
+                            )
+                        } else {
+                            value
+                        };
+                        let mut args =
+                            vec![literal(Datum::new_string("value"), string_ty()); arity];
+                        args[argument] = value;
+                        let selection = (0..rows.len())
+                            .rev()
+                            .chain([0, rows.len() - 1, 0])
+                            .collect::<Vec<_>>();
+                        for profile in 0..3 {
+                            for level in 0..3 {
+                                compare_wildcard_source(
+                                    call(name, ret.clone(), args.clone()),
+                                    &schema,
+                                    &rows,
+                                    &selection,
+                                    profile,
+                                    level,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for name in crate::tikv::crypto_value_tests::NAMES {
+        let arity = crate::tikv::crypto_value::operation(name).unwrap().arity();
+        for argument in 0..arity {
+            for computed in [false, true] {
+                let field = FieldType::new(FieldTypeCode::NewDecimal);
+                let mut value = literal(
+                    crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+                    field.clone(),
+                );
+                if computed {
+                    value = call(
+                        "if",
+                        field.clone(),
+                        vec![int(1), value, literal(Datum::Null, field)],
+                    );
+                }
+                let mut args = vec![literal(Datum::new_string("value"), string_ty()); arity];
+                args[argument] = value;
+                compare_wildcard_source(
+                    call(name, string_ty(), args),
+                    &[],
+                    &[vec![]],
+                    &[0, 0],
+                    0,
+                    0,
+                );
+            }
+        }
+        for payload in [
+            Datum::Bytes(vec![255, 0]),
+            Datum::Raw(vec![255]),
+            Datum::MinNotNull,
+            Datum::MaxValue,
+        ] {
+            let mut args = vec![literal(Datum::new_string(""), string_ty()); arity];
+            args[0] = literal(payload, string_ty());
+            let root = call(name, string_ty(), args);
+            compare_wildcard_source(
+                call("cast_char", string_ty(), vec![root]),
+                &[],
+                &[vec![]],
+                &[0, 0],
+                0,
+                0,
+            );
+        }
+        for argument in 0..arity {
+            let mut args = vec![literal(Datum::Null, string_ty()); arity];
+            args[argument] = call("abs", ty(), vec![int(i64::MIN)]);
+            // NULL data cannot suppress an error in the eager password expression.
+            compare_wildcard_source(call(name, string_ty(), args), &[], &[vec![]], &[0, 0], 0, 0);
+        }
+    }
+}
+
+#[test]
+fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+            LocalHostServices,
+        },
+        NativeCryptoOperation as O,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<String>>,
+        warning_action: Cell<u8>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented crypto source")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::tikv::ReadyValueCache> {
+            panic!("retired crypto Ready")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            panic!("pure crypto does not read zone")
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            panic!("pure crypto does not read truncation policy")
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            // A real context callback must be free to borrow the store exclusively.
+            let mut values = self.store.borrow_mut();
+            self.events
+                .borrow_mut()
+                .push(format!("warning:{code}:{message}"));
+            match self.warning_action.replace(0) {
+                1 => panic!("original PASSWORD warning panic"),
+                2 => values.begin_window().unwrap(),
+                _ => (),
+            }
+        }
+    }
+    fn outcome(f: impl FnOnce() -> std::result::Result<Datum, EvalError>) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => format!("{v:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        }
+    }
+    let mut rejected = 0;
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for op in [O::Sm3, O::Password, O::Encode, O::Decode] {
+            let arity = op.arity();
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); arity];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::CryptoNative(op),
+                HostSignature {
+                    arg_types: args.clone().into_boxed_slice(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::Crypto {
+                arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
+                operation: op,
+                probe: None,
+                result_type: string_ty(),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign_token = foreign
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            let context = C {
+                store: &store,
+                events: RefCell::new(vec![]),
+                warning_action: Cell::new(0),
+            };
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, c: &mut EvalContext| {
+                let HostStart::Pending { task, request } = p
+                    .start(
+                        c,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         c: &mut EvalContext,
+                         t: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    c,
+                    t,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            for index in 0..arity {
+                let good = insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                let mut corrupt = good.clone();
+                corrupt[0] ^= 1;
+                let mut short = good.clone();
+                short.pop();
+                let mut long = good;
+                long.push(0);
+                for bad in [
+                    None,
+                    Some(corrupt),
+                    Some(short),
+                    Some(long),
+                    Some(stale.clone()),
+                    Some(foreign_token.clone()),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::Output,
+                        3 + index,
+                        row,
+                    )),
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    )),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            occurrence: 0,
+                            input_row: 1,
+                        },
+                    )),
+                ] {
+                    context.events.borrow_mut().clear();
+                    let task = begin(&mut provider, &mut ctx);
+                    for prefix in 0..index {
+                        assert!(matches!(
+                            reply(
+                                &mut provider,
+                                &mut ctx,
+                                &task,
+                                prefix,
+                                Some(insert(
+                                    &Datum::Null,
+                                    NativeValueRole::CharInput,
+                                    3 + prefix,
+                                    row
+                                ))
+                            ),
+                            Ok(HostStep::NeedArg(_))
+                        ));
+                    }
+                    assert!(matches!(
+                        reply(&mut provider, &mut ctx, &task, index, bad),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(context.events.borrow().is_empty());
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                    rejected += 1;
+                }
+            }
+            let task = begin(&mut provider, &mut ctx);
+            assert!(reply(
+                &mut provider,
+                &mut ctx,
+                &task,
+                arity,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            provider.cancel(&task);
+            rejected += 1;
+            let mut cases = vec![
+                vec![Datum::Null; arity],
+                vec![Datum::new_string(""); arity],
+                vec![Datum::new_string("value"); arity],
+                vec![Datum::Bytes(vec![255, 0]); arity],
+                vec![Datum::Raw(vec![255]); arity],
+                vec![Datum::Int(-7); arity],
+                vec![Datum::MinNotNull; arity],
+                vec![crate::tikv::misc_identity_value_tests::extra_values().remove(4); arity],
+            ];
+            if arity == 2 {
+                for password in [
+                    Datum::Bytes(vec![255; 1 << 20]),
+                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                    Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+                    crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+                ] {
+                    cases.push(vec![Datum::Null, password]);
+                }
+                cases.push(vec![Datum::new_string("value"), Datum::Null]);
+            }
+            for values in cases {
+                context.events.borrow_mut().clear();
+                let task = begin(&mut provider, &mut ctx);
+                let actual = outcome(|| {
+                    let mut last = None;
+                    for (i, value) in values.iter().enumerate() {
+                        let step = reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            i,
+                            Some(insert(value, NativeValueRole::CharInput, 3 + i, row)),
+                        );
+                        if i + 1 < arity {
+                            assert!(matches!(step, Ok(HostStep::NeedArg(_))));
+                            assert!(context.events.borrow().is_empty());
+                        } else {
+                            last = Some(step);
+                        }
+                    }
+                    match last.unwrap() {
+                        Ok(HostStep::Ready(v)) => {
+                            let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                                panic!()
+                            };
+                            Ok(store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap()
+                                .clone())
+                        }
+                        Err(_) => Err(provider
+                            .take_native_error()
+                            .expect("small crypto result or original conversion error")),
+                        _ => panic!(),
+                    }
+                });
+                let events = context.events.borrow().clone();
+                context.events.borrow_mut().clear();
+                let expected = outcome(|| {
+                    crate::builtin_ext::crypto::dispatch(
+                        &op.name().to_ascii_uppercase(),
+                        &values,
+                        &context,
+                    )
+                    .unwrap()
+                    .and_then(|v| {
+                        crate::scalar_function::coerce_function_result(
+                            op.name(),
+                            Some(&string_ty()),
+                            v,
+                        )
+                    })
+                });
+                assert_eq!(actual, expected, "crypto provider {op:?} role={role:?}");
+                assert_eq!(events, *context.events.borrow());
+                let _ = provider.take_native_error();
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    arity - 1,
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + arity - 1,
+                        row
+                    ))
+                )
+                .is_err());
+                provider.cancel(&task);
+                provider.cancel(&task);
+            }
+            // A demanded valid coefficient with huge precision must refuse finite
+            // work, consume the body and allow a fresh NULL call on this provider.
+            context.events.borrow_mut().clear();
+            let task = begin(&mut provider, &mut ctx);
+            let huge = Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1));
+            for i in 0..arity {
+                let value = if i == 0 { &huge } else { &Datum::Null };
+                let result = reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    i,
+                    Some(insert(value, NativeValueRole::CharInput, 3 + i, row)),
+                );
+                if i + 1 < arity {
+                    assert!(matches!(result, Ok(HostStep::NeedArg(_))));
+                } else {
+                    assert!(result.is_err());
+                }
+            }
+            assert!(matches!(
+                provider.take_native_error(),
+                Some(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            let warning_count = context.events.borrow().len();
+            assert!(reply(
+                &mut provider,
+                &mut ctx,
+                &task,
+                arity - 1,
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3 + arity - 1,
+                    row
+                ))
+            )
+            .is_err());
+            assert_eq!(context.events.borrow().len(), warning_count);
+            provider.cancel(&task);
+            let task = begin(&mut provider, &mut ctx);
+            for i in 0..arity {
+                let result = reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    i,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3 + i, row)),
+                );
+                if i + 1 < arity {
+                    assert!(matches!(result, Ok(HostStep::NeedArg(_))));
+                } else {
+                    assert!(matches!(result, Ok(HostStep::Ready(_))));
+                }
+            }
+            provider.cancel(&task);
+            if arity == 2 {
+                // A valid second capability cannot rehabilitate a first capability
+                // invalidated between child replies, even when data was NULL.
+                context.events.borrow_mut().clear();
+                let task = begin(&mut provider, &mut ctx);
+                assert!(matches!(
+                    reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    ),
+                    Ok(HostStep::NeedArg(_))
+                ));
+                store.borrow_mut().begin_window().unwrap();
+                assert!(matches!(
+                    reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        1,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row))
+                    ),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert!(context.events.borrow().is_empty());
+                provider.cancel(&task);
+            }
+            if op == O::Password {
+                for action in [1, 2] {
+                    context.warning_action.set(action);
+                    context.events.borrow_mut().clear();
+                    let task = begin(&mut provider, &mut ctx);
+                    let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        reply(&mut provider, &mut ctx, &task, 0, Some(token))
+                    }));
+                    if action == 1 {
+                        assert!(result.is_err());
+                    } else {
+                        assert!(matches!(result, Ok(Err(LocalError::BindingContract(_)))));
+                    }
+                    assert_eq!(context.events.borrow().len(), 1);
+                    // Warning panic or generation mutation cannot replay the consumed body.
+                    assert!(reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    )
+                    .is_err());
+                    assert_eq!(context.events.borrow().len(), 1);
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                    let task = begin(&mut provider, &mut ctx);
+                    assert!(matches!(
+                        reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        ),
+                        Ok(HostStep::Ready(_))
+                    ));
+                    provider.cancel(&task);
+                }
+            }
+        }
+    }
+    assert_eq!(rejected, 128);
+}
+
+#[test]
+fn crypto_actual_resource_is_terminal_and_same_source_null_recovers_with_password_warning() {
+    let schema = [ty()];
+    let rows = [vec![Datum::Int(1)], vec![Datum::Int(0)]];
+    let field = FieldType::new(FieldTypeCode::NewDecimal);
+    for name in crate::tikv::crypto_value_tests::NAMES {
+        let arity = crate::tikv::crypto_value::operation(name).unwrap().arity();
+        for argument in 0..arity {
+            let huge = literal(
+                Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+                field.clone(),
+            );
+            let value = call(
+                "if",
+                field.clone(),
+                vec![column(0), huge, literal(Datum::Null, field.clone())],
+            );
+            let mut args = vec![literal(Datum::new_string("value"), string_ty()); arity];
+            args[argument] = value;
+            let actual = suite(call(name, string_ty(), args));
+            let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+            ctx.inner.reject = true;
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(vec![0]));
+            let mut output = output_for(&string_ty());
+            assert!(matches!(
+                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+                Err(crate::evaluator::EvaluatorError::Eval(
+                    EvalError::ExpressionRuntimeFailure(_)
+                ))
+            ));
+            let route = actual.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0));
+            ctx.inner.events.borrow_mut().clear();
+            input.set_sel(Some(vec![1]));
+            let mut output = output_for(&string_ty());
+            actual
+                .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+                .unwrap();
+            assert!(output.column(0).is_null(0));
+            let route = actual.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0));
+            let events = ctx.inner.events.borrow();
+            if name == "PASSWORD" {
+                assert_eq!(events.len(), 1);
+                assert!(format!("{events:?}").contains("1681"));
+            } else {
+                assert!(events.is_empty());
+            }
+        }
+    }
+}

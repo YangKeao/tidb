@@ -54,10 +54,11 @@ pub(crate) fn dispatch(
             ctx,
         )),
         ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1], ctx)),
-        ("SM3", 1) => Some(hash_unary(
-            crate::tikv::EvaluatedBytesOp::Sm3Native,
-            &vals[0],
+        ("SM3", 1) => Some(crate::tikv::crypto_value::eval_refs(
+            tidb_query_expr::NativeCryptoOperation::Sm3,
+            &[&vals[0]],
             ctx,
+            crate::tikv::identity_actual::default_budget(),
         )),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
@@ -255,20 +256,19 @@ fn aes_operation(encrypt: bool, mode: BlockEncryptionMode) -> crate::tikv::Evalu
 /// coercion, NULL handling, and worker admission; the shared kernel owns the
 /// native double-raw-SHA1 result, distinct from wire PASSWORD's double-hex form.
 fn password_hash(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    // go `builtinPasswordSig`: the deprecated spelling warns
-    // ErrDeprecatedSyntaxNoReplacement (1681) and still hashes.
-    ctx.append_warning(
-        1681,
-        "PASSWORD is deprecated and will be removed in a future release.",
-    );
-    hash_unary(crate::tikv::EvaluatedBytesOp::PasswordNative, value, ctx)
+    crate::tikv::crypto_value::eval_refs(
+        tidb_query_expr::NativeCryptoOperation::Password,
+        &[value],
+        ctx,
+        crate::tikv::identity_actual::default_budget(),
+    )
 }
 
 /// `ENCODE(str, password)`: the worker owns the deterministic MySQL 3.21
 /// stream cipher; this frontend preserves byte coercion and result metadata.
 fn sql_encode(data: &Datum, password: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     sql_crypt(
-        crate::tikv::EvaluatedBytesOp::SqlEncodeNative,
+        tidb_query_expr::NativeCryptoOperation::Encode,
         data,
         password,
         ctx,
@@ -278,7 +278,7 @@ fn sql_encode(data: &Datum, password: &Datum, ctx: &dyn Columns) -> Result<Datum
 /// `DECODE(str, password)`, the inverse stream operation of [`sql_encode`].
 fn sql_decode(data: &Datum, password: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     sql_crypt(
-        crate::tikv::EvaluatedBytesOp::SqlDecodeNative,
+        tidb_query_expr::NativeCryptoOperation::Decode,
         data,
         password,
         ctx,
@@ -286,43 +286,16 @@ fn sql_decode(data: &Datum, password: &Datum, ctx: &dyn Columns) -> Result<Datum
 }
 
 fn sql_crypt(
-    operation: crate::tikv::EvaluatedBytesOp,
+    operation: tidb_query_expr::NativeCryptoOperation,
     data: &Datum,
     password: &Datum,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    // Select the NULL operation from actual ordered coercion, without an
-    // invented password NULL when data is NULL. Like TRANSLATE, preparation
-    // precedes capability discovery/scope guard: coercion errors therefore
-    // precede admission. Only the ready arguments enter one complete call.
-    let (operation, ready) = 'prepare: {
-        let Some(data) = sql_string_bytes(data)? else {
-            break 'prepare (
-                crate::tikv::EvaluatedBytesOp::SqlCryptNullNative,
-                crate::tikv::EvaluatedArgs::NullWitness(None),
-            );
-        };
-        let Some(password) = sql_string_bytes(password)? else {
-            break 'prepare (
-                crate::tikv::EvaluatedBytesOp::SqlCryptNullNative,
-                crate::tikv::EvaluatedArgs::NullWitness(None),
-            );
-        };
-        (
-            operation,
-            crate::tikv::EvaluatedArgs::Bytes2(Some(data), Some(password)),
-        )
-    };
-    crate::tikv::evaluate_args_in(
+    crate::tikv::crypto_value::eval_refs(
         operation,
+        &[data, password],
         ctx,
-        || Ok(ready),
-        // Original Text metadata is retained even for non-UTF-8 output bytes.
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
+        crate::tikv::identity_actual::default_budget(),
     )
 }
 
@@ -330,7 +303,7 @@ fn sql_crypt(
 /// `coerce_str`, this deliberately accepts arbitrary string/bytes payloads;
 /// SQL's deprecated stream functions operate on bytes, not Unicode scalar
 /// values. Numeric values use their ordinary SQL decimal rendering.
-fn sql_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
+pub(crate) fn sql_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
     Ok(match value {
         Datum::Null => None,
         Datum::String(value) => Some(value.bytes().to_vec()),
@@ -453,9 +426,9 @@ pub(crate) fn validate_password_strength(
     Ok(Datum::Int(100))
 }
 
-/// Shared byte adapter for MD5, SHA/SHA1, SM3, and native PASSWORD. The frontend
+/// Retained explicit byte adapter for MD5 and SHA/SHA1. The frontend
 /// retains its original byte conversion and text packing; the shared kernel
-/// owns hashing and hex formatting, including native PASSWORD's empty result.
+/// owns their hashing and hex formatting; SM3/PASSWORD use actual values.
 /// Actual NULL inputs also reach the worker unchanged.
 fn hash_unary(
     operation: crate::tikv::EvaluatedBytesOp,
@@ -500,7 +473,7 @@ fn random_bytes(length: &Datum) -> Result<Datum, EvalError> {
 /// decimal text representation. Keeping this boundary byte-oriented lets
 /// binary/GBK values reach the digest unchanged instead of rejecting them as
 /// invalid UTF-8 in the shared human-text coercion helper.
-fn hash_input(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
+pub(crate) fn hash_input(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
     Ok(match value {
         Datum::String(value) => Some(value.bytes().to_vec()),
         Datum::Bytes(value) => Some(value.clone()),
