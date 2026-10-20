@@ -1422,6 +1422,28 @@ fn decimal_to_unsigned(value: &Decimal, upper: u64, target: FieldTypeCode) -> Co
     numeric_outcome(converted)
 }
 
+#[cfg(any(test, feature = "test-conversion-clock"))]
+std::thread_local! {
+    static TEST_CONVERSION_NOW: std::cell::Cell<Option<chrono::DateTime<Utc>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Replay conversion tests with an explicit real clock input on this thread.
+/// Only development builds enabling `test-conversion-clock` expose this scope;
+/// ordinary production builds retain the original direct UTC clock read.
+/// Nested scopes and unwinding restore the previous input without changing the
+/// process clock, timezone, other threads or computed SQL values.
+#[cfg(any(test, feature = "test-conversion-clock"))]
+pub fn with_test_conversion_clock<T>(now: chrono::DateTime<Utc>, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<chrono::DateTime<Utc>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_CONVERSION_NOW.with(|value| value.set(self.0.take()));
+        }
+    }
+    let _restore = Restore(TEST_CONVERSION_NOW.with(|value| value.replace(Some(now))));
+    run()
+}
+
 /// Go `StrToDuration(ctx, str, fsp)` (pkg/types/convert.go), whose `ctx`
 /// carries the session location: a 12-or-more-digit literal is parsed as a
 /// DATETIME first, and rounding it to `fsp` goes through the same
@@ -1438,6 +1460,10 @@ fn decimal_to_unsigned(value: &Decimal, upper: u64, target: FieldTypeCode) -> Co
 /// rather than two that can disagree. `Utc::now()` here is the instant, not a
 /// zone choice; `with_timezone` is Go's `In`.
 fn session_now(zone: &SessionTimeZone) -> chrono::DateTime<SessionTimeZone> {
+    #[cfg(any(test, feature = "test-conversion-clock"))]
+    if let Some(now) = TEST_CONVERSION_NOW.with(std::cell::Cell::get) {
+        return now.with_timezone(zone);
+    }
     Utc::now().with_timezone(zone)
 }
 
@@ -3799,4 +3825,58 @@ fn shared_year_route_keeps_native_projection_adjustment_and_json_fallback() {
         json.convert_to(&year, ConversionFlags::default()).unwrap(),
         exact(Datum::Int(2024))
     );
+}
+
+#[cfg(test)]
+mod conversion_clock_fixture_tests {
+    use super::*;
+    use chrono::{Datelike, TimeZone};
+    #[test]
+    fn explicit_clock_is_scoped_nested_panic_safe_and_thread_local() {
+        let before = TEST_CONVERSION_NOW.with(std::cell::Cell::get);
+        let original = Utc.with_ymd_and_hms(2026, 10, 19, 17, 18, 44).unwrap();
+        let next = original + chrono::Duration::days(1);
+        with_test_conversion_clock(original, || {
+            assert_eq!(
+                session_now(&SessionTimeZone::utc()).with_timezone(&Utc),
+                original
+            );
+            with_test_conversion_clock(next, || {
+                assert_eq!(
+                    session_now(&SessionTimeZone::utc()).with_timezone(&Utc),
+                    next
+                )
+            });
+            assert_eq!(
+                session_now(&SessionTimeZone::utc()).with_timezone(&Utc),
+                original
+            );
+            assert!(
+                std::thread::spawn(|| TEST_CONVERSION_NOW.with(std::cell::Cell::get))
+                    .join()
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                std::panic::catch_unwind(|| with_test_conversion_clock(next, || panic!(
+                    "original clock scope panic"
+                )))
+                .is_err()
+            );
+            assert_eq!(
+                session_now(&SessionTimeZone::utc()).with_timezone(&Utc),
+                original
+            );
+            let east = SessionTimeZone::Fixed {
+                name: "+09".into(),
+                offset_secs: 9 * 3600,
+            };
+            let shifted = session_now(&east);
+            assert_eq!(
+                (shifted.year(), shifted.month(), shifted.day()),
+                (2026, 10, 20)
+            );
+        });
+        assert_eq!(TEST_CONVERSION_NOW.with(std::cell::Cell::get), before);
+    }
 }

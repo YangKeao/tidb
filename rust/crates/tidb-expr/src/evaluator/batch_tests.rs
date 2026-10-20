@@ -23429,3 +23429,835 @@ fn native_misc_identity_resource_is_terminal_and_same_source_null_recovers() {
         assert!(ctx.inner.events.borrow().is_empty());
     }
 }
+
+#[test]
+fn native_misc_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in crate::tikv::misc_value_tests::NAMES {
+        let v = if name == "BIN_TO_UUID" {
+            Datum::Bytes(vec![0; 16])
+        } else if matches!(name, "TIDB_SHARD" | "VITESS_HASH") {
+            Datum::Int(7)
+        } else {
+            Datum::new_string("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+        };
+        let ty = crate::tikv::misc_identity_value_tests::field(&v);
+        let actual = suite(call(name, string_ty(), vec![literal(v, ty)]));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "misc native source {failures:?}");
+}
+
+fn misc_native_source_types() -> Vec<(FieldType, Vec<Datum>)> {
+    vec![
+        (ty(), vec![Datum::Null, Datum::Int(7), Datum::Int(i64::MIN)]),
+        (
+            ty().with_unsigned(true),
+            vec![Datum::Null, Datum::UInt(u64::MAX)],
+        ),
+        (
+            real_ty(),
+            vec![
+                Datum::Null,
+                Datum::Real(-0.0),
+                Datum::Real(f64::NAN),
+                Datum::Real(f64::INFINITY),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Float),
+            vec![Datum::Null, Datum::Float32(1.25), Datum::Float32(f64::NAN)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(7),
+            vec![
+                Datum::Null,
+                Datum::Decimal(Decimal::from_literal("-30.0000005")),
+            ],
+        ),
+        (
+            string_ty(),
+            vec![
+                Datum::Null,
+                Datum::new_string("6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+                Datum::new_string("bad"),
+                Datum::Bytes(vec![255]),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Year),
+            vec![Datum::Null, Datum::Int(24), Datum::Int(2024)],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::DateTime,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Date),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Timestamp).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0x1fa0bb8b8b800000),
+                    tidb_datatype::TimeType::Timestamp,
+                    6,
+                )),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            vec![
+                Datum::Null,
+                Datum::Duration(MySqlDuration::from_nanoseconds(-45678900000000, 6).unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Bit).with_flen(64),
+            vec![
+                Datum::Null,
+                Datum::Bit(tidb_datatype::BinaryLiteral::from(vec![255; 8])),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Enum),
+            vec![
+                Datum::Null,
+                Datum::Enum(
+                    tidb_datatype::MysqlEnum::new("one", 1),
+                    Collation::Utf8Mb4Bin,
+                ),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Set),
+            vec![
+                Datum::Null,
+                Datum::Set(
+                    tidb_datatype::MysqlSet::new("one,two", 3),
+                    Collation::Utf8Mb4Bin,
+                ),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::Json),
+            vec![
+                Datum::Null,
+                Datum::Json(BinaryJSON::parse("{\"x\":2}").unwrap()),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            vec![
+                Datum::Null,
+                Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, -0.0])),
+            ],
+        ),
+        (
+            FieldType::new(FieldTypeCode::NewDate),
+            vec![
+                Datum::Null,
+                Datum::Time(Time::from_raw_parts(
+                    tidb_datatype::CoreTime::from_raw(0),
+                    tidb_datatype::TimeType::Date,
+                    0,
+                )),
+            ],
+        ),
+    ]
+}
+#[test]
+fn misc_native_sources_keep_types_flags_phases_returns_context_and_output_prefixes() {
+    let returns = [
+        ty(),
+        ty().with_unsigned(true),
+        real_ty(),
+        FieldType::new(FieldTypeCode::Float),
+        string_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Json),
+        FieldType::new(FieldTypeCode::VectorFloat32),
+    ];
+    for (field, values) in misc_native_source_types() {
+        for ret in &returns {
+            for name in crate::tikv::misc_value_tests::NAMES {
+                let optional = matches!(name, "UUID_TO_BIN" | "BIN_TO_UUID");
+                for position in 0..3 {
+                    let schema = if field.code() == FieldTypeCode::NewDate {
+                        vec![]
+                    } else {
+                        vec![field.clone()]
+                    };
+                    let rows = if schema.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>()
+                    };
+                    let value = if position == 0 || schema.is_empty() {
+                        literal(values.last().unwrap().clone(), field.clone())
+                    } else {
+                        typed_column(0, &field)
+                    };
+                    let value = if position == 2 {
+                        call(
+                            "if",
+                            field.clone(),
+                            vec![int(1), value, literal(Datum::Null, field.clone())],
+                        )
+                    } else {
+                        value
+                    };
+                    let mut argsets = vec![vec![value.clone()]];
+                    if optional {
+                        for flag in [
+                            null(),
+                            int(0),
+                            int(-1),
+                            literal(Datum::new_string("1bad"), string_ty()),
+                            literal(Datum::new_string("bad"), string_ty()),
+                        ] {
+                            argsets.push(vec![value.clone(), flag]);
+                        }
+                    }
+                    let selection = (0..rows.len())
+                        .chain([0, rows.len() - 1])
+                        .collect::<Vec<_>>();
+                    for args in argsets {
+                        let root = call(name, ret.clone(), args);
+                        for seed in 0..3 {
+                            for level in 0..3 {
+                                compare_wildcard_source(
+                                    root.clone(),
+                                    &schema,
+                                    &rows,
+                                    &selection,
+                                    seed,
+                                    level,
+                                );
+                            }
+                        }
+                    }
+                }
+                // Full declared flag kinds, including NULL data and real valid payloads.
+                if optional {
+                    for (flag_type, flags) in misc_native_source_types() {
+                        if flag_type.code() == FieldTypeCode::NewDate {
+                            continue;
+                        }
+                        for payload in [
+                            Datum::Null,
+                            if name == "BIN_TO_UUID" {
+                                Datum::Bytes(vec![0; 16])
+                            } else {
+                                Datum::new_string("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                            },
+                            Datum::new_string("bad"),
+                        ] {
+                            let first_ty = crate::tikv::misc_identity_value_tests::field(&payload);
+                            let root = call(
+                                name,
+                                ret.clone(),
+                                vec![literal(payload, first_ty), typed_column(0, &flag_type)],
+                            );
+                            let rows = flags.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>();
+                            for level in 0..3 {
+                                compare_wildcard_source(
+                                    root.clone(),
+                                    std::slice::from_ref(&flag_type),
+                                    &rows,
+                                    &[0, 1, 0, 1],
+                                    1,
+                                    level,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // All child EXPRESSIONS remain eager, even when later body conversion
+    // would stop at NULL/invalid UUID before reading the literal flag value.
+    for name in ["UUID_TO_BIN", "BIN_TO_UUID"] {
+        for first in [Datum::Null, Datum::new_string("bad")] {
+            let field = crate::tikv::misc_identity_value_tests::field(&first);
+            let root = call(
+                name,
+                string_ty(),
+                vec![
+                    literal(first, field),
+                    call("abs", ty(), vec![int(i64::MIN)]),
+                ],
+            );
+            compare_wildcard_source(root, &[], &[vec![]], &[0, 0], 0, 0);
+        }
+    }
+    // A genuine computed malformed coefficient still reaches its original
+    // body error/panic; a stored constant probes BEFORE all child expressions.
+    for name in crate::tikv::misc_value_tests::NAMES {
+        for computed in [false, true] {
+            let field = FieldType::new(FieldTypeCode::NewDecimal);
+            let mut first = literal(
+                crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+                field.clone(),
+            );
+            if computed {
+                first = call(
+                    "if",
+                    field.clone(),
+                    vec![int(1), first, literal(Datum::Null, field)],
+                );
+            }
+            compare_wildcard_source(
+                call(name, string_ty(), vec![first]),
+                &[],
+                &[vec![]],
+                &[0],
+                0,
+                0,
+            );
+        }
+    }
+}
+
+#[test]
+fn misc_native_resource_failure_is_terminal_and_same_source_null_recovers() {
+    for name in [
+        "IS_UUID",
+        "UUID_TO_BIN",
+        "BIN_TO_UUID",
+        "TIDB_SHARD",
+        "VITESS_HASH",
+    ] {
+        let schema = [string_ty()];
+        let rows = [
+            vec![Datum::new_string("1".repeat(1 << 20))],
+            vec![Datum::Null],
+        ];
+        let actual = suite(call(name, string_ty(), vec![typed_column(0, &schema[0])]));
+        let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+        ctx.inner.reject = true;
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(vec![0]));
+        let mut output = output_for(&string_ty());
+        assert!(matches!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+            Err(crate::evaluator::EvaluatorError::Eval(
+                EvalError::ExpressionRuntimeFailure(_)
+            ))
+        ));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        ctx.inner.events.borrow_mut().clear();
+        input.set_sel(Some(vec![1]));
+        let mut output = output_for(&string_ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        assert!(ctx.inner.events.borrow().is_empty());
+    }
+}
+
+#[test]
+fn misc_native_capabilities_callbacks_ignored_payloads_panics_and_recovery() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+        LocalHostServices,
+    };
+    use tidb_query_expr::NativeMiscOperation as O;
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<String>>,
+        panic_zone: Cell<bool>,
+        level: Cell<usize>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented misc source")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::tikv::ReadyValueCache> {
+            panic!("retired misc Ready")
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("zone".into());
+            assert!(
+                !self.panic_zone.replace(false),
+                "original misc zone callback panic"
+            );
+            SessionTimeZone::utc()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("level".into());
+            match self.level.get() {
+                0 => crate::ErrorLevel::Warn,
+                1 => crate::ErrorLevel::Error,
+                _ => crate::ErrorLevel::Ignore,
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            drop(self.store.borrow_mut());
+            self.events
+                .borrow_mut()
+                .push(format!("warning:{code}:{message}"));
+        }
+    }
+    fn outcome(f: impl FnOnce() -> std::result::Result<Datum, EvalError>) -> Vec<u8> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(Ok(v)) => format!("VALUE:{v:?}").into_bytes(),
+            Ok(Err(e)) => format!("ERROR:{e:?}").into_bytes(),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            )
+            .into_bytes(),
+        }
+    }
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for name in crate::tikv::misc_value_tests::NAMES {
+            let op = crate::tikv::misc_value::operation(name).unwrap();
+            for arity in [1usize, 2].into_iter().filter(|n| op.accepts_arity(*n)) {
+                let field = projected(&native_bytes_type(), true).unwrap();
+                let args = vec![field.clone(); arity];
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::MiscNative {
+                        operation: op,
+                        arity: arity as u8,
+                    },
+                    HostSignature {
+                        arg_types: args.clone().into_boxed_slice(),
+                        return_type: field.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::Misc {
+                    arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
+                    operation: op,
+                    probe: None,
+                    result_type: string_ty(),
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let row = InputRow {
+                    occurrence: 0,
+                    input_row: 0,
+                };
+                let insert = |v: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(v, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                store.borrow_mut().begin_window().unwrap();
+                let foreign = RefCell::new(NativeValueStore::new(4096).unwrap());
+                foreign.borrow_mut().begin_window().unwrap();
+                let foreign_token = foreign
+                    .borrow_mut()
+                    .insert_clone(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: 3, row },
+                    )
+                    .unwrap();
+                let context = C {
+                    store: &store,
+                    events: RefCell::new(vec![]),
+                    panic_zone: Cell::new(false),
+                    level: Cell::new(0),
+                };
+                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
+                    .with_native_values(Some(&store));
+                let mut ctx = EvalContext::default();
+                let begin = |p: &mut NativeBatchHosts<'_>, c: &mut EvalContext| {
+                    let HostStart::Pending { task, .. } = p
+                        .start(
+                            c,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &field,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    task
+                };
+                let reply = |p: &mut NativeBatchHosts<'_>,
+                             c: &mut EvalContext,
+                             t: &HostTaskId,
+                             index,
+                             token: Option<Vec<u8>>| {
+                    p.resume(
+                        c,
+                        t,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                        },
+                    )
+                };
+                for index in 0..arity {
+                    let mut corrupt =
+                        insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                    corrupt[0] ^= 1;
+                    for bad in [
+                        None,
+                        Some(corrupt),
+                        Some(stale.clone()),
+                        Some(foreign_token.clone()),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::Output,
+                            3 + index,
+                            row,
+                        )),
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            InputRow {
+                                occurrence: 1,
+                                input_row: 0,
+                            },
+                        )),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            InputRow {
+                                occurrence: 0,
+                                input_row: 1,
+                            },
+                        )),
+                    ] {
+                        context.events.borrow_mut().clear();
+                        let task = begin(&mut provider, &mut ctx);
+                        for prefix in 0..index {
+                            assert!(matches!(
+                                reply(
+                                    &mut provider,
+                                    &mut ctx,
+                                    &task,
+                                    prefix,
+                                    Some(insert(
+                                        &Datum::Null,
+                                        NativeValueRole::CharInput,
+                                        3 + prefix,
+                                        row
+                                    ))
+                                ),
+                                Ok(HostStep::NeedArg(_))
+                            ));
+                        }
+                        assert!(matches!(
+                            reply(&mut provider, &mut ctx, &task, index, bad),
+                            Err(LocalError::BindingContract(_))
+                        ));
+                        assert!(context.events.borrow().is_empty());
+                        assert!(provider.take_native_error().is_none());
+                        provider.cancel(&task);
+                        provider.cancel(&task);
+                    }
+                }
+                let valid = if op == O::BinToUuid {
+                    Datum::Bytes(vec![0; 16])
+                } else if matches!(op, O::TidbShard | O::VitessHash) {
+                    Datum::Int(7)
+                } else {
+                    Datum::new_string("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                };
+                let mut cases = vec![
+                    vec![valid.clone(); arity],
+                    vec![Datum::Null; arity],
+                    vec![Datum::new_string("bad"); arity],
+                    vec![Datum::Bytes(vec![255]); arity],
+                    vec![crate::tikv::misc_identity_value_tests::extra_values().remove(4); arity],
+                ];
+                if arity == 2 {
+                    for first in [valid.clone(), Datum::Null, Datum::new_string("bad")] {
+                        for flag in [
+                            Datum::new_string("1bad"),
+                            Datum::Bytes(vec![255]),
+                            Datum::Enum(
+                                tidb_datatype::MysqlEnum::new(vec![255; 1 << 20], 1),
+                                Collation::Utf8Mb4ZhPinyinTiDbAsCs,
+                            ),
+                            Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                        ] {
+                            cases.push(vec![first.clone(), flag]);
+                        }
+                    }
+                    if op == O::UuidToBin {
+                        cases.push(vec![Datum::Null, Datum::Bytes(vec![255; 1 << 20])]);
+                    }
+                }
+                if matches!(op, O::TidbShard | O::VitessHash) {
+                    cases.extend([
+                        vec![Datum::VectorFloat32(VectorFloat32::init(1 << 18))],
+                        vec![Datum::Raw(vec![255; 1 << 20])],
+                        vec![Datum::MinNotNull],
+                    ]);
+                }
+                for values in cases {
+                    for level in 0..3 {
+                        context.level.set(level);
+                        context.events.borrow_mut().clear();
+                        let task = begin(&mut provider, &mut ctx);
+                        let actual = outcome(|| {
+                            let mut last = None;
+                            for (i, v) in values.iter().enumerate() {
+                                let step = reply(
+                                    &mut provider,
+                                    &mut ctx,
+                                    &task,
+                                    i,
+                                    Some(insert(v, NativeValueRole::CharInput, 3 + i, row)),
+                                );
+                                if i + 1 < arity {
+                                    assert!(matches!(step, Ok(HostStep::NeedArg(_))));
+                                    assert!(context.events.borrow().is_empty());
+                                } else {
+                                    last = Some(step);
+                                }
+                            }
+                            match last.unwrap() {
+                                Ok(HostStep::Ready(v)) => {
+                                    let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0)
+                                    else {
+                                        panic!()
+                                    };
+                                    Ok(store
+                                        .borrow()
+                                        .get(token, role, NativeValueOrigin { node: 2, row })
+                                        .unwrap()
+                                        .clone())
+                                }
+                                Err(_) => Err(provider
+                                    .take_native_error()
+                                    .expect("small/demanded bounded misc result")),
+                                _ => panic!(),
+                            }
+                        });
+                        let events = context.events.borrow().clone();
+                        context.events.borrow_mut().clear();
+                        let expected = outcome(|| {
+                            crate::builtin_ext::misc::dispatch_in(name, &values, &context)
+                                .unwrap()
+                                .and_then(|v| {
+                                    crate::scalar_function::coerce_function_result(
+                                        op.name(),
+                                        Some(&string_ty()),
+                                        v,
+                                    )
+                                })
+                        });
+                        assert_eq!(actual, expected, "{name} arity={arity} level={level}");
+                        assert_eq!(events, *context.events.borrow());
+                        let _ = provider.take_native_error();
+                        assert!(reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            arity - 1,
+                            Some(insert(
+                                &Datum::Null,
+                                NativeValueRole::CharInput,
+                                3 + arity - 1,
+                                row
+                            ))
+                        )
+                        .is_err());
+                        provider.cancel(&task);
+                    }
+                }
+                // A real callback panic consumes its host phase, and later calls recover.
+                if matches!(op, O::TidbShard | O::VitessHash) {
+                    context.panic_zone.set(true);
+                    let task = begin(&mut provider, &mut ctx);
+                    assert!(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row))
+                        )))
+                        .is_err()
+                    );
+                    assert!(reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    )
+                    .is_err());
+                    provider.cancel(&task);
+                    let task = begin(&mut provider, &mut ctx);
+                    assert!(matches!(
+                        reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Int(9), NativeValueRole::CharInput, 3, row))
+                        ),
+                        Ok(HostStep::Ready(_))
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn misc_native_hash_unused_vector_payload_keeps_original_small_body_work() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::{
+        local::{
+            HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, LocalHostServices,
+        },
+        NativeMiscOperation as O,
+    };
+    for op in [O::TidbShard, O::VitessHash] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = [field.clone()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::MiscNative {
+                operation: op,
+                arity: 1,
+            },
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::Misc {
+            arguments: vec![3].into_boxed_slice(),
+            operation: op,
+            probe: None,
+            result_type: ty().with_unsigned(true),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let value = Datum::VectorFloat32(VectorFloat32::init(1 << 18));
+        let token = store
+            .borrow_mut()
+            .insert_clone(
+                &value,
+                NativeValueRole::CharInput,
+                NativeValueOrigin { node: 3, row },
+            )
+            .unwrap();
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 128 << 10)
+            .with_native_values(Some(&store));
+        let mut ctx = EvalContext::default();
+        let HostStart::Pending { task, .. } = provider
+            .start(
+                &mut ctx,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let result = provider.resume(
+            &mut ctx,
+            &task,
+            HostArgReply {
+                index: 0,
+                field_type: &field,
+                values: &VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1),
+            },
+        );
+        let actual = match result {
+            Ok(HostStep::Ready(out)) => {
+                let ScalarValueRef::Bytes(Some(token)) = out.get_scalar_ref(0) else {
+                    panic!()
+                };
+                Ok(store
+                    .borrow()
+                    .get(
+                        token,
+                        NativeValueRole::Output,
+                        NativeValueOrigin { node: 2, row },
+                    )
+                    .unwrap()
+                    .clone())
+            }
+            Err(_) => Err(provider.take_native_error().unwrap()),
+            _ => panic!(),
+        };
+        let expected = crate::builtin_ext::misc::dispatch_in(
+            if op == O::TidbShard {
+                "TIDB_SHARD"
+            } else {
+                "VITESS_HASH"
+            },
+            &[value],
+            &crate::NoColumns,
+        )
+        .unwrap();
+        assert_eq!(actual, expected, "ignored vector payload {op:?}");
+    }
+}

@@ -690,3 +690,8 @@ pub(crate) mod wildcard_value_tests;
 
 #[cfg(test)]
 pub(crate) mod misc_identity_value_tests;
+
+#[cfg(test)]
+pub(crate) mod misc_value_tests;
+
+pub(crate) mod misc_value;

@@ -375,6 +375,7 @@ fn promoted_native_root_view(
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_misc_call(function).is_some()
         || native_identity_call(function)
         || native_grouping_call(function)
         || native_like_call(function)
@@ -931,6 +932,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || (native_misc_call(function).is_some() && view.value_role().is_some())
         || (native_identity_call(function) && view.value_role().is_some())
         || native_grouping_call(function)
         || native_like_call(function)
@@ -1199,6 +1201,7 @@ fn native_character_value_argument(function: &ScalarFunction) -> bool {
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_misc_call(function).is_some()
         || native_identity_call(function)
         || native_grouping_call(function)
         || native_like_call(function)
@@ -1441,6 +1444,10 @@ fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharset
         _ => return None,
     })
 }
+fn native_misc_call(function: &ScalarFunction) -> Option<tidb_query_expr::NativeMiscOperation> {
+    crate::tikv::misc_value::operation(function.func_name.lowercase())
+        .filter(|op| op.accepts_arity(function.args.len()))
+}
 fn native_identity_call(function: &ScalarFunction) -> bool {
     matches!(
         (function.func_name.lowercase(), function.args.len()),
@@ -1461,6 +1468,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_calendar_call(function).is_some()
         || native_duration_construction_call(function).is_some()
         || native_vector_call(function).is_some()
+        || native_misc_call(function).is_some()
         || native_identity_call(function)
         || native_grouping_call(function)
         || native_like_call(function)
@@ -1479,6 +1487,22 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if let Some(operation) = native_misc_call(function).filter(|_| view.value_role().is_some()) {
+        if function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "misc requires original native declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::MiscNative {
+                operation,
+                arity: function.args.len() as u8,
+            }),
+            function.args.len(),
+        ));
+    }
     if native_identity_call(function) && view.value_role().is_some() {
         if function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none())
@@ -2523,6 +2547,17 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if native_misc_call(function).is_some() && view.value_role().is_some() {
+                        budget.field(sql, 1)?;
+                        budget.array::<usize>(arity)?;
+                        budget.array::<Option<Datum>>(1)?;
+                        if let Some(v) = function.identity_constant_probe() {
+                            budget.add(
+                                crate::tikv::identity_actual::copy_extent(v)
+                                    .map_err(|_| resource("misc probe copy overflow"))?,
+                            )?;
+                        }
+                    }
                     if native_identity_call(function) && view.value_role().is_some() {
                         budget.field(sql, 1)?;
                         budget.array::<usize>(arity)?;
@@ -3218,6 +3253,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::CalendarNative { .. }
                                         | SqlBatchHostOperation::DurationConstructionNative(_)
                                         | SqlBatchHostOperation::VectorNative(_)
+                                        | SqlBatchHostOperation::MiscNative { .. }
                                         | SqlBatchHostOperation::ValueIdentityNative { .. }
                                         | SqlBatchHostOperation::GroupingNative
                                         | SqlBatchHostOperation::LikeNative { .. }
@@ -3315,6 +3351,34 @@ fn lower_view(
                                         .view
                                         .value_role()
                                         .ok_or_else(|| binding("LIKE result role missing"))?,
+                                }
+                            }
+                            SqlBatchHostOperation::MiscNative {
+                                operation,
+                                arity: _,
+                            } => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, *arity)?;
+                                let mut child = ordinal
+                                    .checked_add(1)
+                                    .ok_or_else(|| resource("misc child overflow"))?;
+                                for _ in 0..*arity {
+                                    arguments.push(child);
+                                    child = checked
+                                        .get(child)
+                                        .ok_or_else(|| binding("misc child absent"))?
+                                        .subtree_end;
+                                }
+                                NativeHostMetadata::Misc {
+                                    arguments: arguments.into_boxed_slice(),
+                                    operation,
+                                    probe: sql.identity_constant_probe().cloned(),
+                                    result_type: snapshot_field_type(item.sql),
+                                    output_node: ordinal,
+                                    output_role: item
+                                        .view
+                                        .value_role()
+                                        .ok_or_else(|| binding("misc output view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::ValueIdentityNative { name_const } => {

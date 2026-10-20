@@ -2354,7 +2354,8 @@ impl ScalarFunction {
         let identity = matches!(
             (self.func_name.lowercase(), self.args.len()),
             ("any_value", 1) | ("name_const", 2)
-        );
+        ) || crate::tikv::misc_value::operation(self.func_name.lowercase())
+            .is_some_and(|op| op.accepts_arity(self.args.len()));
         let var = if identity {
             crate::tikv::identity_actual::probe(
                 self.identity_constant_probe(),

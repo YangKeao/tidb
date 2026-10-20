@@ -176,6 +176,15 @@ fn misc_identity_original_scalar_observations() {
     if isolated("misc_identity_original_scalar_observations") {
         return;
     }
+    // The original capture ran on this UTC date. Duration -> Date/Datetime
+    // reads the datatype's real clock, not Columns.now. Replay that original
+    // clock input; retain every original case, algorithm, count and checksum.
+    let captured = chrono::DateTime::parse_from_rfc3339("2026-10-19T17:18:44Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(captured, misc_identity_scalar_at_original_capture);
+}
+fn misc_identity_scalar_at_original_capture() {
     let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
     let declarations = [
         FieldType::new(FieldTypeCode::LongLong),
@@ -323,4 +332,85 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
         .const_level(),
         crate::expression::ConstLevel::NONE
     );
+}
+
+#[test]
+fn misc_identity_duration_returns_read_the_supplied_calendar_day() {
+    if isolated("misc_identity_duration_returns_read_the_supplied_calendar_day") {
+        return;
+    }
+    let before = chrono::DateTime::parse_from_rfc3339("2026-10-19T17:18:44Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let after = before + chrono::Duration::days(1);
+    let declarations = [
+        FieldType::new(FieldTypeCode::LongLong),
+        FieldType::new(FieldTypeCode::LongLong).with_unsigned(true),
+        FieldType::new(FieldTypeCode::Float),
+        FieldType::new(FieldTypeCode::Double),
+        FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6),
+        FieldType::new(FieldTypeCode::VarString),
+        FieldType::new(FieldTypeCode::Date),
+        FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+        FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+        FieldType::new(FieldTypeCode::Json),
+        FieldType::new(FieldTypeCode::VectorFloat32),
+    ];
+    let values = super::duration_construction_value_tests::values()
+        .into_iter()
+        .filter(|v| matches!(v, Datum::Duration(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(values.len(), 10);
+    let input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+    let mut count = 0;
+    for profile in 0..3 {
+        for level in 0..3 {
+            for name in ["any_value", "name_const"] {
+                for source in &declarations {
+                    for ret in [
+                        FieldType::new(FieldTypeCode::Date),
+                        FieldType::new(FieldTypeCode::Datetime).with_decimal(6),
+                    ] {
+                        for value in &values {
+                            let mut args = vec![Expression::Constant(Constant::new(
+                                value.clone(),
+                                source.clone(),
+                            ))];
+                            if name == "name_const" {
+                                args.insert(
+                                    0,
+                                    Expression::Constant(Constant::new(
+                                        Datum::new_string("label"),
+                                        FieldType::new(FieldTypeCode::VarString),
+                                    )),
+                                );
+                            }
+                            let f = ScalarFunction::new(
+                                tidb_ast::CiString::new(name),
+                                ret.clone(),
+                                args,
+                            );
+                            let a = super::calendar_value_tests::context(profile, 3, level);
+                            let b = super::calendar_value_tests::context(profile, 3, level);
+                            let left = tidb_datatype::with_test_conversion_clock(before, || {
+                                observe(|| f.eval(&a, input.get_row(0)), &a)
+                            });
+                            let right = tidb_datatype::with_test_conversion_clock(after, || {
+                                observe(|| f.eval(&b, input.get_row(0)), &b)
+                            });
+                            assert_ne!(
+                                left, right,
+                                "original Duration calendar input {name} {source:?} {ret:?}"
+                            );
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("MISC IDENTITY ORIGINAL CALENDAR DAY INPUTS {count}");
+    assert_eq!(count, 3960);
 }

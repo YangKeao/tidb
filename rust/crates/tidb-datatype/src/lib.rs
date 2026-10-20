@@ -34,6 +34,8 @@ mod convert;
 mod core_time;
 mod datum;
 mod datum_convert;
+#[cfg(any(test, feature = "test-conversion-clock"))]
+pub use datum_convert::with_test_conversion_clock;
 mod datum_eval;
 mod decimal;
 mod duration;

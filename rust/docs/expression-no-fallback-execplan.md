@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20) N7v: capture/freeze original seven UUID/shard/Vitess misc callers and source/Ready guards, expose actual finite SDK values over the original pure owners, independently compare before retiring eight Ready handoffs, preserve signature probes/eager children/distinct optional-flag phases/typed errors and exact Decimal/UInt bits. Integrate dedicated native sources through the same frame, validate demand/provenance/resources/panic/recovery/returns/Projection/full gates and sign local DCO checkpoints. Generic/unistore/global gates stay open.
+
 - [x] (2026-10-20) N7u: retire ANY_VALUE/NAME_CONST Ready identity framing and integrate actual native-value identity sources over the same frame, preserving all19 raw representations, outer result-family conversion, ANY_VALUE unfoldability and NAME_CONST's eager first-expression demand without coercing its ignored name. Capture/freeze original direct/scalar outcomes and Ready/source REDs before candidate edits; independently compare before retirement; bound actual copies without formatting huge raw precision or cloning unused names, validate capabilities/resources/selection/output prefixes/mixed Projection and full gates, then sign local DCO commits. No generic fallback/unistore completion is implied.
 
 - [x] (2026-10-19) N7t original-only capture: 63,513 utility/legacy observations (1952BB7F6D8F1E9B), 34,344 scalar observations (C49CB830518858A9), and 78 cache/AST observations (94085E5905346BCD), before any production candidate changes. Seven representative Ready callers and both canonical LIKE/ILIKE source guards reproduce actual old-route failures. Fixed witnesses are retained; the subsequent candidate comparisons and N7t integration below are now verified.
@@ -120,6 +122,30 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N7v final audit: signed old frontend80aaa96d/SDKda0bf55 reproduced the same
+real-day231102/E060 drift as the new code. Identical default-OFF test clock input
+restores historical E5 in both, and3960 actual cross-day cases establish the day
+dependency. Test import/count mistakes were fixture-only; two actual large-vector
+copy regressions were reproduced and fixed without changing SQL algorithms.
+
+N7v original capture froze34713 direct/2E9C5CB462D67999 and381843 scalar/
+1EE864887CAE1C77 observations; all416556 genuine old/candidate comparisons passed
+before the seven ordinary misc callers/eight Ready handoffs were retired. Large
+actual-vector tests then exposed unnecessary copies: BIN_TO_UUID's quiet vector
+flag and the signed hash cast's unsupported vector payload exhausted128KiB despite
+the original fixed-size body work. The B2U flag regression and independent1MiB hash
+regression (oldUInt167 versus Resource) were captured before fixing either path.
+
+Full N7v frontend also exposed a pre-existing N7u witness clock input: Duration
+return conversion to Date/Datetime reads frontend datatype session_now directly,
+not Columns.now. The original capture was Oct19UTC; Oct20 produced count231102/
+E060F864CFA86ED1 instead of the frozen E5E2EFBE8F3E3F49. Re-running the untouched
+signed N7u frontend80aaa96d and SDKda0bf55 pairing reproduces exactly E060 on the
+new date. Keep the historical hash; do not normalize computed Datum dates or
+replace the expected checksum. A default-off development clock scope is being
+validated on both original/current sources with the original capture instant.
+
 
 N7u expanded sources additionally exposed malformed Decimal return-conversion
 order: a computed raw coefficient originally panics before huge unused scale,
@@ -249,6 +275,38 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+Decision N7v final: preserve all frozen expected checksums and default production
+clock behavior; expose only an explicitly enabled development clock scope, use
+the original captured date, and validate the same harness on signed old and new
+sources. Keep borrowed quiet flags/hash payloads actual and callbacks outside
+store borrows. Rationale: reproducibility and removal of unnecessary copies must
+not fabricate SQL outcomes or replace independent proof. Date/author:2026-10-20,
+TiDBEngineer.
+
+- Decision: detach only String/Bytes flags before BIN_TO_UUID's callbacks;
+  keep other actual quiet flags borrowed. For hash Raw/vector kinds, preserve
+  their original empty warning prefix, drop the store borrow, read the genuine
+  session zone, reauthenticate and run the original pure signed conversion with
+  that captured zone before the same SDK hash owner. Keep the scalar-name lookup
+  allocation-free. No fabricated cast result, source operand or early answer.
+  Rationale: large real operands failed against the original helper under a small
+  body allowance; these kinds' original warning stages are empty and payloads
+  are not scanned by their original numeric conversion.
+  Date/Author:2026-10-20/TiDBEngineer.
+
+- Decision: make the N7u historical witness's clock input explicit in a
+  development-only, default-off frontend datatype feature. Scope a real
+  DateTime<Utc> input per thread with nested/unwind restoration; the normal
+  production session_now path remains the original Utc::now. Enable the hook
+  through a frontend dev dependency and replay the original Oct19 capture on
+  BOTH original signed sources and current sources. Keep every original input,
+  algorithm, count and expected hash; separately test the calendar-day dependency.
+  Rationale: the signed old pairing reproduces the same daily drift, so this is
+  a missing deterministic test input, not a new SQL semantic delta. Production
+  clock mutation, LD_PRELOAD and Datum/output date rewriting are unnecessary.
+  Date/Author:2026-10-20/TiDBEngineer.
+
+
 - Decision: keep exact existing typed ANY_VALUE SDK recipes and intercept only
   actual-value views for the new host. Give malformed Decimal return conversion
   a bounded genuine coefficient-validation prefix before visible-scale work.
@@ -362,6 +420,24 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7v completed eight ordinary Ready handoffs/seven canonical sources with416556
+independent comparisons, exact frozen witnesses, full frontend1765/exact3,
+SDK1131/exact1, wrapper515/exact2 and Projection26. All281 batch tests, warning
+Counters, lint/formats/fixtures/checker pass. This advances shared execution;
+generic fallback, unistore, remaining sources and full-server gates stay open.
+
+N7v remains uncommitted pending final clock-controlled and full validation.
+Actual UUID/hash APIs reuse all eight original pure owners with visibility-only
+changes; the public wire ABI remains intact. Source and provider checks pass,
+including consuming tasks, exact flag phases, exclusive store-borrow callbacks,
+ignored large payloads, original panics and later recovery. Core1131/exact1,
+clippy and lint completed; full frontend1763/exact4 exposed the old daily N7u
+witness drift in addition to the prior3. The signed old source reproduces that
+same drift. The default-off clock fixture and identical original/current replay
+are now in validation; Projection's new cohort also needs its compile-only moved
+fixture correction verified. No N7v sign-off or global completion is claimed yet.
+
 
 N7u retires both ordinary ANY_VALUE/NAME_CONST Ready callers and their private
 identity framing forwarders; historical codec tests and explicit SDK wire ABI stay.
@@ -3695,3 +3771,60 @@ SQL validation is claimed here.
 Revision N7u final: recorded original/probe and return-order evidence,234315
 independent pairs before retirement, restored unchanged typed SDK recipes,
 consuming actual identity sources and all final gates. Global work remains open.
+
+
+## N7v: actual UUID and hash values
+
+NativeMiscOperation covers IS_UUID, UUID_VERSION, UUID_TIMESTAMP, UUID_TO_BIN,
+BIN_TO_UUID, TIDB_SHARD and VITESS_HASH with their original optional flag arities.
+The finite actual SDK APIs in native_misc_value.rs call the same eight original
+pure miscellaneous owners, preserving typed owned UUID failures, byte layout,
+exact signed timestamp Decimal and unsigned digest bits. No expression traversal,
+identity frame, marker, alternate SQL algorithm or Ready program is introduced.
+The frontend misc_value.rs retains its two strict versus byte-preserving string
+coercions, original signed casts/warnings and the two distinct flag phases.
+
+The dedicated MiscNative host uses the existing frame and authenticated actual
+capabilities. Preparation snapshots actual stored first-Constant probe metadata
+and budgets its copy without formatting/evaluating. Start preserves that original
+probe before argument0. All child expressions are eager before body conversion;
+each token authenticates and demand advances before any body error/callback/panic.
+Pure bodies borrow actual values; callback paths detach only demanded ownership
+and release store borrows. UUID_TO_BIN parsing may skip flag conversion, while
+BIN_TO_UUID flag warnings precede even NULL data. Raw/vector hash payloads are
+not cloned: the genuine zone callback stays before their genuine pure cast.
+Ordinary return conversion runs once; output is the producer's own role/origin.
+Exact prior typed source recipes stay inside the same SDK frame.
+
+Before retirement, original guards reproduced seven Ready calls and all seven
+source prepared0/fallback1/Admission routes. Original34713/2E9C5CB462D67999 and
+381843/1EE864887CAE1C77 checksums were frozen and rerun before candidates. The
+independent416556 pair log and executed tests/front/scalar/SDK sources were
+archived before removal; fixed witnesses are not renewed independent proof.
+Expanded source checks cover17 declarations,11 returns, optional flag kinds,
+profiles/truncation levels/execution flags, duplicate rows, eager expression
+errors, raw coefficient panics and physical prefixes. Provider checks include
+both output roles, all9 valid name/arity shapes,176 bad-capability cases,
+exclusive store callbacks, actual large ignored names/vector payloads, double
+cancel and rejected replay. Resource failures are terminal and the same prepared
+source subsequently handles NULL. New19-root Projection cohort is appended last.
+
+The old signed pair passes9 clock-controlled checks and3960 genuine cross-day
+conversions. The current full frontend passes1765 with exactly3 prior failures
+and95ignored; all281 batch tests pass. SDK passes1131/exact1/1ignored; Projection
+passes26 with the19-root mixed cohort, both flags and workers0/2. Frontend wrapper
+passes515/exact2, with its new scoped/nested/unwind/thread/zone guard passing.
+Default-OFF production datatype check passes. Front346/SDK17/clippy171 warning
+Counters are unchanged, including89 expression clippy warnings. Final lint, both
+pinned formatters over18 Rust files, immutable fixtures and both diff gates pass.
+The read-only n7v-final-check.py verifies all proof/count/failure/warning gates.
+See rust/docs/evidence/no-fallback-n7v.md for exact commands and retained logs. Wrapper datatype baseline is514/exact2, distinct from the unchanged SDK
+datatype565/exact2 baseline. No Go/Bazel source was changed; no complete Go-package
+transcreation, generic/unistore fallback retirement or full-server validation is
+implied. Keep all current and audit worktrees isolated; do not edit a crate or its
+dependencies during its live build, or rerun already applied integration scripts.
+
+Revision N7v final: record416556 independent pairs before retirement, consuming
+actual ownership/demand, two large-payload RED fixes, identical old/new controlled
+clock replay without changing historical hashes or production defaults, all final
+gates and local DCO checkpoint. Global remaining scope stays open.

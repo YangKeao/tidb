@@ -17,7 +17,6 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::coerce::coerce_str;
 use crate::{Datum, EvalError};
 use tidb_query_expr::{
     format_uuid_native as format_uuid, NATIVE_UUID_EPOCH_100NS as UUID_EPOCH_100NS,
@@ -182,7 +181,7 @@ fn uuid_v7() -> Result<Datum, EvalError> {
 /// The Go signature is binary `ETString`: successful output is therefore raw
 /// sixteen-byte data, not UTF-8 text.  `StringDatum` and `Bytes` both retain
 /// those bytes; numeric values use the source's `ETString` coercion.  The
-/// strict whitespace check runs before parsing inside the worker, because
+/// strict whitespace check runs before parsing inside the shared core, because
 /// MySQL rejects surrounding spaces although `google/uuid.Parse` accepts the
 /// inner spelling.
 fn uuid_to_bin(
@@ -190,32 +189,12 @@ fn uuid_to_bin(
     flag: Option<&Datum>,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    // The first complete call returns actual parsed UUID bytes, not a marker.
-    // Invalid text and NULL skip flag coercion. Admission therefore precedes
-    // the as-yet-undemanded flag; success pays for two leases/result transport
-    // and two one-shot workers when no context capability is available.
-    let parsed = crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::UuidToBinParseNative,
-        ctx,
-        || Ok(crate::tikv::EvaluatedArgs::Bytes(eval_string_bytes(value)?)),
-        crate::tikv::EvaluatedBytesResult::into_bytes,
-    )?;
-    let Some(parsed) = parsed else {
-        return Ok(Datum::Null);
-    };
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::UuidToBinSwapNative,
-        ctx,
-        || {
-            // Missing and actual NULL flags retain their original quiet zero.
-            let flag = eval_int_flag(flag);
-            Ok(crate::tikv::EvaluatedArgs::BytesInt(
-                Some(parsed),
-                Some(flag),
-            ))
-        },
-        |computed| Ok(computed.into_bytes()?.map_or(Datum::Null, Datum::Bytes)),
-    )
+    let op = tidb_query_expr::NativeMiscOperation::UuidToBin;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    match flag {
+        Some(flag) => crate::tikv::misc_value::eval_refs(op, &[value, flag], ctx, maximum),
+        None => crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum),
+    }
 }
 
 /// `BIN_TO_UUID(binary_uuid, swap_flag)`, ported from
@@ -229,42 +208,12 @@ fn bin_to_uuid(
     value: &Datum,
     flag: Option<&Datum>,
 ) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::BinToUuidNative,
-        ctx,
-        || {
-            // Preserve the original flag warning/cast before even a NULL
-            // payload. The worker owns length validation and its 1411 cause.
-            let flag_int = match flag {
-                Some(flag @ (Datum::String(_) | Datum::Bytes(_))) => {
-                    crate::cast::report_int_truncation(flag, ctx)?;
-                    crate::cast::to_i64_signed(flag)
-                }
-                Some(flag) if !matches!(flag, Datum::Null) => crate::cast::to_i64_signed(flag),
-                _ => 0,
-            };
-            let input = eval_string_bytes(value)?;
-            Ok(crate::tikv::EvaluatedArgs::BytesInt(input, Some(flag_int)))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
-}
-
-/// The Go `EvalString` payload boundary used by UUID_TO_BIN/BIN_TO_UUID.
-/// String/bytes datums are returned byte-for-byte; scalar numeric values are
-/// stringified. Callers retain their distinct optional-flag demand order.
-fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
-    crate::coerce::coerce_str_bytes(value)
-}
-
-fn eval_int_flag(flag: Option<&Datum>) -> i64 {
-    flag.filter(|value| !matches!(value, Datum::Null))
-        .map(crate::cast::to_i64_signed)
-        .unwrap_or(0)
+    let op = tidb_query_expr::NativeMiscOperation::BinToUuid;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    match flag {
+        Some(flag) => crate::tikv::misc_value::eval_refs(op, &[value, flag], ctx, maximum),
+        None => crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum),
+    }
 }
 
 /// `TIDB_SHARD(value)`, ported from `builtinTidbShardSig.evalInt` in
@@ -274,20 +223,9 @@ fn eval_int_flag(flag: Option<&Datum>) -> i64 {
 /// two's-complement `uint64` bits and takes the big-endian ciphertext's low
 /// byte. The bucket count is 256, so the low byte is exactly the modulo.
 fn tidb_shard(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::TidbShardNative,
-        ctx,
-        || {
-            // Preserve the original ETInt prefix conversion and warnings.
-            let value = if matches!(value, Datum::Null) {
-                None
-            } else {
-                Some(crate::cast::to_i64_signed_with_warnings(value, ctx)?)
-            };
-            Ok(crate::tikv::EvaluatedArgs::Int(value))
-        },
-        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
-    )
+    let op = tidb_query_expr::NativeMiscOperation::TidbShard;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum)
 }
 
 /// `VITESS_HASH(shard_key)`, ported from `builtinVitessHashSig.evalInt`. Like
@@ -295,20 +233,9 @@ fn tidb_shard(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalErro
 /// 64-bit digest is returned. The result column is UNSIGNED, so it is a
 /// `Datum::UInt`.
 fn vitess_hash(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::VitessHashNative,
-        ctx,
-        || {
-            let value = if matches!(value, Datum::Null) {
-                None
-            } else {
-                Some(crate::cast::to_i64_signed_with_warnings(value, ctx)?)
-            };
-            Ok(crate::tikv::EvaluatedArgs::Int(value))
-        },
-        // The signed carrier contains all 64 result bits, not a SQL flag.
-        crate::tikv::EvaluatedBytesResult::into_uint_bits_datum,
-    )
+    let op = tidb_query_expr::NativeMiscOperation::VitessHash;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum)
 }
 
 /// `IS_UUID(value)`, ported from `builtinIsUUIDSig.evalInt` in
@@ -321,12 +248,9 @@ fn vitess_hash(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalErr
 /// are examined. Keep that last behavior: it is explicitly covered by
 /// TiDB's `TestIsUUID` and is why this is not a canonical-format validator.
 fn is_uuid(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::IsUuidNative,
-        ctx,
-        || eval_string_bytes(value),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
+    let op = tidb_query_expr::NativeMiscOperation::IsUuid;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum)
 }
 
 /// `UUID_VERSION(value)`, ported from `builtinUUIDVersionSig.evalInt` in
@@ -334,16 +258,13 @@ fn is_uuid(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> 
 ///
 /// TiDB invokes `github.com/google/uuid.Parse` over an `ETString` argument,
 /// then returns the high nibble of UUID byte 6. Preserve the original strict
-/// UTF-8 string coercion before admission; the worker parses all accepted UUID
+/// UTF-8 string coercion before admission; the shared core parses all accepted UUID
 /// spellings. Its typed cause retains the original Unsupported diagnostic for
 /// malformed UUIDs rather than changing this frontend's policy to error 1411.
 fn uuid_version(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::UuidVersionNative,
-        ctx,
-        || Ok(coerce_str(value)?.map(String::into_bytes)),
-        crate::tikv::EvaluatedBytesResult::into_int_datum,
-    )
+    let op = tidb_query_expr::NativeMiscOperation::UuidVersion;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum)
 }
 
 /// `UUID_TIMESTAMP(value)`, ported from `builtinUUIDTimestampSig.evalDecimal`
@@ -351,17 +272,14 @@ fn uuid_version(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalEr
 ///
 /// TiDB accepts the UUID spellings parsed by `google/uuid.Parse`, returns
 /// `NULL` for a valid UUID that does not carry a timestamp, and renders the
-/// Version 1, 6, and 7 time as an exact `DECIMAL(18,6)`. The worker owns the
+/// Version 1, 6, and 7 time as an exact `DECIMAL(18,6)`. The shared core owns the
 /// `google/uuid.UUID.Time` / `Time.UnixTime` decoding, truncation toward zero
 /// to microseconds and fixed six-place decimal construction. Original strict
 /// string coercion stays in the guard; malformed UUIDs retain Unsupported.
 fn uuid_timestamp(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        crate::tikv::EvaluatedBytesOp::UuidTimestampNative,
-        ctx,
-        || Ok(coerce_str(value)?.map(String::into_bytes)),
-        crate::tikv::EvaluatedBytesResult::into_decimal_datum,
-    )
+    let op = tidb_query_expr::NativeMiscOperation::UuidTimestamp;
+    let maximum = crate::tikv::identity_actual::default_budget();
+    crate::tikv::misc_value::eval_refs(op, &[value], ctx, maximum)
 }
 
 #[cfg(test)]

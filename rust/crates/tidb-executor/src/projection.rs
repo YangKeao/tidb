@@ -3733,6 +3733,65 @@ mod tests {
         let identity_mix = std::iter::once(0)
             .chain(identity_start..roots.len())
             .collect::<Vec<_>>();
+        let misc_start = roots.len();
+        for name in [
+            "is_uuid",
+            "uuid_version",
+            "uuid_timestamp",
+            "uuid_to_bin",
+            "bin_to_uuid",
+            "tidb_shard",
+            "vitess_hash",
+        ] {
+            let optional = matches!(name, "uuid_to_bin" | "bin_to_uuid");
+            for flag in 0..if optional { 2 } else { 1 } {
+                let (field, value) = if matches!(name, "tidb_shard" | "vitess_hash") {
+                    (integer.clone().with_unsigned(true), column(0))
+                } else {
+                    let payload = if name == "bin_to_uuid" {
+                        Datum::Bytes(vec![0; 16])
+                    } else if name == "uuid_to_bin" {
+                        Datum::new_string("00000000-0000-1000-0000-000000000000")
+                    } else {
+                        Datum::new_string("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                    };
+                    let value = call(
+                        "if",
+                        string.clone(),
+                        vec![
+                            column(0),
+                            Expression::Constant(Constant::new(payload, string.clone())),
+                            Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                        ],
+                    );
+                    let field = if name == "uuid_timestamp" {
+                        FieldType::new(FieldTypeCode::NewDecimal)
+                            .with_flen(65)
+                            .with_decimal(6)
+                    } else if matches!(name, "is_uuid" | "uuid_version") {
+                        integer.clone()
+                    } else {
+                        string.clone()
+                    };
+                    (field, value)
+                };
+                let mut args = vec![value];
+                if flag == 1 {
+                    args.push(Expression::Constant(Constant::new(
+                        Datum::Int(1),
+                        integer.clone(),
+                    )));
+                }
+                let root = call(name, field.clone(), args);
+                roots.push(root.clone());
+                fields.push(field);
+                roots.push(call("cast_char", string.clone(), vec![root]));
+                fields.push(string.clone());
+            }
+        }
+        let misc_mix = std::iter::once(0)
+            .chain(misc_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -3880,6 +3939,10 @@ mod tests {
             (
                 identity_mix.iter().map(|&i| roots[i].clone()).collect(),
                 identity_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
+            (
+                misc_mix.iter().map(|&i| roots[i].clone()).collect(),
+                misc_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
         ];
         // Keep prior matrices intact. Each new heterogeneous suite adds a

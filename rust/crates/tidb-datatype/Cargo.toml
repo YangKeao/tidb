@@ -62,3 +62,7 @@ name = "fuzz-json-extract"
 path = "fuzz/json_extract.rs"
 test = false
 bench = false
+
+# Explicit development-only clock injection for reproducible conversion tests.
+[features]
+test-conversion-clock = []
