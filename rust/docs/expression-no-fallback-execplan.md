@@ -18,11 +18,13 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20 N9)796554/B0601ED2964A5721 original observations and independent pairs before common-body retirement;54 genuine actual-vector Admission guards. Metadata-only shared eager body, live cache handles, variadic actual host and lazy statement-worker reuse integrated.17x11 source matrix/0-4args/118 bad capabilities/callbacks/resources/strict ignored scale/actual error-cause identity pass; final focus10. Full frontend1802/exact3/95ignored/all301batch, SDK1141/exact1/1ignored, Projection26 with final11-root cohort; exact346/17/clippy89expr171overall warnings, lint/dual21fmt/fixtures/checker pass. Local checkpoint only; continue broader demand/source closure.
+
 - [x] (2026-10-20) N7z compression:75816 independent pairs before retirement,85 immutable original encoder frames, original direct6318/51EC3B8C9ED75F51 and scalar69498/4EBAC72F3EA6BB39 retained. Three ordinary Ready callers retired, native unary source integrated and original wire/actual decoder owners consolidated. Expanded7 and Projection26 pass; full frontend1792/exact3/95ignored/all294batch, SDK1136/exact1/1ignored, clippy/lint/format/fixtures and exact warning checks recorded in final receipt. Local DCO checkpoint only; continue overall work immediately.
 
 - [x] (2026-10-20) N8 direct closed value dispatch:11448 original/candidate pairs before nested entry retirement,477 recipes;6561 dispatched/5271 success,8992E4132C233F8C fixed witness. Production invokes the same prepared kernel directly, including three fixed two-kernel compositions. Existing11 input-capacity regressions restored by retaining the original input ledger; all assertions unchanged. Final SDK1139/exact1/1ignored, front1792/exact3/95/all294batch, Projection26; warnings17/346/clippy89expr171total exact, lint/dual3fmt/fixtures/checker pass. Local checkpoint only.
 
-- [ ] (2026-10-20 continuous overall execution) N9: separate common eager value-body semantics from child execution, integrate remaining value sources in the same host frame with original field types/cache facts/probes/returns; then lazy/effectful/deferred/PB/public/unistore closure and delete Admission fallback. Continue until overall task complete; no checkpoint is a stopping point.
+- [ ] (2026-10-20 continuous overall execution) N10: broaden common eager preparation through an exact shared semantic classification rather than a growing name whitelist; preserve early/lazy/session/metadata/prefix and malformed-arity demand. Then remaining ordered effects, deferred/parameter/correlated/PB/optional-type sources and public/unistore traversal, followed by generic Admission deletion and final caller/Go/server/performance gates. No stage is a stopping point.
 
 - [x] (2026-10-20) N7y: original42912/C0AA6D5E6AB8F921 and472032/6B9F95BC40BDD875 frozen/rerun; all514944 independent pairs pass and six executed sources archived before ordinary MD5/SHA/SHA1/SHA2 Ready retirement. Existing actual CryptoNative frame and original owners now handle all eight operations. Expanded source/provider/ignored-payload/resource/recovery checks pass, including236 bad capabilities; last nine-root digest Projection cohort passes. Full frontend1784/exact3/95ignored/all290batch; SDK1134/exact1/1ignored; Projection26; warning Counters346/17/clippy89expr171total unchanged; lint/dual9fmt/fixtures/read-only checker pass. SDK local DCOe177f16 and matching frontend checkpoint record this milestone; global scope stays open.
 
@@ -134,6 +136,29 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N9's full input matrix proved that the old typed UPPER path was not semantically
+complete for invalid UTF-8 bytes. Ordinary eager roots therefore use the original
+value policy, while explicit typed registry witnesses remain separately tested.
+The first full suite had only two extra failures, both asserting the old default
+registry selection; preserve every assertion by preparing that explicit typed
+profile in those two historical tests. Generic source results remain covered by
+the new full matrix. INSERT's existing Unsupported result also invalidated a
+new provider success fixture; use the existing four-argument EXPORT_SET owner
+for that positive case, keeping INSERT's original error in the frozen witness.
+
+JSON_MERGE rejects numeric operands before display, unlike JSON_ARRAY/OBJECT and
+JSON_DEPTH numeric casts. Keep its huge unused Decimal scale uncharged and verify
+the original strict SQL error. The new successful Projection cohort must use a
+valid character payload: cast_char(UPPER(BytesFF)) genuinely errors in the original
+reference too; preserve that behavior in a separate parent-error comparison.
+
+N9 initially omitted TO_BASE64/FROM_BASE64 from a generated eligibility list
+because its regex excluded digits. The original behavior witness still passed;
+the actual native-source guard caught both remaining Admission fallbacks. Add
+them without changing any expected SQL result. Common value-body cache capture
+must explicitly share live ownership: ordinary NativeContextCache::clone clears
+state, which would silently invalidate context-keyed JSON/regexp behavior.
 
 N8's first full SDK run exposed11 genuine regressions: borrowed Ready capacities
 had lived in TaskGuard.storage(), not scalar node_storage(). The candidate
@@ -351,6 +376,15 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision (2026-10-20 N9): extract the original common eager policy into facts
+  and live cache handles, with no executable children or old evaluator callback.
+  Preserve explicit typed registry paths, while ordinary eager sources use
+  their original actual-value policy. A single variadic host consumes
+  authenticated actual arguments, invokes that same body without a store borrow,
+  reauthenticates after callbacks and applies one original return boundary.
+  Lexical limits apply only to actually demanded conversion and direct-kernel
+  work; audit resource refusal so an old values helper cannot turn it into NULL.
+
 - Decision (2026-10-20 N8): keep exact recipe/schema/role/metadata identity gates,
   but borrow actual operands and call the unchanged generated-kernel seam
   directly. Preserve fixed two-call compositions and one budget/witness owner;
@@ -560,6 +594,13 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N9 independent comparisons and the original witness pass before retirement.
+The shared eager body now handles ordinary and new native sources from the same
+owner. Full source/provider/resource/callback/caller validation and exact
+inherited failure/warning checks pass;
+this does not complete generic Admission removal, other demand policies or
+public/unistore traversal. Continue overall execution after local milestones.
 
 N8's11448 independent comparisons passed before the old nested Ready entry was
 replaced. Full public-worker/frontend/Projection validation passes with exact
@@ -4176,3 +4217,32 @@ interpreter. Public AST and unistore have distinct semantic metadata; do not
 silently coerce their policy into the typed ScalarFunction dialect. All previously
 supported entries must reach this one framework before deleting Admission
 fallback. No family checkpoint or partial inventory closes the overall task.
+
+
+## N9: common eager value-body policy and actual sources
+
+Keep the original ScalarFunction common eager tail intact through capture and
+fresh original/candidate comparisons. The metadata-only body retains original
+argument types, constant/cache facts, literal-only row mode, return declaration
+and explicit live cache handles. Its EXTRACT/HEX/cast-layer/regexp/ORD/JSON/
+temporal/round/math/value dispatch order stays unchanged. Original math error
+decoration remains in its ordinary owner; the initial actual-source set excludes
+that diagnostic family and retains existing dedicated math hosts.
+
+Register one variadic actual-value host for the proven eager set. Preserve
+explicit typed registry validation; ordinary eager roots use the original
+actual-value policy, including invalid-byte behavior. Complete source metadata/probe byte gates precede capture.
+Authenticate each argument, consume phases before fallible body work, never hold
+a store Ref across Columns callbacks, reauthenticate all capabilities afterward,
+and preserve producer role/node and one return conversion. Actual conversion
+and generated-kernel work shares a lexical allowance; resources remain terminal,
+including when older helper code treats ordinary conversion errors as absence.
+Validate0/1/2/3/4-argument sources, all declarations/returns/contexts/flags/
+selections/prefixes/parents, capabilities/stages/replay, warning mutation/panic/
+exclusive borrow/recovery and malformed/resource phases. Append Projection
+coverage last, preserve prior clock fixtures and exact inherited failures/warnings,
+then all full gates, guide/receipt/checker and paired local DCO. Continue remaining
+lazy/effectful/deferred/PB/public/unistore and generic dispatch work immediately.
+
+
+Revision N9 final: record complete original proof, shared value-body ownership, scoped terminal resources, lazy cache reuse, expanded source/provider/Projection gates, exact inherited baselines and paired local DCO. The overall task continues with N10 semantic classification and remaining source/traversal closure.

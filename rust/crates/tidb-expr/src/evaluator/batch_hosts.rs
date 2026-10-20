@@ -141,7 +141,18 @@ impl NativeRawValueOperation {
     }
 }
 
+#[path = "batch_eager_values.rs"]
+mod eager_values_source;
+
 pub(super) enum NativeHostMetadata {
+    EagerValues {
+        arguments: Box<[usize]>,
+        kernel: crate::scalar_function::eager_values::EagerValueKernel,
+        probe: Option<Datum>,
+        result_type: FieldType,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     Crypto {
         arguments: Box<[usize]>,
         operation: tidb_query_expr::NativeCryptoOperation,
@@ -396,6 +407,7 @@ impl NativeHostMetadata {
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
             | Self::Crypto { result_type, .. }
+            | Self::EagerValues { result_type, .. }
             | Self::Compression { result_type, .. }
             | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
@@ -431,6 +443,10 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    EagerValues {
+        next: usize,
+        tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
+    },
     Crypto {
         next: usize,
         tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
@@ -566,7 +582,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
-            SqlDemand::Crypto { next, .. } => Ok(Some(*next)),
+            SqlDemand::EagerValues { next, .. } | SqlDemand::Crypto { next, .. } => Ok(Some(*next)),
             SqlDemand::Compression { consumed } | SqlDemand::ByteUnary { consumed } => {
                 Ok(Some(usize::from(*consumed)))
             }
@@ -612,6 +628,9 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
+            SqlDemand::EagerValues { .. } => {
+                Err(binding("eager values cannot buffer a wire prefix"))
+            }
             SqlDemand::Crypto { .. } => Err(binding("crypto cannot buffer a wire prefix")),
             SqlDemand::Compression { .. } => {
                 Err(binding("compression cannot buffer a wire prefix"))
@@ -681,7 +700,10 @@ impl NativeTask {
                 .checked_add(pending.as_ref().map_or(0, |p| p.retained_bytes()))
                 .ok_or_else(|| resource("LIKE retained prefix overflow"));
         }
-        if let SqlDemand::In { tokens, .. } | SqlDemand::Extremum { tokens, .. } = &self.demand {
+        if let SqlDemand::EagerValues { tokens, .. }
+        | SqlDemand::In { tokens, .. }
+        | SqlDemand::Extremum { tokens, .. } = &self.demand
+        {
             return bytes
                 .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
                     tokens.capacity(),
@@ -2236,6 +2258,29 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             ));
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::EagerValuesNative => {
+                let Some(NativeHostMetadata::EagerValues {
+                    arguments, probe, ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    return Err(binding("eager values descriptor absent"));
+                };
+                if self.native_values.is_none() || arguments.len() != invocation.arg_types.len() {
+                    return Err(binding("eager values descriptor differs"));
+                }
+                let maximum = self
+                    .max_retained_bytes
+                    .checked_sub(self.retained_bytes()?)
+                    .ok_or_else(|| resource("eager probe allowance exhausted"))?;
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                    return self.native_failure(e);
+                }
+                SqlDemand::EagerValues {
+                    next: 0,
+                    tokens: Vec::new(),
+                }
+            }
+
             SqlBatchHostOperation::TimestampDiffNative {
                 typed,
                 stop_on_null,
@@ -2942,7 +2987,10 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         };
         let immediate = matches!(
             demand,
-            SqlDemand::Clock | SqlDemand::Tso | SqlDemand::Epoch { .. }
+            SqlDemand::EagerValues { .. }
+                | SqlDemand::Clock
+                | SqlDemand::Tso
+                | SqlDemand::Epoch { .. }
         ) && invocation.arg_types.is_empty();
         let start = self.install_task(
             invocation.slot,
@@ -2954,7 +3002,9 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             let HostStart::Pending { task, .. } = start else {
                 unreachable!()
             };
-            let result = if matches!(self.task(&task)?.demand, SqlDemand::Clock) {
+            let result = if matches!(self.task(&task)?.demand, SqlDemand::EagerValues { .. }) {
+                self.finish_eager_values(&task)
+            } else if matches!(self.task(&task)?.demand, SqlDemand::Clock) {
                 self.resume_clock(&task, None)
             } else if matches!(self.task(&task)?.demand, SqlDemand::Tso) {
                 self.resume_tso(&task, None)
@@ -3050,6 +3100,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("crypto source cannot be wire NULL"));
             };
             return self.resume_crypto(id, token);
+        }
+        if matches!(task.demand, SqlDemand::EagerValues { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("eager argument cannot be wire NULL"));
+            };
+            return self.resume_eager_values(id, token);
         }
         if matches!(task.demand, SqlDemand::Compression { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

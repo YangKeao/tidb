@@ -455,6 +455,17 @@ pub(crate) fn cast_arg_as_string(
     _source: Option<&tidb_datatype::FieldType>,
     _ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
+    if !matches!(
+        v,
+        Datum::Null
+            | Datum::String(_)
+            | Datum::Bytes(_)
+            | Datum::BinaryLiteral(_)
+            | Datum::Enum(..)
+            | Datum::Set(..)
+    ) {
+        crate::scalar_function::eager_values::charge_string_work(v)?;
+    }
     crate::tikv::eval_cast_arg_as_string(v)
 }
 

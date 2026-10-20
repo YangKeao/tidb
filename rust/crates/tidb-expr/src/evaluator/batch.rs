@@ -436,6 +436,9 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::Column(_) => NativeView::RootValue,
+        Expression::ScalarFunction(f) if crate::scalar_function::eager_values::supports(f) => {
+            NativeView::RootValue
+        }
         Expression::ScalarFunction(function)
             if native_cast_name(function).is_some()
                 && function.func_name.lowercase() != "cast_char" =>
@@ -1482,14 +1485,16 @@ fn native_identity_call(function: &ScalarFunction) -> bool {
     )
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    matches!(
-        function.func_name.lowercase(),
-        "json_sum_crc32"
-            | "str_to_date"
-            | "timestampdiff"
-            | "sig_timestampdiff"
-            | "tidb_bounded_staleness"
-    ) || native_epoch_call(function).is_some()
+    crate::scalar_function::eager_values::supports(function)
+        || matches!(
+            function.func_name.lowercase(),
+            "json_sum_crc32"
+                | "str_to_date"
+                | "timestampdiff"
+                | "sig_timestampdiff"
+                | "tidb_bounded_staleness"
+        )
+        || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
@@ -1517,6 +1522,20 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if crate::scalar_function::eager_values::supports(function) && view.value_role().is_some() {
+        if function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none())
+        {
+            return Err(BatchFailure::admission(
+                "eager values require original native declarations",
+            ));
+        }
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            function.args.len(),
+        ));
+    }
+
     if let Some(operation) = native_crypto_call(function).filter(|_| view.value_role().is_some()) {
         if function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none())
@@ -2620,6 +2639,34 @@ fn preflight_view<'a>(
                             1,
                         )?;
                     }
+                    if crate::scalar_function::eager_values::supports(function)
+                        && view.value_role().is_some()
+                    {
+                        budget
+                            .array::<crate::scalar_function::eager_values::EagerArgument>(arity)?;
+                        budget.array::<usize>(arity)?;
+                        budget.add(
+                            function
+                                .func_name
+                                .original()
+                                .len()
+                                .checked_mul(2)
+                                .ok_or_else(|| resource("eager name extent overflow"))?,
+                        )?;
+                        budget.field(sql, 2)?;
+                        for argument in &function.args {
+                            budget.field(
+                                argument.static_type().expect("checked eager argument"),
+                                1,
+                            )?;
+                        }
+                        if let Some(v) = function.identity_constant_probe() {
+                            budget.add(
+                                crate::tikv::identity_actual::copy_extent(v)
+                                    .map_err(|_| resource("eager probe copy extent overflow"))?,
+                            )?;
+                        }
+                    }
                     if native_crypto_call(function).is_some() && view.value_role().is_some() {
                         budget.field(sql, 1)?;
                         budget.array::<usize>(arity)?;
@@ -3358,6 +3405,7 @@ fn lower_view(
                                         | SqlBatchHostOperation::DurationConstructionNative(_)
                                         | SqlBatchHostOperation::VectorNative(_)
                                         | SqlBatchHostOperation::CryptoNative(_)
+                                        | SqlBatchHostOperation::EagerValuesNative
                                         | SqlBatchHostOperation::CompressionNative(_)
                                         | SqlBatchHostOperation::ByteUnaryNative(_)
                                         | SqlBatchHostOperation::MiscNative { .. }
@@ -3483,6 +3531,18 @@ fn lower_view(
                                         .view
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
+                                }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative=>{
+                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
+                                let mut child=ordinal+1;
+                                for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("eager child absent"))?.subtree_end;}
+                                NativeHostMetadata::EagerValues{
+                                    arguments:arguments.into_boxed_slice(),
+                                    kernel:crate::scalar_function::eager_values::EagerValueKernel::capture(sql),
+                                    probe:sql.identity_constant_probe().cloned(),
+                                    result_type:snapshot_field_type(item.sql),output_node:ordinal,
+                                    output_role:item.view.value_role().ok_or_else(||binding("eager output view absent"))?,
                                 }
                             }
                             SqlBatchHostOperation::CompressionNative(operation) => {

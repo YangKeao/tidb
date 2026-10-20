@@ -712,3 +712,6 @@ pub(crate) mod digest_value_tests;
 pub(crate) mod compression_value_tests;
 
 pub(crate) mod compression_value;
+
+#[cfg(test)]
+pub(crate) mod eager_scalar_value_tests;

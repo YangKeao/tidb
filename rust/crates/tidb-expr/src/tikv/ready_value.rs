@@ -169,10 +169,29 @@ impl ReadyValueCache {
     ) -> R {
         let cache = native.ready_value_cache().unwrap_or(self);
         let mut guard = CacheNativeGuard::new(cache);
-        let columns = ScopedReadyValueColumns { native, cache };
+        let columns = ScopedReadyValueColumns {
+            native,
+            cache,
+            fallback: false,
+        };
         let result = body(&columns);
         guard.disarm();
         result
+    }
+
+    /// Offer this lane cache only when the value body actually requests its
+    /// original Ready capability. Earlier SQL/coercion failures never query it.
+    pub(crate) fn with_fallback_columns<'a, R>(
+        &'a self,
+        native: &'a dyn Columns,
+        body: impl FnOnce(&ScopedReadyValueColumns<'a, 'a>) -> R,
+    ) -> R {
+        let columns = ScopedReadyValueColumns {
+            native,
+            cache: self,
+            fallback: true,
+        };
+        body(&columns)
     }
 
     fn run_args(
@@ -1567,6 +1586,7 @@ fn route_prepared_args_in<T>(
                 let columns = ScopedReadyValueColumns {
                     native: ctx,
                     cache: &cache,
+                    fallback: false,
                 };
                 pack(computed, &columns)
             },
@@ -2487,6 +2507,7 @@ fn evaluate_ascii_in(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalErro
 pub struct ScopedReadyValueColumns<'native, 'cache> {
     native: &'native dyn Columns,
     cache: &'cache ReadyValueCache,
+    fallback: bool,
 }
 
 // One local forwarding list, not a general context/delegation framework.
@@ -2501,7 +2522,11 @@ macro_rules! forward_columns {
 
 impl Columns for ScopedReadyValueColumns<'_, '_> {
     fn ready_value_cache(&self) -> Option<&ReadyValueCache> {
-        Some(self.cache)
+        if self.fallback {
+            self.native.ready_value_cache().or(Some(self.cache))
+        } else {
+            Some(self.cache)
+        }
     }
 
     forward_columns! {

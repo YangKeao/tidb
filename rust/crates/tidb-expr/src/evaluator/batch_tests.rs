@@ -118,6 +118,36 @@ fn prepare(suite: &EvaluatorSuite, schema: &[FieldType]) -> PreparedBatch {
     )
     .unwrap()
 }
+
+// These historical registry witnesses exercise the explicit typed protocol.
+// Ordinary scalar sources now use their original value policy for invalid bytes.
+fn prepare_typed_registry(suite: &EvaluatorSuite, schema: &[FieldType]) -> PreparedBatch {
+    let mut worker = prepare(suite, schema);
+    let source = lower_view(
+        suite,
+        0,
+        schema,
+        true,
+        93,
+        limits(),
+        Some(NativeView::Typed),
+    )
+    .unwrap();
+    let program = compile_batch(
+        &source.expr,
+        &source.schema,
+        LocalCompileContext {
+            limits: source.limits.tree,
+        },
+        &source.facts,
+    )
+    .unwrap();
+    worker.window_size = program.max_batch_size();
+    worker.source = source;
+    worker.program = program;
+    worker
+}
+
 fn chunk(schema: &[FieldType], rows: &[Vec<Datum>]) -> Chunk {
     let mut result = Chunk::new_with_capacity(schema, rows.len());
     for row in rows {
@@ -423,7 +453,7 @@ fn bytes_to_fixed_and_varlen_share_the_whole_selection_driver() {
         ),
     ] {
         let suite = suite(root);
-        let mut worker = prepare(&suite, &schema);
+        let mut worker = prepare_typed_registry(&suite, &schema);
         let mut native_input = chunk(&schema, &rows);
         native_input.set_sel(Some(selected.clone()));
         let mut batch_input = chunk(&schema, &rows);
@@ -480,7 +510,7 @@ fn mixed_carrier_and_three_argument_calls_use_the_shared_registry() {
         vec![string_column(0), int(2), int(3)],
     );
     let string_suite = suite(root);
-    let mut worker = prepare(&string_suite, &schema);
+    let mut worker = prepare_typed_registry(&string_suite, &schema);
     let mut native_input = chunk(&schema, &rows);
     native_input.set_sel(Some(vec![1, 0, 1, 2]));
     let mut batch_input = chunk(&schema, &rows);
@@ -26062,4 +26092,648 @@ fn compression_actual_resource_is_terminal_and_same_source_null_recovers() {
         assert_eq!((route.refusals, route.fallback), (0, 0));
         assert!(ctx.inner.events.borrow().is_empty());
     }
+}
+
+#[test]
+fn eager_scalar_actual_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for &name in crate::tikv::eager_scalar_value_tests::NAMES {
+        let args = crate::tikv::eager_scalar_value_tests::arguments(
+            name,
+            &Datum::VectorFloat32(VectorFloat32::init(0)),
+        )
+        .into_iter()
+        .map(|v| {
+            let f = crate::tikv::misc_identity_value_tests::field(&v);
+            literal(v, f)
+        })
+        .collect();
+        let actual = suite(call(name, string_ty(), args));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "eager scalar source {failures:?}");
+}
+
+fn compare_eager_source(
+    root: Expression,
+    schema: &[FieldType],
+    rows: &[Vec<Datum>],
+    selection: &[usize],
+    seed: usize,
+    level: usize,
+) {
+    fn outcome<T: std::fmt::Debug>(f: impl FnOnce() -> T) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => format!("{v:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        }
+    }
+    let field = snapshot_field_type(root.static_type().unwrap());
+    let label = format!("{root:?} {schema:?} seed={seed} level={level} selection={selection:?}");
+    let (actual, reference) = (suite(root.clone()), suite(root));
+    for enabled in [false, true, false, true] {
+        let mut ctx = crate::tikv::wildcard_value_tests::context(1, seed, level);
+        ctx.inner.reject = false;
+        ctx.inner.enabled.set(enabled);
+        let oldctx = crate::tikv::wildcard_value_tests::context(1, seed, level);
+        oldctx.inner.enabled.set(enabled);
+        let (mut input, mut old) = (chunk(schema, rows), chunk(schema, rows));
+        input.set_sel(Some(selection.to_vec()));
+        old.set_sel(Some(selection.to_vec()));
+        let (mut output, mut expected) = (output_for(&field), output_for(&field));
+        assert_eq!(
+            outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, schema)),
+            outcome(|| reference.run(&oldctx, &mut old, &mut expected)),
+            "{label} flag={enabled}"
+        );
+        assert_eq!(
+            *ctx.inner.events.borrow(),
+            *oldctx.inner.events.borrow(),
+            "{label}"
+        );
+        assert_eq!(output.num_rows(), expected.num_rows(), "{label}");
+        assert_eq!(output.column(0), expected.column(0), "{label}");
+        let route = actual.batch_route_snapshot();
+        assert_eq!(
+            (route.refusals, route.fallback),
+            (0, 0),
+            "{label} {route:?}"
+        );
+    }
+}
+#[test]
+fn eager_scalar_sources_keep_declared_types_returns_context_selection_and_prefixes() {
+    for (field, values) in misc_native_source_types() {
+        for ret in crate::tikv::eager_scalar_value_tests::types() {
+            for &name in crate::tikv::eager_scalar_value_tests::NAMES {
+                for position in 0..3 {
+                    let schema = if field.code() == FieldTypeCode::NewDate {
+                        vec![]
+                    } else {
+                        vec![field.clone()]
+                    };
+                    let rows = if schema.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        values.iter().cloned().map(|v| vec![v]).collect::<Vec<_>>()
+                    };
+                    let value = if position == 0 || schema.is_empty() {
+                        literal(values.last().unwrap().clone(), field.clone())
+                    } else {
+                        typed_column(0, &field)
+                    };
+                    let value = if position == 2 {
+                        call(
+                            "if",
+                            field.clone(),
+                            vec![int(1), value, literal(Datum::Null, field.clone())],
+                        )
+                    } else {
+                        value
+                    };
+                    let selection = (0..rows.len())
+                        .rev()
+                        .chain([0, rows.len() - 1, 0])
+                        .collect::<Vec<_>>();
+                    let mut args =
+                        crate::tikv::eager_scalar_value_tests::arguments(name, &Datum::Null)
+                            .into_iter()
+                            .map(|v| {
+                                let f = crate::tikv::misc_identity_value_tests::field(&v);
+                                literal(v, f)
+                            })
+                            .collect::<Vec<_>>();
+                    args[usize::from(name == "JSON_OBJECT")] = value;
+                    for profile in 0..3 {
+                        for level in 0..3 {
+                            compare_eager_source(
+                                call(name, ret.clone(), args.clone()),
+                                &schema,
+                                &rows,
+                                &selection,
+                                profile,
+                                level,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for name in ["JSON_ARRAY", "JSON_OBJECT"] {
+        compare_eager_source(
+            call(name, string_ty(), vec![]),
+            &[],
+            &[vec![]],
+            &[0, 0],
+            0,
+            0,
+        );
+    }
+    for name in [
+        "UPPER",
+        "JSON_ARRAY",
+        "JSON_SET",
+        "REPLACE",
+        "TO_BASE64",
+        "FROM_BASE64",
+    ] {
+        for computed in [false, true] {
+            let field = FieldType::new(FieldTypeCode::NewDecimal);
+            let value = literal(
+                crate::tikv::misc_identity_value_tests::extra_values().remove(4),
+                field.clone(),
+            );
+            let value = if computed {
+                call(
+                    "if",
+                    field.clone(),
+                    vec![int(1), value, literal(Datum::Null, field)],
+                )
+            } else {
+                value
+            };
+            let mut args = crate::tikv::eager_scalar_value_tests::arguments(name, &Datum::Null)
+                .into_iter()
+                .map(|v| {
+                    let f = crate::tikv::misc_identity_value_tests::field(&v);
+                    literal(v, f)
+                })
+                .collect::<Vec<_>>();
+            args[0] = value;
+            compare_eager_source(call(name, string_ty(), args), &[], &[vec![]], &[0], 0, 0);
+        }
+    }
+}
+
+#[test]
+fn eager_scalar_string_work_resource_is_terminal_and_same_source_null_recovers() {
+    let schema = [ty()];
+    let rows = [vec![Datum::Int(1)], vec![Datum::Int(0)]];
+    let field = FieldType::new(FieldTypeCode::NewDecimal);
+    for name in [
+        "UPPER",
+        "LOWER",
+        "REPLACE",
+        "TO_BASE64",
+        "FROM_BASE64",
+        "JSON_ARRAY",
+        "JSON_OBJECT",
+        "JSON_DEPTH",
+    ] {
+        let huge = literal(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+            field.clone(),
+        );
+        let value = call(
+            "if",
+            field.clone(),
+            vec![column(0), huge, literal(Datum::Null, field.clone())],
+        );
+        let mut args = crate::tikv::eager_scalar_value_tests::arguments(name, &Datum::Null)
+            .into_iter()
+            .map(|v| {
+                let f = crate::tikv::misc_identity_value_tests::field(&v);
+                literal(v, f)
+            })
+            .collect::<Vec<_>>();
+        args[usize::from(name == "JSON_OBJECT")] = value;
+        let actual = suite(call(name, string_ty(), args));
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(vec![0]));
+        let ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+        let mut output = output_for(&string_ty());
+        assert!(
+            matches!(
+                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+                Err(crate::evaluator::EvaluatorError::Eval(
+                    EvalError::ExpressionRuntimeFailure(_)
+                ))
+            ),
+            "{name}"
+        );
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        ctx.inner.events.borrow_mut().clear();
+        input.set_sel(Some(vec![1]));
+        let mut output = output_for(&string_ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+            .unwrap();
+
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        let expected_ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+        let expected_function =
+            crate::tikv::eager_scalar_value_tests::function(name, &Datum::Null, &string_ty());
+        let expected_value = expected_function
+            .eval(&expected_ctx, tidb_chunk::row::Row::empty())
+            .unwrap();
+        let mut expected_output = output_for(&string_ty());
+        expected_output.append_datum(0, &expected_value);
+        assert_eq!(output.column(0), expected_output.column(0), "{name}");
+        assert_eq!(
+            *ctx.inner.events.borrow(),
+            *expected_ctx.inner.events.borrow()
+        );
+    }
+}
+
+#[test]
+fn eager_scalar_capabilities_eager_stages_callbacks_consumption_and_recovery() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, HostTaskId,
+        LocalHostServices,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        events: RefCell<Vec<u16>>,
+        action: Cell<u8>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented eager operand")
+        }
+        fn append_warning(&self, code: u16, _: &str) {
+            let mut store = self.store.borrow_mut();
+            self.events.borrow_mut().push(code);
+            match self.action.replace(0) {
+                1 => panic!("eager warning unwind"),
+                2 => store.begin_window().unwrap(),
+                _ => (),
+            }
+        }
+    }
+    let mut rejected = 0;
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        for name in [
+            "UPPER",
+            "JSON_OBJECT",
+            "REPLACE",
+            "EXPORT_SET",
+            "JSON_MERGE",
+        ] {
+            let actuals = if name == "EXPORT_SET" {
+                vec![
+                    Datum::Int(5),
+                    Datum::new_string("Y"),
+                    Datum::new_string("N"),
+                    Datum::new_string(","),
+                ]
+            } else {
+                crate::tikv::eager_scalar_value_tests::arguments(name, &Datum::new_string("[1]"))
+            };
+            let f = ScalarFunction::new(
+                tidb_ast::CiString::new(name),
+                string_ty(),
+                actuals
+                    .iter()
+                    .cloned()
+                    .map(|v| {
+                        let t = crate::tikv::misc_identity_value_tests::field(&v);
+                        literal(v, t)
+                    })
+                    .collect(),
+            );
+            let arity = actuals.len();
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); arity];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::EagerValuesNative,
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::EagerValues {
+                arguments: (3..3 + arity).collect(),
+                kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
+                probe: None,
+                result_type: string_ty(),
+                output_node: 2,
+                output_role: role,
+            }];
+            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
+            };
+            let insert = |v: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(v, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign = foreign
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            let ctx = C {
+                store: &store,
+                events: RefCell::new(vec![]),
+                action: Cell::new(0),
+            };
+            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8 << 20)
+                .with_native_values(Some(&store));
+            let mut eval = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                let HostStart::Pending { task, request } = p
+                    .start(
+                        eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!("nonempty eager call")
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         eval: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token: Option<Vec<u8>>| {
+                p.resume(
+                    eval,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            let mut corrupt = good.clone();
+            corrupt[0] ^= 1;
+            let mut short = good.clone();
+            short.pop();
+            let mut long = good;
+            long.push(0);
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(short),
+                Some(long),
+                Some(stale),
+                Some(foreign),
+                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 1,
+                        input_row: 0,
+                    },
+                )),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 0,
+                        input_row: 1,
+                    },
+                )),
+            ] {
+                let task = begin(&mut p, &mut eval);
+                assert!(matches!(
+                    reply(&mut p, &mut eval, &task, 0, bad),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert!(ctx.events.borrow().is_empty());
+                assert!(p.take_native_error().is_none());
+                p.cancel(&task);
+                p.cancel(&task);
+                rejected += 1;
+            }
+            let task = begin(&mut p, &mut eval);
+            assert!(reply(
+                &mut p,
+                &mut eval,
+                &task,
+                1,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            p.cancel(&task);
+            rejected += 1;
+            if arity > 1 {
+                let task = begin(&mut p, &mut eval);
+                assert!(matches!(
+                    reply(
+                        &mut p,
+                        &mut eval,
+                        &task,
+                        0,
+                        Some(insert(&actuals[0], NativeValueRole::CharInput, 3, row))
+                    )
+                    .unwrap(),
+                    HostStep::NeedArg(_)
+                ));
+                assert!(reply(
+                    &mut p,
+                    &mut eval,
+                    &task,
+                    1,
+                    Some(insert(&actuals[1], NativeValueRole::CharInput, 3, row))
+                )
+                .is_err());
+                p.cancel(&task);
+                rejected += 1;
+            }
+            let run = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext, task: &HostTaskId| {
+                let mut final_value = None;
+                for (i, value) in actuals.iter().enumerate() {
+                    match reply(
+                        p,
+                        eval,
+                        task,
+                        i,
+                        Some(insert(value, NativeValueRole::CharInput, 3 + i, row)),
+                    )? {
+                        HostStep::NeedArg(r) => assert_eq!(r.index, i + 1),
+                        HostStep::Ready(v) => {
+                            assert_eq!(i + 1, arity);
+                            final_value = Some(v);
+                        }
+                    }
+                }
+                Ok::<_, LocalError>(final_value.unwrap())
+            };
+            let task = begin(&mut p, &mut eval);
+            let result = match run(&mut p, &mut eval, &task) {
+                Ok(v) => v,
+                Err(e) => panic!("{name} {role:?} {e:?} native={:?}", p.take_native_error()),
+            };
+            let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
+                panic!()
+            };
+            store
+                .borrow()
+                .get(token, role, NativeValueOrigin { node: 2, row })
+                .unwrap();
+            assert!(reply(
+                &mut p,
+                &mut eval,
+                &task,
+                0,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            p.cancel(&task);
+            p.cancel(&task);
+            if name == "JSON_MERGE" {
+                assert_eq!(*ctx.events.borrow(), vec![1681]);
+                for action in [1, 2] {
+                    ctx.events.borrow_mut().clear();
+                    ctx.action.set(action);
+                    let task = begin(&mut p, &mut eval);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run(&mut p, &mut eval, &task)
+                    }));
+                    if action == 1 {
+                        assert!(result.is_err());
+                    } else {
+                        assert!(matches!(result, Ok(Err(LocalError::BindingContract(_)))));
+                    }
+                    assert_eq!(*ctx.events.borrow(), vec![1681]);
+                    assert!(reply(
+                        &mut p,
+                        &mut eval,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    )
+                    .is_err());
+                    p.cancel(&task);
+                    ctx.events.borrow_mut().clear();
+                    let task = begin(&mut p, &mut eval);
+                    run(&mut p, &mut eval, &task).unwrap();
+                    p.cancel(&task);
+                    assert_eq!(*ctx.events.borrow(), vec![1681]);
+                }
+            }
+        }
+    }
+    assert_eq!(rejected, 118);
+}
+
+#[test]
+fn eager_scalar_lane_value_cache_is_lazy_and_reuses_exact_closed_workers() {
+    struct C {
+        calls: Cell<usize>,
+    }
+    impl crate::Columns for C {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            self.calls.set(self.calls.get() + 1);
+            None
+        }
+    }
+    let ctx = C {
+        calls: Cell::new(0),
+    };
+    let cache = crate::ReadyValueCache::new();
+    let before = cache.with_fallback_columns(&ctx, |_| {
+        Err::<(), _>(EvalError::Unsupported("earlier value failure"))
+    });
+    assert!(before.is_err());
+    assert_eq!(ctx.calls.get(), 0);
+    assert_eq!(cache.prepared_worker_count(), 0);
+    for n in 1..=2 {
+        cache
+            .with_fallback_columns(&ctx, |scoped| {
+                crate::tikv::evaluate_bytes_in(
+                    crate::tikv::EvaluatedBytesOp::Length,
+                    scoped,
+                    || Ok(Some(b"abc".to_vec())),
+                    crate::tikv::EvaluatedBytesResult::into_int_datum,
+                )
+            })
+            .unwrap();
+        assert_eq!(ctx.calls.get(), n);
+        assert_eq!(cache.prepared_worker_count(), 1);
+    }
+}
+
+#[test]
+fn eager_scalar_json_strict_numeric_rejection_ignores_unused_decimal_scale() {
+    let field = FieldType::new(FieldTypeCode::NewDecimal);
+    let huge = literal(
+        Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+        field.clone(),
+    );
+    let value = call(
+        "if",
+        field.clone(),
+        vec![int(1), huge, literal(Datum::Null, field)],
+    );
+    for (name, tail) in [("JSON_CONTAINS", "[]"), ("JSON_MERGE", "[1]")] {
+        compare_eager_source(
+            call(
+                name,
+                string_ty(),
+                vec![value.clone(), literal(Datum::new_string(tail), string_ty())],
+            ),
+            &[],
+            &[vec![]],
+            &[0, 0],
+            0,
+            0,
+        );
+    }
+}
+
+#[test]
+fn eager_scalar_invalid_byte_parent_keeps_original_coercion_error() {
+    compare_eager_source(
+        call(
+            "cast_char",
+            string_ty(),
+            vec![call(
+                "UPPER",
+                string_ty(),
+                vec![literal(Datum::Bytes(vec![255]), string_ty())],
+            )],
+        ),
+        &[],
+        &[vec![]],
+        &[0, 0],
+        0,
+        0,
+    );
 }

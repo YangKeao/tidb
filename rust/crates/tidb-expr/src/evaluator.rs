@@ -709,8 +709,10 @@ impl EvaluatorSuite {
         self.batch_route_prepared
             .set(self.batch_route_prepared.get().saturating_add(1));
         let mut tikv_ctx = TikvEvalContext::default();
-        worker
-            .run(self, ctx, &mut tikv_ctx, input, output, row_schema)
+        self.ready_value_cache
+            .with_fallback_columns(ctx, |scoped| {
+                worker.run(self, scoped, &mut tikv_ctx, input, output, row_schema)
+            })
             .map_err(batch::BatchFailure::into_evaluator_error)
     }
 

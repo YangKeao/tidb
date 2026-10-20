@@ -100,6 +100,7 @@ pub(crate) fn coerce_str(value: &Datum) -> Result<Option<String>, EvalError> {
 /// separate from [`coerce_str`] so callers that actually need Unicode text do
 /// not silently acquire replacement or lossy-decoding behavior.
 pub(crate) fn coerce_str_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
+    crate::scalar_function::eager_values::charge_string_work(value)?;
     tidb_query_expr::native_coerce_bytes(value.as_shared_json_input())
         .map_err(EvalError::Unsupported)
 }
