@@ -87,6 +87,7 @@ pub(crate) fn string_text(value: &StringDatum) -> Result<&str, EvalError> {
 
 /// Coerces a scalar to text, preserving NULL and rejecting invalid UTF-8.
 pub(crate) fn coerce_str(value: &Datum) -> Result<Option<String>, EvalError> {
+    crate::scalar_function::eager_values::charge_string_work(value)?;
     tidb_query_expr::native_coerce_string(value.as_shared_json_input())
         .map_err(EvalError::Unsupported)
 }

@@ -25,6 +25,7 @@ pub(crate) struct EagerValueKernel {
     session_read: Option<super::session_read::SessionRead>,
     user_variable: Option<super::user_variable::UserVariableAction>,
     last_insert_id: bool,
+    early_string: Option<Box<super::early_string::EarlyString>>,
     args: Box<[EagerArgument]>,
     regexp_cache: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
     regexp_replace_instruction_cache:
@@ -38,6 +39,13 @@ impl EagerValueKernel {
     }
     pub(crate) fn user_variable(&self) -> Option<super::user_variable::UserVariableAction> {
         self.user_variable
+    }
+    pub(crate) fn demanded_arguments(&self) -> usize {
+        self.early_string
+            .as_ref()
+            .map_or(self.args.len(), |operation| {
+                operation.demanded_arguments(self.args.len())
+            })
     }
     pub(crate) fn capture(function: &ScalarFunction) -> Self {
         let cache_facts = matches!(
@@ -55,6 +63,7 @@ impl EagerValueKernel {
             ret_type: function.ret_type.clone(),
             session_read: super::session_read::SessionRead::for_function(function),
             user_variable: super::user_variable::UserVariableAction::for_function(function),
+            early_string: super::early_string::EarlyString::for_function(function).map(Box::new),
             last_insert_id: function.pb_builtin.is_none()
                 && function.func_name.lowercase() == "last_insert_id"
                 && function.args.len() == 1,
@@ -110,11 +119,14 @@ impl EagerValueKernel {
     ) -> Result<Datum, EvalError> {
         assert_eq!(
             vals.len(),
-            self.args.len(),
+            self.demanded_arguments(),
             "eager value-body arity contract"
         );
         if let Some(operation) = self.session_read {
             return operation.eval(ctx);
+        }
+        if let Some(operation) = &self.early_string {
+            return operation.eval(ctx, vals);
         }
         if self.last_insert_id {
             return super::user_variable::record_last_insert_id(
@@ -353,6 +365,7 @@ pub(crate) fn supports(function: &ScalarFunction) -> bool {
     super::argument_policy::classify(function)
         == super::argument_policy::ArgumentPolicy::CommonEager
         || super::session_read::SessionRead::for_function(function).is_some()
+        || super::early_string::EarlyString::supports(function)
         || super::user_variable::UserVariableAction::for_function(function).is_some()
         || (function.pb_builtin.is_none()
             && function.func_name.lowercase() == "last_insert_id"

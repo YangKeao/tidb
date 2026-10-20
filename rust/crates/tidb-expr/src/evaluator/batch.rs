@@ -127,6 +127,11 @@ impl BatchFailure {
                 | LocalError::HostContract(_),
             ) => BatchRefusal::Contract,
             FailureKind::Local(LocalError::Evaluation(_)) => BatchRefusal::Evaluation,
+            FailureKind::Native(EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(
+                error,
+            ))) if error.class() == crate::ExpressionRuntimeFailureClass::ResourceLimit => {
+                BatchRefusal::Resource
+            }
             FailureKind::Native(_) => BatchRefusal::Native,
         }
     }
@@ -406,6 +411,16 @@ fn promoted_native_root_view(
         return Ok(None);
     };
     profile_shape(root, limits)?;
+    // Extending actual-value producers must not replace an already closed
+    // typed tree merely because its formerly typed-only string child can now
+    // also produce a value handle. Keep the established phases and call sites.
+    if contains_early_string(root, limits.tree.max_depth, &mut { limits.tree.max_nodes })
+        && typed_source_tree_complete(root, NativeView::Typed, limits.tree.max_depth, &mut {
+            limits.tree.max_nodes
+        })
+    {
+        return Ok(None);
+    }
     if row_control {
         // Native controls/comparisons invoke their selected operands per row,
         // even when the outer batch flag is enabled. Eager typed descendants
@@ -511,6 +526,23 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
         }
         _ => NativeView::Typed,
     }
+}
+
+fn contains_early_string(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return false;
+    }
+    *remaining -= 1;
+    if let Expression::ScalarFunction(function) = node {
+        if crate::scalar_function::early_string::EarlyString::supports(function) {
+            return true;
+        }
+        return function
+            .args
+            .iter()
+            .any(|child| contains_early_string(child, depth - 1, remaining));
+    }
+    false
 }
 
 fn contains_native_arithmetic(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
@@ -2760,6 +2792,17 @@ fn preflight_view<'a>(
                         for argument in &function.args {
                             budget.field(
                                 argument.static_type().expect("checked eager argument"),
+                                1,
+                            )?;
+                        }
+                        if crate::scalar_function::early_string::EarlyString::supports(function) {
+                            budget.array::<crate::scalar_function::early_string::EarlyString>(1)?;
+                        }
+                        if function.func_name.lowercase() == "locate" && arity == 3 {
+                            budget.field(
+                                function.args[2]
+                                    .static_type()
+                                    .expect("checked locate position declaration"),
                                 1,
                             )?;
                         }

@@ -15,11 +15,17 @@ impl NativeBatchHosts<'_> {
         if next >= arity || tokens.len() != next {
             return Err(binding("eager stage consumed"));
         }
-        let Some(NativeHostMetadata::EagerValues { arguments, .. }) =
-            self.metadata.get(task.slot.index())
+        let Some(NativeHostMetadata::EagerValues {
+            arguments, kernel, ..
+        }) = self.metadata.get(task.slot.index())
         else {
             return Err(binding("eager metadata absent"));
         };
+        let demanded = kernel.demanded_arguments();
+        if demanded > arity || next >= demanded {
+            return Err(binding("eager demanded arity differs"));
+        }
+        let arity = demanded;
         let origin = NativeValueOrigin {
             node: arguments[next],
             row,
@@ -70,7 +76,15 @@ impl NativeBatchHosts<'_> {
         let SqlDemand::EagerValues { next, tokens } = &task.demand else {
             return Err(binding("eager task differs"));
         };
-        let (arity, row, slot) = (task.arity, task.row, task.slot);
+        let (graph_arity, row, slot) = (task.arity, task.row, task.slot);
+        let Some(NativeHostMetadata::EagerValues { kernel, .. }) = self.metadata.get(slot.index())
+        else {
+            return Err(binding("eager demand descriptor absent"));
+        };
+        let arity = kernel.demanded_arguments();
+        if arity > graph_arity {
+            return Err(binding("eager demanded arity exceeds graph"));
+        }
         if *next != arity || tokens.len() != arity {
             return Err(binding("eager body incomplete or consumed"));
         }

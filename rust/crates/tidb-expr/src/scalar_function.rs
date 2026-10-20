@@ -2571,37 +2571,13 @@ impl ScalarFunction {
             let value = self.args[0].eval(ctx, row)?;
             return user_variable::record_last_insert_id(value, self.args[0].static_type(), ctx);
         }
-        // Go `builtinTrim*Sig`: the name carries the direction and the second
-        // argument is the string to remove.
-        if let Some(direction) = match name {
-            "trim" if self.args.len() == 2 => Some(tidb_ast::TrimDirection::Both),
-            "ltrim_with" => Some(tidb_ast::TrimDirection::Leading),
-            "rtrim_with" => Some(tidb_ast::TrimDirection::Trailing),
-            _ => None,
-        } {
-            let value = self.args[0].eval(ctx, row)?;
-            let remstr = self.args[1].eval(ctx, row)?;
-            let binary = matches!(value, Datum::Bytes(_));
-            let text = crate::coerce::coerce_str_bytes(&value)?;
-            let remove = crate::coerce::coerce_str_bytes(&remstr)?;
-            return crate::string_fn::trim_value_in(text, remove, direction, binary, ctx);
-        }
-        // Go picks a string-length signature from the ARGUMENT's type before
-        // any value exists, which is what `build_string_length` models.
-        if self.args.len() == 1 {
-            let length = match name {
-                "length" | "octet_length" => Some(crate::StringLengthFunction::Length),
-                "char_length" | "character_length" => Some(crate::StringLengthFunction::CharLength),
-                _ => None,
-            };
-            if let Some(function) = length {
-                let argument_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                    tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::Null)
-                });
-                let built =
-                    crate::BuildContext::default().build_string_length(function, argument_type);
-                return built.eval_in(&self.args[0].eval(ctx, row)?, ctx);
-            }
+        if let Some(operation) = early_string::EarlyString::for_function(self) {
+            let demanded = operation.demanded_arguments(self.args.len());
+            let values = self.args[..demanded]
+                .iter()
+                .map(|arg| arg.eval(ctx, row))
+                .collect::<Result<Vec<_>, _>>()?;
+            return operation.eval(ctx, values);
         }
         // Go `randFunctionClass`: a constant `RAND(N)` owns one
         // statement-scoped generator per AST occurrence, a nonconstant
@@ -2777,44 +2753,6 @@ impl ScalarFunction {
         {
             let collation = self.derived_collation();
             match name {
-                // `LOCATE(substr, str[, pos])` / `INSTR(str, substr)`: the
-                // same 1-indexed position; INSTR swaps its arguments
-                // internally. The three-argument form is LOCATE-only (Go has
-                // no position signature for INSTR) and takes its arguments
-                // UNSWAPPED, starting the search at `pos`
-                // (`builtinLocate3Args{,UTF8}Sig`).
-                "locate" if matches!(self.args.len(), 2 | 3) => {
-                    let substr = self.args[0].eval(ctx, row)?;
-                    let str = self.args[1].eval(ctx, row)?;
-                    if self.args.len() == 3 {
-                        // Go declares the position `types.ETInt`, so
-                        // `newBaseBuiltinFuncWithTp` wraps it in
-                        // `WrapWithCastAsInt` — the same boundary the wrap
-                        // layer applies (`cast_arg_as_int`), applied here
-                        // because this arm returns before that pass.
-                        let position = self.args[2].eval(ctx, row)?;
-                        let position = crate::cast::cast_arg_as_int(
-                            &position,
-                            self.args[2].static_type(),
-                            ctx,
-                        )?;
-                        return crate::string_fn::locate_with_position_in(
-                            &[substr, str, position],
-                            collation,
-                            ctx,
-                        );
-                    }
-                    return crate::string_fn::locate_in(&substr, &str, collation, ctx);
-                }
-                "instr" if self.args.len() == 2 => {
-                    let a = self.args[0].eval(ctx, row)?;
-                    let b = self.args[1].eval(ctx, row)?;
-                    return crate::string_fn::locate_in(&b, &a, collation, ctx);
-                }
-                "strcmp" if self.args.len() == 2 => {
-                    let vals = [self.args[0].eval(ctx, row)?, self.args[1].eval(ctx, row)?];
-                    return crate::string_fn::strcmp_with_collation_in(&vals, collation, ctx);
-                }
                 "find_in_set" if self.args.len() == 2 => {
                     let needle = self.args[0].eval(ctx, row)?;
                     if self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT {
@@ -2936,14 +2874,6 @@ impl ScalarFunction {
                         arg_collation,
                         ctx,
                     );
-                }
-                "field" if self.args.len() >= 2 => {
-                    let vals: Vec<Datum> = self
-                        .args
-                        .iter()
-                        .map(|a| a.eval(ctx, row))
-                        .collect::<Result<_, _>>()?;
-                    return crate::string_fn::field_with_collation(&vals, collation, ctx);
                 }
                 _ => {}
             }
@@ -6318,3 +6248,5 @@ pub(crate) mod math_diagnostic;
 pub(crate) mod session_read;
 
 pub(crate) mod user_variable;
+
+pub(crate) mod early_string;

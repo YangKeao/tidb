@@ -27857,3 +27857,334 @@ fn user_variable_ordered_error_and_panic_keep_input_selection_and_alias_owners()
     assert_eq!(ctx.calls.get(), 4);
     assert_eq!(empty.column(0).rows(), 0);
 }
+
+#[test]
+fn early_string_actual_value_parents_do_not_fallback() {
+    use crate::tikv::early_string_tests as proof;
+    let mut failures = vec![];
+    for (name, n) in proof::recipes() {
+        let child = Expression::ScalarFunction(proof::function(
+            name,
+            &proof::inputs(name, n)[0],
+            &string_ty(),
+            &ty(),
+        ));
+        let root = call(
+            "setvar",
+            ty(),
+            vec![literal(Datum::new_string("x"), string_ty()), child],
+        );
+        let owner = suite(root);
+        let ctx = crate::tikv::user_variable_tests::Context::new(1, Datum::Int(0));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output();
+        let _ =
+            session_read_outcome(|| owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &[]));
+        let route = owner.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, n, route));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "early string value sources {failures:?}"
+    );
+}
+
+#[test]
+fn early_string_actual_sources_keep_declarations_returns_flags_and_state() {
+    if isolate_common_corpus(
+        "early_string_actual_sources_keep_declarations_returns_flags_and_state",
+    ) {
+        return;
+    }
+    use crate::tikv::early_string_tests as proof;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut cases = 0;
+        for (name, n) in proof::recipes() {
+            for decl in proof::declarations() {
+                for ret in crate::tikv::eager_scalar_value_tests::types() {
+                    for profile in 0..3 {
+                        for (index, values) in proof::inputs(name, n).into_iter().enumerate() {
+                            let f = proof::function(name, &values, &decl, &ret);
+                            let root = call(
+                                "setvar",
+                                ret.clone(),
+                                vec![
+                                    literal(Datum::new_string("x"), string_ty()),
+                                    Expression::ScalarFunction(f),
+                                ],
+                            );
+                            let actual = suite(root.clone());
+                            for enabled in [false, true] {
+                                // An invalid output declaration can unwind the legacy
+                                // explicit adapter scope. Compare a fresh original
+                                // reference while reusing the canonical source lane.
+                                let reference = suite(root.clone());
+                                let (ctx, old) = (
+                                    crate::tikv::user_variable_tests::Context::new(
+                                        profile,
+                                        Datum::Int(0),
+                                    ),
+                                    crate::tikv::user_variable_tests::Context::new(
+                                        profile,
+                                        Datum::Int(0),
+                                    ),
+                                );
+                                ctx.enabled.set(enabled);
+                                old.enabled.set(enabled);
+                                let (mut input, mut oldinput) = (
+                                    chunk(&[], &[vec![], vec![], vec![]]),
+                                    chunk(&[], &[vec![], vec![], vec![]]),
+                                );
+                                input.set_sel(Some(vec![2, 0, 2]));
+                                oldinput.set_sel(Some(vec![2, 0, 2]));
+                                let (mut output, mut expected) =
+                                    (output_for(&ret), output_for(&ret));
+                                output.append_null(0);
+                                expected.append_null(0);
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+                                });
+                                let want = session_read_outcome(|| {
+                                    reference.run(&old, &mut oldinput, &mut expected)
+                                });
+                                assert_eq!(got,want,"{name}/{n} d={decl:?} r={ret:?} p={profile} i={index} flag={enabled}");
+                                assert_eq!(ctx.snapshot(), old.snapshot(), "{name}/{n} i={index}");
+                                assert_eq!(
+                                    output.column(0),
+                                    expected.column(0),
+                                    "{name}/{n} d={decl:?} r={ret:?} p={profile} i={index}"
+                                );
+                                assert_eq!(input.sel(), Some(&[2, 0, 2][..]));
+                                let route = actual.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.refusals, route.fallback),
+                                    (0, 0),
+                                    "{name}/{n}: {route:?}"
+                                );
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 129855);
+        eprintln!("EARLY STRING ACTUAL SOURCE MATRIX {cases}");
+    });
+}
+
+#[test]
+fn early_string_strict_formatter_resource_is_terminal_and_same_worker_null_recovers() {
+    let schema = [ty()];
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal);
+    let huge = literal(
+        Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], 1_000_000, 1)),
+        decimal.clone(),
+    );
+    let selected = call(
+        "if",
+        decimal.clone(),
+        vec![column(0), huge, literal(Datum::Null, decimal)],
+    );
+    let length = call("length", ty(), vec![selected]);
+    let owner = suite(call(
+        "setvar",
+        ty(),
+        vec![literal(Datum::new_string("x"), string_ty()), length],
+    ));
+    let mut worker = PreparedBatch::compile(
+        &owner,
+        &schema,
+        true,
+        93,
+        limits(),
+        ExecutionLimits::default(),
+        65536,
+    )
+    .unwrap();
+    let ctx = crate::tikv::user_variable_tests::Context::new(1, Datum::Int(42));
+    let mut input = chunk(&schema, &[vec![Datum::Int(1)]]);
+    let mut output = output();
+    worker
+        .validate_invocation(&owner, &input, &output, &schema)
+        .unwrap();
+    let result = worker.execute_profile(
+        &ctx,
+        &mut EvalContext::default(),
+        &input,
+        &mut output,
+        true,
+        None,
+    );
+    let error = result.expect_err("demanded strict LENGTH formatter bypassed finite work scope");
+    assert_eq!(error.refusal(), BatchRefusal::Resource);
+    assert!(matches!(
+        error.into_evaluator_error(),
+        EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(_))
+    ));
+    assert!(ctx.events.borrow().is_empty());
+    assert_eq!(output.num_rows(), 0);
+    input = chunk(&schema, &[vec![Datum::Int(0)]]);
+    worker
+        .validate_invocation(&owner, &input, &output, &schema)
+        .unwrap();
+    worker
+        .execute_profile(
+            &ctx,
+            &mut EvalContext::default(),
+            &input,
+            &mut output,
+            true,
+            None,
+        )
+        .unwrap();
+    assert!(output.column(0).is_null(0));
+    assert!(ctx.events.borrow().is_empty());
+}
+
+#[test]
+fn early_string_sources_keep_explicit_collations_and_child_demand() {
+    use crate::tikv::early_string_tests as proof;
+    let mut cases = 0;
+    for collation in crate::tikv::wildcard_value_tests::collations() {
+        let decl = FieldType::new(FieldTypeCode::VarString).with_collation(collation);
+        let ret = ty().with_collation(collation);
+        for (name, n) in [
+            ("locate", 2),
+            ("locate", 3),
+            ("instr", 2),
+            ("strcmp", 2),
+            ("field", 3),
+        ] {
+            for profile in 0..3 {
+                for values in proof::inputs(name, n) {
+                    let root =
+                        Expression::ScalarFunction(proof::function(name, &values, &decl, &ret));
+                    compare_early_string_extra(root, profile);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    for f in proof::demand_cases() {
+        for profile in 0..3 {
+            compare_early_string_extra(Expression::ScalarFunction(f.clone()), profile);
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 3540);
+}
+fn compare_early_string_extra(root: Expression, profile: usize) {
+    let field = root.static_type().unwrap().clone();
+    // A variable parent requires actual-value composition for every family.
+    let root = call(
+        "setvar",
+        field.clone(),
+        vec![literal(Datum::new_string("result"), string_ty()), root],
+    );
+    let actual = suite(root.clone());
+    for enabled in [false, true, false, true] {
+        let reference = suite(root.clone());
+        let ctx = crate::tikv::user_variable_tests::Context::new(profile, Datum::Int(0));
+        let old = crate::tikv::user_variable_tests::Context::new(profile, Datum::Int(0));
+        ctx.enabled.set(enabled);
+        old.enabled.set(enabled);
+        let (mut input, mut oldinput) = (
+            chunk(&[], &[vec![], vec![], vec![]]),
+            chunk(&[], &[vec![], vec![], vec![]]),
+        );
+        input.set_sel(Some(vec![2, 0, 2]));
+        oldinput.set_sel(Some(vec![2, 0, 2]));
+        let (mut output, mut expected) = (output_for(&field), output_for(&field));
+        assert_eq!(
+            session_read_outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[])),
+            session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected)),
+            "{root:?} p={profile} flag={enabled}"
+        );
+        assert_eq!(output.column(0), expected.column(0), "{root:?}");
+        assert_eq!(ctx.snapshot(), old.snapshot(), "{root:?}");
+        assert_eq!(input.sel(), Some(&[2, 0, 2][..]));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+    }
+}
+
+#[test]
+fn early_string_dead_empty_and_ignored_metadata_never_format() {
+    let decimal = FieldType::new(FieldTypeCode::NewDecimal);
+    for name in [
+        "length",
+        "char_length",
+        "ltrim_with",
+        "rtrim_with",
+        "locate",
+        "strcmp",
+        "field",
+    ] {
+        let bad = literal(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![255], u32::MAX, 1)),
+            decimal.clone(),
+        );
+        let ret = if matches!(name, "ltrim_with" | "rtrim_with") {
+            string_ty()
+        } else {
+            ty()
+        };
+        let args = if matches!(name, "length" | "char_length") {
+            vec![bad]
+        } else {
+            vec![bad, literal(Datum::new_string("a"), string_ty())]
+        };
+        let root = call(name, ret.clone(), args);
+        let good = literal(
+            if ret.eval_type() == NativeEvalType::String {
+                Datum::new_string("ok")
+            } else {
+                Datum::Int(7)
+            },
+            ret.clone(),
+        );
+        let owner = suite(call("if", ret.clone(), vec![int(0), root.clone(), good]));
+        let ctx = crate::tikv::user_variable_tests::Context::new(1, Datum::Int(0));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&ret);
+        owner
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        assert_eq!(owner.batch_route_snapshot().fallback, 0);
+        let empty = suite(call(
+            "setvar",
+            ret.clone(),
+            vec![literal(Datum::new_string("x"), string_ty()), root],
+        ));
+        input.set_sel(Some(vec![]));
+        let mut output = output_for(&ret);
+        empty
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        assert!(ctx.events.borrow().iter().all(|e| e.starts_with("flag:")));
+        assert_eq!(empty.batch_route_snapshot().fallback, 0);
+    }
+    // A valid prefix must not inspect the ignored third argument's precision.
+    for name in ["ltrim_with", "rtrim_with"] {
+        let huge = literal(
+            Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
+            decimal.clone(),
+        );
+        let child = call(
+            name,
+            string_ty(),
+            vec![
+                literal(Datum::new_string(" a "), string_ty()),
+                literal(Datum::new_string(" "), string_ty()),
+                huge,
+            ],
+        );
+        compare_early_string_extra(child, 1);
+    }
+}

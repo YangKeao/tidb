@@ -4052,6 +4052,67 @@ mod tests {
         let variable_mix = std::iter::once(0)
             .chain(variable_start..roots.len())
             .collect::<Vec<_>>();
+        let early_start = roots.len();
+        let early_text = || call("cast_char", string.clone(), vec![column(0)]);
+        let early_literal = |value: &str| {
+            Expression::Constant(Constant::new(Datum::new_string(value), string.clone()))
+        };
+        for (name, field, args) in [
+            ("length", integer.clone(), vec![early_text()]),
+            ("char_length", integer.clone(), vec![early_literal("éA")]),
+            (
+                "locate",
+                integer.clone(),
+                vec![early_literal("a"), early_literal("Aéa"), column(0)],
+            ),
+            (
+                "instr",
+                integer.clone(),
+                vec![early_literal("Aéa"), early_literal("a")],
+            ),
+            (
+                "strcmp",
+                integer.clone(),
+                vec![early_text(), early_literal("1")],
+            ),
+            (
+                "field",
+                integer.clone(),
+                vec![
+                    early_text(),
+                    early_literal("0"),
+                    early_literal("1"),
+                    early_literal("2"),
+                ],
+            ),
+            (
+                "ltrim_with",
+                string.clone(),
+                vec![early_literal(" a "), early_literal(" ")],
+            ),
+            (
+                "rtrim_with",
+                string.clone(),
+                vec![
+                    early_literal(" a "),
+                    early_literal(" "),
+                    call("__unregistered_ignored__", string.clone(), vec![]),
+                ],
+            ),
+        ] {
+            let root = call(
+                "setvar",
+                field.clone(),
+                vec![early_literal("early"), call(name, field.clone(), args)],
+            );
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let early_mix = std::iter::once(0)
+            .chain(early_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -4248,9 +4309,14 @@ mod tests {
                 variable_mix.iter().map(|&i| roots[i].clone()).collect(),
                 variable_mix.iter().map(|&i| fields[i].clone()).collect(),
             ),
+            (
+                early_mix.iter().map(|&i| roots[i].clone()).collect(),
+                early_mix.iter().map(|&i| fields[i].clone()).collect(),
+            ),
         ];
-        let session_configuration = configurations.len() - 2;
-        let variable_configuration = configurations.len() - 1;
+        let session_configuration = configurations.len() - 3;
+        let variable_configuration = configurations.len() - 2;
+        let early_configuration = configurations.len() - 1;
         let with_session = |context: crate::StmtContext| {
             context
                 .with_session_state(Some("dbé会话".into()), Some("8.0-session".into()))
@@ -4329,7 +4395,7 @@ mod tests {
                     .with_workers(workers);
                     projection.open().unwrap();
                     let mut output = projection.new_chunk();
-                    projection.next(&mut output).unwrap();
+                    projection.next(&mut output).unwrap_or_else(|error| panic!("configuration={configuration} flag={enabled} workers={workers}: {error:?}"));
                     assert_eq!(output.num_rows(), expected.num_rows());
                     for row in 0..output.num_rows() {
                         for column in 0..fields.len() {
@@ -4345,6 +4411,12 @@ mod tests {
                         }
                     }
                     assert_eq!(context.take_warnings(), warnings);
+                    if configuration == early_configuration {
+                        assert_eq!(
+                            tidb_expr::Columns::get_uservar(&context, "early"),
+                            tidb_expr::Columns::get_uservar(&reference, "early")
+                        );
+                    }
                     if configuration == variable_configuration {
                         assert_eq!(
                             tidb_expr::Columns::get_uservar(&context, "X"),

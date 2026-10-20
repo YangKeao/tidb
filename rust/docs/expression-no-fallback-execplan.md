@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-21 N13) Original 129,855 / E1A91F4419B7C00E and supplementary explicit-collation/child-demand 3,540 / F069242CF30A6838 were captured, frozen, rerun and independently compared against the actual old scalar before retirement. All nineteen native-value parent Admission gaps reproduced before integration; executed old/candidate sources archived.
+- [x] (2026-10-21 N13) Shared early string metadata/value owners use the same EagerValuesNative frame, preserving ignored extras/missing-argument effects. Actual source 129,855 x two flags and 3,540 x four flags plus dead/empty/ignored checks pass. Strict formatter billing and Resource-tag defects reproduced before correction; broad validation also fixed typed-call identity and metadata footprint regressions. Final full frontend 1,839/exact prior 3/95/all 325 batch/exact 346 warnings, Projection26/lint/dual ten-file formatting and reconstruction checker pass. See evidence/no-fallback-n13.md; continue cached/leaf/stateful/public seams.
+
 - [x] (2026-10-21 N12) Original scalar/state 57,057 / DF2895EE82065D7E and ordered output 432 / 695ADB35A928374D captured, frozen and rerun unchanged. Genuine four-route source Admission guard reproduced; independent 57,057 scalar pairs passed before retiring the original effects bodies; executed sources archived.
 - [x] (2026-10-21 N12) Stored-name read/write demand uses the existing EagerValuesNative frame; LAST_INSERT_ID(value) shares the proven value owner; original row-major suite scheduling uses shared physical column views. Actual source 57,057 cases x two flags and all 432 ordered cases pass; callbacks/authentication/resources/recovery/selection/alias checks pass. Full frontend 1,831/exact prior 3/95/all 320 batch/exact 346 warnings, Projection26/lint/dual eleven-file formatting and final reconstruction checker pass. See evidence/no-fallback-n12.md; continue the overall task.
 
@@ -147,6 +150,13 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N13 broad validation found two integration regressions before checkpoint: newly available string value producers promoted an already proved typed STRCMP subtree, changing compiled call ordinals, and an inline optional EarlyString enlarged metadata for an unrelated calendar Projection until its fixed budget refused preparation. Keep existing typed closure/phases and box only actual early metadata, charging that allocation at preflight; do not change the existing identity assertion or metadata ceiling.
+
+- N13 finite visible-precision fixture reproduced a real strict formatter bounds panic escaping the work policy. Adding the existing charge_string_work owner to coerce_str makes it a terminal runtime Resource failure, but revealed that BatchFailure.refusal classified native-wrapped Resource failures as Native. A separate observed regression now preserves the actual error and reports its Resource category.
+- N13 malformed output declarations can panic after an early LENGTH helper and poison the old explicit with_columns adapter scope. Actual source reuse is compared with fresh original references for those independent invocations; the canonical source still recovers. This test envelope does not change scalar witnesses or valid SQL semantics.
+
+- N13 inspection: LTRIM_WITH/RTRIM_WITH select their early branch regardless of argument count. Missing arguments panic only after preceding demanded arguments; extra arguments are never evaluated. LOCATE(3) evaluates all arguments before casting position; LENGTH chooses its immutable signature from the argument declaration.
 
 - N12 full validation preserves every inherited failure/warning, while ordered programs no longer refuse preparation. The same singleton-view source survives a real assignment callback panic with original input selection intact; resource errors remain terminal and recover with NULL on the same worker.
 
@@ -404,6 +414,18 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: Store EarlyString behind an optional Box and reserve its size only for actual early hosts. If a tree containing an early string function already has a closed typed source, retain that source rather than promoting it solely because new value producers exist.
+  Rationale: preserve previously proved call identities/phases and avoid charging unrelated hosts for newly added inline metadata. Both regressions were reproduced by existing full/Projection checks before correction.
+  Date/Author: 2026-10-21 / ExpressionReuseEngineer.
+
+- Decision: Add a second original proof before completing N13 retirement, varying the result declaration collation and real child assignment effects. Restore the actual old branches for that capture/rerun/independent comparison, archive executed sources, then restore the proven shared dispatch.
+  Rationale: varying argument declaration alone does not prove the derived collation used by comparison functions. Existing frozen observations remain unchanged.
+  Date/Author: 2026-10-21 / ExpressionReuseEngineer.
+
+- Decision: N13 begins with original early string observations and native-value parent gaps, while production remains unchanged. Preserve demand and declaration/collation decisions, including malformed arities, before replacing original branches.
+  Rationale: typed root kernels already cover some calls but do not close composition with user-variable/native parents.
+  Date/Author: 2026-10-21 / ExpressionReuseEngineer.
+
 - Decision: N12 keeps a single EagerValuesNative catalog and SDK frame. Immutable user-variable selectors choose either immediate context read, demand of argument 1 only, or the original common eager body if stored-name formatting fails. Ordered suites use singleton selection views sharing column owners; the caller selection is never overwritten.
   Rationale: preserve original demand, write-before-return-conversion state and exact program.vectorizable scheduling without a second expression interpreter or callback.
   Date/Author: 2026-10-21 / ExpressionReuseEngineer.
@@ -638,6 +660,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+- N13 is complete as a local checkpoint after N12 c0dab105: both independent pre-retirement proofs and frozen witnesses are preserved; actual sources cover 129,855 x two flags and 3,540 x four flags plus empty/dead/ignored boundaries. Final full frontend 1,839/exact prior 3/95/all 325 batch/exact 346 warnings, Projection26/lint/dual ten-file formatting and reconstruction checker pass after fixing observed formatter, Resource-category, typed-identity and metadata regressions. Evidence: evidence/no-fallback-n13.md. SDK source is unchanged at 7df75c9. Continue the overall task directly.
 
 - N12 is complete as a local checkpoint after N11 1ad03fd3: 57,057 independent pre-retirement pairs and frozen scalar/ordered witnesses are preserved; actual source 57,057 x two flags and all 432 ordered cases pass. Full frontend 1,831/exact prior 3/95/all 320 batch/exact 346 warnings, Projection26/lint/dual eleven-file formatting and final checker pass. Evidence: evidence/no-fallback-n12.md. SDK sources remain unchanged at 7df75c9. Continue early typed/cached functions and remaining leaf/public/fallback seams without another prompt.
 

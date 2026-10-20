@@ -721,3 +721,6 @@ pub(crate) mod session_read_tests;
 
 #[cfg(test)]
 pub(crate) mod user_variable_tests;
+
+#[cfg(test)]
+pub(crate) mod early_string_tests;
