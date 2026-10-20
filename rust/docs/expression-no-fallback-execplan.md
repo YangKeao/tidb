@@ -20,7 +20,9 @@ previous user contract; demand and side-effect ordering do not.
 
 - [x] (2026-10-20) N7z compression:75816 independent pairs before retirement,85 immutable original encoder frames, original direct6318/51EC3B8C9ED75F51 and scalar69498/4EBAC72F3EA6BB39 retained. Three ordinary Ready callers retired, native unary source integrated and original wire/actual decoder owners consolidated. Expanded7 and Projection26 pass; full frontend1792/exact3/95ignored/all294batch, SDK1136/exact1/1ignored, clippy/lint/format/fixtures and exact warning checks recorded in final receipt. Local DCO checkpoint only; continue overall work immediately.
 
-- [ ] (2026-10-20 continuous overall execution) N8: remove the nested single-operation Ready VM through one validated generated-kernel dispatch, independently compare before switching; then cover remaining value-body/source gaps, generic Admission dispatch and old public/unistore traversals. No stage is a stopping point.
+- [x] (2026-10-20) N8 direct closed value dispatch:11448 original/candidate pairs before nested entry retirement,477 recipes;6561 dispatched/5271 success,8992E4132C233F8C fixed witness. Production invokes the same prepared kernel directly, including three fixed two-kernel compositions. Existing11 input-capacity regressions restored by retaining the original input ledger; all assertions unchanged. Final SDK1139/exact1/1ignored, front1792/exact3/95/all294batch, Projection26; warnings17/346/clippy89expr171total exact, lint/dual3fmt/fixtures/checker pass. Local checkpoint only.
+
+- [ ] (2026-10-20 continuous overall execution) N9: separate common eager value-body semantics from child execution, integrate remaining value sources in the same host frame with original field types/cache facts/probes/returns; then lazy/effectful/deferred/PB/public/unistore closure and delete Admission fallback. Continue until overall task complete; no checkpoint is a stopping point.
 
 - [x] (2026-10-20) N7y: original42912/C0AA6D5E6AB8F921 and472032/6B9F95BC40BDD875 frozen/rerun; all514944 independent pairs pass and six executed sources archived before ordinary MD5/SHA/SHA1/SHA2 Ready retirement. Existing actual CryptoNative frame and original owners now handle all eight operations. Expanded source/provider/ignored-payload/resource/recovery checks pass, including236 bad capabilities; last nine-root digest Projection cohort passes. Full frontend1784/exact3/95ignored/all290batch; SDK1134/exact1/1ignored; Projection26; warning Counters346/17/clippy89expr171total unchanged; lint/dual9fmt/fixtures/read-only checker pass. SDK local DCOe177f16 and matching frontend checkpoint record this milestone; global scope stays open.
 
@@ -132,6 +134,20 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N8's first full SDK run exposed11 genuine regressions: borrowed Ready capacities
+had lived in TaskGuard.storage(), not scalar node_storage(). The candidate
+initially omitted that ledger, allowing dispatch before a terminal resource
+refusal. Reuse the original EvalInput.retained_input_bytes() owner and include
+it throughout direct argument/result overlap; keep every original test and
+zero-dispatch assertion intact. The test counter also displaced an original doc
+comment onto a macro; restore it to eval_frames to preserve warning Counters.
+
+N8 inventory has477 closed Ready recipes, including exactly three fixed two-call
+NOT(IS ...) compositions. Original11448 observations include6561 real dispatches
+and5271 successful values; admission refusals and unbound metadata errors must
+not be presented as successful kernel coverage. The original public LENGTH
+worker genuinely increments the nested-frame counter, reproducing the target.
 
 N7z's full build exposed a now-unused UncompressOutcome re-export; remove it and
 rerun the frontend to preserve the exact warning baseline. Its old cache witness
@@ -335,6 +351,14 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision (2026-10-20 N8): keep exact recipe/schema/role/metadata identity gates,
+  but borrow actual operands and call the unchanged generated-kernel seam
+  directly. Preserve fixed two-call compositions and one budget/witness owner;
+  never replace this with a general expression scheduler. Archive independently
+  executed sources before retiring the old nested method. Validate genuine
+  bound invocation metadata using the public-worker suites as well as the
+  distinct low-level original witness.
+
 - Decision (2026-10-20): N7z shares the original encoder/header and one actual
   incremental decoder between wire and native callers only after independent
   proof. Distinguish finite resources from genuine decoder SQL dispositions.
@@ -536,6 +560,12 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N8's11448 independent comparisons passed before the old nested Ready entry was
+replaced. Full public-worker/frontend/Projection validation passes with exact
+inherited failure and warning sets after correcting the input-capacity ledger. This removes nested traversal for all currently closed Ready recipes,
+not the generic frontend fallback or public/unistore interpreters; those remain
+active work, and execution continues after the local checkpoint.
 
 Overall task remains active. N7z is the compression checkpoint; the next work removes nested Ready execution and closes remaining source and traversal gaps. Checkpoints are not stopping points.
 
@@ -4122,3 +4152,27 @@ Continue after that checkpoint to the remaining string/packet/compare/JSON/lib R
 
 
 Revision N7z final: original proof, shared decoder, source/provider/resource gates, explicit-wire cache preservation and ordinary zero-worker regression are recorded in rust/docs/evidence/no-fallback-n7z.md. Continue N8 immediately after the local signed checkpoint.
+
+
+## N8: direct execution of closed value recipes
+
+The remaining Ready facade currently owns a tiny compiled expression and starts
+`eval_frames` after its arguments are already available. Replace this nested
+traversal with the same `eval_prepared_kernel` used by the shared driver, retaining
+immutable recipe validation, full metadata identity, input-role checks, finite
+work/storage/depth, original error reporting and witness accounting. Three fixed
+NOT(IS ...) compositions retain exactly two kernel calls; they are not a general
+expression scheduler. Keep the original method intact during capture and actual
+independent candidate comparisons. Include every477 enum operation and genuine
+non-NULL/NULL/typed malformed representatives, and count successful dispatches
+separately from admission refusals. Bindings with invocation metadata also need
+the existing real public-worker suites after the switch.
+
+Subsequent source closure should reuse original value-body policies, preserving
+all static field types, constant facts, caches and one return boundary. Lazy,
+repeated and side-effectful demand requires resumable phases owned by the same
+SDK driver. A body may request its argument but must never call an old tree
+interpreter. Public AST and unistore have distinct semantic metadata; do not
+silently coerce their policy into the typed ScalarFunction dialect. All previously
+supported entries must reach this one framework before deleting Admission
+fallback. No family checkpoint or partial inventory closes the overall task.
