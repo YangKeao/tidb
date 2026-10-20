@@ -24770,7 +24770,10 @@ fn crypto_actual_sources_keep_types_returns_eager_children_context_and_prefixes(
     ];
     for (field, values) in misc_native_source_types() {
         for ret in &returns {
-            for name in crate::tikv::crypto_value_tests::NAMES {
+            for name in crate::tikv::crypto_value_tests::NAMES
+                .into_iter()
+                .chain(crate::tikv::digest_value_tests::NAMES)
+            {
                 let arity = crate::tikv::crypto_value::operation(name).unwrap().arity();
                 for argument in 0..arity {
                     for position in 0..3 {
@@ -24822,7 +24825,10 @@ fn crypto_actual_sources_keep_types_returns_eager_children_context_and_prefixes(
             }
         }
     }
-    for name in crate::tikv::crypto_value_tests::NAMES {
+    for name in crate::tikv::crypto_value_tests::NAMES
+        .into_iter()
+        .chain(crate::tikv::digest_value_tests::NAMES)
+    {
         let arity = crate::tikv::crypto_value::operation(name).unwrap().arity();
         for argument in 0..arity {
             for computed in [false, true] {
@@ -24932,7 +24938,16 @@ fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password
     }
     let mut rejected = 0;
     for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
-        for op in [O::Sm3, O::Password, O::Encode, O::Decode] {
+        for op in [
+            O::Sm3,
+            O::Password,
+            O::Encode,
+            O::Decode,
+            O::Md5,
+            O::Sha,
+            O::Sha1,
+            O::Sha2,
+        ] {
             let arity = op.arity();
             let field = projected(&native_bytes_type(), true).unwrap();
             let args = vec![field.clone(); arity];
@@ -25120,6 +25135,31 @@ fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password
                 }
                 cases.push(vec![Datum::new_string("value"), Datum::Null]);
             }
+            if op == O::Sha2 {
+                for length in [Datum::Int(128), Datum::Null] {
+                    cases.push(vec![Datum::Bytes(vec![255; 1 << 20]), length]);
+                }
+                for length in [
+                    Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 0)),
+                    Datum::Enum(
+                        tidb_datatype::MysqlEnum::new(vec![255; 1 << 20], 256),
+                        Collation::Utf8Mb4Bin,
+                    ),
+                    Datum::Set(
+                        tidb_datatype::MysqlSet::new(vec![255; 1 << 20], 256),
+                        Collation::Utf8Mb4Bin,
+                    ),
+                    Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![255; 1 << 20])),
+                    Datum::Raw(vec![255; 1 << 20]),
+                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                    Datum::Json(
+                        BinaryJSON::parse(&format!("{{\"x\":\"{}\"}}", "x".repeat(1 << 20)))
+                            .unwrap(),
+                    ),
+                ] {
+                    cases.push(vec![Datum::new_string("value"), length]);
+                }
+            }
             for values in cases {
                 context.events.borrow_mut().clear();
                 let task = begin(&mut provider, &mut ctx);
@@ -25191,6 +25231,72 @@ fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password
                 )
                 .is_err());
                 provider.cancel(&task);
+                provider.cancel(&task);
+            }
+            if op == O::Sha2 {
+                let task = begin(&mut provider, &mut ctx);
+                assert!(matches!(
+                    reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        0,
+                        Some(insert(
+                            &Datum::new_string("value"),
+                            NativeValueRole::CharInput,
+                            3,
+                            row
+                        ))
+                    ),
+                    Ok(HostStep::NeedArg(_))
+                ));
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    1,
+                    Some(insert(
+                        &Datum::new_string("2".repeat(16 << 10)),
+                        NativeValueRole::CharInput,
+                        4,
+                        row
+                    ))
+                )
+                .is_err());
+                assert!(matches!(
+                    provider.take_native_error(),
+                    Some(EvalError::ExpressionRuntimeFailure(_))
+                ));
+                assert!(reply(
+                    &mut provider,
+                    &mut ctx,
+                    &task,
+                    1,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row))
+                )
+                .is_err());
+                provider.cancel(&task);
+                let task = begin(&mut provider, &mut ctx);
+                assert!(matches!(
+                    reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    ),
+                    Ok(HostStep::NeedArg(_))
+                ));
+                assert!(matches!(
+                    reply(
+                        &mut provider,
+                        &mut ctx,
+                        &task,
+                        1,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row))
+                    ),
+                    Ok(HostStep::Ready(_))
+                ));
                 provider.cancel(&task);
             }
             // A demanded valid coefficient with huge precision must refuse finite
@@ -25321,7 +25427,7 @@ fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password
             }
         }
     }
-    assert_eq!(rejected, 128);
+    assert_eq!(rejected, 236);
 }
 
 #[test]
@@ -25329,9 +25435,15 @@ fn crypto_actual_resource_is_terminal_and_same_source_null_recovers_with_passwor
     let schema = [ty()];
     let rows = [vec![Datum::Int(1)], vec![Datum::Int(0)]];
     let field = FieldType::new(FieldTypeCode::NewDecimal);
-    for name in crate::tikv::crypto_value_tests::NAMES {
+    for name in crate::tikv::crypto_value_tests::NAMES
+        .into_iter()
+        .chain(crate::tikv::digest_value_tests::NAMES)
+    {
         let arity = crate::tikv::crypto_value::operation(name).unwrap().arity();
         for argument in 0..arity {
+            if name == "SHA2" && argument == 1 {
+                continue;
+            }
             let huge = literal(
                 Datum::Decimal(Decimal::from_raw_parts(false, vec![b'1'], u32::MAX, 1)),
                 field.clone(),
@@ -25375,4 +25487,27 @@ fn crypto_actual_resource_is_terminal_and_same_source_null_recovers_with_passwor
             }
         }
     }
+}
+
+#[test]
+fn native_digest_actual_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in crate::tikv::digest_value_tests::NAMES {
+        let mut args = vec![literal(
+            Datum::VectorFloat32(VectorFloat32::init(0)),
+            FieldType::new(FieldTypeCode::VectorFloat32),
+        )];
+        if name == "SHA2" {
+            args.push(literal(Datum::Int(256), ty()));
+        }
+        let actual = suite(call(name, string_ty(), args));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "crypto actual source {failures:?}");
 }

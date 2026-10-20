@@ -43,17 +43,18 @@ pub(crate) fn dispatch(
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("MD5", 1) => Some(hash_unary(
-            crate::tikv::EvaluatedBytesOp::Md5,
-            &vals[0],
+        ("MD5" | "SHA" | "SHA1", 1) => Some(crate::tikv::crypto_value::eval_refs(
+            crate::tikv::crypto_value::operation(name).expect("validated digest name"),
+            &[&vals[0]],
             ctx,
+            crate::tikv::identity_actual::default_budget(),
         )),
-        ("SHA" | "SHA1", 1) => Some(hash_unary(
-            crate::tikv::EvaluatedBytesOp::Sha1,
-            &vals[0],
+        ("SHA2", 2) => Some(crate::tikv::crypto_value::eval_refs(
+            tidb_query_expr::NativeCryptoOperation::Sha2,
+            &[&vals[0], &vals[1]],
             ctx,
+            crate::tikv::identity_actual::default_budget(),
         )),
-        ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1], ctx)),
         ("SM3", 1) => Some(crate::tikv::crypto_value::eval_refs(
             tidb_query_expr::NativeCryptoOperation::Sm3,
             &[&vals[0]],
@@ -426,27 +427,6 @@ pub(crate) fn validate_password_strength(
     Ok(Datum::Int(100))
 }
 
-/// Retained explicit byte adapter for MD5 and SHA/SHA1. The frontend
-/// retains its original byte conversion and text packing; the shared kernel
-/// owns their hashing and hex formatting; SM3/PASSWORD use actual values.
-/// Actual NULL inputs also reach the worker unchanged.
-fn hash_unary(
-    operation: crate::tikv::EvaluatedBytesOp,
-    value: &Datum,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_bytes_in(
-        operation,
-        ctx,
-        || hash_input(value),
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
-}
-
 /// `RANDOM_BYTES(len)`: one fresh OS-random binary string per evaluation.
 /// The bytes themselves are unspecified; the stable SQL contract is the
 /// requested length, NULL propagation, and inclusive 1..=1024 range gate.
@@ -493,36 +473,6 @@ pub(crate) fn hash_input(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
     })
 }
 
-/// `SHA2(str, n)`: the SHA-2 family digest as lowercase hex. Port of
-/// `builtinSHA2Sig.evalString` (`pkg/expression/builtin_encryption.go`):
-/// `NULL` in either argument propagates; the switch over `n` maps
-/// `SHA0`(0) and `SHA256`(256) to SHA-256, `SHA224`/`SHA384`/`SHA512` to
-/// their hashes, and leaves the hasher nil for EVERY other value — which
-/// the Go code returns as `NULL` (not an error). Its function class declares
-/// the second argument `ETInt`, so [`encryption_int_argument`] ports that implicit cast
-/// before C4 selects and computes the digest.
-fn sha2_hash(arg: &Datum, len: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_args_in(
-        crate::tikv::EvaluatedBytesOp::Sha2Native,
-        ctx,
-        || {
-            let bytes = hash_input(arg)?;
-            // NULL still reaches C4, but must not demand length coercion.
-            let count = if bytes.is_none() {
-                crate::tikv::ReadyIntArg::Undemanded
-            } else {
-                crate::tikv::ReadyIntArg::Value(encryption_int_argument(len)?)
-            };
-            Ok(crate::tikv::EvaluatedArgs::BytesIntReady { bytes, count })
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    )
-}
-
 /// Ports the `ETInt` coercion requested by the encryption function classes.
 /// Decimal inputs round half away from zero (`builtinCastDecimalAsIntSig`),
 /// while floats round ties to even (`builtinCastRealAsIntSig` through
@@ -531,7 +481,7 @@ fn sha2_hash(arg: &Datum, len: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalE
 /// evaluator has no statement-context warning channel. An out-of-range input
 /// becomes an invalid hash length, hence `SHA2` returns `NULL` just as Go
 /// does after its saturating integer conversion.
-fn encryption_int_argument(value: &Datum) -> Result<Option<i64>, EvalError> {
+pub(crate) fn encryption_int_argument(value: &Datum) -> Result<Option<i64>, EvalError> {
     Ok(match value {
         Datum::Int(n) => Some(*n),
         Datum::UInt(n) => Some(*n as i64),

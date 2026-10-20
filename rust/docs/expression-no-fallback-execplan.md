@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-20) N7y: original42912/C0AA6D5E6AB8F921 and472032/6B9F95BC40BDD875 frozen/rerun; all514944 independent pairs pass and six executed sources archived before ordinary MD5/SHA/SHA1/SHA2 Ready retirement. Existing actual CryptoNative frame and original owners now handle all eight operations. Expanded source/provider/ignored-payload/resource/recovery checks pass, including236 bad capabilities; last nine-root digest Projection cohort passes. Full frontend1784/exact3/95ignored/all290batch; SDK1134/exact1/1ignored; Projection26; warning Counters346/17/clippy89expr171total unchanged; lint/dual9fmt/fixtures/read-only checker pass. SDK local DCOe177f16 and matching frontend checkpoint record this milestone; global scope stays open.
+
 - [x] (2026-10-20) N7x: preserve 418392 pre-retirement independent pairs and original hashes, retire ordinary SM3/PASSWORD/ENCODE/DECODE Ready handoffs, integrate actual eager native sources, and finish expanded types/returns/selection/provider/callback/resource/NULL-recovery tests plus last nine-root mixed Projection cohort. Full frontend1780/exact3/95ignored/all289batch, SDK1133/exact1/1ignored, Projection26; warning-title Counters346/17/clippy89expr171total unchanged. Lint, both pinned15-file format checks, fixtures, archived original-owner comparison and read-only final checker pass. SDK local DCO28a69df and matching frontend checkpoint record this milestone; global fallback/unistore/full-server work remains open.
 
 - [x] (2026-10-20) N7w: capture/freeze original ASCII/LTRIM/RTRIM byte-unary observations and Ready/source guards before production edits, expose finite actual byte results over single original SDK owners, independently pair before retirement, integrate actual canonical sources with original signature casts/probes/return boundary and binary output policy. Validate full gates and signed local checkpoint; global scope stays open.
@@ -126,6 +128,15 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N7y independent proof is complete:514944 direct/scalar real old/new comparisons
+pass, and original hashes remain unchanged. Executed tests/frontend/original-
+frontend/scalar/SDK-candidate/SDK-original snapshots were archived before caller
+retirement. The first integration compile rejected temporary reference arrays
+returned by conditional branches; using separate one/two-argument dispatch arms
+retains stack-only real references. Corrected focus53, full frontend1784/exact3, SDK1134/exact1 and Projection26 all pass their expected baselines. No expected hash or inherited failure changed.
+
+N7y inventory: SHA and SHA1 share an original owner but retain their original SQL names. SHA2 converts data with hash_input first, skips length coercion on NULL data, then calls warning-free sha2_native. Invalid lengths return NULL. Its length cast rounds Decimal half away from zero, Real ties to even, and parses strings with original prefix/UTF-8/error policies. All child expressions remain eager.
 
 N7x final: the expanded provider test initially passed lowercase SDK operation
 names into the uppercase frontend dispatch oracle, producing a test-only None
@@ -310,6 +321,10 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: extend the established actual CryptoNative frame for the remaining deterministic digest family, retaining separate SHA/SHA1 spelling and the original hash_input/encryption_int_argument/SDK algorithms. Preserve original implementation and executed sources through independent comparisons.
+  Rationale: this removes the remaining digest Ready transport without introducing another evaluator or duplicating SQL conversion policies.
+  Date/Author: 2026-10-20, ExpressionReuseEngineer.
 
 - Decision: finish the existing four-function N7x milestone before migrating another family; append its Projection cohort last and retain the original clock setup index. Preserve historical original/pair evidence and run current source/provider tests independently of those witnesses.
   Rationale: the handoff integrated production code but left source and callback contracts unverified.
@@ -496,6 +511,17 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N7y is complete as a local digest checkpoint after514944 independent comparisons
+and six executed archives before caller retirement. Actual CryptoNative sources
+retain original conversion/algorithm owners and eager children, SHA2 ordered NULL
+barriers, unused-storage rules and single return conversion. Expanded source/
+provider/resource/recovery tests and the last nine-root mixed Projection cohort
+pass. Full frontend1784/exact3/95ignored/all290batch, SDK1134/exact1/1ignored,
+Projection26, exact warning Counters346/17/clippy89expr171total, lint/dual9fmt/
+fixtures/checker pass. See rust/docs/evidence/no-fallback-n7y.md. Local DCO only;
+AES/compression/random, generic fallback/unistore/source gaps and Go/full-server/
+performance validation remain open.
 
 N7x is complete as a local four-function checkpoint. SM3/PASSWORD/ENCODE/DECODE
 ordinary calls and canonical sources use actual finite SDK values over the same
@@ -4045,3 +4071,17 @@ Revision N7x final: successor validation completed all expanded and full gates,
 retained original hashes/archives and exact inherited failures, and added the
 SDK ownership guide and final receipt. The two local DCO checkpoints preserve
 all prior local commits; global no-fallback completion is not claimed.
+
+
+## N7y: remaining deterministic digest actual operands
+
+Keep the original hash_unary/sha2_hash functions and SDK md5/sha1/sha2_native owners intact while capturing all original results and comparing candidates. Reuse the149 raw-value corpus with29 SHA2 length shapes, original direct/scalar contexts and explicit UTC test clock. Freeze observed counts/hashes only from original execution and preserve genuine Ready/source guard failures. Capture executed original/candidate source snapshots before retirement.
+
+Extend NativeCryptoOperation with MD5/SHA/SHA1/SHA2 and finite actual services over those original owners. The frontend keeps hash_input and encryption_int_argument as conversion owners; budget actual demanded length storage before invoking the latter, retaining malformed coefficient panic before irrelevant visible scale. NULL data skips length coercion but never child evaluation/authentication. Invalid lengths preserve original warning-free NULL behavior without copying/scanning an unused byte payload. The existing CryptoNative host performs eager capabilities and one return conversion. Validate input/return declarations, both argument positions, parents, selections, original error prefixes, provenance/consumption/resources/recovery and last Projection cohort. Run full frontend/core/Projection, exact inherited warning/failure comparisons, lint, dual format, fixtures and read-only checker before explicit-file local DCO commits. No push is authorized.
+
+
+Revision N7y final: record514944 independent comparisons before retirement,
+expanded eight-operation source/provider/unused-payload coverage and final full
+gates, original-owner archive equality, SDK ownership guide and final receipt.
+Preserve all prior commits and unrelated BUILD.bazel; no global completion or
+publication authorization is implied.

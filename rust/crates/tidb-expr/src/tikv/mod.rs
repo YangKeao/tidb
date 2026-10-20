@@ -705,3 +705,6 @@ pub(crate) mod byte_unary_value;
 pub(crate) mod crypto_value_tests;
 
 pub(crate) mod crypto_value;
+
+#[cfg(test)]
+pub(crate) mod digest_value_tests;
