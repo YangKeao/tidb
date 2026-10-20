@@ -26918,3 +26918,330 @@ fn common_policy_registered_eager_calls_match_original_on_actual_null_rows() {
     assert_eq!(pairs, 1699);
     eprintln!("COMMON EAGER ACTUAL NULL SOURCE COMPARISONS {pairs}");
 }
+
+#[test]
+fn session_read_actual_sources_do_not_fallback() {
+    let mut failures = vec![];
+    for name in crate::tikv::session_read_tests::NAMES {
+        let actual = suite(call(name, string_ty(), vec![]));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        let _ = actual.run_with_tikv_batch(&crate::NoColumns, &mut input, &mut output, &[]);
+        let route = actual.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((name, route));
+        }
+    }
+    assert!(failures.is_empty(), "session read source {failures:?}");
+}
+
+fn session_read_outcome<T: std::fmt::Debug>(f: impl FnOnce() -> T) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(v) => format!("{v:?}"),
+        Err(e) => format!(
+            "PANIC:{:?}",
+            e.downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| e.downcast_ref::<&str>().copied())
+        ),
+    }
+}
+#[test]
+fn session_read_sources_keep_live_context_returns_selection_and_prefixes() {
+    const KEY: &str = "TIDB_SESSION_READ_SOURCE_MATRIX";
+    if std::env::var(KEY).as_deref() != Ok("1") {
+        let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","evaluator::batch::tests::session_read_sources_keep_live_context_returns_selection_and_prefixes","--nocapture"]).env(KEY,"1").env("TZ","UTC").output().unwrap();
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+        assert!(output.status.success());
+        return;
+    }
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut cases = 0;
+        for name in crate::tikv::session_read_tests::NAMES {
+            for profile in 0..5 {
+                for ret in crate::tikv::eager_scalar_value_tests::types() {
+                    let payloads = if name == "version" {
+                        crate::tikv::session_read_tests::values()
+                    } else {
+                        vec![Datum::Null]
+                    };
+                    for value in payloads {
+                        let root = call(name, ret.clone(), vec![]);
+                        let (actual, reference) = (suite(root.clone()), suite(root));
+                        for enabled in [false, true, false, true] {
+                            let ctx = crate::tikv::session_read_tests::Context::new(
+                                profile,
+                                value.clone(),
+                            );
+                            ctx.enabled.set(enabled);
+                            let oldctx = crate::tikv::session_read_tests::Context::new(
+                                profile,
+                                value.clone(),
+                            );
+                            oldctx.enabled.set(enabled);
+                            let (mut input, mut oldinput) = (
+                                chunk(&[], &[vec![], vec![], vec![]]),
+                                chunk(&[], &[vec![], vec![], vec![]]),
+                            );
+                            input.set_sel(Some(vec![2, 0, 2]));
+                            oldinput.set_sel(Some(vec![2, 0, 2]));
+                            let (mut output, mut expected) = (output_for(&ret), output_for(&ret));
+                            output.append_null(0);
+                            expected.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+                            });
+                            let want = session_read_outcome(|| {
+                                reference.run(&oldctx, &mut oldinput, &mut expected)
+                            });
+                            assert_eq!(got,want,"{name} profile={profile} ret={ret:?} value={value:?} flag={enabled}");
+                            assert_eq!(*ctx.events.borrow(), *oldctx.events.borrow(), "{name}");
+                            assert_eq!(output.num_rows(), expected.num_rows(), "{name}");
+                            assert_eq!(output.column(0), expected.column(0), "{name}");
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.refusals, route.fallback),
+                                (0, 0),
+                                "{name}: {route:?}"
+                            );
+                        }
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 1760);
+        eprintln!("SESSION READ ACTUAL SOURCE MATRIX {cases}");
+    });
+}
+#[test]
+fn session_read_same_source_tracks_changed_properties_without_preparing_values() {
+    for name in crate::tikv::session_read_tests::NAMES {
+        let root = call(name, string_ty(), vec![]);
+        let (actual, reference) = (suite(root.clone()), suite(root));
+        let mut ctx = crate::tikv::session_read_tests::Context::new(0, Datum::Null);
+        let mut oldctx = crate::tikv::session_read_tests::Context::new(0, Datum::Null);
+        for profile in [0, 2, 1, 3, 4, 0, 2] {
+            ctx.profile = profile;
+            oldctx.profile = profile;
+            ctx.value = Datum::new_string(format!("version-{profile}é"));
+            oldctx.value = ctx.value.clone();
+            let (mut input, mut oldinput) =
+                (chunk(&[], &[vec![], vec![]]), chunk(&[], &[vec![], vec![]]));
+            let (mut output, mut expected) = (output_for(&string_ty()), output_for(&string_ty()));
+            actual
+                .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+                .unwrap();
+            reference
+                .run(&oldctx, &mut oldinput, &mut expected)
+                .unwrap();
+            assert_eq!(
+                output.column(0),
+                expected.column(0),
+                "{name} profile={profile}"
+            );
+            assert_eq!(*ctx.events.borrow(), *oldctx.events.borrow());
+            let route = actual.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0));
+        }
+    }
+}
+#[test]
+fn session_read_dead_calls_and_empty_selection_do_not_read_session_state() {
+    for name in crate::tikv::session_read_tests::NAMES {
+        let ctx = crate::tikv::session_read_tests::Context::new(2, Datum::new_string("v"));
+        let read = call(name, string_ty(), vec![]);
+        let dead = suite(call(
+            "if",
+            string_ty(),
+            vec![
+                int(0),
+                read.clone(),
+                literal(Datum::new_string("chosen"), string_ty()),
+            ],
+        ));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&string_ty());
+        dead.run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        assert!(ctx.events.borrow().is_empty(), "dead {name}");
+        let route = dead.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        let actual = suite(read);
+        let mut input = chunk(&[], &[vec![]]);
+        input.set_sel(Some(vec![]));
+        let mut output = output_for(&string_ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        assert!(ctx.events.borrow().is_empty(), "empty {name}");
+        assert_eq!(output.num_rows(), 0);
+    }
+}
+#[test]
+fn session_read_resource_is_terminal_and_same_worker_missing_value_recovers() {
+    let owner = suite(call("version", string_ty(), vec![]));
+    let mut worker = PreparedBatch::compile(
+        &owner,
+        &[],
+        true,
+        93,
+        limits(),
+        ExecutionLimits::default(),
+        65536,
+    )
+    .unwrap();
+    let mut ctx =
+        crate::tikv::session_read_tests::Context::new(2, Datum::Bytes(vec![255; 1 << 20]));
+    let input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    // Use the same canonical profile as the production suite; the historical
+    // run_batch test consumer intentionally requires a typed batch candidate.
+    worker
+        .validate_invocation(&owner, &input, &output, &[])
+        .unwrap();
+    let error = worker
+        .execute_profile(
+            &ctx,
+            &mut EvalContext::default(),
+            &input,
+            &mut output,
+            true,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error.refusal(), BatchRefusal::Resource);
+    assert!(matches!(
+        error.into_evaluator_error(),
+        EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(_))
+    ));
+    assert_eq!(output.num_rows(), 0);
+    ctx.profile = 0;
+    let input = chunk(&[], &[vec![]]);
+    let mut output = output_for(&string_ty());
+    worker
+        .validate_invocation(&owner, &input, &output, &[])
+        .unwrap();
+    worker
+        .execute_profile(
+            &ctx,
+            &mut EvalContext::default(),
+            &input,
+            &mut output,
+            true,
+            None,
+        )
+        .unwrap();
+    assert_eq!(output.num_rows(), 1);
+    assert!(output.column(0).is_null(0));
+}
+
+#[test]
+fn session_read_immediate_callback_unwind_releases_task_and_keeps_exclusive_borrow() {
+    use super::hosts::*;
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostInvocation, HostSignature, HostStart, LocalHostServices};
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        panic: Cell<bool>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented session callback source")
+        }
+        fn sysvar(&self, _: Option<tidb_ast::SysVarScope>, name: &str) -> Option<Datum> {
+            assert_eq!(name, "version");
+            let _exclusive = self.store.borrow_mut();
+            if self.panic.get() {
+                panic!("session read callback");
+            }
+            Some(Datum::new_string("7"))
+        }
+    }
+    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+        let f = ScalarFunction::new(CiString::new("version"), string_ty(), vec![]);
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: Box::new([]),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::EagerValues {
+            arguments: Box::new([]),
+            kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
+            probe: None,
+            result_type: string_ty(),
+            output_node: 2,
+            output_role: role,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let context = C {
+            store: &store,
+            panic: Cell::new(false),
+        };
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 8192)
+            .with_native_values(Some(&store));
+        let mut eval = EvalContext::default();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+            p.start(
+                eval,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &[],
+                    return_type: &field,
+                },
+            )
+        };
+        for cycle in 0..2 {
+            if cycle == 1 {
+                context.panic.set(true);
+                for _ in 0..64 {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        begin(&mut provider, &mut eval)
+                    }));
+                    let Err(panic) = result else {
+                        panic!("zero-argument callback left an unreachable task after unwind: {result:?}");
+                    };
+                    let text = panic
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic.downcast_ref::<&str>().copied());
+                    assert_eq!(text, Some("session read callback"));
+                    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                }
+                context.panic.set(false);
+            }
+            let HostStart::Ready(value) = begin(&mut provider, &mut eval).unwrap() else {
+                panic!("niladic session read requested an argument")
+            };
+            let ScalarValueRef::Bytes(Some(token)) = value.get_scalar_ref(0) else {
+                panic!()
+            };
+            let values = store.borrow();
+            assert_eq!(
+                values
+                    .get(token, role, NativeValueOrigin { node: 2, row })
+                    .unwrap()
+                    .go_bytes(),
+                b"7"
+            );
+            assert!(values
+                .get(token, role, NativeValueOrigin { node: 3, row })
+                .is_err());
+        }
+    }
+}

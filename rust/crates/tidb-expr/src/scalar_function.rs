@@ -2571,89 +2571,8 @@ impl ScalarFunction {
         // Go `builtinDatabaseSig`/`builtinVersionSig` read session state
         // rather than arguments: the current database (NULL when none is
         // selected) and the same string `@@version` reports.
-        if self.args.is_empty() {
-            match name {
-                "database" | "schema" => {
-                    return Ok(match ctx.current_database() {
-                        Some(name) => Datum::new_string(name.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                "version" => {
-                    return Ok(ctx.sysvar(None, "version").unwrap_or(Datum::Null));
-                }
-                "tidb_version" => {
-                    return Ok(Datum::new_string(ctx.tidb_info().into_bytes()));
-                }
-                // Go `builtinCurrentUserSig` reports the MATCHED grant
-                // identity (`UserIdentity.String()`, which prefers
-                // AuthUsername@AuthHostname). CURRENT_USER is the only name
-                // bound to it: `pkg/expression/builtin.go:823` registers
-                // `currentUserFunctionClass` for CURRENT_USER alone, while
-                // USER, SESSION_USER and SYSTEM_USER (`:833`, `:840`, `:841`)
-                // all share `userFunctionClass`, whose sig returns
-                // `UserIdentity.LoginString()` -- the authenticated identity.
-                "current_user" => {
-                    return Ok(match ctx.current_user() {
-                        Some(user) => Datum::new_string(user.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                // Go `builtinCurrentRoleSig` reports the session's ACTIVE
-                // roles -- not the roles the account holds, which only
-                // `SHOW GRANTS` prints.
-                "current_role" => {
-                    return Ok(match ctx.current_role() {
-                        Some(roles) => Datum::new_string(roles.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                // Go `builtinCurrentResourceGroupSig` reports the effective
-                // statement resource group (the hint-selected name when a
-                // resource-group hint is active, otherwise
-                // `StmtCtx.ResourceGroupName`).
-                "current_resource_group" => {
-                    return Ok(match ctx.current_resource_group() {
-                        Some(group) => Datum::new_string(group.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                "user" | "session_user" | "system_user" => {
-                    return Ok(match ctx.login_user() {
-                        Some(user) => Datum::new_string(user.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                "connection_id" => {
-                    return Ok(match ctx.connection_id() {
-                        Some(id) => Datum::UInt(id),
-                        None => Datum::Null,
-                    })
-                }
-                "found_rows" => {
-                    return Ok(match ctx.found_rows() {
-                        Some(rows) => Datum::UInt(rows),
-                        None => Datum::Null,
-                    })
-                }
-                "row_count" => {
-                    return Ok(match ctx.row_count() {
-                        Some(rows) => Datum::Int(rows),
-                        None => Datum::Null,
-                    })
-                }
-                "last_insert_id" => {
-                    // LAST_INSERT_ID is an unsigned domain (Go
-                    // `builtinLastInsertIDSig.evalInt` returns the
-                    // PrevLastInsertID through an ETInt result the vectorized
-                    // source pins as UInt).
-                    return Ok(match ctx.last_insert_id() {
-                        Some(id) => Datum::UInt(id),
-                        None => Datum::Null,
-                    });
-                }
-                _ => {}
-            }
+        if let Some(operation) = session_read::SessionRead::for_function(self) {
+            return operation.eval(ctx);
         }
         // Go `builtinLastInsertIDWithIDSig.evalInt`: LAST_INSERT_ID(expr)
         // evaluates the integer expression, records it as the session's
@@ -6416,3 +6335,5 @@ pub(crate) mod eager_policy_tests;
 pub(crate) mod argument_policy;
 
 pub(crate) mod math_diagnostic;
+
+pub(crate) mod session_read;

@@ -3024,25 +3024,40 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             let HostStart::Pending { task, .. } = start else {
                 unreachable!()
             };
-            let result = if matches!(self.task(&task)?.demand, SqlDemand::EagerValues { .. }) {
-                self.finish_eager_values(&task)
-            } else if matches!(self.task(&task)?.demand, SqlDemand::Clock) {
-                self.resume_clock(&task, None)
-            } else if matches!(self.task(&task)?.demand, SqlDemand::Tso) {
-                self.resume_tso(&task, None)
+            // No task handle has crossed the host boundary yet. A context
+            // callback can unwind before start returns, so this scope owns
+            // cancellation until a ready result is returned to the driver.
+            struct ImmediateGuard<'call, 'context> {
+                provider: &'call mut NativeBatchHosts<'context>,
+                task: HostTaskId,
+            }
+            impl Drop for ImmediateGuard<'_, '_> {
+                fn drop(&mut self) {
+                    self.provider.cancel(&self.task);
+                }
+            }
+            let guard = ImmediateGuard {
+                provider: self,
+                task,
+            };
+            let result = if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::EagerValues { .. }
+            ) {
+                guard.provider.finish_eager_values(&guard.task)
+            } else if matches!(guard.provider.task(&guard.task)?.demand, SqlDemand::Clock) {
+                guard.provider.resume_clock(&guard.task, None)
+            } else if matches!(guard.provider.task(&guard.task)?.demand, SqlDemand::Tso) {
+                guard.provider.resume_tso(&guard.task, None)
             } else {
-                self.resume_epoch(&task, None)
+                guard.provider.resume_epoch(&guard.task, None)
             };
             return match result {
                 Ok(HostStep::Ready(value)) => Ok(HostStart::Ready(value)),
                 Ok(HostStep::NeedArg(_)) => {
-                    self.cancel(&task);
-                    Err(binding("clock unexpectedly demanded an argument"))
+                    Err(binding("niladic host unexpectedly demanded an argument"))
                 }
-                Err(e) => {
-                    self.cancel(&task);
-                    Err(e)
-                }
+                Err(error) => Err(error),
             };
         }
         Ok(start)

@@ -3992,6 +3992,28 @@ mod tests {
         let common_policy_mix = std::iter::once(0)
             .chain(common_policy_start..roots.len())
             .collect::<Vec<_>>();
+        let session_read_start = roots.len();
+        for name in [
+            "database",
+            "current_user",
+            "version",
+            "connection_id",
+            "found_rows",
+        ] {
+            let field = if matches!(name, "connection_id" | "found_rows") {
+                integer.clone().with_unsigned(true)
+            } else {
+                string.clone()
+            };
+            let root = call(name, field.clone(), vec![]);
+            roots.push(root.clone());
+            fields.push(field);
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let session_read_mix = std::iter::once(0)
+            .chain(session_read_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let configurations = [
             (
@@ -4177,7 +4199,22 @@ mod tests {
                     .map(|&i| fields[i].clone())
                     .collect(),
             ),
+            (
+                session_read_mix.iter().map(|&i| roots[i].clone()).collect(),
+                session_read_mix
+                    .iter()
+                    .map(|&i| fields[i].clone())
+                    .collect(),
+            ),
         ];
+        let session_configuration = configurations.len() - 1;
+        let with_session = |context: crate::StmtContext| {
+            context
+                .with_session_state(Some("dbé会话".into()), Some("8.0-session".into()))
+                .with_user(Some("grant@host".into()), Some("login@host".into()))
+                .with_connection_id(Some(u64::MAX))
+                .with_last_found_rows(u64::MAX - 1)
+        };
         // Keep prior matrices intact. Each new heterogeneous suite adds a
         // family within the unchanged finite metadata allowance.
         for (configuration, (roots, fields)) in configurations.into_iter().enumerate() {
@@ -4194,6 +4231,11 @@ mod tests {
                             },
                         )
                         .with_sysdate_is_now(true)
+                } else {
+                    reference
+                };
+                let reference = if configuration == session_configuration {
+                    with_session(reference)
                 } else {
                     reference
                 };
@@ -4219,6 +4261,11 @@ mod tests {
                                 },
                             )
                             .with_sysdate_is_now(true)
+                    } else {
+                        context
+                    };
+                    let context = if configuration == session_configuration {
+                        with_session(context)
                     } else {
                         context
                     };

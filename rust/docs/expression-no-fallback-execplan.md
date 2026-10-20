@@ -18,6 +18,10 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-21 N11 niladic session reads) Original1760/33F3607B995E80CC captured/frozen/rerun; independent1760 pairs and14 actual SourceAdmission RED before retirement. Shared context-only value owner integrated in ordinary scalar and existing zero-argument host. Actual1760 source matrix/live7profiles/dead/empty/resourceNULLrecovery and128 callback panic/recovery cases pass; immediate orphan-task bug reproduced before scope-guard fix. Fullfront1822/exact3/95/all314batch/346warnings, Projection26(new11rootcohort), lint/dual8fmt/fixtures/shared-owner/checker pass. Local checkpoint; overall effects/ordered/global work continues.
+
+- [x] (2026-10-21 N11 initial scope) Capture, independent proof and shared niladic owner/source integration completed above. Continue remaining early/session-write/ordered/global gaps; no checkpoint pause.
+
 - [x] (2026-10-20 N10) Original policy2308/common2036/names328/BC3F1FF91A278C16 captured/rerun and independently classified before integration. All2036 common source recipes,1699 actual non-niladic NULL call shapes,6 dead-unknown controls and70 original-renderer comparisons pass. Common default preserves dedicated/typed priorities, original prefix probes and actual math diagnostics/work. Fullfront1814/exact3/95/all308batch, Projection26 includingnew11rootcohort, exact346warningtitles, lint/dual14fmt/immutableowners/fixtures/read-onlychecker pass. Local checkpoint only; immediately continue N11 early/session/ordered/global closure.
 
 - [x] (N10 preparation) Executed original early/common phase for 328 names and 2,308 arity cases: 2,036 common, BC3F1FF91A278C16. Unchanged rerun and all 2,308 independent metadata-classifier comparisons pass before source-policy changes.
@@ -140,6 +144,11 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N11 callback proof: an immediate host task was installed before the caller could receive its handle; a context panic leaked unreachable tasks across service reuse. The corrected string callback fixture reproduced byte-cap failure after repeated real panics. A guard now owns cancellation until start returns, including success/error/unwind; 128 panics and fresh recovery pass without changing the original panic.
+- N11 source coverage uses the canonical worker/profile. The historical mandatory typed test consumer correctly rejected a niladic session call before execution; the resource fixture now exercises the production profile rather than changing that existing consumer's contract.
+
+- N11 preparation: niladic session reads return before the common value body but need no child traversal. Their current source gap can be closed through the existing zero-argument actual-value host, preserving context reads at invocation. Original captures must include missing/empty session fields, login versus grant identity, UInt64 high bits and the ordinary return-family conversion.
 
 - N10 actual1699-case corpus found protocol LOGICAND/LOGICOR names had been given logical source behavior despite original scalar Unsupported after eager children. Source selection now distinguishes the protocol alias from the actual binary operator metadata; NULL/non-NULL comparisons preserve the original error. No fixture or original error expectation was changed to conceal the mismatch.
 - N10 upfront common math diagnostic formatting would reserve unused visible Decimal scale in a dead branch. The genuine dead-EXP regression reproduced this; diagnostic-only raw facts now render through original helpers only on an actual overflow. Existing dedicated ABS protocol is kept. The broader root policy also preserves already proved typed closures; all original four-kernel and Duration-nanosecond provider assertions pass.
@@ -385,6 +394,11 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- N11 final: store only the SessionRead selector in EagerValueKernel, and call the same context-only helper from the ordinary scalar entrance. Exact zero-arity/non-PB eligibility preserves malformed/common and PB behavior. Keep the original common body unchanged after the new guard and defer result-family conversion to its original boundary.
+- N11 lifecycle: use one immediate-task cancellation guard for existing eager/clock/TSO/epoch branches. Never catch or replace the callback panic; release unexposed task ownership during unwind. Keep SDK sources/baselines unchanged and validate the affected frontend/Projection scopes completely.
+
+- N11 initial: first record the unchanged original session-read owner with test-only context getters, then extract it into shared value metadata after independent proof. Keep session effects and output ordering as explicit subsequent work using the same driver; do not call the old expression evaluator from a context-value host.
+
 - N10 final: keep the old54 common names only as an original-coercion priority, not an admission whitelist; choose remaining common actual hosts after dedicated recipes. Preserve complete typed closures where their static carrier proof already holds; nontrivial first stored constants select native phases to retain original probe panics/work. Typed protocol aliases cannot replace the original scalar meaning.
 - N10 validation: reuse the unchanged clean SDK7df75c9 N9 tests/clippy instead of rebuilding it. Actual final frontend, Projection, lint and dual-format/checker gates cover this frontend-only checkpoint. Two former fallback/admission assertions now assert genuine preparation and, for malformed PLUS, the original demanded failure; all other original/inherited assertions remain.
 
@@ -608,6 +622,10 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+- N11 niladic session reads and immediate-task cleanup are complete as a local checkpoint, with original witness/independent pre-retirement proof, actual source matrices and exact prior failure/warning sets. All final builds are terminal. The overall task continues with user-variable/session effects and ordered output, then remaining early/leaf/public/unistore/fallback closure; no new prompt is needed.
+
+- Historical N11 preparation began after signed N10 189bbcbd with production untouched. Niladic integration and complete gates are now recorded above; overall completion remains open.
 
 - N10 complete as a local checkpoint: all required frontend gates and independent semantic witnesses pass with exact original failures/warnings; no SDK source, push or release changes. The common source body and original scalar interpreter code are byte-identical to N9; only metadata/source selection and demanded formatting work changed. Overall task is still active. Continue early session/value/metadata adapters, ordered effects, deferred/PB/public/unistore sources and eventual generic Admission deletion without a new prompt.
 

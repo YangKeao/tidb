@@ -22,6 +22,7 @@ pub(crate) struct EagerValueKernel {
     func_name: tidb_ast::CiString,
     overflow_expression: Option<super::math_diagnostic::MathDiagnostic>,
     ret_type: Option<FieldType>,
+    session_read: Option<super::session_read::SessionRead>,
     args: Box<[EagerArgument]>,
     regexp_cache: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
     regexp_replace_instruction_cache:
@@ -47,6 +48,7 @@ impl EagerValueKernel {
             func_name: function.func_name.clone(),
             overflow_expression: None,
             ret_type: function.ret_type.clone(),
+            session_read: super::session_read::SessionRead::for_function(function),
             args: function
                 .args
                 .iter()
@@ -102,6 +104,9 @@ impl EagerValueKernel {
             self.args.len(),
             "eager value-body arity contract"
         );
+        if let Some(operation) = self.session_read {
+            return operation.eval(ctx);
+        }
         let name = self.func_name.lowercase();
         let upper = name.to_ascii_uppercase();
         // Go `builtinExtractDatetimeSig`/`builtinExtractDurationSig`: the
@@ -331,6 +336,7 @@ impl EagerValueKernel {
 pub(crate) fn supports(function: &ScalarFunction) -> bool {
     super::argument_policy::classify(function)
         == super::argument_policy::ArgumentPolicy::CommonEager
+        || super::session_read::SessionRead::for_function(function).is_some()
 }
 /// These original common bodies take precedence over the stricter typed registry.
 pub(crate) fn prefers_common_body(function: &ScalarFunction) -> bool {

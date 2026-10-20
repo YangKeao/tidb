@@ -715,3 +715,6 @@ pub(crate) mod compression_value;
 
 #[cfg(test)]
 pub(crate) mod eager_scalar_value_tests;
+
+#[cfg(test)]
+pub(crate) mod session_read_tests;
