@@ -320,7 +320,14 @@ pub(crate) fn benchmark_loop_count(
     source: Option<&tidb_datatype::FieldType>,
     ctx: &dyn Columns,
 ) -> Result<Option<i64>, EvalError> {
-    match crate::cast::cast_arg_as_int(&value, source, ctx)? {
+    benchmark_loop_count_borrowed(&value, source, ctx)
+}
+pub(crate) fn benchmark_loop_count_borrowed(
+    value: &Datum,
+    source: Option<&tidb_datatype::FieldType>,
+    ctx: &dyn Columns,
+) -> Result<Option<i64>, EvalError> {
+    match crate::cast::cast_arg_as_int(value, source, ctx)? {
         Datum::Null => Ok(None),
         Datum::Int(value) => Ok(Some(value)),
         Datum::UInt(value) => Ok(Some(value as i64)),

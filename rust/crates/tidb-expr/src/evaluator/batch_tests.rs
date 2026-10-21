@@ -34084,3 +34084,6 @@ fn char_cast_context_row_child_is_atomic_across_driver_windows() {
 
 #[path = "batch_cached_list_tests.rs"]
 mod cached_list_tests;
+
+#[path = "batch_stateful_tests.rs"]
+mod stateful_tests;

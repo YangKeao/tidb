@@ -2010,12 +2010,7 @@ impl ScalarFunction {
             if !self.args.is_empty() {
                 return Err(EvalError::WrongParameterCount("values"));
             }
-            let offset = self
-                .values_offset
-                .ok_or(EvalError::Unsupported("VALUES offset is not initialized"))?;
-            return ctx
-                .current_insert_value(offset)?
-                .map_or(Ok(Datum::Null), Ok);
+            return stateful::current_value(self.values_offset, ctx);
         }
         if name == "json_schema_valid" {
             return crate::host_compat::eval_json_schema(
@@ -2168,28 +2163,7 @@ impl ScalarFunction {
             let [argument] = self.args.as_slice() else {
                 return Err(EvalError::WrongParameterCount("sleep"));
             };
-            let value = argument.eval(ctx, row)?;
-            if value.is_null() {
-                ctx.handle_sleep_incorrect_argument()?;
-                return Ok(Datum::Int(0));
-            }
-            let seconds = crate::ops::to_f64_with_mysql_string(&value, ctx)?;
-            if seconds < 0.0 {
-                ctx.handle_sleep_incorrect_argument()?;
-                return Ok(Datum::Int(0));
-            }
-            if seconds > f64::MAX / 1_000_000_000.0 {
-                return Err(EvalError::IncorrectArguments(
-                    "Incorrect arguments to sleep".to_owned(),
-                ));
-            }
-            if seconds <= 0.0 {
-                return Ok(Datum::Int(0));
-            }
-            let duration = std::time::Duration::try_from_secs_f64(seconds).map_err(|_| {
-                EvalError::IncorrectArguments("Incorrect arguments to sleep".to_owned())
-            })?;
-            return Ok(Datum::Int(i64::from(ctx.sleep_for(duration))));
+            return stateful::sleep(&argument.eval(ctx, row)?, ctx);
         }
         if matches!(
             name,
@@ -2199,8 +2173,7 @@ impl ScalarFunction {
                 if !self.args.is_empty() {
                     return Err(EvalError::WrongParameterCount("release_all_locks"));
                 }
-                let count = ctx.release_all_advisory_locks()?;
-                return Ok(Datum::Int(i64::try_from(count).unwrap_or(i64::MAX)));
+                return stateful::release_all(ctx);
             }
 
             let expected = if name == "get_lock" { 2 } else { 1 };
@@ -2214,42 +2187,20 @@ impl ScalarFunction {
                 }));
             }
             let raw_name = self.args[0].eval(ctx, row)?;
-            let string_name =
-                crate::cast::cast_arg_as_string(&raw_name, self.args[0].static_type(), ctx)?;
-            let lock_name = advisory_lock_name(string_name)?;
+            let lock_name = stateful::lock_name(&raw_name, self.args[0].static_type(), ctx)?;
 
             return match name {
-                "get_lock" => {
-                    let raw_timeout = self.args[1].eval(ctx, row)?;
-                    let int_timeout = crate::cast::cast_arg_as_int(
-                        &raw_timeout,
-                        self.args[1].static_type(),
-                        ctx,
-                    )?;
-                    let mut timeout = crate::arg_eval_type::eval_int(&int_timeout)?.unwrap_or(0);
-                    if !(0..=MAX_ADVISORY_LOCK_TIMEOUT_SECS).contains(&timeout) {
-                        ctx.append_warning(
-                            1292,
-                            &format!("Truncated incorrect get_lock value: '{timeout}'"),
-                        );
-                        timeout = MAX_ADVISORY_LOCK_TIMEOUT_SECS;
-                    }
-                    let acquired = ctx.acquire_advisory_lock(
-                        &lock_name,
-                        std::time::Duration::from_secs(timeout as u64),
-                    )?;
-                    Ok(Datum::Int(i64::from(acquired)))
-                }
-                "release_lock" => Ok(Datum::Int(i64::from(
-                    ctx.release_advisory_lock(&lock_name)?,
-                ))),
-                "is_free_lock" => Ok(Datum::Int(i64::from(
-                    ctx.advisory_lock_owner(&lock_name)?.is_none(),
-                ))),
-                "is_used_lock" => Ok(ctx
-                    .advisory_lock_owner(&lock_name)?
-                    .map_or(Datum::Null, |owner| Datum::Int(owner as i64))),
-                _ => unreachable!("advisory lock name was matched above"),
+                "get_lock" => stateful::acquire(
+                    &lock_name,
+                    &self.args[1].eval(ctx, row)?,
+                    self.args[1].static_type(),
+                    ctx,
+                ),
+                _ => stateful::lock_service(
+                    stateful::Operation::from_name(name).expect("matched advisory operation"),
+                    &lock_name,
+                    ctx,
+                ),
             };
         }
         // Go `builtinCaseWhen*Sig`: the arguments are the flattened
@@ -6248,3 +6199,5 @@ pub(crate) fn prepare_native_numeric_operand(
 pub(crate) use numeric_argument_value::{
     Pending as NumericOperandPending, Step as NumericOperandStep,
 };
+
+pub(crate) mod stateful;

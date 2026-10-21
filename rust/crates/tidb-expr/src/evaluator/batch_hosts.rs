@@ -164,7 +164,12 @@ pub(super) use typed_context_source::{NativeTypedContext, NativeTypedDescriptor}
 mod cached_list_source;
 pub(super) use cached_list_source::NativeCachedList;
 
+#[path = "batch_stateful.rs"]
+mod stateful_source;
+pub(super) use stateful_source::NativeStateful;
+
 pub(super) enum NativeHostMetadata {
+    Stateful(Box<NativeStateful>),
     CachedList(Box<NativeCachedList>),
     TypedContext(NativeTypedContext),
     ContextValue {
@@ -426,6 +431,7 @@ pub(super) enum NativeHostMetadata {
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
+            Self::Stateful(metadata) => Some(&metadata.result_type),
             Self::CachedList(metadata) => Some(&metadata.result_type),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
@@ -474,6 +480,7 @@ mod compression_source;
 
 enum SqlDemand {
     Consumed,
+    Stateful(Box<stateful_source::StatefulTask>),
     CachedList(Box<cached_list_source::CachedListTask>),
     TypedWindow(Box<typed_window::TypedWindowTask>),
     Numeric(Box<numeric_parent::NumericTask>),
@@ -632,6 +639,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Consumed => Ok(None),
+            SqlDemand::Stateful(task) => Ok(Some(task.next_argument())),
             SqlDemand::CachedList(task) => Ok(Some(task.next_argument())),
             SqlDemand::TypedWindow(_) => Ok(Some(0)),
             SqlDemand::Numeric(task) => Ok(Some(task.next_argument())),
@@ -692,6 +700,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
             SqlDemand::CachedList(_) => Err(binding("cached list cannot buffer wire values")),
             SqlDemand::Diagnostic(_) => Err(binding("diagnostic demand cannot buffer wire values")),
             SqlDemand::TypedContext { .. } => {
@@ -774,6 +783,11 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::Stateful(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("stateful retained extent overflow"));
+        }
         if let SqlDemand::CachedList(task) = &self.demand {
             return bytes
                 .checked_add(task.retained_bytes())
@@ -2477,7 +2491,16 @@ impl NativeBatchHosts<'_> {
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
-                if let Some(NativeHostMetadata::CachedList(meta)) =
+                if let Some(NativeHostMetadata::Stateful(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.arguments.len() != invocation.arg_types.len()
+                    {
+                        return Err(binding("stateful declaration differs"));
+                    }
+                    SqlDemand::Stateful(Box::new(stateful_source::StatefulTask::First))
+                } else if let Some(NativeHostMetadata::CachedList(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
                     if self.native_values.is_none()
@@ -3283,7 +3306,9 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate = matches!(demand, SqlDemand::UserVariableRead { .. })
+        let immediate = matches!(demand, SqlDemand::Stateful(_))
+            && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::Stateful(meta)) if meta.descriptor.argument_types.len()!=meta.descriptor.operation.arity() || invocation.arg_types.is_empty())
+            || matches!(demand, SqlDemand::UserVariableRead { .. })
             || (matches!(
                 demand,
                 SqlDemand::EagerValues { .. }
@@ -3320,6 +3345,11 @@ impl NativeBatchHosts<'_> {
                 task,
             };
             let result = if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::Stateful(_)
+            ) {
+                guard.provider.resume_stateful(&guard.task, None)
+            } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::TypedContext { .. }
             ) {
@@ -3364,6 +3394,12 @@ impl NativeBatchHosts<'_> {
     ) -> LocalResult<HostStep> {
         self.validate_row_reply(id, reply)?;
         let task = self.task(id)?;
+        if matches!(task.demand, SqlDemand::Stateful(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("stateful source cannot be wire NULL"));
+            };
+            return self.resume_stateful(id, Some(token));
+        }
         if matches!(task.demand, SqlDemand::CachedList(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
                 return Err(binding("cached list source cannot be wire NULL"));

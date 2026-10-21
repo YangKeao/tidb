@@ -4516,3 +4516,49 @@ new cached-list host had skipped that boundary. Both hit and miss now run the
 existing bounded original result-coercion owner inside the finite scope before
 reauthentication/publication. Eleven original return declarations over all ten
 list shapes, both flags and nine cache epochs are retained in the regression.
+
+## N17: stateful services and repeated children in the existing frame
+
+Capture original VALUES, BENCHMARK, SLEEP and advisory-lock behavior before
+changing their early scalar branches. Include genuine metadata/arity errors,
+NULL and negative/count-zero barriers, declared vector BENCHMARK rejection before
+its repeated child, late child errors, stored-name assignment effects, context
+errors and panics, both vector flags, empty/duplicate selections and output
+prefixes. Session test doubles must never actually sleep or acquire external
+locks. Freeze and rerun original checksums and archive executed original owners
+before extraction. Keep strict source-admission witnesses for all eight names.
+
+Extract plain value/context phases while the original traversal stays independent
+for comparison. Owned same-frame demands must request BENCHMARK's child Fresh for
+each iteration, validate its original optional type even at zero iterations and
+consume every phase before conversion/context callbacks. Advisory name conversion
+and validation precede timeout child demand; timeout warning/clamping precedes
+lock acquisition. VALUES reads its real saved offset only after correct arity.
+SLEEP preserves NULL/negative handling and the actual interrupt callback. Release
+value-store borrows before callbacks and authenticate original capabilities again
+before publication. Retain original outer result conversion, task cancellation,
+callback unwind, resource failures and same-provider recovery.
+
+Further pending early policies include JSON-schema validation, RAND, owner-state
+and AES. Optional scalar declarations, protocol origins, original public/AST and
+unistore/filter entrypoints, generic Admission deletion and final caller/server/
+performance gates remain part of task #4. No function checkpoint ends execution.
+
+N17 local checkpoint completes these eight declared, non-protocol source families.
+Original10,368/C0B8ADE1ECE31EEF and independent1,728/90EA3BA8B5A947B2 were
+captured/rerun before public branch retirement; the exact old branches remain
+cfg(test) controls. The public wrappers and owned descriptor now share plain
+value/context phases. The SDK remains unchanged at ad73b11.
+
+Four demonstrated regressions were fixed: retained ignored BENCHMARK bodies
+(generational subtree slot recycling); unused SLEEP vector cloning (independently
+proved shared nontext preparation); unused integer count/timeout copying (actual
+Datum stack leases with callback-safe lifetime and active-payload accounting);
+and VALUES malformed Decimal return-validation priority (existing original
+identity return owner). Old observations remain frozen, including storage3,576,
+SLEEP59,004 and pure174; the expanded actual472,032 matrix is separately labeled
+post-extraction integration. Long2051/2057/public-frame alternation, callback/auth/
+unwind/cancellation/recovery and two appended heterogeneous Projection cohorts
+pass. Full frontend1974/exact3/95ignored,433batch/exact346warnings,Projection26,
+lint/dual12fmt/reconstruction are recorded in evidence/no-fallback-n17.md.
+Continue the remaining policies and global entry closure without checkpoint pause.

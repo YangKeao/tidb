@@ -4273,6 +4273,61 @@ mod tests {
         let ordered_cached_mix = std::iter::once(0)
             .chain(cached_start..roots.len())
             .collect::<Vec<_>>();
+        let stateful_start = roots.len();
+        roots.push(Expression::ScalarFunction(ScalarFunction::new_values(
+            0,
+            integer.clone(),
+        )));
+        fields.push(integer.clone());
+        roots.push(call(
+            "benchmark",
+            integer.clone(),
+            vec![literal(3), context_parameter()],
+        ));
+        fields.push(integer.clone());
+        roots.push(call("sleep", integer.clone(), vec![literal(0)]));
+        fields.push(integer.clone());
+        // Default StmtContext owns an isolated process-local lock service.
+        // Zero timeout cannot wait; the same suite releases the real lease.
+        for name in [
+            "get_lock",
+            "is_free_lock",
+            "is_used_lock",
+            "release_lock",
+            "release_all_locks",
+        ] {
+            let args = if name == "release_all_locks" {
+                vec![]
+            } else if name == "get_lock" {
+                vec![early_literal("n17-projection"), literal(0)]
+            } else {
+                vec![early_literal("n17-projection")]
+            };
+            roots.push(call(name, integer.clone(), args));
+            fields.push(integer.clone());
+        }
+        let stateful_mix = std::iter::once(0)
+            .chain(cached_start..stateful_start)
+            .chain(stateful_start..roots.len())
+            .collect::<Vec<_>>();
+        roots.push(call(
+            "benchmark",
+            integer.clone(),
+            vec![
+                literal(3),
+                call(
+                    "setvar",
+                    integer.clone(),
+                    vec![variable_name(), context_parameter()],
+                ),
+            ],
+        ));
+        fields.push(integer.clone());
+        roots.push(read_variable());
+        fields.push(integer.clone());
+        let ordered_stateful_mix = std::iter::once(0)
+            .chain(stateful_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let mut configurations = vec![
             (
@@ -4523,6 +4578,20 @@ mod tests {
                 .map(|&i| roots[i].clone())
                 .collect(),
             ordered_cached_mix
+                .iter()
+                .map(|&i| fields[i].clone())
+                .collect(),
+        ));
+        configurations.push((
+            stateful_mix.iter().map(|&i| roots[i].clone()).collect(),
+            stateful_mix.iter().map(|&i| fields[i].clone()).collect(),
+        ));
+        configurations.push((
+            ordered_stateful_mix
+                .iter()
+                .map(|&i| roots[i].clone())
+                .collect(),
+            ordered_stateful_mix
                 .iter()
                 .map(|&i| fields[i].clone())
                 .collect(),

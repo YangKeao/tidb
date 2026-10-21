@@ -238,22 +238,37 @@ pub(crate) fn to_f64_with_mysql_string(
     v: &Datum,
     ctx: &dyn crate::context::Columns,
 ) -> Result<f64, EvalError> {
-    if matches!(v, Datum::Decimal(_)) {
-        // The existing Decimal-to-real owner displays the visible coefficient.
-        // Charge that actual demand, never unused scale metadata at admission.
-        crate::scalar_function::eager_values::charge_string_work(v)?;
+    if let Some(result) = to_f64_nontext(v) {
+        return result;
     }
     match v {
         Datum::String(s) => bytes_to_f64(s.bytes(), ctx),
         Datum::Bytes(s) => bytes_to_f64(s, ctx),
-        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_) => {
-            Ok(to_f64(v.clone()))
-        }
-        other => other
-            .to_f64()
-            .map(|converted| converted.value)
-            .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
+        _ => unreachable!("nontext handled by the shared value owner"),
     }
+}
+
+/// Shared context-free original non-text coercion; no context/store borrow is retained.
+pub(crate) fn to_f64_nontext(v: &Datum) -> Option<Result<f64, EvalError>> {
+    if matches!(v, Datum::String(_) | Datum::Bytes(_)) {
+        return None;
+    }
+    Some((|| {
+        if matches!(v, Datum::Decimal(_)) {
+            crate::scalar_function::eager_values::charge_string_work(v)?;
+        }
+        match v {
+            Datum::Int(_)
+            | Datum::UInt(_)
+            | Datum::Decimal(_)
+            | Datum::Real(_)
+            | Datum::Float32(_) => Ok(to_f64(v.clone())),
+            other => other
+                .to_f64()
+                .map(|converted| converted.value)
+                .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
+        }
+    })())
 }
 
 /// `types.StrToFloat` over the RAW BYTES of a SQL string.
@@ -346,5 +361,29 @@ mod numeric_work_tests {
             result,
             Err(EvalError::ExpressionRuntimeFailure(_))
         ));
+    }
+}
+
+// Executed pre-extraction control, never a production fallback.
+#[cfg(test)]
+pub(crate) fn original_to_f64_with_mysql_string(
+    v: &Datum,
+    ctx: &dyn crate::context::Columns,
+) -> Result<f64, EvalError> {
+    if matches!(v, Datum::Decimal(_)) {
+        // The existing Decimal-to-real owner displays the visible coefficient.
+        // Charge that actual demand, never unused scale metadata at admission.
+        crate::scalar_function::eager_values::charge_string_work(v)?;
+    }
+    match v {
+        Datum::String(s) => bytes_to_f64(s.bytes(), ctx),
+        Datum::Bytes(s) => bytes_to_f64(s, ctx),
+        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_) => {
+            Ok(to_f64(v.clone()))
+        }
+        other => other
+            .to_f64()
+            .map(|converted| converted.value)
+            .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
     }
 }
