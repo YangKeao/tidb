@@ -2034,12 +2034,12 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
         && function.get_static_type().is_some()
         && function.args.iter().all(|arg| arg.static_type().is_some())
 }
-// These complete value owners already retain actual optional metadata. Other
-// specialized families keep their own admission and typed-demand contracts.
+// Complete common value owners retain actual optional metadata and demand
+// policy. Specialized lazy families keep their distinct source contracts.
 fn native_optional_eager_call(function: &ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && crate::scalar_function::eager_values::prefers_common_body(function)
+        && crate::scalar_function::eager_values::supports(function)
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
@@ -3082,6 +3082,58 @@ fn projected(sql: &FieldType, new_collation: bool) -> Result<tipb::FieldType> {
     )?)
 }
 
+// Use the same demand recipe for declared and genuinely absent result types.
+fn survey_common_math_diagnostic<'a>(
+    function: &'a ScalarFunction,
+    ordinal: usize,
+    depth: usize,
+    allow_pb: bool,
+    limits: BatchSourceLimits,
+    budget: &mut Budget,
+    scheduled: &mut usize,
+    pending: &mut Vec<(&'a Expression, usize, NativeView, bool)>,
+    diagnostics: &mut Vec<PendingDiagnostic<'a>>,
+) -> Result<()> {
+    let recipe = crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic::survey_math(
+        function,
+        limits.tree.max_nodes,
+        limits.max_metadata_bytes,
+    )?;
+    budget.add(recipe.bytes())?;
+    budget.array::<PendingDiagnostic<'_>>(1)?;
+    budget.array::<CompiledDiagnosticParent>(1)?;
+    budget.array::<Option<crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic>>(1)?;
+    budget.array::<usize>(recipe.bindings().len())?;
+    budget.array::<tipb::FieldType>(recipe.bindings().len())?;
+    budget.array::<(&Expression, usize, NativeView, bool)>(recipe.bindings().len())?;
+    budget.field(&native_bytes_type(), recipe.bindings().len())?;
+    *scheduled = (*scheduled)
+        .checked_add(recipe.bindings().len())
+        .filter(|n| *n <= limits.tree.max_nodes)
+        .ok_or_else(|| resource("diagnostic mirror source node policy exceeded"))?;
+    let child_depth = depth
+        .checked_add(1)
+        .filter(|n| *n <= limits.tree.max_depth)
+        .ok_or_else(|| resource("diagnostic mirror source depth policy exceeded"))?;
+    reserve(pending, recipe.bindings().len())?;
+    for &child in recipe.bindings().iter().rev() {
+        pending.push((
+            child,
+            child_depth,
+            NativeView::DiagnosticConstantRoot(recipe.policy()),
+            allow_pb,
+        ));
+    }
+    reserve(diagnostics, 1)?;
+    diagnostics.push(PendingDiagnostic {
+        ordinal,
+        main_arity: function.args.len(),
+        bindings: recipe.bindings().len(),
+        recipe: Some(recipe),
+    });
+    Ok(())
+}
+
 // Complete source and incoming schema byte gates precede EVERY equality and
 // detached/projected/C snapshot. Borrowed temporary nodes have no executable
 // children and are not a second interpreter. Stable owner interval is required.
@@ -3169,6 +3221,27 @@ fn preflight_view<'a>(
                     budget.array::<NativeHostMetadata>(1)?;
                     budget.array::<Option<Datum>>(1)?;
                     budget_eager_metadata(&mut budget, function, None)?;
+                    if matches!(
+                        function.func_name.lowercase(),
+                        "abs" | "cot" | "pow" | "power"
+                    ) && function.args.iter().any(|child| {
+                        contains_context_value(child, limits.tree.max_depth, &mut {
+                            limits.tree.max_nodes
+                        })
+                    }) {
+                        survey_common_math_diagnostic(
+                            function,
+                            checked.len(),
+                            depth,
+                            allow_pb,
+                            limits,
+                            &mut budget,
+                            &mut scheduled,
+                            &mut pending,
+                            &mut diagnostics,
+                        )?;
+                    }
+
                     budget.array::<tipb::FieldType>(arity)?;
                     for arg in &function.args {
                         if let Some(field) = arg.static_type() {
@@ -3400,6 +3473,11 @@ fn preflight_view<'a>(
                             })
                         });
                 if contextual_numeric
+                    && (!native_optional_eager_call(function)
+                        || matches!(
+                            function.func_name.lowercase(),
+                            "abs" | "cot" | "exp" | "pow" | "power"
+                        ))
                     && function.func_name.lowercase() != "exp"
                     && !(view.value_role().is_some()
                         && native_unary_sign_operation(function.func_name.lowercase()).is_some())
@@ -3415,47 +3493,17 @@ fn preflight_view<'a>(
                                 | SqlBatchHostOperation::AbsIntWindowNative
                         )
                     ) {
-                        let recipe=crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic::survey_math(function,limits.tree.max_nodes,limits.max_metadata_bytes)?;
-                        budget.add(recipe.bytes())?;
-                        budget.array::<PendingDiagnostic<'_>>(1)?;
-                        budget.array::<CompiledDiagnosticParent>(1)?;
-                        budget.array::<Option<
-                            crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic,
-                        >>(1)?;
-                        budget.array::<usize>(recipe.bindings().len())?;
-                        budget.array::<tipb::FieldType>(recipe.bindings().len())?;
-                        budget.array::<(&Expression, usize, NativeView, bool)>(
-                            recipe.bindings().len(),
+                        survey_common_math_diagnostic(
+                            function,
+                            checked.len(),
+                            depth,
+                            allow_pb,
+                            limits,
+                            &mut budget,
+                            &mut scheduled,
+                            &mut pending,
+                            &mut diagnostics,
                         )?;
-                        budget.field(&native_bytes_type(), recipe.bindings().len())?;
-                        scheduled = scheduled
-                            .checked_add(recipe.bindings().len())
-                            .filter(|n| *n <= limits.tree.max_nodes)
-                            .ok_or_else(|| {
-                                resource("diagnostic mirror source node policy exceeded")
-                            })?;
-                        let child_depth = depth
-                            .checked_add(1)
-                            .filter(|n| *n <= limits.tree.max_depth)
-                            .ok_or_else(|| {
-                                resource("diagnostic mirror source depth policy exceeded")
-                            })?;
-                        reserve(&mut pending, recipe.bindings().len())?;
-                        for &child in recipe.bindings().iter().rev() {
-                            pending.push((
-                                child,
-                                child_depth,
-                                NativeView::DiagnosticConstantRoot(recipe.policy()),
-                                allow_pb,
-                            ));
-                        }
-                        reserve(&mut diagnostics, 1)?;
-                        diagnostics.push(PendingDiagnostic {
-                            ordinal: checked.len(),
-                            main_arity: arity,
-                            bindings: recipe.bindings().len(),
-                            recipe: Some(recipe),
-                        });
                     } else if matches!(
                         function.func_name.lowercase(),
                         "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"
@@ -3619,229 +3667,243 @@ fn preflight_view<'a>(
                             budget_eager_metadata(&mut budget, function, Some(sql))?;
                         }
                     }
-                    if native_crypto_call(function).is_some() && view.value_role().is_some() {
-                        budget.field(sql, 1)?;
-                        budget.array::<usize>(arity)?;
-                        budget.array::<Option<Datum>>(1)?;
-                        if let Some(v) = function.identity_constant_probe() {
-                            budget.add(
-                                crate::tikv::identity_actual::copy_extent(v)
-                                    .map_err(|_| resource("crypto probe copy overflow"))?,
-                            )?;
-                        }
-                    }
-                    if native_compression_call(function).is_some() && view.value_role().is_some() {
-                        budget.field(sql, 1)?;
-                        budget.array::<Option<Datum>>(1)?;
-                        if let Some(v) = function.identity_constant_probe() {
-                            budget.add(
-                                crate::tikv::identity_actual::copy_extent(v)
-                                    .map_err(|_| resource("compression probe copy overflow"))?,
-                            )?;
-                        }
-                    }
-                    if native_byte_unary_call(function).is_some() && view.value_role().is_some() {
-                        budget.field(sql, 1)?;
-                        budget.array::<Option<Datum>>(1)?;
-                        if let Some(v) = function.identity_constant_probe() {
-                            budget.add(
-                                crate::tikv::identity_actual::copy_extent(v)
-                                    .map_err(|_| resource("byte unary probe copy overflow"))?,
-                            )?;
-                        }
-                    }
-                    if native_misc_call(function).is_some() && view.value_role().is_some() {
-                        budget.field(sql, 1)?;
-                        budget.array::<usize>(arity)?;
-                        budget.array::<Option<Datum>>(1)?;
-                        if let Some(v) = function.identity_constant_probe() {
-                            budget.add(
-                                crate::tikv::identity_actual::copy_extent(v)
-                                    .map_err(|_| resource("misc probe copy overflow"))?,
-                            )?;
-                        }
-                    }
-                    if native_identity_call(function) && view.value_role().is_some() {
-                        budget.field(sql, 1)?;
-                        budget.array::<usize>(arity)?;
-                        budget.array::<Option<Datum>>(1)?;
-                        if let Some(value) = function.identity_constant_probe() {
-                            budget.add(
-                                crate::tikv::identity_actual::copy_extent(value)
-                                    .map_err(|_| resource("identity probe extent overflow"))?,
-                            )?;
-                        }
-                    }
-                    if native_like_call(function) {
-                        budget.field(sql, 1)?;
-                        budget.field(
-                            function.args[2].static_type().expect("checked LIKE escape"),
-                            1,
-                        )?;
-                        budget.add(
-                            std::mem::size_of::<tidb_query_expr::NativeLikeInvocation>()
-                                + std::mem::size_of::<[usize; 3]>(),
-                        )?;
-                    }
-                    if native_grouping_call(function) {
-                        budget.field(sql, 1)?;
-                        budget.add(std::mem::size_of::<
-                            Option<std::sync::Arc<crate::grouping::GroupingMetadata>>,
-                        >())?;
-                    }
-                    if let Some(op) = native_vector_call(function) {
-                        budget.field(sql, 1)?;
-                        budget.add(
-                            op.arity()
-                                .checked_mul(std::mem::size_of::<usize>())
-                                .ok_or_else(|| resource("vector metadata overflow"))?,
-                        )?;
-                    }
-                    if let Some(op) = native_duration_construction_call(function) {
-                        budget.field(sql, 1)?;
-                        for arg in &function.args {
-                            budget.field(arg.static_type().expect("checked duration source"), 1)?;
-                        }
-                        budget.add(
-                            op.arity()
-                                .checked_mul(std::mem::size_of::<usize>())
-                                .ok_or_else(|| resource("duration source metadata overflow"))?,
-                        )?;
-                    }
-                    if let Some((_, arity)) = native_calendar_call(function) {
-                        budget.field(sql, 1)?;
-                        budget.field(
-                            function.args[0]
-                                .static_type()
-                                .expect("checked calendar source"),
-                            1,
-                        )?;
-                        budget.add(
-                            arity
-                                .checked_mul(std::mem::size_of::<usize>())
-                                .ok_or_else(|| resource("calendar metadata overflow"))?,
-                        )?;
-                    }
-                    if native_clock_call(function).is_some() {
-                        budget.field(sql, 1)?;
-                    }
-                    if native_tso_call(function).is_some() {
-                        budget.field(sql, 1)?;
-                        if let Some(arg) = function.args.first() {
-                            budget.field(arg.static_type().expect("checked TSO source"), 1)?;
-                        }
-                    }
-                    if let Some((_, arity)) = native_epoch_call(function) {
-                        budget.add(
-                            arity
-                                .checked_mul(std::mem::size_of::<usize>())
-                                .ok_or_else(|| resource("epoch node metadata overflow"))?,
-                        )?;
-                    }
-                    if let Some(call) = native_extract_call(function) {
-                        budget.add(
-                            call.arity()
-                                .checked_mul(std::mem::size_of::<usize>())
-                                .ok_or_else(|| resource("EXTRACT node metadata overflow"))?,
-                        )?;
-                        if let Some(unit) = call.unit() {
-                            budget.add(unit.len())?;
-                        }
-                        budget.field(
-                            function.args[usize::from(call.unit().is_none())]
-                                .static_type()
-                                .expect("checked EXTRACT value source"),
-                            1,
-                        )?;
-                    }
-                    if native_date_arithmetic_call(function).is_some() {
-                        let (unit, _) =
-                            native_date_arithmetic_call(function).expect("checked date arithmetic");
-                        budget.add(unit.len())?;
-                        budget.add(unit.len())?;
-                        for arg in &function.args {
-                            budget.field(
-                                arg.static_type().expect("checked date arithmetic argument"),
-                                1,
-                            )?;
-                        }
-                    }
-                    if matches!(
-                        resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::BoundedStalenessNative { .. })
-                    ) {
-                        for argument in &function.args {
-                            budget.field(
-                                argument.static_type().expect("checked bounded argument"),
-                                1,
-                            )?;
-                        }
-                    }
-                    if native_arithmetic_operation(function.func_name.lowercase()).is_some() {
-                        budget.field(sql, 1)?;
-                        for arg in &function.args {
-                            budget
-                                .field(arg.static_type().expect("checked arithmetic source"), 1)?;
-                        }
-                    }
-                    if matches!(
-                        resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::InNative)
-                    ) {
-                        budget.array::<hosts::NativeInArgument>(function.args.len())?;
-                        budget.field(sql, 1)?;
-                        for arg in &function.args {
-                            budget.field(arg.static_type().expect("checked IN source"), 1)?;
-                        }
-                        let (keys, dynamic, _) = function.native_in_cache();
-                        budget.array::<usize>(dynamic.len())?;
-                        if let Some(keys) = keys {
-                            // Conservative logical table/key duplication allowance;
-                            // no whole allocator-memory guarantee is implied.
-                            budget.array::<(Vec<u8>, u64)>(
-                                keys.capacity()
-                                    .checked_mul(4)
-                                    .ok_or_else(|| resource("IN key table allowance overflow"))?,
-                            )?;
-                            for key in keys {
+                    // Optional common calls retain only their common metadata.
+                    // A name may also have a typed specialization whose required
+                    // declarations were not selected by this call's source.
+                    if !native_optional_eager_call(function) {
+                        if native_crypto_call(function).is_some() && view.value_role().is_some() {
+                            budget.field(sql, 1)?;
+                            budget.array::<usize>(arity)?;
+                            budget.array::<Option<Datum>>(1)?;
+                            if let Some(v) = function.identity_constant_probe() {
                                 budget.add(
-                                    key.len().checked_mul(2).ok_or_else(|| {
-                                        resource("IN key copy allowance overflow")
-                                    })?,
+                                    crate::tikv::identity_actual::copy_extent(v)
+                                        .map_err(|_| resource("crypto probe copy overflow"))?,
                                 )?;
                             }
                         }
-                    }
-                    if matches!(
-                        resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::IntervalNative)
-                    ) {
-                        budget.array::<hosts::NativeIntervalArgument>(function.args.len())?;
-                        budget.field(sql, 1)?;
-                        for arg in &function.args {
-                            budget.field(arg.static_type().expect("checked INTERVAL source"), 1)?;
+                        if native_compression_call(function).is_some()
+                            && view.value_role().is_some()
+                        {
+                            budget.field(sql, 1)?;
+                            budget.array::<Option<Datum>>(1)?;
+                            if let Some(v) = function.identity_constant_probe() {
+                                budget
+                                    .add(crate::tikv::identity_actual::copy_extent(v).map_err(
+                                        |_| resource("compression probe copy overflow"),
+                                    )?)?;
+                            }
                         }
-                    }
-                    if matches!(
-                        resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::ExtremumNative)
-                    ) {
-                        budget.array::<usize>(function.args.len())?;
-                        budget.array::<i64>(function.args.len())?;
-                        budget.field(sql, 1)?;
-                    }
-                    if matches!(
-                        resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(SqlBatchHostOperation::CharsetNative(_))
-                    ) {
-                        budget.array::<usize>(function.args.len())?;
-                        budget.field(
-                            function.args[0]
-                                .static_type()
-                                .expect("checked charset source"),
-                            1,
-                        )?;
-                        budget.field(sql, 1)?;
+                        if native_byte_unary_call(function).is_some() && view.value_role().is_some()
+                        {
+                            budget.field(sql, 1)?;
+                            budget.array::<Option<Datum>>(1)?;
+                            if let Some(v) = function.identity_constant_probe() {
+                                budget
+                                    .add(crate::tikv::identity_actual::copy_extent(v).map_err(
+                                        |_| resource("byte unary probe copy overflow"),
+                                    )?)?;
+                            }
+                        }
+                        if native_misc_call(function).is_some() && view.value_role().is_some() {
+                            budget.field(sql, 1)?;
+                            budget.array::<usize>(arity)?;
+                            budget.array::<Option<Datum>>(1)?;
+                            if let Some(v) = function.identity_constant_probe() {
+                                budget.add(
+                                    crate::tikv::identity_actual::copy_extent(v)
+                                        .map_err(|_| resource("misc probe copy overflow"))?,
+                                )?;
+                            }
+                        }
+                        if native_identity_call(function) && view.value_role().is_some() {
+                            budget.field(sql, 1)?;
+                            budget.array::<usize>(arity)?;
+                            budget.array::<Option<Datum>>(1)?;
+                            if let Some(value) = function.identity_constant_probe() {
+                                budget.add(
+                                    crate::tikv::identity_actual::copy_extent(value)
+                                        .map_err(|_| resource("identity probe extent overflow"))?,
+                                )?;
+                            }
+                        }
+                        if native_like_call(function) {
+                            budget.field(sql, 1)?;
+                            budget.field(
+                                function.args[2].static_type().expect("checked LIKE escape"),
+                                1,
+                            )?;
+                            budget.add(
+                                std::mem::size_of::<tidb_query_expr::NativeLikeInvocation>()
+                                    + std::mem::size_of::<[usize; 3]>(),
+                            )?;
+                        }
+                        if native_grouping_call(function) {
+                            budget.field(sql, 1)?;
+                            budget.add(std::mem::size_of::<
+                                Option<std::sync::Arc<crate::grouping::GroupingMetadata>>,
+                            >())?;
+                        }
+                        if let Some(op) = native_vector_call(function) {
+                            budget.field(sql, 1)?;
+                            budget.add(
+                                op.arity()
+                                    .checked_mul(std::mem::size_of::<usize>())
+                                    .ok_or_else(|| resource("vector metadata overflow"))?,
+                            )?;
+                        }
+                        if let Some(op) = native_duration_construction_call(function) {
+                            budget.field(sql, 1)?;
+                            for arg in &function.args {
+                                budget.field(
+                                    arg.static_type().expect("checked duration source"),
+                                    1,
+                                )?;
+                            }
+                            budget.add(
+                                op.arity()
+                                    .checked_mul(std::mem::size_of::<usize>())
+                                    .ok_or_else(|| resource("duration source metadata overflow"))?,
+                            )?;
+                        }
+                        if let Some((_, arity)) = native_calendar_call(function) {
+                            budget.field(sql, 1)?;
+                            budget.field(
+                                function.args[0]
+                                    .static_type()
+                                    .expect("checked calendar source"),
+                                1,
+                            )?;
+                            budget.add(
+                                arity
+                                    .checked_mul(std::mem::size_of::<usize>())
+                                    .ok_or_else(|| resource("calendar metadata overflow"))?,
+                            )?;
+                        }
+                        if native_clock_call(function).is_some() {
+                            budget.field(sql, 1)?;
+                        }
+                        if native_tso_call(function).is_some() {
+                            budget.field(sql, 1)?;
+                            if let Some(arg) = function.args.first() {
+                                budget.field(arg.static_type().expect("checked TSO source"), 1)?;
+                            }
+                        }
+                        if let Some((_, arity)) = native_epoch_call(function) {
+                            budget.add(
+                                arity
+                                    .checked_mul(std::mem::size_of::<usize>())
+                                    .ok_or_else(|| resource("epoch node metadata overflow"))?,
+                            )?;
+                        }
+                        if let Some(call) = native_extract_call(function) {
+                            budget.add(
+                                call.arity()
+                                    .checked_mul(std::mem::size_of::<usize>())
+                                    .ok_or_else(|| resource("EXTRACT node metadata overflow"))?,
+                            )?;
+                            if let Some(unit) = call.unit() {
+                                budget.add(unit.len())?;
+                            }
+                            budget.field(
+                                function.args[usize::from(call.unit().is_none())]
+                                    .static_type()
+                                    .expect("checked EXTRACT value source"),
+                                1,
+                            )?;
+                        }
+                        if native_date_arithmetic_call(function).is_some() {
+                            let (unit, _) = native_date_arithmetic_call(function)
+                                .expect("checked date arithmetic");
+                            budget.add(unit.len())?;
+                            budget.add(unit.len())?;
+                            for arg in &function.args {
+                                budget.field(
+                                    arg.static_type().expect("checked date arithmetic argument"),
+                                    1,
+                                )?;
+                            }
+                        }
+                        if matches!(
+                            resolve_call_in_view(function, view)?.0,
+                            CallTarget::Host(SqlBatchHostOperation::BoundedStalenessNative { .. })
+                        ) {
+                            for argument in &function.args {
+                                budget.field(
+                                    argument.static_type().expect("checked bounded argument"),
+                                    1,
+                                )?;
+                            }
+                        }
+                        if native_arithmetic_operation(function.func_name.lowercase()).is_some() {
+                            budget.field(sql, 1)?;
+                            for arg in &function.args {
+                                budget.field(
+                                    arg.static_type().expect("checked arithmetic source"),
+                                    1,
+                                )?;
+                            }
+                        }
+                        if matches!(
+                            resolve_call_in_view(function, view)?.0,
+                            CallTarget::Host(SqlBatchHostOperation::InNative)
+                        ) {
+                            budget.array::<hosts::NativeInArgument>(function.args.len())?;
+                            budget.field(sql, 1)?;
+                            for arg in &function.args {
+                                budget.field(arg.static_type().expect("checked IN source"), 1)?;
+                            }
+                            let (keys, dynamic, _) = function.native_in_cache();
+                            budget.array::<usize>(dynamic.len())?;
+                            if let Some(keys) = keys {
+                                // Conservative logical table/key duplication allowance;
+                                // no whole allocator-memory guarantee is implied.
+                                budget.array::<(Vec<u8>, u64)>(
+                                    keys.capacity().checked_mul(4).ok_or_else(|| {
+                                        resource("IN key table allowance overflow")
+                                    })?,
+                                )?;
+                                for key in keys {
+                                    budget.add(key.len().checked_mul(2).ok_or_else(|| {
+                                        resource("IN key copy allowance overflow")
+                                    })?)?;
+                                }
+                            }
+                        }
+                        if matches!(
+                            resolve_call_in_view(function, view)?.0,
+                            CallTarget::Host(SqlBatchHostOperation::IntervalNative)
+                        ) {
+                            budget.array::<hosts::NativeIntervalArgument>(function.args.len())?;
+                            budget.field(sql, 1)?;
+                            for arg in &function.args {
+                                budget.field(
+                                    arg.static_type().expect("checked INTERVAL source"),
+                                    1,
+                                )?;
+                            }
+                        }
+                        if matches!(
+                            resolve_call_in_view(function, view)?.0,
+                            CallTarget::Host(SqlBatchHostOperation::ExtremumNative)
+                        ) {
+                            budget.array::<usize>(function.args.len())?;
+                            budget.array::<i64>(function.args.len())?;
+                            budget.field(sql, 1)?;
+                        }
+                        if matches!(
+                            resolve_call_in_view(function, view)?.0,
+                            CallTarget::Host(SqlBatchHostOperation::CharsetNative(_))
+                        ) {
+                            budget.array::<usize>(function.args.len())?;
+                            budget.field(
+                                function.args[0]
+                                    .static_type()
+                                    .expect("checked charset source"),
+                                1,
+                            )?;
+                            budget.field(sql, 1)?;
+                        }
                     }
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;

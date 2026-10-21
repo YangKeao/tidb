@@ -27569,304 +27569,322 @@ fn user_variable_host_demand_credentials_callbacks_and_recovery() {
         }
     }
     let mut rejected = 0;
-    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
-        for name in ["getvar_int", "setvar"] {
-            let write = name == "setvar";
-            let arity = if write { 2 } else { 1 };
-            let f = crate::tikv::user_variable_tests::scalar_function(
-                name,
-                &ty(),
-                &Datum::new_string("X"),
-                &Datum::Int(7),
-            );
-            let field = projected(&native_bytes_type(), true).unwrap();
-            let args = vec![field.clone(); arity];
-            let catalog = HostCatalog::for_sql_batch(vec![(
-                SqlBatchHostOperation::EagerValuesNative,
-                HostSignature {
-                    arg_types: args.clone().into(),
-                    return_type: field.clone(),
-                },
-            )])
-            .unwrap();
-            let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::EagerValues {
-                arguments: (3..3 + arity).collect(),
-                kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
-                probe: Some(Datum::new_string("X")),
-                result_type: Some(ty()),
-                output_node: 2,
-                output_role: role,
-            }];
-            let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
-            store.borrow_mut().begin_window().unwrap();
-            let row = InputRow {
-                occurrence: 0,
-                input_row: 0,
-            };
-            let insert = |v: &Datum, role, node, row| {
-                store
-                    .borrow_mut()
-                    .insert_clone(v, role, NativeValueOrigin { node, row })
-                    .unwrap()
-            };
-            let stale = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
-            store.borrow_mut().begin_window().unwrap();
-            let mut foreign = NativeValueStore::new(4096).unwrap();
-            foreign.begin_window().unwrap();
-            let foreign = foreign
-                .insert_clone(
+    for optional in [false, true] {
+        for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+            for name in ["getvar_int", "setvar"] {
+                let write = name == "setvar";
+                let arity = if write { 2 } else { 1 };
+                let mut f = crate::tikv::user_variable_tests::scalar_function(
+                    name,
+                    &ty(),
+                    &Datum::new_string("X"),
                     &Datum::Int(7),
-                    NativeValueRole::CharInput,
-                    NativeValueOrigin { node: 4, row },
-                )
-                .unwrap();
-            let ctx = C {
-                store: &store,
-                action: Cell::new(0),
-                events: RefCell::new(vec![]),
-                value: RefCell::new(Datum::Int(7)),
-            };
-            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8192)
-                .with_native_values(Some(&store));
-            let mut eval = EvalContext::default();
-            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-                p.start(
-                    eval,
-                    HostInvocation {
-                        slot,
-                        row,
-                        arg_types: &args,
-                        return_type: &field,
-                    },
-                )
-            };
-            let reply = |p: &mut NativeBatchHosts<'_>,
-                         eval: &mut EvalContext,
-                         task: &HostTaskId,
-                         index,
-                         token: Option<Vec<u8>>| {
-                p.resume(
-                    eval,
-                    task,
-                    HostArgReply {
-                        index,
-                        field_type: &field,
-                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-                    },
-                )
-            };
-            if !write {
-                for _ in 0..64 {
-                    ctx.action.set(1);
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        begin(&mut p, &mut eval)
-                    }));
-                    assert!(result.is_err());
-                    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
-                }
-                let HostStart::Ready(v) = begin(&mut p, &mut eval).unwrap() else {
-                    panic!("stored-name read demanded its unused child")
-                };
-                let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
-                    panic!()
-                };
-                assert_eq!(
-                    store
-                        .borrow()
-                        .get(token, role, NativeValueOrigin { node: 2, row })
-                        .unwrap(),
-                    &Datum::Int(7)
                 );
-                assert!(ctx.events.borrow().iter().all(|e| e == "get:X"));
-                continue;
-            }
-            let pending = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-                let HostStart::Pending { task, request } = begin(p, eval).unwrap() else {
-                    panic!()
-                };
-                assert_eq!(request.index, 1);
-                task
-            };
-            let good = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
-            let mut corrupt = good.clone();
-            corrupt[0] ^= 1;
-            let mut short = good.clone();
-            short.pop();
-            let mut long = good;
-            long.push(0);
-            for bad in [
-                None,
-                Some(corrupt),
-                Some(short),
-                Some(long),
-                Some(stale),
-                Some(foreign),
-                Some(insert(&Datum::Int(7), NativeValueRole::Output, 4, row)),
-                Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row)),
-                Some(insert(
-                    &Datum::Int(7),
-                    NativeValueRole::CharInput,
-                    4,
-                    InputRow {
-                        occurrence: 1,
-                        input_row: 0,
-                    },
-                )),
-                Some(insert(
-                    &Datum::Int(7),
-                    NativeValueRole::CharInput,
-                    4,
-                    InputRow {
-                        occurrence: 0,
-                        input_row: 1,
-                    },
-                )),
-            ] {
-                let task = pending(&mut p, &mut eval);
-                assert!(reply(&mut p, &mut eval, &task, 1, bad).is_err());
-                assert!(ctx.events.borrow().is_empty());
-                p.cancel(&task);
-                p.cancel(&task);
-                rejected += 1;
-            }
-            let task = pending(&mut p, &mut eval);
-            assert!(reply(
-                &mut p,
-                &mut eval,
-                &task,
-                0,
-                Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row))
-            )
-            .is_err());
-            p.cancel(&task);
-            rejected += 1;
-            for action in [0, 1, 2, 0] {
-                ctx.events.borrow_mut().clear();
-                ctx.action.set(action);
-                let token = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
-                let task = pending(&mut p, &mut eval);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    reply(&mut p, &mut eval, &task, 1, Some(token.clone()))
-                }));
-                match action {
-                    1 => assert!(result.is_err()),
-                    2 => assert!(result.unwrap().is_err()),
-                    _ => {
-                        let HostStep::Ready(v) = result.unwrap().unwrap() else {
-                            panic!()
-                        };
-                        let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
-                            panic!()
-                        };
-                        let values = store.borrow();
-                        assert_eq!(
-                            values
-                                .get(token, role, NativeValueOrigin { node: 2, row })
-                                .unwrap(),
-                            &Datum::Int(7)
-                        );
-                        assert!(values
-                            .get(token, role, NativeValueOrigin { node: 3, row })
-                            .is_err());
+                if optional {
+                    f.ret_type = None;
+                    for arg in &mut f.args {
+                        if let Expression::Constant(c) = arg {
+                            c.ret_type = None;
+                        }
                     }
                 }
-                assert_eq!(*ctx.events.borrow(), vec!["set:X"]);
-                assert!(reply(&mut p, &mut eval, &task, 1, Some(token)).is_err());
+                let field = projected(&native_bytes_type(), true).unwrap();
+                let args = vec![field.clone(); arity];
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::EagerValuesNative,
+                    HostSignature {
+                        arg_types: args.clone().into(),
+                        return_type: field.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::EagerValues {
+                    arguments: (3..3 + arity).collect(),
+                    kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
+                    probe: Some(Datum::new_string("X")),
+                    result_type: (!optional).then(ty),
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let row = InputRow {
+                    occurrence: 0,
+                    input_row: 0,
+                };
+                let insert = |v: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(v, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let stale = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
+                store.borrow_mut().begin_window().unwrap();
+                let mut foreign = NativeValueStore::new(4096).unwrap();
+                foreign.begin_window().unwrap();
+                let foreign = foreign
+                    .insert_clone(
+                        &Datum::Int(7),
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: 4, row },
+                    )
+                    .unwrap();
+                let ctx = C {
+                    store: &store,
+                    action: Cell::new(0),
+                    events: RefCell::new(vec![]),
+                    value: RefCell::new(Datum::Int(7)),
+                };
+                let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8192)
+                    .with_native_values(Some(&store));
+                let mut eval = EvalContext::default();
+                let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                    p.start(
+                        eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                };
+                let reply = |p: &mut NativeBatchHosts<'_>,
+                             eval: &mut EvalContext,
+                             task: &HostTaskId,
+                             index,
+                             token: Option<Vec<u8>>| {
+                    p.resume(
+                        eval,
+                        task,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                        },
+                    )
+                };
+                if !write {
+                    for _ in 0..64 {
+                        ctx.action.set(1);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            begin(&mut p, &mut eval)
+                        }));
+                        assert!(result.is_err());
+                        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                    }
+                    let HostStart::Ready(v) = begin(&mut p, &mut eval).unwrap() else {
+                        panic!("stored-name read demanded its unused child")
+                    };
+                    let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                        panic!()
+                    };
+                    assert_eq!(
+                        store
+                            .borrow()
+                            .get(token, role, NativeValueOrigin { node: 2, row })
+                            .unwrap(),
+                        &Datum::Int(7)
+                    );
+                    assert!(ctx.events.borrow().iter().all(|e| e == "get:X"));
+                    continue;
+                }
+                let pending = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                    let HostStart::Pending { task, request } = begin(p, eval).unwrap() else {
+                        panic!()
+                    };
+                    assert_eq!(request.index, 1);
+                    task
+                };
+                let good = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
+                let mut corrupt = good.clone();
+                corrupt[0] ^= 1;
+                let mut short = good.clone();
+                short.pop();
+                let mut long = good;
+                long.push(0);
+                for bad in [
+                    None,
+                    Some(corrupt),
+                    Some(short),
+                    Some(long),
+                    Some(stale),
+                    Some(foreign),
+                    Some(insert(&Datum::Int(7), NativeValueRole::Output, 4, row)),
+                    Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 3, row)),
+                    Some(insert(
+                        &Datum::Int(7),
+                        NativeValueRole::CharInput,
+                        4,
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    )),
+                    Some(insert(
+                        &Datum::Int(7),
+                        NativeValueRole::CharInput,
+                        4,
+                        InputRow {
+                            occurrence: 0,
+                            input_row: 1,
+                        },
+                    )),
+                ] {
+                    let task = pending(&mut p, &mut eval);
+                    assert!(reply(&mut p, &mut eval, &task, 1, bad).is_err());
+                    assert!(ctx.events.borrow().is_empty());
+                    p.cancel(&task);
+                    p.cancel(&task);
+                    rejected += 1;
+                }
+                let task = pending(&mut p, &mut eval);
+                assert!(reply(
+                    &mut p,
+                    &mut eval,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row))
+                )
+                .is_err());
                 p.cancel(&task);
-                p.cancel(&task);
-                assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                rejected += 1;
+                for action in [0, 1, 2, 0] {
+                    ctx.events.borrow_mut().clear();
+                    ctx.action.set(action);
+                    let token = insert(&Datum::Int(7), NativeValueRole::CharInput, 4, row);
+                    let task = pending(&mut p, &mut eval);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        reply(&mut p, &mut eval, &task, 1, Some(token.clone()))
+                    }));
+                    match action {
+                        1 => assert!(result.is_err()),
+                        2 => assert!(result.unwrap().is_err()),
+                        _ => {
+                            let HostStep::Ready(v) = result.unwrap().unwrap() else {
+                                panic!()
+                            };
+                            let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                                panic!()
+                            };
+                            let values = store.borrow();
+                            assert_eq!(
+                                values
+                                    .get(token, role, NativeValueOrigin { node: 2, row })
+                                    .unwrap(),
+                                &Datum::Int(7)
+                            );
+                            assert!(values
+                                .get(token, role, NativeValueOrigin { node: 3, row })
+                                .is_err());
+                        }
+                    }
+                    assert_eq!(*ctx.events.borrow(), vec!["set:X"]);
+                    assert!(reply(&mut p, &mut eval, &task, 1, Some(token)).is_err());
+                    p.cancel(&task);
+                    p.cancel(&task);
+                    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                }
+                ctx.events.borrow_mut().clear();
+                let task = pending(&mut p, &mut eval);
+                let token = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
+                assert!(matches!(
+                    reply(&mut p, &mut eval, &task, 1, Some(token)).unwrap(),
+                    HostStep::Ready(_)
+                ));
+                assert!(ctx.events.borrow().is_empty());
             }
-            ctx.events.borrow_mut().clear();
-            let task = pending(&mut p, &mut eval);
-            let token = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-            assert!(matches!(
-                reply(&mut p, &mut eval, &task, 1, Some(token)).unwrap(),
-                HostStep::Ready(_)
-            ));
-            assert!(ctx.events.borrow().is_empty());
         }
     }
-    assert_eq!(rejected, 22);
+    assert_eq!(rejected, 44);
 }
 
 #[test]
 fn user_variable_resource_is_terminal_and_same_worker_null_recovers() {
     use crate::tikv::user_variable_tests as proof;
     let schema = [string_ty()];
-    for name in ["getvar_string", "setvar"] {
-        let root = if name == "setvar" {
-            call(
-                name,
-                string_ty(),
-                vec![
-                    literal(Datum::new_string("x"), string_ty()),
-                    typed_column(0, &string_ty()),
-                ],
-            )
-        } else {
-            call(
-                name,
-                string_ty(),
-                vec![literal(Datum::new_string("x"), string_ty())],
-            )
-        };
-        let owner = suite(root);
-        let mut worker = PreparedBatch::compile(
-            &owner,
-            &schema,
-            true,
-            93,
-            limits(),
-            ExecutionLimits::default(),
-            65536,
-        )
-        .unwrap();
-        let ctx = proof::Context::new(1, Datum::Bytes(vec![255; 1 << 20]));
-        let mut input = chunk(&schema, &[vec![Datum::Bytes(vec![255; 1 << 20])]]);
-        let mut output = output_for(&string_ty());
-        worker
-            .validate_invocation(&owner, &input, &output, &schema)
-            .unwrap();
-        let error = worker
-            .execute_profile(
-                &ctx,
-                &mut EvalContext::default(),
-                &input,
-                &mut output,
+    for optional in [false, true] {
+        for name in ["getvar_string", "setvar"] {
+            let mut root = if name == "setvar" {
+                call(
+                    name,
+                    string_ty(),
+                    vec![
+                        literal(Datum::new_string("x"), string_ty()),
+                        typed_column(0, &string_ty()),
+                    ],
+                )
+            } else {
+                call(
+                    name,
+                    string_ty(),
+                    vec![literal(Datum::new_string("x"), string_ty())],
+                )
+            };
+            if optional {
+                let Expression::ScalarFunction(f) = &mut root else {
+                    unreachable!()
+                };
+                f.ret_type = None;
+            }
+            let owner = suite(root);
+            let mut worker = PreparedBatch::compile(
+                &owner,
+                &schema,
                 true,
-                None,
-            )
-            .unwrap_err();
-        assert_eq!(error.refusal(), BatchRefusal::Resource);
-        assert!(matches!(
-            error.into_evaluator_error(),
-            EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(_))
-        ));
-        assert_eq!(output.num_rows(), 0);
-        if name == "setvar" {
-            assert!(ctx.events.borrow().is_empty());
-        }
-        ctx.events.borrow_mut().clear();
-        ctx.vars.borrow_mut().insert("x".into(), Datum::Null);
-        input = chunk(&schema, &[vec![Datum::Null]]);
-        let mut output = output_for(&string_ty());
-        worker
-            .validate_invocation(&owner, &input, &output, &schema)
-            .unwrap();
-        worker
-            .execute_profile(
-                &ctx,
-                &mut EvalContext::default(),
-                &input,
-                &mut output,
-                true,
-                None,
+                93,
+                limits(),
+                ExecutionLimits::default(),
+                65536,
             )
             .unwrap();
-        assert!(output.column(0).is_null(0));
-        if name == "setvar" {
-            assert!(ctx.events.borrow().is_empty());
+            let ctx = proof::Context::new(1, Datum::Bytes(vec![255; 1 << 20]));
+            let mut input = chunk(&schema, &[vec![Datum::Bytes(vec![255; 1 << 20])]]);
+            let mut output = output_for(&string_ty());
+            worker
+                .validate_invocation(&owner, &input, &output, &schema)
+                .unwrap();
+            let error = worker
+                .execute_profile(
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &input,
+                    &mut output,
+                    true,
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(error.refusal(), BatchRefusal::Resource);
+            assert!(matches!(
+                error.into_evaluator_error(),
+                EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(_))
+            ));
+            assert_eq!(output.num_rows(), 0);
+            if name == "setvar" {
+                assert!(ctx.events.borrow().is_empty());
+            }
+            ctx.events.borrow_mut().clear();
+            ctx.vars.borrow_mut().insert("x".into(), Datum::Null);
+            input = chunk(&schema, &[vec![Datum::Null]]);
+            let mut output = output_for(&string_ty());
+            worker
+                .validate_invocation(&owner, &input, &output, &schema)
+                .unwrap();
+            worker
+                .execute_profile(
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &input,
+                    &mut output,
+                    true,
+                    None,
+                )
+                .unwrap();
+            assert!(output.column(0).is_null(0));
+            if name == "setvar" {
+                assert!(ctx.events.borrow().is_empty());
+            }
         }
     }
 }

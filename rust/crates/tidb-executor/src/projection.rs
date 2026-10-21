@@ -4808,34 +4808,49 @@ mod tests {
         let json = FieldType::new(FieldTypeCode::Json);
         let mut roots = vec![];
         let mut fields = vec![];
-        for name in ["reverse", "bin", "json_array", "json_object"] {
-            for column_input in [false, true] {
-                let value = if column_input {
-                    let mut c = Column::new(1, integer.clone());
-                    c.index = 0;
-                    Expression::Column(c)
-                } else {
-                    let mut c = Constant::new(Datum::new_string("stored"), string.clone());
-                    c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
-                    c.ret_type = None;
-                    Expression::Constant(c)
-                };
-                let mut args = vec![];
-                if name == "json_object" {
-                    let mut key = Constant::new(Datum::new_string("key"), string.clone());
-                    key.ret_type = None;
-                    args.push(Expression::Constant(key));
+        for name in [
+            "reverse",
+            "bin",
+            "json_array",
+            "json_object",
+            "length",
+            "md5",
+            "sha1",
+            "ltrim",
+        ] {
+            for result_declared in [false, true] {
+                for column_input in [false, true] {
+                    let value = if column_input {
+                        let mut c = Column::new(1, integer.clone());
+                        c.index = 0;
+                        Expression::Column(c)
+                    } else {
+                        let mut c = Constant::new(Datum::new_string("stored"), string.clone());
+                        c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
+                        c.ret_type = None;
+                        Expression::Constant(c)
+                    };
+                    let mut args = vec![];
+                    if name == "json_object" {
+                        let mut key = Constant::new(Datum::new_string("key"), string.clone());
+                        key.ret_type = None;
+                        args.push(Expression::Constant(key));
+                    }
+                    args.push(value);
+                    let output = if name == "length" {
+                        integer.clone()
+                    } else if name.starts_with("json_") {
+                        json.clone()
+                    } else {
+                        string.clone()
+                    };
+                    let mut f = ScalarFunction::new(CiString::new(name), output.clone(), args);
+                    if !result_declared {
+                        f.ret_type = None;
+                    }
+                    roots.push(Expression::ScalarFunction(f));
+                    fields.push(output);
                 }
-                args.push(value);
-                let output = if name.starts_with("json_") {
-                    json.clone()
-                } else {
-                    string.clone()
-                };
-                let mut f = ScalarFunction::new(CiString::new(name), output.clone(), args);
-                f.ret_type = None;
-                roots.push(Expression::ScalarFunction(f));
-                fields.push(output);
             }
         }
         for enabled in [false, true] {

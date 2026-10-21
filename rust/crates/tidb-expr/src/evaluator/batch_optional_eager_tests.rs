@@ -310,3 +310,313 @@ fn optional_eager_preferred_registry_arity_and_original_metadata_match() {
     eprintln!("OPTIONAL REGISTRY ORIGINAL {families}/{count}/{hash:016X}");
     assert_eq!((families, count, hash), (52, 17808, 0x96FBFCB7F4B38305));
 }
+
+#[test]
+fn optional_common_profiles_record_original_and_actual_admission() {
+    if isolate_common_corpus(
+        "optional_eager_tests::optional_common_profiles_record_original_and_actual_admission",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::scalar_function::{eager_policy_tests as policy, eager_values};
+    let (mut count, mut hash, mut profiles) = (0usize, 0xcbf29ce484222325u64, 0usize);
+    let mut gaps = vec![];
+    for name in policy::names() {
+        for arity in policy::arities(&name) {
+            let signature = policy::function(&name, arity);
+            if !eager_values::supports(&signature) || eager_values::prefers_common_body(&signature)
+            {
+                continue;
+            }
+            // Entropy-producing valid signatures need a separate contract
+            // oracle; two real OS draws cannot be compared byte-for-byte.
+            if (matches!(name.as_str(), "uuid" | "uuid_v4" | "uuid_v7") && arity == 0)
+                || (name == "random_bytes" && arity == 1)
+            {
+                continue;
+            }
+            profiles += 1;
+            for mask in [1, 2, 3, 7] {
+                for (vi, value) in [
+                    Datum::Null,
+                    Datum::Int(3),
+                    Datum::new_string("abc"),
+                    Datum::new_string("[1]"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    for kind in ["literal", "param", "deferred_effect", "correlated"] {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let make = || {
+                                    let mut ctx = leaf::Context::new(0, value.clone());
+                                    ctx.enabled.set(enabled);
+                                    ctx.binding = Some(Arc::new(RwLock::new(value.clone())));
+                                    let actual_field =
+                                        crate::tikv::misc_identity_value_tests::field(&value);
+                                    let declared = (mask & 6 == 0).then_some(&actual_field);
+                                    let args = (0..arity)
+                                        .map(|_| {
+                                            if kind == "literal" {
+                                                let mut c = Constant::new(
+                                                    value.clone(),
+                                                    actual_field.clone(),
+                                                );
+                                                c.ret_type = declared.cloned();
+                                                Expression::Constant(c)
+                                            } else {
+                                                leaf::expression(
+                                                    kind,
+                                                    0,
+                                                    &value,
+                                                    declared,
+                                                    ctx.binding.clone(),
+                                                )
+                                            }
+                                        })
+                                        .collect();
+                                    let field = registry_output(&name);
+                                    let mut f = ScalarFunction::new(
+                                        CiString::new(&name),
+                                        field.clone(),
+                                        args,
+                                    );
+                                    if mask & 1 != 0 {
+                                        f.ret_type = None;
+                                    }
+                                    (suite(Expression::ScalarFunction(f)), ctx, field)
+                                };
+                                let input = || {
+                                    let mut c = chunk(
+                                        &[ty()],
+                                        &[
+                                            vec![Datum::Int(1)],
+                                            vec![Datum::Int(2)],
+                                            vec![Datum::Int(3)],
+                                        ],
+                                    );
+                                    c.set_sel(selection.clone());
+                                    c
+                                };
+                                let (owner, old, field) = make();
+                                let mut left = output_for(&field);
+                                left.append_null(0);
+                                let expected = session_read_outcome(|| {
+                                    owner.run(&old, &mut input(), &mut left)
+                                });
+                                let label = format!(
+                                    "{name}/{arity}/{mask}/{vi}/{kind}/{enabled}/{selection:?}"
+                                );
+                                {
+                                    let (actual, new, _) = make();
+                                    let mut right = output_for(&field);
+                                    right.append_null(0);
+                                    let got = session_read_outcome(|| {
+                                        actual.run_with_tikv_batch(
+                                            &new,
+                                            &mut input(),
+                                            &mut right,
+                                            &[ty()],
+                                        )
+                                    });
+                                    if got != expected
+                                        || right.column(0) != left.column(0)
+                                        || new.snapshot() != old.snapshot()
+                                    {
+                                        eprintln!("OPTIONAL COMMON DIFFERENCE {label} old={expected:?} new={got:?} oldcolumn={:?} newcolumn={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                    }
+                                    assert_eq!(got, expected, "outcome {label}");
+                                    assert_eq!(right.column(0), left.column(0), "column {label}");
+                                    assert_eq!(new.snapshot(), old.snapshot(), "effects {label}");
+                                    let route = actual.batch_route_snapshot();
+                                    if route.prepared != 1
+                                        || route.fallback != 0
+                                        || route.refusals != 0
+                                    {
+                                        if gaps.len() < 30 {
+                                            gaps.push(format!("{label}: {route:?}"));
+                                        }
+                                    }
+                                }
+                                for byte in format!(
+                                    "{label}|{expected}|{:?}|{}",
+                                    left.column(0),
+                                    old.snapshot()
+                                )
+                                .bytes()
+                                {
+                                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("OPTIONAL COMMON ORIGINAL {profiles}/{count}/{hash:016X}");
+    assert_eq!((profiles, count, hash), (1713, 657792, 0xA94C463994D2D98D));
+    if !gaps.is_empty() {
+        eprintln!("OPTIONAL COMMON ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty(), "optional common admission gaps: {gaps:?}");
+}
+
+#[test]
+fn optional_common_entropy_keeps_actual_generation_and_error_contracts() {
+    let mut gaps = 0;
+    let mut cases = 0;
+    for name in ["uuid", "uuid_v4", "uuid_v7", "random_bytes"] {
+        for mask in [1, 2, 3, 7] {
+            for value in [
+                Datum::Null,
+                Datum::Int(-1),
+                Datum::Int(0),
+                Datum::Int(32),
+                Datum::Int(1024),
+                Datum::Int(1025),
+            ] {
+                for dynamic in [false, true] {
+                    for enabled in [false, true] {
+                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                            let make = || {
+                                let context = leaf::Context::new(0, value.clone());
+                                context.enabled.set(enabled);
+                                let mut arg = Constant::new(value.clone(), ty());
+                                if dynamic {
+                                    arg.param_marker = Some(ParamMarker { order: 0 });
+                                }
+                                if mask & 6 != 0 {
+                                    arg.ret_type = None;
+                                }
+                                let args = if name == "random_bytes" {
+                                    vec![Expression::Constant(arg)]
+                                } else {
+                                    vec![]
+                                };
+                                let mut f =
+                                    ScalarFunction::new(CiString::new(name), string_ty(), args);
+                                if mask & 1 != 0 {
+                                    f.ret_type = None;
+                                }
+                                (suite(Expression::ScalarFunction(f)), context)
+                            };
+                            let input = || {
+                                let mut c = chunk(
+                                    &[ty()],
+                                    &[
+                                        vec![Datum::Int(1)],
+                                        vec![Datum::Int(2)],
+                                        vec![Datum::Int(3)],
+                                    ],
+                                );
+                                c.set_sel(selection.clone());
+                                c
+                            };
+                            let label = format!(
+                                "{name}/{mask}/{value:?}/{dynamic}/{enabled}/{selection:?}"
+                            );
+                            let validate =
+                                |output: &Chunk, outcome: &std::result::Result<(), EvaluatorError>| {
+                                    assert!(output.column(0).is_null(0), "prefix {label}");
+                                    let empty = selection.as_ref().is_some_and(Vec::is_empty);
+                                    let random_null = name == "random_bytes" && value.is_null();
+                                    let good_random = matches!(value, Datum::Int(32 | 1024));
+                                    let success = empty
+                                        || name != "random_bytes"
+                                        || random_null
+                                        || good_random;
+                                    assert_eq!(outcome.is_ok(), success, "{label}: {outcome:?}");
+                                    assert_eq!(
+                                        output.num_rows(),
+                                        if !empty && success { 4 } else { 1 },
+                                        "{label}"
+                                    );
+                                    let mut actual_values = std::collections::HashSet::new();
+                                    for row in 1..output.num_rows() {
+                                        assert_eq!(
+                                            output.column(0).is_null(row),
+                                            random_null,
+                                            "{label}"
+                                        );
+                                        if random_null {
+                                            continue;
+                                        }
+                                        let column = output.column(0);
+                                        let bytes = column.get_bytes(row);
+                                        let bytes = bytes.as_ref();
+                                        if name == "random_bytes" {
+                                            let Datum::Int(length) = value else { panic!() };
+                                            assert_eq!(bytes.len(), length as usize, "{label}");
+                                        } else {
+                                            assert_eq!(bytes.len(), 36, "{label}");
+                                            for i in 0..36 {
+                                                if [8, 13, 18, 23].contains(&i) {
+                                                    assert_eq!(bytes[i], b'-', "{label}");
+                                                } else {
+                                                    assert!(
+                                                        bytes[i].is_ascii_hexdigit(),
+                                                        "{label}"
+                                                    );
+                                                }
+                                            }
+                                            assert_eq!(
+                                                bytes[14],
+                                                match name {
+                                                    "uuid" => b'1',
+                                                    "uuid_v4" => b'4',
+                                                    _ => b'7',
+                                                },
+                                                "{label}"
+                                            );
+                                            assert!(
+                                                matches!(bytes[19], b'8' | b'9' | b'a' | b'b'),
+                                                "{label}"
+                                            );
+                                        }
+                                        // Reverse/duplicate physical selections still
+                                        // invoke the genuine generator per occurrence.
+                                        assert!(
+                                            actual_values.insert(bytes.to_vec()),
+                                            "reused entropy {label}"
+                                        );
+                                    }
+                                };
+                            let (owner, old) = make();
+                            let mut left = output_for(&string_ty());
+                            left.append_null(0);
+                            let expected = owner.run(&old, &mut input(), &mut left);
+                            validate(&left, &expected);
+                            {
+                                let (actual, new) = make();
+                                let mut right = output_for(&string_ty());
+                                right.append_null(0);
+                                let got = actual.run_with_tikv_batch(
+                                    &new,
+                                    &mut input(),
+                                    &mut right,
+                                    &[ty()],
+                                );
+                                validate(&right, &got);
+                                assert_eq!(got, expected, "{label}");
+                                assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                let route = actual.batch_route_snapshot();
+                                if route.prepared != 1 || route.fallback != 0 || route.refusals != 0
+                                {
+                                    gaps += 1;
+                                }
+                            }
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("OPTIONAL COMMON ACTUAL ENTROPY {cases}, admission gaps {gaps}");
+    assert_eq!(cases, 1152);
+    assert_eq!(gaps, 0);
+}
