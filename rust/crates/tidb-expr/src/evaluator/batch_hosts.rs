@@ -350,7 +350,7 @@ pub(super) enum NativeHostMetadata {
     RawValues {
         operation: NativeRawValueOperation,
         name: Box<str>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         left_node: usize,
         right_node: Option<usize>,
         output_node: usize,
@@ -387,7 +387,7 @@ pub(super) enum NativeHostMetadata {
     Comparison {
         operation: SqlBatchHostOperation,
         name: Box<str>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         argument_nodes: [usize; 2],
         operands: [crate::ops::OperandFacts; 2],
         collation: tidb_datatype::Collation,
@@ -455,6 +455,8 @@ impl NativeHostMetadata {
         match self {
             Self::EagerValues { result_type, .. } => result_type.as_ref(),
             Self::Selection { result_type, .. } => result_type.as_ref(),
+            Self::Comparison { result_type, .. } => result_type.as_ref(),
+            Self::RawValues { result_type, .. } => result_type.as_ref(),
             Self::JsonSchema(metadata) => metadata.result_type.as_ref(),
             Self::Stateful(metadata) => metadata.result_type.as_ref(),
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
@@ -482,9 +484,7 @@ impl NativeHostMetadata {
             | Self::BoundedStaleness { result_type, .. }
             | Self::StrToDate { result_type, .. }
             | Self::JsonSumCrc32 { result_type, .. }
-            | Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
-            | Self::Comparison { result_type, .. }
             | Self::Arithmetic { result_type, .. }
             | Self::Math { result_type, .. }
             | Self::ValueCast { result_type, .. } => Some(result_type),
@@ -1344,6 +1344,8 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::FinalState(_)
                 | NativeHostMetadata::CachedList(_)
                 | NativeHostMetadata::Selection { .. }
+                | NativeHostMetadata::Comparison { .. }
+                | NativeHostMetadata::RawValues { .. }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {
@@ -1920,7 +1922,7 @@ impl<'a> NativeBatchHosts<'a> {
                 binary,
                 left,
                 right,
-                operands.map(|operand| !operand.unsigned),
+                operands.map(|operand| operand.eval_type.is_some() && !operand.unsigned),
             )
         };
         let available = self
@@ -1989,11 +1991,14 @@ impl<'a> NativeBatchHosts<'a> {
             }
             _ => return Err(binding("comparison descriptor has another operation")),
         };
-        let result =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
+        let result = match crate::scalar_function::coerce_function_result(
+            name,
+            result_type.as_ref(),
+            result,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
             .map(HostStep::Ready)
     }
@@ -3212,7 +3217,9 @@ impl NativeBatchHosts<'_> {
                 if self.native_values.is_none()
                     || *descriptor_operation != operation
                     || native_comparison_operation(name) != Some(operation)
-                    || operands.iter().any(|operand| operand.eval_type.is_none())
+                    || operands.iter().any(|operand| {
+                        operand.eval_type.is_none() && (operand.unsigned || operand.duration_column)
+                    })
                     || invocation.arg_types.len() != 2
                 {
                     return Err(binding("comparison descriptor differs"));

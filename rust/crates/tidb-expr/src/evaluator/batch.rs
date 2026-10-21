@@ -537,7 +537,8 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_final_state_call(function)
                 || native_stateful_call(function)
                 || native_cached_list_call(function)
-                || native_optional_selection_call(function) =>
+                || native_optional_selection_call(function)
+                || native_optional_operator_call(function) =>
         {
             NativeView::RootValue
         }
@@ -2087,8 +2088,27 @@ fn native_optional_selection_call(function: &ScalarFunction) -> bool {
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
+// These raw/comparison owners read genuine optional operand facts. Absence
+// must remain distinct from a declared signed operand for literal coercion.
+fn native_optional_operator_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && !crate::scalar_function::eager_values::supports(function)
+        && native_unary_sign_operation(function.func_name.lowercase())
+            .or_else(|| native_bitwise_operation(function.func_name.lowercase()))
+            .or_else(|| {
+                (function.func_name.lowercase() == "xor")
+                    .then_some(SqlBatchHostOperation::XorNative)
+            })
+            .or_else(|| native_comparison_operation(function.func_name.lowercase()))
+            .is_some_and(|op| op.accepts_arity(function.args.len()))
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none()))
+}
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
-    native_optional_value_call(function) || native_optional_selection_call(function)
+    native_optional_value_call(function)
+        || native_optional_selection_call(function)
+        || native_optional_operator_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_json_schema_call(function)
@@ -2619,7 +2639,8 @@ fn resolve_specific_call_in_view(
             if !operation.accepts_arity(function.args.len())
                 || ((function.get_static_type().is_none()
                     || function.args.iter().any(|arg| arg.static_type().is_none()))
-                    && !native_optional_selection_call(function))
+                    && !native_optional_selection_call(function)
+                    && !native_optional_operator_call(function))
             {
                 return Err(BatchFailure::admission(
                     "native nullable control requires typed arguments and valid arity",
@@ -3272,7 +3293,7 @@ fn preflight_view<'a>(
                     budget.array::<Option<Datum>>(1)?;
                     if native_optional_selection_call(function) {
                         budget.array::<usize>(arity)?;
-                    } else {
+                    } else if !native_optional_operator_call(function) {
                         budget_value_call_metadata(&mut budget, function, None)?;
                     }
                     let (CallTarget::Host(operation), _) = resolve_call_in_view(function, view)?
@@ -5728,9 +5749,9 @@ fn lower_view_policy(
                                         NativeRawValueOperation::Bitwise {
                                             operation,
                                             unsigned: [
-                                                checked[left].declared_sql().is_unsigned(),
+                                                checked[left].sql.is_some_and(FieldType::is_unsigned),
                                                 right.is_some_and(|right| {
-                                                    checked[right].declared_sql().is_unsigned()
+                                                    checked[right].sql.is_some_and(FieldType::is_unsigned)
                                                 }),
                                             ],
                                         }
@@ -5738,7 +5759,7 @@ fn lower_view_policy(
                                     SqlBatchHostOperation::UnarySignNative(sign) => {
                                         NativeRawValueOperation::UnarySign {
                                             sign,
-                                            unsigned: checked[left].declared_sql().is_unsigned(),
+                                            unsigned: checked[left].sql.is_some_and(FieldType::is_unsigned),
                                             constant: checked[left].folds_to_constant,
                                         }
                                     }
@@ -5750,7 +5771,7 @@ fn lower_view_policy(
                                 NativeHostMetadata::RawValues {
                                     operation,
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     left_node: left,
                                     right_node: right,
                                     output_node: ordinal,
@@ -5805,20 +5826,19 @@ fn lower_view_policy(
                                             .get(index)
                                             .ok_or_else(|| binding("comparison source missing"))?;
                                         Ok(crate::ops::OperandFacts {
-                                            eval_type: Some(child.declared_sql().eval_type()),
-                                            unsigned: child.declared_sql().is_unsigned(),
+                                            eval_type: child.sql.map(FieldType::eval_type),
+                                            unsigned: child.sql.is_some_and(FieldType::is_unsigned),
                                             constant: child.folds_to_constant,
                                             duration_column: matches!(
                                                 child.node,
                                                 Expression::Column(_)
-                                            ) && child.declared_sql().code()
-                                                == FieldTypeCode::Duration,
+                                            ) && child.sql.is_some_and(|field| field.code() == FieldTypeCode::Duration),
                                         })
                                     };
                                 NativeHostMetadata::Comparison {
                                     operation,
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     argument_nodes: [left, right],
                                     operands: [facts(left)?, facts(right)?],
                                     collation: sql.derived_collation(),

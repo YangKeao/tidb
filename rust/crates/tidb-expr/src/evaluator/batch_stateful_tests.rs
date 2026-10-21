@@ -1635,10 +1635,89 @@ fn run_optional_selection_matrix(compare: bool) {
         [Datum::MinNotNull, Datum::Null],
         [Datum::Real(f64::NAN), Datum::new_string("null")],
     ];
+    run_optional_control_matrix(
+        compare,
+        &names,
+        &values,
+        "optional-selection",
+        "OPTIONAL SELECTION",
+        Some((388800, 0xED53E168732558ED)),
+    );
+}
+
+#[test]
+fn optional_operator_original_metadata_and_demands() {
+    if isolate_common_corpus("stateful_tests::optional_operator_original_metadata_and_demands") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_operator_matrix(false);
+}
+#[test]
+fn optional_operator_actual_metadata_and_demands() {
+    if isolate_common_corpus("stateful_tests::optional_operator_actual_metadata_and_demands") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_operator_matrix(true);
+}
+const OPTIONAL_OPERATOR_NAMES: [&str; 17] = [
+    "bitand",
+    "bitor",
+    "bitxor",
+    "leftshift",
+    "rightshift",
+    "bitneg",
+    "unaryplus",
+    "unaryminus",
+    "xor",
+    "eq",
+    "ne",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "nulleq",
+    "nullif",
+];
+
+fn run_optional_operator_matrix(compare: bool) {
+    let names = OPTIONAL_OPERATOR_NAMES;
+    let binary =
+        |bytes: Vec<u8>| Datum::new_binary_literal(tidb_datatype::BinaryLiteral::from(bytes));
+    let values = [
+        [Datum::Null, Datum::new_string("selected")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+        [binary(vec![255; 8]), Datum::UInt(u64::MAX)],
+        [binary(vec![0, 255]), Datum::Int(255)],
+        [binary(vec![255; 9]), binary(vec![128, 0, 0, 0, 0, 0, 0, 0])],
+        [Datum::UInt(u64::MAX), Datum::Int(-1)],
+    ];
+    run_optional_control_matrix(
+        compare,
+        &names,
+        &values,
+        "optional-operator",
+        "OPTIONAL OPERATOR",
+        Some((734400, 0x13E31BEF014E40C9)),
+    );
+}
+fn run_optional_control_matrix(
+    compare: bool,
+    names: &[&str],
+    values: &[[Datum; 2]],
+    prefix: &str,
+    heading: &str,
+    golden: Option<(usize, u64)>,
+) {
     let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
     let mut gaps = vec![];
     let mut retained_bulk_gaps = 0usize;
-    for name in names {
+    for &name in names {
         for shape in 0..5 {
             for mask in 0..8 {
                 for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
@@ -1656,8 +1735,11 @@ fn run_optional_selection_matrix(compare: bool) {
                                             literal(Datum::new_string("fallback"), string_ty());
                                         let mut args = match name {
                                             "if" | "case" => vec![p0, p1, fallback],
-                                            "ifnull" | "coalesce" | "and" | "or" => vec![p0, p1],
-                                            _ => vec![p0],
+                                            "not" | "isnull" | "istrue" | "isfalse"
+                                            | "isnottrue" | "isnotfalse" | "isunknown"
+                                            | "isnotunknown" | "istrue_with_null" | "bitneg"
+                                            | "unaryplus" | "unaryminus" => vec![p0],
+                                            _ => vec![p0, p1],
                                         };
                                         match shape {
                                             1 => {
@@ -1738,7 +1820,7 @@ fn run_optional_selection_matrix(compare: bool) {
                                         let expected = session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
-                                        let label=format!("optional-selection/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        let label=format!("{prefix}/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
                                         if compare {
                                             let mut b = input();
                                             let mut right = output_for(&field);
@@ -1755,7 +1837,7 @@ fn run_optional_selection_matrix(compare: bool) {
                                                 || left.column(0) != right.column(0)
                                                 || old.snapshot() != new.snapshot()
                                             {
-                                                eprintln!("OPTIONAL SELECTION DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                eprintln!("{heading} DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
                                             }
                                             assert_eq!(got, expected, "{label}");
                                             assert_eq!(right.column(0), left.column(0), "{label}");
@@ -1789,10 +1871,100 @@ fn run_optional_selection_matrix(compare: bool) {
             }
         }
     }
-    eprintln!("OPTIONAL SELECTION ORIGINAL {count}/{hash:016X}; retained whole profiles {retained_bulk_gaps}");
-    assert_eq!((count, hash), (388800, 0xED53E168732558ED));
+    eprintln!(
+        "{heading} ORIGINAL {count}/{hash:016X}; retained whole profiles {retained_bulk_gaps}"
+    );
+    if let Some(golden) = golden {
+        assert_eq!((count, hash), golden);
+    }
     if !gaps.is_empty() {
-        eprintln!("OPTIONAL SELECTION ROW ADMISSION RED {gaps:?}");
+        eprintln!("{heading} ROW ADMISSION RED {gaps:?}");
     }
     assert!(gaps.is_empty());
+}
+
+#[test]
+fn optional_operator_full_actual_values_keep_raw_domains_and_facts() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_operator_full_actual_values_keep_raw_domains_and_facts",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in OPTIONAL_OPERATOR_NAMES {
+        for mask in [1, 2, 3, 7] {
+            for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                .into_iter()
+                .enumerate()
+            {
+                for enabled in [false, true] {
+                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                        let make = || {
+                            let mut args = vec![parameter(0, string_ty())];
+                            if !matches!(name, "bitneg" | "unaryplus" | "unaryminus") {
+                                args.push(parameter(1, string_ty()));
+                            }
+                            let mut expression = call(name, ty(), args);
+                            erase_optional_call_declarations(&mut expression, mask);
+                            suite(expression)
+                        };
+                        let original = make();
+                        let actual = make();
+                        let old = C::new(0, enabled, [value.clone(), Datum::Int(1)]);
+                        let new = C::new(0, enabled, [value.clone(), Datum::Int(1)]);
+                        for reuse in 0..2 {
+                            let input = || {
+                                let mut input = chunk(
+                                    &[ty()],
+                                    &[
+                                        vec![Datum::Int(1)],
+                                        vec![Datum::Int(2)],
+                                        vec![Datum::Int(3)],
+                                    ],
+                                );
+                                input.set_sel(selection.clone());
+                                input
+                            };
+                            let mut a = input();
+                            let mut left = output_for(&ty());
+                            left.append_null(0);
+                            let expected =
+                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let mut b = input();
+                            let mut right = output_for(&ty());
+                            right.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                            });
+                            let label = format!("operator-full-actual/{name}/{mask}/{vi}/{enabled}/{selection:?}/{reuse}");
+                            if got != expected
+                                || right.column(0) != left.column(0)
+                                || new.snapshot() != old.snapshot()
+                            {
+                                eprintln!("OPERATOR FULL DIFFERENCE {label} value={} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",leaf::frame(&value),left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                            }
+                            assert_eq!(got, expected, "{label}");
+                            assert_eq!(right.column(0), left.column(0), "{label}");
+                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!((route.fallback, route.refusals), (0, 0), "{label}");
+                            for byte in format!(
+                                "{label}|{expected}|{:?}|{}",
+                                left.column(0),
+                                old.snapshot()
+                            )
+                            .bytes()
+                            {
+                                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("OPERATOR FULL ACTUAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (121584, 0x762EE08F41914785));
 }

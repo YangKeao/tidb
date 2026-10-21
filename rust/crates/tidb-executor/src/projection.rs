@@ -4946,6 +4946,23 @@ mod tests {
             "isunknown",
             "isnotunknown",
             "istrue_with_null",
+            "bitand",
+            "bitor",
+            "bitxor",
+            "leftshift",
+            "rightshift",
+            "bitneg",
+            "unaryplus",
+            "unaryminus",
+            "xor",
+            "eq",
+            "ne",
+            "lt",
+            "le",
+            "gt",
+            "ge",
+            "nulleq",
+            "nullif",
         ] {
             for mask in [0u8, 1, 2, 3] {
                 let field = if name == "rand" {
@@ -4966,6 +4983,13 @@ mod tests {
                         "rand" => vec![number(5)],
                         "aes_encrypt" => vec![text("hello"), text("key"), text("ignored IV")],
                         "find_in_set" => vec![parameter(2, string.clone()), text("1,123,3")],
+                        "bitneg" | "unaryplus" | "unaryminus" => {
+                            vec![parameter(0, integer.clone())]
+                        }
+                        "bitand" | "bitor" | "bitxor" | "leftshift" | "rightshift" | "xor"
+                        | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq" | "nullif" => {
+                            vec![parameter(0, integer.clone()), number(1)]
+                        }
                         "if" | "case" => vec![parameter(0, integer.clone()), number(7), number(0)],
                         "ifnull" | "coalesce" | "and" | "or" => {
                             vec![parameter(0, integer.clone()), number(7)]
@@ -4994,6 +5018,7 @@ mod tests {
         // The added controls also cover fully declared typed parameters, whose
         // old whole-column phases are still outside optional row admission.
         let unordered = (roots[..28].to_vec(), fields[..28].to_vec());
+        let operator_end = roots.len();
         roots.push(Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("setvar"),
             integer.clone(),
@@ -5009,14 +5034,14 @@ mod tests {
         let mut configurations = vec![unordered];
         // Each real suite keeps its normal per-calculation metadata allowance;
         // multiplying unrelated roots must not dilute the AES/cache admission.
-        for start in (28..88).step_by(12) {
-            let end = (start + 12).min(88);
+        for start in (28..operator_end).step_by(12) {
+            let end = (start + 12).min(operator_end);
             let mut selected = roots[start..end].to_vec();
             let mut declared = fields[start..end].to_vec();
             selected.push(roots[0].clone());
             declared.push(fields[0].clone());
-            selected.extend_from_slice(&roots[88..]);
-            declared.extend_from_slice(&fields[88..]);
+            selected.extend_from_slice(&roots[operator_end..]);
+            declared.extend_from_slice(&fields[operator_end..]);
             configurations.push((selected, declared));
         }
         for (roots, fields) in configurations {
