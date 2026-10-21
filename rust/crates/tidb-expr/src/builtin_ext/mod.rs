@@ -48,7 +48,9 @@ pub(crate) use json::{
 #[cfg(test)]
 pub(crate) use string2::find_in_set_lookup;
 pub(crate) use string2::{
-    build_find_in_set_lookup, find_in_set_lookup_in, find_in_set_with_collation_in, FindInSetLookup,
+    build_find_in_set_lookup, eval_find_in_set_prepared_values, find_in_set_lookup_in,
+    find_in_set_with_collation_in, prepare_find_in_set_lookup_value,
+    prepare_find_in_set_tuple_values, FindInSetLookup,
 };
 
 /// Tries each family in turn; `None` if no family implements `name`.

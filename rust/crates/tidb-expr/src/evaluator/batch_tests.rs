@@ -34081,3 +34081,6 @@ fn char_cast_context_row_child_is_atomic_across_driver_windows() {
     }
     assert_eq!(count, 12);
 }
+
+#[path = "batch_cached_list_tests.rs"]
+mod cached_list_tests;

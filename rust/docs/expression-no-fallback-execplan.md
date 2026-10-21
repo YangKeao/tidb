@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-21 N16 validated) Serialized owned cache initialization, semantic empty-row demand, shared value preparation and original return-family conversion are integrated. Historical48600/1BE95C69A586382F, clean SQL48600/98391F5AC2C266FB with exact2932 retired-scope differences, cache7776/B7F093DF39181199 and independent preparation135888/4913F925E3CA7FDA remain fixed; original controls/archives precede retirements. Actual48600/90/266412, long selections/public alternation, auth/callback/cancel/resource recovery and eleven return declarations pass. Three actual regressions (COLLATE binding, encoded header work and return conversion) were reproduced before correction. Final frontend1956/exact inherited3/95/all415batch/exact346warnings, SDK1148/exact inherited1/1ignored/exact17warnings, all-target clippy171/89, Projection26 with two new cohorts, lint/dual11+4fmt and reconstruction checks pass. See evidence/no-fallback-n16.md. Continue stateful/optional/PB/public/unistore/filter and final performance immediately; task #4 is not complete.
+
 - [x] (2026-10-21 N15 final) Typed context sources, owned dynamic/math/numeric diagnostics, all six arithmetic phases, deferred-root type profiles and CAST_CHAR source closure are verified. Original corpora and independent pre-retirement evidence are retained; actual source and callback/long-window/authentication/resource recovery checks pass. Full frontend1944/exact inherited3/95/all403batch/exact346warnings, Projection26 with two added typed/ordered cohorts, final lint, dual31-file formatting and reconstruction checker pass. See evidence/no-fallback-n15.md and compatible SDKcdd5c30. Continue serialized cache/empty-row and global source/public entry retirement immediately; this is not overall completion.
 
 - [ ] (2026-10-21 N15 integration follow-up) Deferred-root original677376/B634495626BD8ECB and reused actual677376,96 long cases,12 multi-window atomic/prefix cases and probe/error/unwind/resource recovery pass. Full1941/exact inherited3/95/all400batch/exact346warnings, initialProjection26 and lint pass. Two added heterogeneous Projection configurations exposed a new Admission gap, retained as a failing guard. CAST_CHAR original1419840/10E3C88C3FFBA67D was captured/rerun/frozen and eight executed files archived before the narrow row-source/publication correction; actual1419840 now pass. CAST_CHAR multi-window and the unchanged expanded Projection guard are running; final gates remain open.
@@ -161,6 +163,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- Observation: Reusing the old suite after a caught constructor callback panic poisons its Ready lane, although the separate SQL list cache correctly retains its old context item. N16 retains this48600-case history and separately captures a fresh original Ready authority while keeping the SQL-function cache warm. All2932 differences are exact retired-lane failures, following the explicit N7n historical-versus-clean-authority decision below. The cache read contract also blocks reads of another context during construction, so a lease must serialize readers as well as constructors.
 
 - Observation: Previously admitted typed CAST_CHAR still used generic row operands and collected the entire result before publication. The broad contextual-root admission gate and forced row-publication flag prevented that existing source path from composing with deferred roots. The new heterogeneous Projection guard reproduced Admission; original and actual1419840 pairs now match after preserving static closed sources and the atomic output boundary. Evidence: n15-projection-final.log, n15-char-context-original-and-source-red.log, n15-char-context-first.log.
 
@@ -455,6 +459,8 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Promote only the independently compared owned cache reservation into NativeContextCache; get_or_init_cache remains its synchronous facade. A mutex/condition variable protects the current item and one initialization flag, while a non-cloneable token owns construction across child demand. Commit consumes it; dropping preserves the old item and wakes readers. Keep the old lock owner test-only, never as a runtime fallback. Rationale: reserve before list child effects without retaining a borrowed lock or an expression callback; preserve cross-context blocking and failure semantics. Date/Author: 2026-10-21 ExpressionReuseEngineer.
 
 - Decision: Extend CAST_CHAR through its existing row value owner; retain closed typed source metadata and promote only incomplete typed trees to their native value view. Clear forced contextual row publication only when the original static CAST_CHAR candidate exists, so its existing output staging can remain atomic while generic/disabled paths preserve prefixes. Rationale: no new conversion algorithm or batch child traversal is needed. Date/Author: 2026-10-21 ExpressionReuseEngineer.
 
@@ -4410,3 +4416,103 @@ lazy/effectful/deferred/PB/public/unistore and generic dispatch work immediately
 
 
 Revision N9 final: record complete original proof, shared value-body ownership, scoped terminal resources, lazy cache reuse, expanded source/provider/Projection gates, exact inherited baselines and paired local DCO. The overall task continues with N10 semantic classification and remaining source/traversal closure.
+
+
+## N16: serialized cached-list demand in the existing frame
+
+FIND_IN_SET began this step as a Source Admission gap even for a strict list.
+The old scalar evaluates the actual-row needle first. A list whose original
+const_level is at least ONLY_IN_CONTEXT then reads context_id and enters the
+single-item cache. A miss evaluates that list on Row::empty, meaning its column
+access must fail rather than read the current selected row. A hit never demands
+the list. NULL needle does not skip initialization. Constructor success commits
+before needle lookup; a later needle error therefore still leaves a warm cache.
+Constructor errors and panics retain the previous context item.
+
+The SDK cache changes in components/tidb_query_expr/src/native_regexp.rs add
+NativeCacheAccess and NativeCacheInitialization. begin_initialization returns a
+hit or an owned reservation before constructor effects. Readers and other
+initializers wait while it exists, matching the original write lock even for an
+old different-context cache read. The token owns only the cache core and context
+id. It stores no SQL tree, callback or lock guard. Drop cancels and commit
+consumes. The existing synchronous facade uses this same owner. Update known
+regexp cache-byte observers to the actual new core layout; do not raise limits.
+The corresponding SDK maintenance guide and frontend builtin_ext/cache.rs facade
+comment document this ownership contract.
+
+Add a dedicated frontend batch_cached_list.rs host implementation with boxed
+immutable function metadata and an owned demand state. Use EagerValuesNative
+with the original two arguments and function/site identity. Its first request is
+the real needle. Consume that phase before context_id or cache services and
+re-authenticate afterward. On a hit, call the original lookup value owner
+without evaluating the list. On a miss, retain the owned reservation while the
+same SDK frame demands argument1. Build the original lookup keys, commit, then
+probe the needle and publish once. A nonconstant list instead uses the actual
+row and never fetches context_id. Release all value-store borrows before context,
+cache, conversion and lookup callbacks; cancellation drops pending reservations.
+
+Represent semantic empty-row lookup in genuine compiler views. Keep every
+capability's actual outer occurrence/physical-row identity while forbidding its
+column read exactly where the original column owner forbids Row::empty.
+Propagate that view through generic and typed numeric operands and deferred
+children. Do not use diagnostic-failure swallowing for ordinary list errors,
+and do not invent a skipped NULL input or call an old expression evaluator.
+FIND_IN_SET also reads context with strict literal children, so generic root
+publication must remain per-row even when no explicit parameter occurs in its
+AST. Original static eligibility remains a separate, unchanged fact.
+
+Before source admission changes, preserve all original/cache sequence archives.
+The original historical48600 checksum remains executable. Keep a separate clean
+SQL reference with the SQL-function cache warm and a fresh original Ready
+capability for each invocation, as done for obsolete backend poisoning in N7n.
+The independent original/candidate cache transcript must retain7776 and
+B7F093DF39181199; reader/constructor success, error and panic barriers plus owned
+cancel/retry tests must pass before facade replacement. Then compare actual
+Source values, errors, callback order, cache hits/context changes/failed misses,
+empty-row errors, both vector flags, duplicates, long selections and public /
+canonical alternating calls. Do not remove the new ten-shape Admission guard.
+
+Run from the SDK worktree:
+
+    RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tikv test --release --locked --offline -j8 -p tidb_query_expr --lib native_regexp:: -- --nocapture
+
+Run from the frontend worktree:
+
+    RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib cached_list_tests:: -- --nocapture
+
+A complete N16 source checkpoint additionally requires full frontend and SDK
+baselines, expanded heterogeneous Projection, all-target repository clippy with
+exact inherited warnings, lint, both pinned formatters, immutable fixtures,
+source/proof reconstruction checks and local DCO. Every build must be terminal
+before changing any source or dependency it reads. After that checkpoint,
+continue stateful/optional/PB/public/unistore/filter closure and final performance;
+it does not complete task #4.
+
+N16 integration observations: The complete actual matrix exposed a legitimate
+column COLLATE overlay rejected by the typed schema binding gate. Only native
+Datum producers now accept original expression metadata over independently
+authenticated equal-code/equal-width physical storage; typed imports keep full
+declaration equality. The failing matrix remains archived, and all original
+values and collations remain present.
+
+The independent135888 original value comparisons were captured and rerun before
+sharing FIND tuple and cached-lookup preparation with public wrappers. Exact
+pre-extraction closures remain cfg(test) controls. Their private Ready capability
+query remains inside the original facade timing; the source uses no nested
+expression evaluator. Native source comparisons also cover149x149 values over
+cached and nonconstant lists, both flags and three collations.
+
+A finite constructor regression demonstrated that256 comma bytes could publish
+more than2KiB of ordered-key headers under a1024-byte allowance. The original
+SDK reservation owner now charges actual encoded additions before allocation.
+Outside a lexical allowance its original explicit encoded-byte cap and SQL
+algorithm are unchanged. A failed initializer must retain the old context item,
+release its reservation and permit NULL recovery on the same cache/provider.
+
+The final N16 return-declaration matrix reproduced an additional real gap: source
+finish_native_value applies only the enclosing Expression enum/set view and
+expects ScalarFunction return-family conversion to have already happened. The
+new cached-list host had skipped that boundary. Both hit and miss now run the
+existing bounded original result-coercion owner inside the finite scope before
+reauthentication/publication. Eleven original return declarations over all ten
+list shapes, both flags and nine cache epochs are retained in the regression.

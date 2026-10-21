@@ -16,8 +16,9 @@
 //!
 //! The cache has one item for one statement context. A failed constructor is
 //! deliberately not retained, and a new context replaces the old item. The
-//! read lock keeps the ordinary per-row hit path cheap; the write lock is the
-//! once-only construction path used by concurrent evaluators. Owner Clone
-//! starts empty; only explicit typed regexp invocation handles share state.
+//! native owner serializes construction before child effects; an owned
+//! reservation can span same-frame demand without a borrowed lock guard.
+//! Failed construction preserves the previous item. Owner Clone starts empty;
+//! explicit invocation handles alone share live state.
 
 pub(crate) use tidb_query_expr::NativeContextCache as BuiltinFuncCache;

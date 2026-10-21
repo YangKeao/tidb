@@ -160,7 +160,12 @@ mod eager_values_source;
 mod typed_context_source;
 pub(super) use typed_context_source::{NativeTypedContext, NativeTypedDescriptor};
 
+#[path = "batch_cached_list.rs"]
+mod cached_list_source;
+pub(super) use cached_list_source::NativeCachedList;
+
 pub(super) enum NativeHostMetadata {
+    CachedList(Box<NativeCachedList>),
     TypedContext(NativeTypedContext),
     ContextValue {
         descriptor: Box<crate::context_value::ContextValue>,
@@ -421,6 +426,7 @@ pub(super) enum NativeHostMetadata {
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
+            Self::CachedList(metadata) => Some(&metadata.result_type),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
@@ -468,6 +474,7 @@ mod compression_source;
 
 enum SqlDemand {
     Consumed,
+    CachedList(Box<cached_list_source::CachedListTask>),
     TypedWindow(Box<typed_window::TypedWindowTask>),
     Numeric(Box<numeric_parent::NumericTask>),
     NumericWindow(Box<numeric_parent::window::NumericWindowTask>),
@@ -625,6 +632,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Consumed => Ok(None),
+            SqlDemand::CachedList(task) => Ok(Some(task.next_argument())),
             SqlDemand::TypedWindow(_) => Ok(Some(0)),
             SqlDemand::Numeric(task) => Ok(Some(task.next_argument())),
             SqlDemand::NumericWindow(task) => Ok(Some(task.next_argument())),
@@ -684,6 +692,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::CachedList(_) => Err(binding("cached list cannot buffer wire values")),
             SqlDemand::Diagnostic(_) => Err(binding("diagnostic demand cannot buffer wire values")),
             SqlDemand::TypedContext { .. } => {
                 Err(binding("typed context cannot buffer a wire prefix"))
@@ -765,6 +774,11 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::CachedList(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes())
+                .ok_or_else(|| resource("cached list task extent overflow"));
+        }
         if let SqlDemand::TypedWindow(task) = &self.demand {
             return bytes
                 .checked_add(task.retained_bytes()?)
@@ -2463,7 +2477,20 @@ impl NativeBatchHosts<'_> {
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
-                if matches!(
+                if let Some(NativeHostMetadata::CachedList(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || invocation.arg_types.len() != 2
+                        || !matches!(
+                            meta.output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                    {
+                        return Err(binding("cached list declaration differs"));
+                    }
+                    SqlDemand::CachedList(Box::new(cached_list_source::CachedListTask::Needle))
+                } else if matches!(
                     self.metadata.get(invocation.slot.index()),
                     Some(NativeHostMetadata::TypedContext(_))
                 ) {
@@ -3337,6 +3364,12 @@ impl NativeBatchHosts<'_> {
     ) -> LocalResult<HostStep> {
         self.validate_row_reply(id, reply)?;
         let task = self.task(id)?;
+        if matches!(task.demand, SqlDemand::CachedList(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("cached list source cannot be wire NULL"));
+            };
+            return self.resume_cached_list(id, token);
+        }
         if matches!(task.demand, SqlDemand::TypedWindow(_)) {
             return Err(binding("typed forward requires its window reply"));
         }

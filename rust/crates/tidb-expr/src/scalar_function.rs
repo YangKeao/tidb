@@ -1432,6 +1432,14 @@ impl ScalarFunction {
         )
     }
 
+    /// Share only the actual original SQL cache owner, without reading or
+    /// initializing it. Compilation never snapshots a context value.
+    pub(crate) fn shared_find_in_set_cache(
+        &self,
+    ) -> crate::builtin_ext::BuiltinFuncCache<crate::builtin_ext::FindInSetLookup> {
+        self.find_in_set_cache.share_for_invocation()
+    }
+
     /// Builds Go `builtinInStringSig.buildHashMapForConstArgs` for the strict
     /// string literals this expression model can evaluate without a statement
     /// context. Other constant families remain in the row path because their

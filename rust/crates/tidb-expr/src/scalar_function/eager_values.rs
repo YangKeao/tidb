@@ -462,7 +462,7 @@ pub(crate) fn charge_string_work(value: &Datum) -> Result<(), EvalError> {
 
 /// Preserve an actual returned resource cause; audit a swallowed refusal before
 /// an ordinary SQL result/error can cross the value-body boundary.
-pub(crate) fn audit_work_result(result: Result<Datum, EvalError>) -> Result<Datum, EvalError> {
+pub(crate) fn audit_work_result<T>(result: Result<T, EvalError>) -> Result<T, EvalError> {
     if matches!(&result,Err(EvalError::ExpressionRuntimeFailure(e)) if e.class()==crate::tikv::ExpressionRuntimeFailureClass::ResourceLimit)
     {
         return result;
@@ -484,17 +484,23 @@ mod scope_receipt_tests {
             let error = EvalError::ExpressionRuntimeFailure(
                 crate::tikv::ExpressionRuntimeFailure::from_local_eval(actual, None),
             );
-            assert_eq!(audit_work_result(Err(error.clone())).unwrap_err(), error);
+            assert_eq!(
+                audit_work_result::<Datum>(Err(error.clone())).unwrap_err(),
+                error
+            );
             assert!(matches!(
                 audit_work_result(Ok(Datum::Null)),
                 Err(EvalError::ExpressionRuntimeFailure(_))
             ));
             assert!(matches!(
-                audit_work_result(Err(EvalError::Unsupported("swallowed resource"))),
+                audit_work_result::<Datum>(Err(EvalError::Unsupported("swallowed resource"))),
                 Err(EvalError::ExpressionRuntimeFailure(_))
             ));
         });
         let error = EvalError::Unsupported("ordinary SQL error");
-        assert_eq!(audit_work_result(Err(error.clone())).unwrap_err(), error);
+        assert_eq!(
+            audit_work_result::<Datum>(Err(error.clone())).unwrap_err(),
+            error
+        );
     }
 }

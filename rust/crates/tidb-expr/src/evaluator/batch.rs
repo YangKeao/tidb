@@ -65,9 +65,10 @@ use numeric_source::PendingNumeric;
 #[path = "batch_values.rs"]
 mod native_values;
 use hosts::{
-    CompiledDiagnosticParent, CompiledNumericParent, NativeBatchHosts, NativeHostMetadata,
-    NativeRawValueOperation, NativeTypedContext, NativeTypedDescriptor, NativeValuePreparation,
-    NumericPlan, NumericPlanBody, WindowArithmeticMetadata, WindowArithmeticSource,
+    CompiledDiagnosticParent, CompiledNumericParent, NativeBatchHosts, NativeCachedList,
+    NativeHostMetadata, NativeRawValueOperation, NativeTypedContext, NativeTypedDescriptor,
+    NativeValuePreparation, NumericPlan, NumericPlanBody, WindowArithmeticMetadata,
+    WindowArithmeticSource,
 };
 use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
 use std::cell::RefCell;
@@ -224,6 +225,8 @@ enum NativeView {
     JsonBytes,
     ValueToken,
     DiagnosticValue,
+    EmptyRowValue,
+    EmptyRowTyped(NativeEvalType),
     RowTyped(NativeEvalType),
     DiagnosticTyped(NativeEvalType),
     DiagnosticConstantRoot(crate::scalar_function::dynamic_diagnostic::LiteralPolicy),
@@ -237,6 +240,8 @@ impl NativeView {
     fn value_role(self) -> Option<NativeValueRole> {
         match self {
             Self::ValueToken
+            | Self::EmptyRowValue
+            | Self::EmptyRowTyped(_)
             | Self::DiagnosticValue
             | Self::DiagnosticConstantRoot(_)
             | Self::RowTyped(_)
@@ -254,6 +259,9 @@ impl NativeView {
             Self::DiagnosticValue | Self::DiagnosticConstantRoot(_) | Self::DiagnosticTyped(_)
         )
     }
+    fn semantic_empty_row(self) -> bool {
+        self.diagnostic() || matches!(self, Self::EmptyRowValue | Self::EmptyRowTyped(_))
+    }
     fn bulk_target(self) -> Option<NativeEvalType> {
         match self {
             Self::BulkValue(target) | Self::BulkPrepared(target) | Self::BulkRoot(target) => {
@@ -266,7 +274,9 @@ impl NativeView {
 
 fn row_typed_context_target(node: &Expression, view: NativeView) -> Option<NativeEvalType> {
     let target = match view {
-        NativeView::RowTyped(target) | NativeView::DiagnosticTyped(target) => target,
+        NativeView::RowTyped(target)
+        | NativeView::DiagnosticTyped(target)
+        | NativeView::EmptyRowTyped(target) => target,
         NativeView::BulkValue(target)
         | NativeView::BulkPrepared(target)
         | NativeView::BulkRoot(target) => {
@@ -297,6 +307,8 @@ fn context_child_view(view: NativeView) -> NativeView {
         NativeView::BulkPrepared(target)
     } else if view.diagnostic() {
         NativeView::DiagnosticValue
+    } else if view.semantic_empty_row() {
+        NativeView::EmptyRowValue
     } else {
         NativeView::ValueToken
     }
@@ -428,14 +440,16 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = matches!(
-        function.func_name.lowercase(),
-        "json_sum_crc32"
-            | "str_to_date"
-            | "timestampdiff"
-            | "sig_timestampdiff"
-            | "tidb_bounded_staleness"
-    ) || native_epoch_call(function).is_some()
+    let row_control = native_cached_list_call(function)
+        || matches!(
+            function.func_name.lowercase(),
+            "json_sum_crc32"
+                | "str_to_date"
+                | "timestampdiff"
+                | "sig_timestampdiff"
+                | "tidb_bounded_staleness"
+        )
+        || native_epoch_call(function).is_some()
         || native_tso_call(function).is_some()
         || native_clock_call(function).is_some()
         || native_calendar_call(function).is_some()
@@ -515,6 +529,9 @@ fn promoted_native_root_view(
 // kinds/declarations, never converts a payload before the complete byte gate.
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
+        Expression::ScalarFunction(function) if native_cached_list_call(function) => {
+            NativeView::RootValue
+        }
         Expression::Column(_) | Expression::CorrelatedColumn(_) => NativeView::RootValue,
         Expression::ScalarFunction(f)
             if crate::scalar_function::eager_values::prefers_common_body(f)
@@ -601,10 +618,12 @@ fn contains_context_value(node: &Expression, depth: usize, remaining: &mut usize
     match node {
         Expression::Constant(c) => c.param_marker.is_some() || c.deferred_expr.is_some(),
         Expression::CorrelatedColumn(_) => true,
-        Expression::ScalarFunction(f) => f
-            .args
-            .iter()
-            .any(|child| contains_context_value(child, depth - 1, remaining)),
+        Expression::ScalarFunction(f) => {
+            native_cached_list_call(f)
+                || f.args
+                    .iter()
+                    .any(|child| contains_context_value(child, depth - 1, remaining))
+        }
         _ => false,
     }
 }
@@ -972,7 +991,11 @@ fn column_source_failure(
     if view.value_role().is_none() || view.bulk_target().is_some() {
         return None;
     }
-    let columns = if view.diagnostic() { 0 } else { columns };
+    let columns = if view.semantic_empty_row() {
+        0
+    } else {
+        columns
+    };
     match crate::column::column_read_index(column.ret_type.is_some(), column.index, columns) {
         Err(EvalError::Unsupported(message)) => Some(message),
         _ => None,
@@ -1280,11 +1303,25 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
             NativeView::RowTyped(target) => NativeView::DiagnosticTyped(target),
             _ => NativeView::DiagnosticValue,
         }
+    } else if view.semantic_empty_row() {
+        match selected {
+            NativeView::RowTyped(target) => NativeView::EmptyRowTyped(target),
+            _ => NativeView::EmptyRowValue,
+        }
     } else {
         selected
     }
 }
 fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
+    if native_cached_list_call(function) {
+        return if index == 1
+            && function.args[1].const_level() >= crate::expression::ConstLevel::ONLY_IN_CONTEXT
+        {
+            NativeView::EmptyRowValue
+        } else {
+            NativeView::ValueToken
+        };
+    }
     if let Some(operation) = window_unary_operation(function, view) {
         return NativeView::BulkValue(
             if operation == SqlBatchHostOperation::CastJsonWindowNative {
@@ -1904,8 +1941,17 @@ fn native_identity_call(function: &ScalarFunction) -> bool {
         ("any_value", 1) | ("name_const", 2)
     )
 }
+fn native_cached_list_call(function: &ScalarFunction) -> bool {
+    function.func_name.lowercase() == "find_in_set"
+        && function.args.len() == 2
+        && function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && function.get_static_type().is_some()
+        && function.args.iter().all(|arg| arg.static_type().is_some())
+}
 fn native_value_call(function: &ScalarFunction) -> bool {
-    crate::scalar_function::eager_values::supports(function)
+    native_cached_list_call(function)
+        || crate::scalar_function::eager_values::supports(function)
         || matches!(
             function.func_name.lowercase(),
             "json_sum_crc32"
@@ -2010,6 +2056,12 @@ fn resolve_specific_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if native_cached_list_call(function) && view.value_role().is_some() {
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            2,
+        ));
+    }
     if crate::scalar_function::eager_values::prefers_common_body(function)
         && view.value_role().is_some()
     {
@@ -3389,40 +3441,50 @@ fn preflight_view<'a>(
                         resolve_call_in_view(function, view)?.0,
                         CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
                     ) {
-                        budget
-                            .array::<crate::scalar_function::eager_values::EagerArgument>(arity)?;
-                        budget.array::<usize>(arity)?;
-                        budget.add(
-                            function
-                                .func_name
-                                .original()
-                                .len()
-                                .checked_mul(2)
-                                .ok_or_else(|| resource("eager name extent overflow"))?,
-                        )?;
-                        budget.field(sql, 2)?;
-                        for argument in &function.args {
-                            budget.field(
-                                argument.static_type().expect("checked eager argument"),
-                                1,
+                        if native_cached_list_call(function) {
+                            budget.array::<NativeCachedList>(1)?;
+                            budget.field(sql, 1)?;
+                        } else {
+                            budget.array::<crate::scalar_function::eager_values::EagerArgument>(
+                                arity,
                             )?;
-                        }
-                        if crate::scalar_function::early_string::EarlyString::supports(function) {
-                            budget.array::<crate::scalar_function::early_string::EarlyString>(1)?;
-                        }
-                        if function.func_name.lowercase() == "locate" && arity == 3 {
-                            budget.field(
-                                function.args[2]
-                                    .static_type()
-                                    .expect("checked locate position declaration"),
-                                1,
-                            )?;
-                        }
-                        if let Some(v) = function.identity_constant_probe() {
+                            budget.array::<usize>(arity)?;
                             budget.add(
-                                crate::tikv::identity_actual::copy_extent(v)
-                                    .map_err(|_| resource("eager probe copy extent overflow"))?,
+                                function
+                                    .func_name
+                                    .original()
+                                    .len()
+                                    .checked_mul(2)
+                                    .ok_or_else(|| resource("eager name extent overflow"))?,
                             )?;
+                            budget.field(sql, 2)?;
+                            for argument in &function.args {
+                                budget.field(
+                                    argument.static_type().expect("checked eager argument"),
+                                    1,
+                                )?;
+                            }
+                            if crate::scalar_function::early_string::EarlyString::supports(function)
+                            {
+                                budget.array::<crate::scalar_function::early_string::EarlyString>(
+                                    1,
+                                )?;
+                            }
+                            if function.func_name.lowercase() == "locate" && arity == 3 {
+                                budget.field(
+                                    function.args[2]
+                                        .static_type()
+                                        .expect("checked locate position declaration"),
+                                    1,
+                                )?;
+                            }
+                            if let Some(v) = function.identity_constant_probe() {
+                                budget.add(
+                                    crate::tikv::identity_actual::copy_extent(v).map_err(|_| {
+                                        resource("eager probe copy extent overflow")
+                                    })?,
+                                )?;
+                            }
                         }
                     }
                     if native_crypto_call(function).is_some() && view.value_role().is_some() {
@@ -3933,6 +3995,16 @@ fn preflight_view<'a>(
             }
 
             let field = &row_schema[column.index as usize];
+            // A native Datum producer decodes using its sealed expression
+            // declaration, including a COLLATE overlay. Authenticate the actual
+            // storage code/width independently; typed imports still require the
+            // complete declaration below.
+            if item.view.value_role().is_some()
+                && field.code() == item.declared_sql().code()
+                && get_fixed_len(field) == get_fixed_len(item.declared_sql())
+            {
+                continue;
+            }
             if field.collation() != item.declared_sql().collation() || field != item.declared_sql()
             {
                 return Err(BatchFailure::admission(
@@ -4720,6 +4792,18 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if native_cached_list_call(sql) => {
+                                let second = checked.get(ordinal + 1).ok_or_else(|| binding("cached needle absent"))?.subtree_end;
+                                NativeHostMetadata::CachedList(Box::new(NativeCachedList {
+                                    arguments: [ordinal + 1, second],
+                                    cacheable: sql.args[1].const_level() >= crate::expression::ConstLevel::ONLY_IN_CONTEXT,
+                                    cache: sql.shared_find_in_set_cache(),
+                                    collation: sql.derived_collation(),
+                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role().ok_or_else(|| binding("cached list output role absent"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative=>{
                                 let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
@@ -6593,7 +6677,9 @@ impl NativeDatumSource for NativeChunk<'_> {
                         && node.view.bulk_target().is_none()
                         && !matches!(
                             node.view,
-                            NativeView::RowTyped(_) | NativeView::DiagnosticTyped(_)
+                            NativeView::RowTyped(_)
+                                | NativeView::DiagnosticTyped(_)
+                                | NativeView::EmptyRowTyped(_)
                         ))
                     .then(|| crate::expression::enum_set_integer_view(value, node.sql.as_ref()))
                     .flatten()

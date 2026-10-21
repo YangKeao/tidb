@@ -261,24 +261,65 @@ pub(crate) fn find_in_set_lookup_in(
     crate::tikv::evaluate_args_in(
         EvaluatedBytesOp::FindInSetPreparedNative,
         ctx,
-        || {
-            let needle = if lookup.is_null {
-                ReadyBytesArg::Undemanded
-            } else {
-                // An empty, non-NULL cache must still coerce the needle.
-                ReadyBytesArg::Value(coerce_str_bytes(needle)?)
-            };
-            let collation = if matches!(&needle, ReadyBytesArg::Value(Some(_))) {
-                find_in_set_key_policy(collation)
-            } else {
-                NativeCollation::Binary
-            };
-            Ok(EvaluatedArgs::FindInSetPreparedReady {
-                needle,
-                keys: lookup.keys.clone(),
-                collation,
-            })
+        || prepare_find_in_set_lookup_value(needle, lookup, collation),
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+// Shared value-only preparation. Frozen independent test-only controls below
+// retain the executed pre-extraction closures.
+pub(crate) fn prepare_find_in_set_lookup_value(
+    needle: &Datum,
+    lookup: &FindInSetLookup,
+    collation: Collation,
+) -> Result<EvaluatedArgs, EvalError> {
+    let needle = if lookup.is_null {
+        ReadyBytesArg::Undemanded
+    } else {
+        ReadyBytesArg::Value(coerce_str_bytes(needle)?)
+    };
+    let collation = if matches!(&needle, ReadyBytesArg::Value(Some(_))) {
+        find_in_set_key_policy(collation)
+    } else {
+        NativeCollation::Binary
+    };
+    Ok(EvaluatedArgs::FindInSetPreparedReady {
+        needle,
+        keys: lookup.keys.clone(),
+        collation,
+    })
+}
+pub(crate) fn prepare_find_in_set_tuple_values(
+    needle: &Datum,
+    list: &Datum,
+    collation: Collation,
+) -> Result<EvaluatedArgs, EvalError> {
+    let left = coerce_str_bytes(needle)?;
+    let right = coerce_str_bytes(list)?;
+    let collation = if left.is_some() && right.as_ref().is_some_and(|list| !list.is_empty()) {
+        find_in_set_key_policy(collation)
+    } else {
+        NativeCollation::Binary
+    };
+    Ok(EvaluatedArgs::CollatedBytes2 {
+        left,
+        right,
+        collation,
+    })
+}
+pub(crate) fn eval_find_in_set_prepared_values(
+    args: EvaluatedArgs,
+    cached: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        if cached {
+            EvaluatedBytesOp::FindInSetPreparedNative
+        } else {
+            EvaluatedBytesOp::FindInSetNative
         },
+        ctx,
+        || Ok(args),
         crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
@@ -304,23 +345,7 @@ pub(crate) fn find_in_set_with_collation_in(
     crate::tikv::evaluate_args_in(
         EvaluatedBytesOp::FindInSetNative,
         ctx,
-        || {
-            // Tuple coercion demands the list even when the needle is NULL.
-            let left = coerce_str_bytes(&vals[0])?;
-            let right = coerce_str_bytes(&vals[1])?;
-            let collation = if left.is_some() && right.as_ref().is_some_and(|list| !list.is_empty())
-            {
-                find_in_set_key_policy(collation)
-            } else {
-                // Preserve the old NULL/empty-list collator demand boundary.
-                NativeCollation::Binary
-            };
-            Ok(EvaluatedArgs::CollatedBytes2 {
-                left,
-                right,
-                collation,
-            })
-        },
+        || prepare_find_in_set_tuple_values(&vals[0], &vals[1], collation),
         crate::tikv::EvaluatedBytesResult::into_int_datum,
     )
 }
@@ -1528,4 +1553,67 @@ mod tests {
             Datum::new_bytes(vec![0xff; 4])
         );
     }
+}
+
+// Executed pre-extraction controls; no production caller or fallback.
+#[cfg(test)]
+pub(crate) fn original_find_in_set_lookup_in(
+    needle: &Datum,
+    lookup: &FindInSetLookup,
+    collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::FindInSetPreparedNative,
+        ctx,
+        || {
+            let needle = if lookup.is_null {
+                ReadyBytesArg::Undemanded
+            } else {
+                // An empty, non-NULL cache must still coerce the needle.
+                ReadyBytesArg::Value(coerce_str_bytes(needle)?)
+            };
+            let collation = if matches!(&needle, ReadyBytesArg::Value(Some(_))) {
+                find_in_set_key_policy(collation)
+            } else {
+                NativeCollation::Binary
+            };
+            Ok(EvaluatedArgs::FindInSetPreparedReady {
+                needle,
+                keys: lookup.keys.clone(),
+                collation,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn original_find_in_set_with_collation_in(
+    vals: &[Datum],
+    collation: tidb_datatype::Collation,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    crate::tikv::evaluate_args_in(
+        EvaluatedBytesOp::FindInSetNative,
+        ctx,
+        || {
+            // Tuple coercion demands the list even when the needle is NULL.
+            let left = coerce_str_bytes(&vals[0])?;
+            let right = coerce_str_bytes(&vals[1])?;
+            let collation = if left.is_some() && right.as_ref().is_some_and(|list| !list.is_empty())
+            {
+                find_in_set_key_policy(collation)
+            } else {
+                // Preserve the old NULL/empty-list collator demand boundary.
+                NativeCollation::Binary
+            };
+            Ok(EvaluatedArgs::CollatedBytes2 {
+                left,
+                right,
+                collation,
+            })
+        },
+        crate::tikv::EvaluatedBytesResult::into_int_datum,
+    )
 }

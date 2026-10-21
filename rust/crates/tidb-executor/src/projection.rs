@@ -4236,6 +4236,43 @@ mod tests {
             .chain(typed_context_start..ordered_typed_start)
             .chain(ordered_typed_start..roots.len())
             .collect::<Vec<_>>();
+        let cached_start = roots.len();
+        let cached_list = |list: Expression| {
+            call(
+                "find_in_set",
+                integer.clone(),
+                vec![
+                    call("cast_char", string.clone(), vec![context_parameter()]),
+                    list,
+                ],
+            )
+        };
+        for list in [
+            early_literal("1,2,7"),
+            context_parameter(),
+            typed_deferred(early_literal("1,2,7"), string.clone(), false),
+            call("cast_char", string.clone(), vec![column(0)]),
+        ] {
+            let root = cached_list(list);
+            roots.push(root.clone());
+            fields.push(integer.clone());
+            roots.push(call("cast_char", string.clone(), vec![root]));
+            fields.push(string.clone());
+        }
+        let cached_mix = std::iter::once(0)
+            .chain(cached_start..roots.len())
+            .collect::<Vec<_>>();
+        roots.push(call(
+            "setvar",
+            integer.clone(),
+            vec![variable_name(), cached_list(early_literal("1,2,7"))],
+        ));
+        fields.push(integer.clone());
+        roots.push(read_variable());
+        fields.push(integer.clone());
+        let ordered_cached_mix = std::iter::once(0)
+            .chain(cached_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let mut configurations = vec![
             (
@@ -4472,6 +4509,20 @@ mod tests {
                 .map(|&i| roots[i].clone())
                 .collect(),
             ordered_typed_mix
+                .iter()
+                .map(|&i| fields[i].clone())
+                .collect(),
+        ));
+        configurations.push((
+            cached_mix.iter().map(|&i| roots[i].clone()).collect(),
+            cached_mix.iter().map(|&i| fields[i].clone()).collect(),
+        ));
+        configurations.push((
+            ordered_cached_mix
+                .iter()
+                .map(|&i| roots[i].clone())
+                .collect(),
+            ordered_cached_mix
                 .iter()
                 .map(|&i| fields[i].clone())
                 .collect(),
