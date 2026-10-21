@@ -4801,6 +4801,98 @@ mod tests {
         }
     }
     #[test]
+    fn genuine_optional_declarations_reach_serial_and_parallel_projection() {
+        let integer = longlong();
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let json = FieldType::new(FieldTypeCode::Json);
+        let mut roots = vec![];
+        let mut fields = vec![];
+        for name in ["reverse", "bin", "json_array", "json_object"] {
+            for column_input in [false, true] {
+                let value = if column_input {
+                    let mut c = Column::new(1, integer.clone());
+                    c.index = 0;
+                    Expression::Column(c)
+                } else {
+                    let mut c = Constant::new(Datum::new_string("stored"), string.clone());
+                    c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
+                    c.ret_type = None;
+                    Expression::Constant(c)
+                };
+                let mut args = vec![];
+                if name == "json_object" {
+                    let mut key = Constant::new(Datum::new_string("key"), string.clone());
+                    key.ret_type = None;
+                    args.push(Expression::Constant(key));
+                }
+                args.push(value);
+                let output = if name.starts_with("json_") {
+                    json.clone()
+                } else {
+                    string.clone()
+                };
+                let mut f = ScalarFunction::new(CiString::new(name), output.clone(), args);
+                f.ret_type = None;
+                roots.push(Expression::ScalarFunction(f));
+                fields.push(output);
+            }
+        }
+        for enabled in [false, true] {
+            let context = || {
+                crate::StmtContext::for_query()
+                    .with_enable_vectorized_expression(enabled)
+                    .with_prepared_params(vec![Datum::new_string("123")].into())
+            };
+            let reference = context();
+            let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+            for row in 0..3 {
+                input.append_int64(0, row);
+                input.append_int64(1, row * 2);
+            }
+            let mut expected = Chunk::new_with_capacity(&fields, 3);
+            EvaluatorSuite::new(roots.clone(), false)
+                .run(&reference, &mut input, &mut expected)
+                .unwrap();
+            let warnings = reference.take_warnings();
+            for workers in [0, 2] {
+                let context = context();
+                let (source, _) = NumberSource::new(3, 3);
+                let schema = Schema::new(
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
+                        .collect(),
+                );
+                let mut projection = ProjectionExec::new(
+                    ExecutorMeta::new(schema, 1, 3, 1024),
+                    roots.clone(),
+                    source,
+                    context.clone(),
+                )
+                .with_workers(workers);
+                projection.open().unwrap();
+                let mut output = projection.new_chunk();
+                projection.next(&mut output).unwrap();
+                assert_eq!(output.num_rows(), expected.num_rows());
+                for column in 0..fields.len() {
+                    assert_eq!(
+                        output.column(column),
+                        expected.column(column),
+                        "column={column} enabled={enabled} workers={workers}"
+                    );
+                }
+                assert_eq!(context.take_warnings(), warnings);
+                if workers == 0 {
+                    let route = projection.evaluator_suite.batch_route_snapshot();
+                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                }
+                projection.close().unwrap();
+            }
+        }
+    }
+    #[test]
     fn partial_date_go_values_reach_serial_parallel_projection_with_no_zero_in_date() {
         let integer = longlong();
         let string = FieldType::new(FieldTypeCode::Varchar)

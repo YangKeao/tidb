@@ -689,6 +689,8 @@ fn context_root_policy(
             Expression::Constant(_) | Expression::CorrelatedColumn(_)
         ) && !context_template_declared(root, limits.tree.max_depth, &mut {
             limits.tree.max_nodes
+        }) && !native_value_tree_complete(root, limits.tree.max_depth, &mut {
+            limits.tree.max_nodes
         }) {
             return Err(BatchFailure::admission(
                 "contextual optional declarations need their explicit profile",
@@ -1066,6 +1068,10 @@ impl SourceKind {
                 });
             }
         }
+        if let Expression::ScalarFunction(function) = node {
+            let (target, arity) = resolve_call_in_view(function, view)?;
+            return Ok(Self::Call { target, arity });
+        }
         let sql = sql.ok_or_else(|| {
             BatchFailure::admission("SQL consumer requires its original declaration")
         })?;
@@ -1082,9 +1088,8 @@ impl SourceKind {
             Expression::Column(column) => Self::Column {
                 index: column.index as usize,
             },
-            Expression::ScalarFunction(function) => {
-                let (target, arity) = resolve_call_in_view(function, view)?;
-                Self::Call { target, arity }
+            Expression::ScalarFunction(_) => {
+                unreachable!("scalar call captured without inventing SQL metadata")
             }
             Expression::CorrelatedColumn(_) => {
                 return Err(BatchFailure::admission("correlated source"))
@@ -1210,6 +1215,46 @@ impl Budget {
     }
 }
 
+fn budget_eager_metadata(
+    budget: &mut Budget,
+    function: &ScalarFunction,
+    result: Option<&FieldType>,
+) -> LocalResult<()> {
+    let arity = function.args.len();
+    budget.array::<crate::scalar_function::eager_values::EagerArgument>(arity)?;
+    budget.array::<usize>(arity)?;
+    budget.add(
+        function
+            .func_name
+            .original()
+            .len()
+            .checked_mul(2)
+            .ok_or_else(|| resource("eager name extent overflow"))?,
+    )?;
+    if let Some(result) = result {
+        budget.field(result, 2)?;
+    }
+    for arg in &function.args {
+        if let Some(field) = arg.static_type() {
+            budget.field(field, 1)?;
+        }
+    }
+    if crate::scalar_function::early_string::EarlyString::supports(function) {
+        budget.array::<crate::scalar_function::early_string::EarlyString>(1)?;
+    }
+    if function.func_name.lowercase() == "locate" && arity == 3 {
+        if let Some(field) = function.args[2].static_type() {
+            budget.field(field, 1)?;
+        }
+    }
+    if let Some(value) = function.identity_constant_probe() {
+        budget.add(
+            crate::tikv::identity_actual::copy_extent(value)
+                .map_err(|_| resource("eager probe copy extent overflow"))?,
+        )?;
+    }
+    Ok(())
+}
 fn check_type(sql: &FieldType) -> Result<()> {
     const DOCUMENTED: u64 = (1 << 25) - 1;
     let excluded = u64::from(
@@ -1989,6 +2034,15 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
         && function.get_static_type().is_some()
         && function.args.iter().all(|arg| arg.static_type().is_some())
 }
+// These complete value owners already retain actual optional metadata. Other
+// specialized families keep their own admission and typed-demand contracts.
+fn native_optional_eager_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && crate::scalar_function::eager_values::prefers_common_body(function)
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none()))
+}
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_json_schema_call(function)
         || native_final_state_call(function)
@@ -2058,6 +2112,12 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if view.value_role().is_some() && native_optional_eager_call(function) {
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            function.args.len(),
+        ));
+    }
     let resolved = resolve_specific_call_in_view(function, view);
     let common = crate::scalar_function::eager_values::supports(function);
     // Protocol aliases are not scalar operator names. The original scalar
@@ -3084,7 +3144,7 @@ fn preflight_view<'a>(
                     Expression::Constant(_)
                         | Expression::CorrelatedColumn(_)
                         | Expression::Column(_)
-                )
+                ) && !matches!(node,Expression::ScalarFunction(f) if native_optional_eager_call(f))
             {
                 return Err(BatchFailure::admission(
                     "optional SQL consumer needs its explicit profile",
@@ -3099,6 +3159,41 @@ fn preflight_view<'a>(
             budget.add(charset.len())?;
             budget.add(collate.len())?;
             match node {
+                Expression::ScalarFunction(function) if native_optional_eager_call(function) => {
+                    check_batch_call(function, view)?;
+                    let arity = function.args.len();
+                    budget.add(function.func_name.original().len())?;
+                    budget.add(function.func_name.lowercase().len())?;
+                    budget.array::<OrdinaryCallSite>(2)?;
+                    budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
+                    budget.array::<NativeHostMetadata>(1)?;
+                    budget.array::<Option<Datum>>(1)?;
+                    budget_eager_metadata(&mut budget, function, None)?;
+                    budget.array::<tipb::FieldType>(arity)?;
+                    for arg in &function.args {
+                        if let Some(field) = arg.static_type() {
+                            budget.field(field, 1)?;
+                        }
+                    }
+                    scheduled = scheduled
+                        .checked_add(arity)
+                        .filter(|n| *n <= limits.tree.max_nodes)
+                        .ok_or_else(|| resource("optional scalar source node policy exceeded"))?;
+                    let child_depth = depth
+                        .checked_add(1)
+                        .filter(|d| *d <= limits.tree.max_depth)
+                        .ok_or_else(|| resource("optional scalar depth policy exceeded"))?;
+                    budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
+                    reserve(&mut pending, arity)?;
+                    for (index, child) in function.args.iter().enumerate().rev() {
+                        pending.push((
+                            child,
+                            child_depth,
+                            argument_view(function, view, index),
+                            allow_pb,
+                        ));
+                    }
+                }
                 Expression::Constant(c) if c.literal_value().is_some() => {
                     if row_typed_context_target(node, view).is_some() {
                         budget_context_source(&mut budget, None)?;
@@ -3271,6 +3366,7 @@ fn preflight_view<'a>(
                     .args
                     .iter()
                     .any(|argument| argument.static_type().is_none())
+                    && !native_optional_eager_call(function)
                 {
                     return Err(BatchFailure::admission(
                         "optional function argument needs its explicit profile",
@@ -3520,46 +3616,7 @@ fn preflight_view<'a>(
                             budget.array::<NativeCachedList>(1)?;
                             budget.field(sql, 1)?;
                         } else {
-                            budget.array::<crate::scalar_function::eager_values::EagerArgument>(
-                                arity,
-                            )?;
-                            budget.array::<usize>(arity)?;
-                            budget.add(
-                                function
-                                    .func_name
-                                    .original()
-                                    .len()
-                                    .checked_mul(2)
-                                    .ok_or_else(|| resource("eager name extent overflow"))?,
-                            )?;
-                            budget.field(sql, 2)?;
-                            for argument in &function.args {
-                                budget.field(
-                                    argument.static_type().expect("checked eager argument"),
-                                    1,
-                                )?;
-                            }
-                            if crate::scalar_function::early_string::EarlyString::supports(function)
-                            {
-                                budget.array::<crate::scalar_function::early_string::EarlyString>(
-                                    1,
-                                )?;
-                            }
-                            if function.func_name.lowercase() == "locate" && arity == 3 {
-                                budget.field(
-                                    function.args[2]
-                                        .static_type()
-                                        .expect("checked locate position declaration"),
-                                    1,
-                                )?;
-                            }
-                            if let Some(v) = function.identity_constant_probe() {
-                                budget.add(
-                                    crate::tikv::identity_actual::copy_extent(v).map_err(|_| {
-                                        resource("eager probe copy extent overflow")
-                                    })?,
-                                )?;
-                            }
+                            budget_eager_metadata(&mut budget, function, Some(sql))?;
                         }
                     }
                     if native_crypto_call(function).is_some() && view.value_role().is_some() {
@@ -3789,12 +3846,13 @@ fn preflight_view<'a>(
                     budget.array::<tipb::FieldType>(function.args.len())?;
                     budget.field(sql, 1)?;
                     for argument in &function.args {
-                        budget.field(
-                            argument.static_type().ok_or_else(|| {
-                                BatchFailure::admission("host argument has no static declaration")
-                            })?,
-                            1,
-                        )?;
+                        if let Some(field) = argument.static_type() {
+                            budget.field(field, 1)?;
+                        } else if !native_optional_eager_call(function) {
+                            return Err(BatchFailure::admission(
+                                "host argument has no static declaration",
+                            ));
+                        }
                     }
                 }
                 let child_depth = depth
@@ -4927,7 +4985,7 @@ fn lower_view_policy(
                                             crate::scalar_function::math_diagnostic::MathDiagnostic::capture(sql,item.subtree_end-ordinal)
                                         } else {None}),
                                     probe:sql.identity_constant_probe().cloned(),
-                                    result_type:snapshot_field_type(item.declared_sql()),output_node:ordinal,
+                                    result_type:item.sql.map(snapshot_field_type),output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("eager output view absent"))?,
                                 }
                             }

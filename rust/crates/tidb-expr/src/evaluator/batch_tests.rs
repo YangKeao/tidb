@@ -26405,279 +26405,347 @@ fn eager_scalar_capabilities_eager_stages_callbacks_consumption_and_recovery() {
         }
     }
     let mut rejected = 0;
-    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
-        for name in [
-            "UPPER",
-            "JSON_OBJECT",
-            "REPLACE",
-            "EXPORT_SET",
-            "JSON_MERGE",
-        ] {
-            let actuals = if name == "EXPORT_SET" {
-                vec![
-                    Datum::Int(5),
-                    Datum::new_string("Y"),
-                    Datum::new_string("N"),
-                    Datum::new_string(","),
-                ]
-            } else {
-                crate::tikv::eager_scalar_value_tests::arguments(name, &Datum::new_string("[1]"))
-            };
-            let f = ScalarFunction::new(
-                tidb_ast::CiString::new(name),
-                string_ty(),
-                actuals
-                    .iter()
-                    .cloned()
-                    .map(|v| {
-                        let t = crate::tikv::misc_identity_value_tests::field(&v);
-                        literal(v, t)
-                    })
-                    .collect(),
-            );
-            let arity = actuals.len();
-            let field = projected(&native_bytes_type(), true).unwrap();
-            let args = vec![field.clone(); arity];
-            let catalog = HostCatalog::for_sql_batch(vec![(
-                SqlBatchHostOperation::EagerValuesNative,
-                HostSignature {
-                    arg_types: args.clone().into(),
-                    return_type: field.clone(),
-                },
-            )])
-            .unwrap();
-            let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::EagerValues {
-                arguments: (3..3 + arity).collect(),
-                kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
-                probe: None,
-                result_type: string_ty(),
-                output_node: 2,
-                output_role: role,
-            }];
-            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
-            store.borrow_mut().begin_window().unwrap();
-            let row = InputRow {
-                occurrence: 0,
-                input_row: 0,
-            };
-            let insert = |v: &Datum, role, node, row| {
-                store
-                    .borrow_mut()
-                    .insert_clone(v, role, NativeValueOrigin { node, row })
-                    .unwrap()
-            };
-            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-            store.borrow_mut().begin_window().unwrap();
-            let mut foreign = NativeValueStore::new(4096).unwrap();
-            foreign.begin_window().unwrap();
-            let foreign = foreign
-                .insert_clone(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    NativeValueOrigin { node: 3, row },
-                )
+    for optional in [false, true] {
+        for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+            for name in [
+                "UPPER",
+                "JSON_OBJECT",
+                "REPLACE",
+                "EXPORT_SET",
+                "JSON_MERGE",
+            ] {
+                let actuals = if name == "EXPORT_SET" {
+                    vec![
+                        Datum::Int(5),
+                        Datum::new_string("Y"),
+                        Datum::new_string("N"),
+                        Datum::new_string(","),
+                    ]
+                } else {
+                    crate::tikv::eager_scalar_value_tests::arguments(
+                        name,
+                        &Datum::new_string("[1]"),
+                    )
+                };
+                let mut f = ScalarFunction::new(
+                    tidb_ast::CiString::new(name),
+                    string_ty(),
+                    actuals
+                        .iter()
+                        .cloned()
+                        .map(|v| {
+                            let t = crate::tikv::misc_identity_value_tests::field(&v);
+                            literal(v, t)
+                        })
+                        .collect(),
+                );
+                if optional {
+                    f.ret_type = None;
+                    for arg in &mut f.args {
+                        if let Expression::Constant(c) = arg {
+                            c.ret_type = None;
+                        }
+                    }
+                }
+                let arity = actuals.len();
+                let field = projected(&native_bytes_type(), true).unwrap();
+                let args = vec![field.clone(); arity];
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::EagerValuesNative,
+                    HostSignature {
+                        arg_types: args.clone().into(),
+                        return_type: field.clone(),
+                    },
+                )])
                 .unwrap();
-            let ctx = C {
-                store: &store,
-                events: RefCell::new(vec![]),
-                action: Cell::new(0),
-            };
-            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8 << 20)
-                .with_native_values(Some(&store));
-            let mut eval = EvalContext::default();
-            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-                let HostStart::Pending { task, request } = p
-                    .start(
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::EagerValues {
+                    arguments: (3..3 + arity).collect(),
+                    kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
+                    probe: None,
+                    result_type: (!optional).then(string_ty),
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let row = InputRow {
+                    occurrence: 0,
+                    input_row: 0,
+                };
+                let insert = |v: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(v, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                store.borrow_mut().begin_window().unwrap();
+                let mut foreign = NativeValueStore::new(4096).unwrap();
+                foreign.begin_window().unwrap();
+                let foreign = foreign
+                    .insert_clone(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: 3, row },
+                    )
+                    .unwrap();
+                let ctx = C {
+                    store: &store,
+                    events: RefCell::new(vec![]),
+                    action: Cell::new(0),
+                };
+                let mut p = NativeBatchHosts::new(catalog.clone(), &metadata, &ctx, 8 << 20)
+                    .with_native_values(Some(&store));
+                let mut eval = EvalContext::default();
+                let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                    let HostStart::Pending { task, request } = p
+                        .start(
+                            eval,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &field,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!("nonempty eager call")
+                    };
+                    assert_eq!(request.index, 0);
+                    task
+                };
+                let reply = |p: &mut NativeBatchHosts<'_>,
+                             eval: &mut EvalContext,
+                             task: &HostTaskId,
+                             index,
+                             token: Option<Vec<u8>>| {
+                    p.resume(
                         eval,
-                        HostInvocation {
-                            slot,
-                            row,
-                            arg_types: &args,
-                            return_type: &field,
+                        task,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
                         },
                     )
-                    .unwrap()
-                else {
-                    panic!("nonempty eager call")
                 };
-                assert_eq!(request.index, 0);
-                task
-            };
-            let reply = |p: &mut NativeBatchHosts<'_>,
-                         eval: &mut EvalContext,
-                         task: &HostTaskId,
-                         index,
-                         token: Option<Vec<u8>>| {
-                p.resume(
-                    eval,
-                    task,
-                    HostArgReply {
-                        index,
-                        field_type: &field,
-                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-                    },
-                )
-            };
-            let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-            let mut corrupt = good.clone();
-            corrupt[0] ^= 1;
-            let mut short = good.clone();
-            short.pop();
-            let mut long = good;
-            long.push(0);
-            for bad in [
-                None,
-                Some(corrupt),
-                Some(short),
-                Some(long),
-                Some(stale),
-                Some(foreign),
-                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
-                Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3,
-                    InputRow {
-                        occurrence: 1,
-                        input_row: 0,
-                    },
-                )),
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3,
-                    InputRow {
-                        occurrence: 0,
-                        input_row: 1,
-                    },
-                )),
-            ] {
+                let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                let mut corrupt = good.clone();
+                corrupt[0] ^= 1;
+                let mut short = good.clone();
+                short.pop();
+                let mut long = good;
+                long.push(0);
+                for bad in [
+                    None,
+                    Some(corrupt),
+                    Some(short),
+                    Some(long),
+                    Some(stale),
+                    Some(foreign),
+                    Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 0,
+                        },
+                    )),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 0,
+                            input_row: 1,
+                        },
+                    )),
+                ] {
+                    let task = begin(&mut p, &mut eval);
+                    assert!(matches!(
+                        reply(&mut p, &mut eval, &task, 0, bad),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(ctx.events.borrow().is_empty());
+                    assert!(p.take_native_error().is_none());
+                    p.cancel(&task);
+                    p.cancel(&task);
+                    rejected += 1;
+                }
                 let task = begin(&mut p, &mut eval);
-                assert!(matches!(
-                    reply(&mut p, &mut eval, &task, 0, bad),
-                    Err(LocalError::BindingContract(_))
-                ));
-                assert!(ctx.events.borrow().is_empty());
-                assert!(p.take_native_error().is_none());
-                p.cancel(&task);
-                p.cancel(&task);
-                rejected += 1;
-            }
-            let task = begin(&mut p, &mut eval);
-            assert!(reply(
-                &mut p,
-                &mut eval,
-                &task,
-                1,
-                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
-            )
-            .is_err());
-            p.cancel(&task);
-            rejected += 1;
-            if arity > 1 {
-                let task = begin(&mut p, &mut eval);
-                assert!(matches!(
-                    reply(
-                        &mut p,
-                        &mut eval,
-                        &task,
-                        0,
-                        Some(insert(&actuals[0], NativeValueRole::CharInput, 3, row))
-                    )
-                    .unwrap(),
-                    HostStep::NeedArg(_)
-                ));
                 assert!(reply(
                     &mut p,
                     &mut eval,
                     &task,
                     1,
-                    Some(insert(&actuals[1], NativeValueRole::CharInput, 3, row))
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
                 )
                 .is_err());
                 p.cancel(&task);
                 rejected += 1;
-            }
-            let run = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext, task: &HostTaskId| {
-                let mut final_value = None;
-                for (i, value) in actuals.iter().enumerate() {
-                    match reply(
-                        p,
-                        eval,
-                        task,
-                        i,
-                        Some(insert(value, NativeValueRole::CharInput, 3 + i, row)),
-                    )? {
-                        HostStep::NeedArg(r) => assert_eq!(r.index, i + 1),
-                        HostStep::NeedArgRow { .. } => {
-                            panic!("row provider cannot demand a window row")
-                        }
-                        HostStep::Ready(v) => {
-                            assert_eq!(i + 1, arity);
-                            final_value = Some(v);
-                        }
-                    }
-                }
-                Ok::<_, LocalError>(final_value.unwrap())
-            };
-            let task = begin(&mut p, &mut eval);
-            let result = match run(&mut p, &mut eval, &task) {
-                Ok(v) => v,
-                Err(e) => panic!("{name} {role:?} {e:?} native={:?}", p.take_native_error()),
-            };
-            let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
-                panic!()
-            };
-            store
-                .borrow()
-                .get(token, role, NativeValueOrigin { node: 2, row })
-                .unwrap();
-            assert!(reply(
-                &mut p,
-                &mut eval,
-                &task,
-                0,
-                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
-            )
-            .is_err());
-            p.cancel(&task);
-            p.cancel(&task);
-            if name == "JSON_MERGE" {
-                assert_eq!(*ctx.events.borrow(), vec![1681]);
-                for action in [1, 2] {
-                    ctx.events.borrow_mut().clear();
-                    ctx.action.set(action);
+                if arity > 1 {
                     let task = begin(&mut p, &mut eval);
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run(&mut p, &mut eval, &task)
-                    }));
-                    if action == 1 {
-                        assert!(result.is_err());
-                    } else {
-                        assert!(matches!(result, Ok(Err(LocalError::BindingContract(_)))));
-                    }
-                    assert_eq!(*ctx.events.borrow(), vec![1681]);
+                    assert!(matches!(
+                        reply(
+                            &mut p,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(&actuals[0], NativeValueRole::CharInput, 3, row))
+                        )
+                        .unwrap(),
+                        HostStep::NeedArg(_)
+                    ));
                     assert!(reply(
                         &mut p,
                         &mut eval,
                         &task,
-                        0,
-                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        1,
+                        Some(insert(&actuals[1], NativeValueRole::CharInput, 3, row))
                     )
                     .is_err());
                     p.cancel(&task);
-                    ctx.events.borrow_mut().clear();
+                    rejected += 1;
+                }
+                let run =
+                    |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext, task: &HostTaskId| {
+                        let mut final_value = None;
+                        for (i, value) in actuals.iter().enumerate() {
+                            match reply(
+                                p,
+                                eval,
+                                task,
+                                i,
+                                Some(insert(value, NativeValueRole::CharInput, 3 + i, row)),
+                            )? {
+                                HostStep::NeedArg(r) => assert_eq!(r.index, i + 1),
+                                HostStep::NeedArgRow { .. } => {
+                                    panic!("row provider cannot demand a window row")
+                                }
+                                HostStep::Ready(v) => {
+                                    assert_eq!(i + 1, arity);
+                                    final_value = Some(v);
+                                }
+                            }
+                        }
+                        Ok::<_, LocalError>(final_value.unwrap())
+                    };
+                let task = begin(&mut p, &mut eval);
+                let result = match run(&mut p, &mut eval, &task) {
+                    Ok(v) => v,
+                    Err(e) => panic!("{name} {role:?} {e:?} native={:?}", p.take_native_error()),
+                };
+                let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
+                    panic!()
+                };
+                store
+                    .borrow()
+                    .get(token, role, NativeValueOrigin { node: 2, row })
+                    .unwrap();
+                assert!(reply(
+                    &mut p,
+                    &mut eval,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                )
+                .is_err());
+                p.cancel(&task);
+                p.cancel(&task);
+                if name == "UPPER" {
+                    // An absent declaration does not turn an authenticated SQL NULL
+                    // into a missing transport value. Cancellation is terminal, but
+                    // cannot cancel a newer task on the same provider.
+                    for _ in 0..128 {
+                        let old = begin(&mut p, &mut eval);
+                        p.cancel(&old);
+                        let task = begin(&mut p, &mut eval);
+                        p.cancel(&old);
+                        let HostStep::Ready(v) = reply(
+                            &mut p,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row)),
+                        )
+                        .unwrap() else {
+                            panic!("unary NULL must complete");
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = v.get_scalar_ref(0) else {
+                            panic!();
+                        };
+                        assert_eq!(
+                            store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap(),
+                            &Datum::Null
+                        );
+                        p.cancel(&task);
+                    }
+                    let mut limited = NativeBatchHosts::new(catalog.clone(), &metadata, &ctx, 1024)
+                        .with_native_values(Some(&store));
+                    let task = begin(&mut limited, &mut eval);
+                    assert!(matches!(
+                        reply(
+                            &mut limited,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(
+                                &Datum::new_string("a".repeat(2048)),
+                                NativeValueRole::CharInput,
+                                3,
+                                row
+                            ))
+                        ),
+                        Err(LocalError::ResourceLimit(_))
+                    ));
+                    limited.cancel(&task);
                     let task = begin(&mut p, &mut eval);
                     run(&mut p, &mut eval, &task).unwrap();
                     p.cancel(&task);
+                }
+                if name == "JSON_MERGE" {
                     assert_eq!(*ctx.events.borrow(), vec![1681]);
+                    for action in [1, 2] {
+                        ctx.events.borrow_mut().clear();
+                        ctx.action.set(action);
+                        let task = begin(&mut p, &mut eval);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            run(&mut p, &mut eval, &task)
+                        }));
+                        if action == 1 {
+                            assert!(result.is_err());
+                        } else {
+                            assert!(matches!(result, Ok(Err(LocalError::BindingContract(_)))));
+                        }
+                        assert_eq!(*ctx.events.borrow(), vec![1681]);
+                        assert!(reply(
+                            &mut p,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        )
+                        .is_err());
+                        p.cancel(&task);
+                        ctx.events.borrow_mut().clear();
+                        let task = begin(&mut p, &mut eval);
+                        run(&mut p, &mut eval, &task).unwrap();
+                        p.cancel(&task);
+                        assert_eq!(*ctx.events.borrow(), vec![1681]);
+                    }
                 }
             }
         }
     }
-    assert_eq!(rejected, 118);
+    assert_eq!(rejected, 236);
 }
 
 #[test]
@@ -27203,7 +27271,7 @@ fn session_read_immediate_callback_unwind_releases_task_and_keeps_exclusive_borr
             arguments: Box::new([]),
             kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
             probe: None,
-            result_type: string_ty(),
+            result_type: Some(string_ty()),
             output_node: 2,
             output_role: role,
         }];
@@ -27526,7 +27594,7 @@ fn user_variable_host_demand_credentials_callbacks_and_recovery() {
                 arguments: (3..3 + arity).collect(),
                 kernel: crate::scalar_function::eager_values::EagerValueKernel::capture(&f),
                 probe: Some(Datum::new_string("X")),
-                result_type: ty(),
+                result_type: Some(ty()),
                 output_node: 2,
                 output_role: role,
             }];
@@ -29514,7 +29582,7 @@ fn dynamic_diagnostic_math_parent_demands_text_after_overflow_and_authenticates_
                 arguments: vec![1].into(),
                 kernel: EagerValueKernel::capture(&function),
                 probe: None,
-                result_type: real_ty(),
+                result_type: Some(real_ty()),
                 output_node: 0,
                 output_role: if nested {
                     NativeValueRole::CharInput
@@ -34107,3 +34175,6 @@ mod json_schema_tests;
 
 #[path = "batch_final_state_tests.rs"]
 mod final_state_tests;
+
+#[path = "batch_optional_eager_tests.rs"]
+mod optional_eager_tests;

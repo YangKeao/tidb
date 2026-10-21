@@ -192,7 +192,7 @@ pub(super) enum NativeHostMetadata {
         arguments: Box<[usize]>,
         kernel: crate::scalar_function::eager_values::EagerValueKernel,
         probe: Option<Datum>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         output_node: usize,
         output_role: NativeValueRole,
     },
@@ -440,6 +440,7 @@ pub(super) enum NativeHostMetadata {
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
+            Self::EagerValues { result_type, .. } => result_type.as_ref(),
             Self::JsonSchema(metadata) => Some(&metadata.result_type),
             Self::Stateful(metadata) => Some(&metadata.result_type),
             Self::FinalState(metadata) => Some(&metadata.result_type),
@@ -454,7 +455,6 @@ impl NativeHostMetadata {
             | Self::DurationConstruction { result_type, .. }
             | Self::Vector { result_type, .. }
             | Self::Crypto { result_type, .. }
-            | Self::EagerValues { result_type, .. }
             | Self::Compression { result_type, .. }
             | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
@@ -1323,6 +1323,8 @@ impl<'a> NativeBatchHosts<'a> {
             // Context leaves already applied their consumer's expression view.
             // A root Constant broadcast deliberately publishes the raw Datum.
             result
+        } else if let NativeHostMetadata::EagerValues { result_type, .. } = metadata {
+            crate::expression::apply_enum_set_integer_view(result, result_type.as_ref())
         } else {
             let field = metadata
                 .result_type()

@@ -189,12 +189,16 @@ impl NativeBatchHosts<'_> {
             )
             .ok_or_else(|| resource("eager result storage overflow"))?;
         self.check_bytes(held)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            kernel.name(),
-            result_type,
-            result,
-            self.max_retained_bytes - held,
-        ) {
+        let converted = match result_type.as_ref() {
+            Some(field) => crate::tikv::coerce_result_bounded(
+                kernel.name(),
+                field,
+                result,
+                self.max_retained_bytes - held,
+            ),
+            None => Ok(result),
+        };
+        let result = match converted {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
@@ -316,12 +320,16 @@ impl NativeBatchHosts<'_> {
         self.check_bytes(held)?;
         // The setter already stored the raw value. Return conversion can fail
         // or panic afterward; neither outcome rolls back that original effect.
-        let value = match crate::tikv::identity_actual::coerce_result(
-            kernel.name(),
-            result_type,
-            value,
-            self.max_retained_bytes - held,
-        ) {
+        let converted = match result_type.as_ref() {
+            Some(field) => crate::tikv::identity_actual::coerce_result(
+                kernel.name(),
+                field,
+                value,
+                self.max_retained_bytes - held,
+            ),
+            None => Ok(value),
+        };
+        let value = match converted {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
