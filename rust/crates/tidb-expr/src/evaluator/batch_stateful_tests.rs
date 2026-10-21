@@ -1738,7 +1738,8 @@ fn run_optional_control_matrix(
                                             "not" | "isnull" | "istrue" | "isfalse"
                                             | "isnottrue" | "isnotfalse" | "isunknown"
                                             | "isnotunknown" | "istrue_with_null" | "bitneg"
-                                            | "unaryplus" | "unaryminus" => vec![p0],
+                                            | "unaryplus" | "unaryminus" | "charset"
+                                            | "collation" | "coercibility" => vec![p0],
                                             _ => vec![p0, p1],
                                         };
                                         match shape {
@@ -1860,6 +1861,21 @@ fn run_optional_control_matrix(
                                         {
                                             hash = (hash ^ u64::from(byte))
                                                 .wrapping_mul(0x100000001b3);
+                                        }
+                                        if matches!(name, "charset" | "collation" | "coercibility")
+                                        {
+                                            assert_eq!(
+                                                (old.reads[0].get(), old.reads[1].get()),
+                                                (0, 0),
+                                                "{label}"
+                                            );
+                                            if compare {
+                                                assert_eq!(
+                                                    (new.reads[0].get(), new.reads[1].get()),
+                                                    (0, 0),
+                                                    "{label}"
+                                                );
+                                            }
                                         }
                                         count += 1;
                                     }
@@ -2262,4 +2278,351 @@ fn no_argument_header_nested_consumers_keep_skips_and_prefixes() {
     }
     eprintln!("NESTED HEADER {count}/{hash:016X}");
     assert_eq!((count, hash), (12960, 0xBAEC627349AA50FD));
+}
+
+#[test]
+fn metadata_property_original_declaration_source() {
+    if isolate_common_corpus("stateful_tests::metadata_property_original_declaration_source") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_metadata_property_declarations(false);
+}
+#[test]
+fn metadata_property_actual_declaration_source() {
+    if isolate_common_corpus("stateful_tests::metadata_property_actual_declaration_source") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_metadata_property_declarations(true);
+}
+fn run_metadata_property_declarations(compare: bool) {
+    let values = [
+        [Datum::Null, Datum::new_string("unread")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+    ];
+    run_optional_control_matrix(
+        compare,
+        &["charset", "collation", "coercibility"],
+        &values,
+        "metadata-property",
+        "PROPERTY DECLARATION",
+        Some((77760, 0xE2A74FA0BA7D91F5)),
+    );
+}
+#[test]
+fn metadata_property_original_stored_attributes() {
+    if isolate_common_corpus("stateful_tests::metadata_property_original_stored_attributes") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_metadata_property_stored(false);
+}
+#[test]
+fn metadata_property_actual_stored_attributes() {
+    if isolate_common_corpus("stateful_tests::metadata_property_actual_stored_attributes") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_metadata_property_stored(true);
+}
+fn run_metadata_property_stored(compare: bool) {
+    use crate::expr_collation::Coercibility;
+    let custom = |charset: &str, collation: &str| {
+        let mut f = string_ty();
+        f.set_charset_name(charset);
+        f.set_collation_name(collation);
+        f
+    };
+    let fields = [
+        string_ty(),
+        native_bytes_type(),
+        ty(),
+        FieldType::new(FieldTypeCode::Json),
+        custom("ascii", "ascii_bin"),
+        custom("gb18030", "gb18030_bin"),
+        custom("unregistered-长charset", "unregistered-长collation"),
+    ];
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for name in ["charset", "collation", "coercibility"] {
+        let result = if name == "coercibility" {
+            ty()
+        } else {
+            string_ty()
+        };
+        for (fi, field) in fields.iter().enumerate() {
+            for shape in 0..7 {
+                for stored in 0..3 {
+                    for mask in [0, 1, 2, 3] {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let make = || {
+                                    let mut arg = match shape {
+                                        0 => literal(Datum::Null, field.clone()),
+                                        1 => parameter(99, field.clone()),
+                                        2 => {
+                                            let mut c = Constant::new(
+                                                Datum::new_string("unread"),
+                                                field.clone(),
+                                            );
+                                            c.deferred_expr = Some(Box::new(leaf::assignment(
+                                                "unread",
+                                                parameter(99, field.clone()),
+                                                field,
+                                            )));
+                                            Expression::Constant(c)
+                                        }
+                                        3 => {
+                                            let mut c =
+                                                crate::column::Column::new(1, field.clone());
+                                            c.index = 0;
+                                            Expression::Column(c)
+                                        }
+                                        4 => call(
+                                            "any_value",
+                                            field.clone(),
+                                            vec![parameter(99, field.clone())],
+                                        ),
+                                        5 => leaf::expression(
+                                            "correlated_absent",
+                                            0,
+                                            &Datum::Int(99),
+                                            Some(field),
+                                            None,
+                                        ),
+                                        _ => literal(
+                                            Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
+                                                true,
+                                                vec![0, 255, b'0'],
+                                                u32::MAX,
+                                                3,
+                                            )),
+                                            field.clone(),
+                                        ),
+                                    };
+                                    let info = match &mut arg {
+                                        Expression::Constant(c) => &mut c.collation,
+                                        Expression::Column(c) => &mut c.collation,
+                                        Expression::CorrelatedColumn(c) => &mut c.column.collation,
+                                        Expression::ScalarFunction(f) => &mut f.collation,
+                                    };
+                                    info.set_charset_and_collation(
+                                        "stored-charset",
+                                        "stored-collation",
+                                    );
+                                    if stored == 1 {
+                                        info.set_coercibility(Coercibility::EXPLICIT);
+                                    } else if stored == 2 {
+                                        info.set_coercibility(Coercibility::NUMERIC);
+                                    }
+                                    let mut root = call(name, result.clone(), vec![arg]);
+                                    erase_optional_call_declarations(&mut root, mask);
+                                    suite(root)
+                                };
+                                let original = make();
+                                let actual = make();
+                                let values =
+                                    [Datum::new_string("unread0"), Datum::new_string("unread1")];
+                                let old = C::new(0, enabled, values.clone());
+                                let new = C::new(0, enabled, values);
+                                for reuse in 0..2 {
+                                    let input = || {
+                                        let mut c = chunk(
+                                            &[string_ty()],
+                                            &[
+                                                vec![Datum::new_string("rowa")],
+                                                vec![Datum::new_string("rowb")],
+                                                vec![Datum::new_string("rowc")],
+                                            ],
+                                        );
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let mut a = input();
+                                    let mut left = output_for(&result);
+                                    left.append_null(0);
+                                    let expected = session_read_outcome(|| {
+                                        original.run(&old, &mut a, &mut left)
+                                    });
+                                    let label=format!("property-stored/{name}/{fi}/{shape}/{stored}/{mask}/{enabled}/{selection:?}/{reuse}");
+                                    if compare {
+                                        let mut b = input();
+                                        let mut right = output_for(&result);
+                                        right.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &new,
+                                                &mut b,
+                                                &mut right,
+                                                &[string_ty()],
+                                            )
+                                        });
+                                        if got != expected
+                                            || left.column(0) != right.column(0)
+                                            || old.snapshot() != new.snapshot()
+                                        {
+                                            eprintln!("PROPERTY STORED DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                        }
+                                        assert_eq!(got, expected, "{label}");
+                                        assert_eq!(right.column(0), left.column(0), "{label}");
+                                        assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.fallback != 0 || route.refusals != 0)
+                                            && gaps.len() < 20
+                                        {
+                                            gaps.push(format!("{label}: {route:?}"));
+                                        }
+                                    }
+                                    assert_eq!(
+                                        (old.reads[0].get(), old.reads[1].get()),
+                                        (0, 0),
+                                        "{label}"
+                                    );
+                                    for byte in format!(
+                                        "{label}|{expected}|{:?}|{}",
+                                        left.column(0),
+                                        old.snapshot()
+                                    )
+                                    .bytes()
+                                    {
+                                        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("PROPERTY STORED ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (21168, 0x0FF4CB511A024679));
+    if !gaps.is_empty() {
+        eprintln!("PROPERTY STORED ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}
+
+#[test]
+fn metadata_property_nested_consumers_keep_original_domains_and_diagnostics() {
+    if isolate_common_corpus(
+        "stateful_tests::metadata_property_nested_consumers_keep_original_domains_and_diagnostics",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let duration = FieldType::new(FieldTypeCode::Duration).with_decimal(6);
+    let (mut count, mut hash, mut retained_numeric) = (0usize, 0xcbf29ce484222325u64, 0usize);
+    for name in ["charset", "collation", "coercibility"] {
+        for text in ["utf8mb4", "-9223372036854775808", "0"] {
+            for wrapper in 0..8 {
+                for mask in [0, 1, 2, 3] {
+                    for enabled in [false, true] {
+                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                            let make = || {
+                                let mut field = string_ty();
+                                field.set_charset_name(text);
+                                field.set_collation_name(text);
+                                let mut c = crate::column::Column::new(1, field);
+                                c.index = 0;
+                                c.orig_name = "t.metadata".into();
+                                let result = if wrapper == 6 { string_ty() } else { ty() };
+                                let mut property = call(name, result, vec![Expression::Column(c)]);
+                                erase_optional_call_declarations(&mut property, mask);
+                                let root = match wrapper {
+                                    0 => call("abs", ty(), vec![property]),
+                                    1 => call("cot", real_ty(), vec![property]),
+                                    2 => call("pow", real_ty(), vec![property, int(-1)]),
+                                    3 => call("minus", ty(), vec![property, int(1)]),
+                                    4 => call("any_value", ty(), vec![property]),
+                                    5 => call("coalesce", ty(), vec![int(7), property]),
+                                    6 => {
+                                        let mut c = crate::column::Column::new(2, duration.clone());
+                                        c.index = 1;
+                                        c.orig_name = "t.duration".into();
+                                        call("eq", ty(), vec![Expression::Column(c), property])
+                                    }
+                                    _ => call("if", ty(), vec![int(0), property, int(9)]),
+                                };
+                                let field = root.static_type().unwrap().clone();
+                                (suite(root), field)
+                            };
+                            let (original, field) = make();
+                            let (actual, _) = make();
+                            let old = C::new(0, enabled, [Datum::Int(0), Datum::Int(1)]);
+                            let new = C::new(0, enabled, [Datum::Int(0), Datum::Int(1)]);
+                            for reuse in 0..2 {
+                                let input = || {
+                                    let mut c=chunk(&[string_ty(),duration.clone()],&(0..3).map(|i|vec![Datum::new_string(format!("unread{i}")),Datum::Duration(tidb_datatype::MySqlDuration::from_raw_parts((i+1)*1_000_000_000,6))]).collect::<Vec<_>>());
+                                    c.set_sel(selection.clone());
+                                    c
+                                };
+                                let mut a = input();
+                                let mut left = output_for(&field);
+                                left.append_null(0);
+                                let expected =
+                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let mut b = input();
+                                let mut right = output_for(&field);
+                                right.append_null(0);
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(
+                                        &new,
+                                        &mut b,
+                                        &mut right,
+                                        &[string_ty(), duration.clone()],
+                                    )
+                                });
+                                let label=format!("property-nested/{name}/{text}/{wrapper}/{mask}/{enabled}/{selection:?}/{reuse}");
+                                if got != expected
+                                    || left.column(0) != right.column(0)
+                                    || old.snapshot() != new.snapshot()
+                                {
+                                    eprintln!("PROPERTY NESTED DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                }
+                                assert_eq!(got, expected, "{label}");
+                                assert_eq!(right.column(0), left.column(0), "{label}");
+                                assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                let route = actual.batch_route_snapshot();
+                                if wrapper == 3 && mask & 1 != 0 {
+                                    if route.fallback != 0 || route.refusals != 0 {
+                                        retained_numeric += 1;
+                                    }
+                                } else {
+                                    assert_eq!(
+                                        (route.fallback, route.refusals),
+                                        (0, 0),
+                                        "{label}: {route:?}"
+                                    );
+                                }
+                                assert_eq!(
+                                    (old.reads[0].get(), old.reads[1].get()),
+                                    (0, 0),
+                                    "{label}"
+                                );
+                                for byte in format!(
+                                    "{label}|{expected}|{:?}|{}",
+                                    left.column(0),
+                                    old.snapshot()
+                                )
+                                .bytes()
+                                {
+                                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("PROPERTY NESTED {count}/{hash:016X}; retained numeric {retained_numeric}");
+    assert_eq!((count, hash), (3456, 0x3C005CEFBC8C583D));
 }

@@ -140,6 +140,63 @@ pub fn coercibility_of(expr: &Expression) -> Coercibility {
     }
 }
 
+/// The original metadata getter, independent of its argument's row value.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InfoMetadataKind {
+    /// Read the real argument field's charset.
+    Charset,
+    /// Read the real argument field's collation.
+    Collation,
+    /// Read the original node's stored/default coercibility.
+    Coercibility,
+}
+impl InfoMetadataKind {
+    /// Recognize only the actual one-argument SQL owner.
+    pub(crate) fn for_function(function: &crate::scalar_function::ScalarFunction) -> Option<Self> {
+        if function.args.len() != 1
+            || function.pb_signature().is_some()
+            || function.pb_origin().is_some()
+        {
+            return None;
+        }
+        Some(match function.func_name.lowercase() {
+            "charset" => Self::Charset,
+            "collation" => Self::Collation,
+            "coercibility" => Self::Coercibility,
+            _ => return None,
+        })
+    }
+    /// The original normalized scalar name for result coercion.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Charset => "charset",
+            Self::Collation => "collation",
+            Self::Coercibility => "coercibility",
+        }
+    }
+    /// Bound only the metadata result's retained payload before copying it.
+    pub(crate) fn copy_extent(self, arg: &Expression) -> usize {
+        let field = ret_type_of(arg);
+        match self {
+            Self::Charset => field.charset_name().len(),
+            Self::Collation => field.collation_name().len(),
+            Self::Coercibility => std::mem::size_of::<i64>(),
+        }
+    }
+    /// Capture the original helper's actual result after the source byte gate.
+    pub(crate) fn capture(self, arg: &Expression) -> Datum {
+        info_metadata_value(self.name(), arg).expect("recognized original metadata getter")
+    }
+    /// Authenticate the immutable result representation selected by the getter.
+    pub(crate) fn accepts_value(self, value: &Datum) -> bool {
+        matches!(
+            (self, value),
+            (Self::Charset | Self::Collation, Datum::String(_))
+                | (Self::Coercibility, Datum::Int(_))
+        )
+    }
+}
+
 /// Evaluates the three `builtin_info.go` functions whose result is the
 /// argument expression's static metadata, never its row value.
 ///

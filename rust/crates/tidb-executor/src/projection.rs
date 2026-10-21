@@ -5735,4 +5735,168 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn metadata_property_calls_keep_static_attributes_and_skip_unbound_row_values() {
+        let integer = longlong();
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let text =
+            |v: &str| Expression::Constant(Constant::new(Datum::new_string(v), string.clone()));
+        let column = || {
+            let mut c = Column::new(1, integer.clone());
+            c.index = 0;
+            Expression::Column(c)
+        };
+        let call = |name: &str, field, args| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        for name in ["charset", "collation", "coercibility"] {
+            for shape in 0..4 {
+                for mask in [0, 1, 2, 3] {
+                    let result = if name == "coercibility" {
+                        integer.clone()
+                    } else {
+                        string.clone()
+                    };
+                    let mut attribute_type = string.clone();
+                    attribute_type.set_charset_name("unregistered-长charset");
+                    attribute_type.set_collation_name("unregistered-长collation");
+                    let parameter = || {
+                        let mut c =
+                            Constant::new(Datum::new_string("unread"), attribute_type.clone());
+                        c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 99 });
+                        Expression::Constant(c)
+                    };
+                    let mut argument = match shape {
+                        0 => parameter(),
+                        1 => {
+                            let mut c =
+                                Constant::new(Datum::new_string("unread"), attribute_type.clone());
+                            c.deferred_expr = Some(Box::new(call(
+                                "setvar",
+                                attribute_type.clone(),
+                                vec![text("property-unread"), parameter()],
+                            )));
+                            Expression::Constant(c)
+                        }
+                        2 => {
+                            let mut c = Column::new(100, attribute_type.clone());
+                            c.index = 99;
+                            Expression::Column(c)
+                        }
+                        _ => call("any_value", attribute_type.clone(), vec![parameter()]),
+                    };
+                    match &mut argument {
+                        Expression::Constant(c) => c
+                            .collation
+                            .set_coercibility(tidb_expr::expr_collation::Coercibility::EXPLICIT),
+                        Expression::Column(c) => c
+                            .collation
+                            .set_coercibility(tidb_expr::expr_collation::Coercibility::EXPLICIT),
+                        Expression::ScalarFunction(f) => f
+                            .collation
+                            .set_coercibility(tidb_expr::expr_collation::Coercibility::EXPLICIT),
+                        _ => (),
+                    }
+                    if mask & 2 != 0 {
+                        match &mut argument {
+                            Expression::Constant(c) => c.ret_type = None,
+                            Expression::Column(c) => c.ret_type = None,
+                            Expression::ScalarFunction(f) => f.ret_type = None,
+                            _ => (),
+                        }
+                    }
+                    let mut property =
+                        ScalarFunction::new(CiString::new(name), result.clone(), vec![argument]);
+                    if mask & 1 != 0 {
+                        property.ret_type = None;
+                    }
+                    let roots = vec![
+                        call(
+                            "setvar",
+                            integer.clone(),
+                            vec![text("property-before"), column()],
+                        ),
+                        Expression::ScalarFunction(property),
+                        call(
+                            "setvar",
+                            integer.clone(),
+                            vec![text("property-after"), column()],
+                        ),
+                    ];
+                    let fields = vec![integer.clone(), result, integer.clone()];
+                    for enabled in [false, true] {
+                        let context = || {
+                            crate::StmtContext::for_query()
+                                .with_enable_vectorized_expression(enabled)
+                                .with_prepared_params(vec![Datum::Int(7)].into())
+                                .with_user_vars(std::sync::Arc::new(std::sync::Mutex::new(
+                                    std::collections::HashMap::new(),
+                                )))
+                        };
+                        let reference = context();
+                        let mut input =
+                            Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+                        for row in 0..3 {
+                            input.append_int64(0, row);
+                            input.append_int64(1, row * 2);
+                        }
+                        let mut expected = Chunk::new_with_capacity(&fields, 3);
+                        EvaluatorSuite::new(roots.clone(), false)
+                            .run(&reference, &mut input, &mut expected)
+                            .unwrap();
+                        let warnings = reference.take_warnings();
+                        for workers in [0, 2] {
+                            let context = context();
+                            let (source, _) = NumberSource::new(3, 3);
+                            let schema = Schema::new(
+                                fields
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
+                                    .collect(),
+                            );
+                            let mut projection = ProjectionExec::new(
+                                ExecutorMeta::new(schema, 1, 3, 1024),
+                                roots.clone(),
+                                source,
+                                context.clone(),
+                            )
+                            .with_workers(workers);
+                            projection.open().unwrap();
+                            let mut output = projection.new_chunk();
+                            projection.next(&mut output).unwrap();
+                            for i in 0..3 {
+                                assert_eq!(
+                                    output.column(i),
+                                    expected.column(i),
+                                    "{name}/{shape}/{mask}/{enabled}/{workers}/{i}"
+                                );
+                            }
+                            assert_eq!(context.take_warnings(), warnings);
+                            for variable in ["property-before", "property-after", "property-unread"]
+                            {
+                                assert_eq!(
+                                    tidb_expr::Columns::get_uservar(&context, variable),
+                                    tidb_expr::Columns::get_uservar(&reference, variable)
+                                );
+                            }
+                            assert_eq!(
+                                tidb_expr::Columns::get_uservar(&context, "property-unread"),
+                                None
+                            );
+                            if workers == 0 {
+                                let route = projection.evaluator_suite.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.prepared, route.fallback, route.refusals),
+                                    (1, 0, 0)
+                                );
+                            }
+                            projection.close().unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

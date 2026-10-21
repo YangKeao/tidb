@@ -34297,7 +34297,7 @@ fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
         for result_type in [Some(ty()), None] {
             for forged in [false, true] {
                 let arity = if forged { 1 } else { arity };
-                let arguments = vec![field.clone(); arity];
+                let arguments = vec![];
                 let catalog = HostCatalog::for_sql_batch(vec![(
                     SqlBatchHostOperation::EagerValuesNative,
                     HostSignature {
@@ -34309,7 +34309,8 @@ fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
                 let slot = catalog.slot(0).unwrap();
                 let metadata = [NativeHostMetadata::HeaderOutcome {
                     kind,
-                    arity,
+                    logical_arity: arity,
+                    property_value: None,
                     result_type: result_type.clone(),
                     output_node: 7,
                     output_role: NativeValueRole::Output,
@@ -34390,6 +34391,157 @@ fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
                         },
                     );
                     assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
+                    assert!(provider.take_native_error().is_none());
+                    store.borrow_mut().begin_window().unwrap();
+                    assert!(matches!(
+                        provider.start(
+                            &mut eval,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &arguments,
+                                return_type: &field
+                            }
+                        ),
+                        Ok(HostStart::Ready(_))
+                    ));
+                    assert!(provider.take_native_error().is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn metadata_property_protocol_authenticates_snapshot_and_zero_value_demand() {
+    use crate::collation_derive::InfoMetadataKind;
+    use crate::scalar_function::header_value::HeaderKind;
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostInvocation, HostStart, LocalHostServices};
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let mut argument_type = string_ty();
+    argument_type.set_charset_name("readonly-charset");
+    argument_type.set_collation_name("readonly-collation");
+    let argument = literal(Datum::Int(99), argument_type);
+    for property in [
+        InfoMetadataKind::Charset,
+        InfoMetadataKind::Collation,
+        InfoMetadataKind::Coercibility,
+    ] {
+        let expected = property.capture(&argument);
+        for declared in [false, true] {
+            for forged in 0..5 {
+                let arguments = if forged == 2 {
+                    vec![field.clone()]
+                } else {
+                    vec![]
+                };
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::EagerValuesNative,
+                    HostSignature {
+                        arg_types: arguments.clone().into(),
+                        return_type: field.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let wrong = if matches!(property, InfoMetadataKind::Coercibility) {
+                    Datum::new_string("not an integer attribute")
+                } else {
+                    Datum::Int(7)
+                };
+                let metadata = [NativeHostMetadata::HeaderOutcome {
+                    kind: HeaderKind::Property(property),
+                    logical_arity: if forged == 1 { 2 } else { 1 },
+                    property_value: match forged {
+                        3 => Some(wrong),
+                        4 => None,
+                        _ => Some(expected.clone()),
+                    },
+                    result_type: declared.then(|| {
+                        if matches!(property, InfoMetadataKind::Coercibility) {
+                            ty()
+                        } else {
+                            string_ty()
+                        }
+                    }),
+                    output_node: 7,
+                    output_role: NativeValueRole::Output,
+                }];
+                let store = RefCell::new(NativeValueStore::new(4096).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let mut provider =
+                    NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 4096)
+                        .with_native_values(Some(&store));
+                let mut eval = EvalContext::default();
+                for occurrence in 0..128 {
+                    store.borrow_mut().begin_window().unwrap();
+                    let row = InputRow {
+                        occurrence,
+                        input_row: 2,
+                    };
+                    let result = provider.start(
+                        &mut eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &arguments,
+                            return_type: &field,
+                        },
+                    );
+                    if forged != 0 {
+                        assert!(
+                            matches!(result, Err(LocalError::BindingContract(_))),
+                            "{property:?}/{forged}: {result:?}"
+                        );
+                    } else {
+                        let HostStart::Ready(values) = result.unwrap() else {
+                            panic!("metadata getters cannot request a row value")
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                            panic!("missing authenticated attribute result")
+                        };
+                        assert_eq!(
+                            *store
+                                .borrow()
+                                .get(
+                                    token,
+                                    NativeValueRole::Output,
+                                    NativeValueOrigin { node: 7, row }
+                                )
+                                .unwrap(),
+                            expected
+                        );
+                    }
+                    assert!(provider.take_native_error().is_none());
+                }
+                if forged == 0 {
+                    let row = InputRow {
+                        occurrence: 0,
+                        input_row: 2,
+                    };
+                    let origin = NativeValueOrigin { node: 99, row };
+                    loop {
+                        if store
+                            .borrow_mut()
+                            .insert_clone(&Datum::Null, NativeValueRole::Output, origin)
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    assert!(matches!(
+                        provider.start(
+                            &mut eval,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &arguments,
+                                return_type: &field
+                            }
+                        ),
+                        Err(LocalError::ResourceLimit(_))
+                    ));
                     assert!(provider.take_native_error().is_none());
                     store.borrow_mut().begin_window().unwrap();
                     assert!(matches!(

@@ -641,6 +641,32 @@ fn contains_context_value(node: &Expression, depth: usize, remaining: &mut usize
         _ => false,
     }
 }
+// A zero-value-input property still has its original logical expression in
+// error text. Survey that real metadata tree independently of the data graph.
+fn contains_metadata_property(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return false;
+    }
+    *remaining -= 1;
+    match node {
+        Expression::ScalarFunction(function) => {
+            if let Some(kind) =
+                crate::scalar_function::header_value::HeaderKind::for_function(function)
+            {
+                return kind.property().is_some();
+            }
+            function
+                .args
+                .iter()
+                .any(|child| contains_metadata_property(child, depth - 1, remaining))
+        }
+        Expression::Constant(c) => c
+            .deferred_expr
+            .as_deref()
+            .is_some_and(|child| contains_metadata_property(child, depth - 1, remaining)),
+        _ => false,
+    }
+}
 fn context_template_declared(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
     if depth == 0 || *remaining == 0 {
         return false;
@@ -878,6 +904,9 @@ fn native_value_tree_complete(node: &Expression, depth: usize, remaining: &mut u
         }
         Expression::Column(_) | Expression::CorrelatedColumn(_) => true,
         Expression::ScalarFunction(function) => {
+            if native_no_argument_header_call(function) {
+                return true;
+            }
             if !native_value_call(function) {
                 return false;
             }
@@ -2194,7 +2223,7 @@ fn resolve_call_in_view(
     if view.value_role().is_some() && native_no_argument_header_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
-            function.args.len(),
+            0,
         ));
     }
     if view.value_role().is_some() && native_optional_value_call(function) {
@@ -3267,6 +3296,63 @@ fn preflight_view<'a>(
         let allow_pb = allow_pb
             || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function));
         let (declaration, collation) = parts_optional(node, allow_pb)?;
+        // Header metadata has no value operands. Keep original logical arity
+        // and attributes in its descriptor; unused row-value bindings are not
+        // part of this data program. The real tree is still shape-bounded.
+        if let Expression::ScalarFunction(function) = node {
+            if let Some(kind) =
+                crate::scalar_function::header_value::HeaderKind::for_function(function)
+            {
+                if view.value_role().is_none() {
+                    return Err(BatchFailure::admission(
+                        "metadata outcome needs its native value ABI",
+                    ));
+                }
+                profile_shape(node, limits)?;
+                budget.field(&native_bytes_type(), 5)?;
+                if let Some(field) = declaration {
+                    budget.field(field, 2)?;
+                }
+                budget.array::<CheckedNode<'_>>(1)?;
+                budget.array::<NodeRecord>(1)?;
+                budget.array::<BuildNode>(1)?;
+                budget.array::<LocalExpr>(1)?;
+                budget.array::<OrdinaryCallSite>(2)?;
+                budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
+                budget.array::<NativeHostMetadata>(1)?;
+                budget.array::<Option<Datum>>(1)?;
+                budget.add(function.func_name.original().len())?;
+                budget.add(function.func_name.lowercase().len())?;
+                let (charset, collate) = collation.charset_and_collation();
+                budget.add(charset.len())?;
+                budget.add(collate.len())?;
+                if let Some(property) = kind.property() {
+                    budget.add(
+                        property
+                            .copy_extent(&function.args[0])
+                            .checked_mul(2)
+                            .ok_or_else(|| resource("property metadata result copy overflow"))?,
+                    )?;
+                }
+                if view.diagnostic() {
+                    budget.array::<usize>(1)?;
+                    diagnostic_slots += 1;
+                }
+                reserve(&mut checked, 1)?;
+                checked.push(CheckedNode {
+                    node,
+                    sql: declaration,
+                    view,
+                    subtree_end: 0,
+                    folds_to_constant: false,
+                    math_render_bound: None,
+                    numeric_render_bound: None,
+                    numeric_format_failure: None,
+                });
+                continue;
+            }
+        }
+
         if row_typed_context_target(node, view).is_some() {
             budget.array::<crate::typed_context_value::TypedContextValue>(1)?;
             budget.array::<NativeTypedDescriptor>(1)?;
@@ -3328,6 +3414,8 @@ fn preflight_view<'a>(
                         "abs" | "cot" | "pow" | "power"
                     ) && function.args.iter().any(|child| {
                         contains_context_value(child, limits.tree.max_depth, &mut {
+                            limits.tree.max_nodes
+                        }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
                             limits.tree.max_nodes
                         })
                     }) {
@@ -3571,6 +3659,8 @@ fn preflight_view<'a>(
                         ))
                         && function.args.iter().any(|child| {
                             contains_context_value(child, limits.tree.max_depth, &mut {
+                                limits.tree.max_nodes
+                            }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
                                 limits.tree.max_nodes
                             })
                         });
@@ -4066,7 +4156,15 @@ fn preflight_view<'a>(
                 function.func_name.lowercase(),
                 function.args.len(),
             );
-            for _ in &function.args {
+            let header = native_no_argument_header_call(function);
+            if header {
+                folds_to_constant = crate::constant_fold::folds_to_constant(checked[index].node);
+                if !function.args.is_empty() {
+                    math_children = None;
+                    numeric_children = None;
+                }
+            }
+            for _ in 0..if header { 0 } else { function.args.len() } {
                 math_children = match (
                     math_children,
                     checked
@@ -4837,7 +4935,7 @@ fn lower_view_policy(
                         };
                         let mut arguments = Vec::new();
                         reserve(&mut arguments, *arity)?;
-                        for argument in &sql.args {
+                        for argument in sql.args.iter().take(*arity) {
                             arguments.push(
                                 if matches!(
                                     operation,
@@ -5069,7 +5167,8 @@ fn lower_view_policy(
                             SqlBatchHostOperation::EagerValuesNative if native_no_argument_header_call(sql) => {
                                 NativeHostMetadata::HeaderOutcome {
                                     kind: crate::scalar_function::header_value::HeaderKind::for_function(sql).expect("checked original header"),
-                                    arity: *arity,
+                                    logical_arity: sql.args.len(),
+                                    property_value: crate::scalar_function::header_value::HeaderKind::for_function(sql).and_then(|kind|kind.property()).map(|kind|kind.capture(&sql.args[0])),
                                     result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item.view.value_role().ok_or_else(||binding("header output view missing"))?,

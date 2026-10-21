@@ -178,7 +178,8 @@ pub(super) use json_schema_source::NativeJsonSchema;
 pub(super) enum NativeHostMetadata {
     HeaderOutcome {
         kind: crate::scalar_function::header_value::HeaderKind,
-        arity: usize,
+        logical_arity: usize,
+        property_value: Option<Datum>,
         result_type: Option<FieldType>,
         output_node: usize,
         output_role: NativeValueRole,
@@ -1326,6 +1327,8 @@ impl<'a> NativeBatchHosts<'a> {
         let task = self.task(id)?;
         let Some(NativeHostMetadata::HeaderOutcome {
             kind,
+            property_value,
+            result_type,
             output_node,
             output_role,
             ..
@@ -1333,15 +1336,40 @@ impl<'a> NativeBatchHosts<'a> {
         else {
             return Err(binding("header outcome descriptor missing"));
         };
-        let (kind, node, role, row) = (*kind, *output_node, *output_role, task.row);
+        let payload = property_value
+            .as_ref()
+            .map(native_payload_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        let base = self
+            .retained_bytes()?
+            .checked_add(
+                payload
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("metadata result copy overflow"))?,
+            )
+            .ok_or_else(|| resource("metadata result extent overflow"))?;
+        self.check_bytes(base)?;
+        let (kind, value, node, role, row) = (
+            *kind,
+            property_value.clone(),
+            *output_node,
+            *output_role,
+            task.row,
+        );
         self.slots[id.slot]
             .task
             .as_mut()
             .expect("live header task")
             .demand = SqlDemand::Consumed;
-        let base = self.retained_bytes()?;
-        self.check_bytes(base)?;
-        let result = match kind.evaluate(self.context) {
+        let maximum = self
+            .max_retained_bytes
+            .checked_sub(base)
+            .ok_or_else(|| resource("metadata result conversion allowance exhausted"))?;
+        let result = kind.evaluate(self.context, value).and_then(|value| {
+            coerce_optional_value_result(kind.name(), result_type.as_ref(), value, maximum)
+        });
+        let result = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
@@ -2599,14 +2627,16 @@ impl NativeBatchHosts<'_> {
             SqlBatchHostOperation::EagerValuesNative => {
                 if let Some(NativeHostMetadata::HeaderOutcome {
                     kind,
-                    arity,
+                    logical_arity,
+                    property_value,
                     output_role,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
                 {
                     if self.native_values.is_none()
-                        || *arity != invocation.arg_types.len()
-                        || !kind.accepts_arity(*arity)
+                        || !invocation.arg_types.is_empty()
+                        || !kind.accepts_arity(*logical_arity)
+                        || !kind.accepts_snapshot(property_value.as_ref())
                         || !matches!(
                             output_role,
                             NativeValueRole::CharInput | NativeValueRole::Output
