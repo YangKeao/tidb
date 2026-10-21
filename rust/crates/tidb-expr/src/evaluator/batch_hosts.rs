@@ -167,6 +167,9 @@ pub(super) use cached_list_source::NativeCachedList;
 #[path = "batch_stateful.rs"]
 mod stateful_source;
 pub(super) use stateful_source::NativeStateful;
+#[path = "batch_final_state.rs"]
+mod final_state_source;
+pub(super) use final_state_source::NativeFinalState;
 
 #[path = "batch_json_schema.rs"]
 mod json_schema_source;
@@ -175,6 +178,7 @@ pub(super) use json_schema_source::NativeJsonSchema;
 pub(super) enum NativeHostMetadata {
     JsonSchema(Box<NativeJsonSchema>),
     Stateful(Box<NativeStateful>),
+    FinalState(Box<NativeFinalState>),
     CachedList(Box<NativeCachedList>),
     TypedContext(NativeTypedContext),
     ContextValue {
@@ -438,6 +442,7 @@ impl NativeHostMetadata {
         match self {
             Self::JsonSchema(metadata) => Some(&metadata.result_type),
             Self::Stateful(metadata) => Some(&metadata.result_type),
+            Self::FinalState(metadata) => Some(&metadata.result_type),
             Self::CachedList(metadata) => Some(&metadata.result_type),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
@@ -488,6 +493,7 @@ enum SqlDemand {
     Consumed,
     JsonSchema(Box<json_schema_source::SchemaTask>),
     Stateful(Box<stateful_source::StatefulTask>),
+    FinalState(Box<final_state_source::FinalTask>),
     CachedList(Box<cached_list_source::CachedListTask>),
     TypedWindow(Box<typed_window::TypedWindowTask>),
     Numeric(Box<numeric_parent::NumericTask>),
@@ -648,6 +654,7 @@ impl NativeTask {
             SqlDemand::Consumed => Ok(None),
             SqlDemand::JsonSchema(task) => Ok(Some(task.next_argument())),
             SqlDemand::Stateful(task) => Ok(Some(task.next_argument())),
+            SqlDemand::FinalState(task) => Ok(Some(task.next)),
             SqlDemand::CachedList(task) => Ok(Some(task.next_argument())),
             SqlDemand::TypedWindow(_) => Ok(Some(0)),
             SqlDemand::Numeric(task) => Ok(Some(task.next_argument())),
@@ -710,6 +717,7 @@ impl NativeTask {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::JsonSchema(_) => Err(binding("schema host cannot buffer wire values")),
             SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
+            SqlDemand::FinalState(_) => Err(binding("final state host cannot buffer wire values")),
             SqlDemand::CachedList(_) => Err(binding("cached list cannot buffer wire values")),
             SqlDemand::Diagnostic(_) => Err(binding("diagnostic demand cannot buffer wire values")),
             SqlDemand::TypedContext { .. } => {
@@ -796,6 +804,11 @@ impl NativeTask {
             return bytes
                 .checked_add(task.retained_bytes()?)
                 .ok_or_else(|| resource("schema retained extent overflow"));
+        }
+        if let SqlDemand::FinalState(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("final state retained extent overflow"));
         }
         if let SqlDemand::Stateful(task) = &self.demand {
             return bytes
@@ -955,7 +968,8 @@ impl CapturedWarnings {
     }
 }
 
-struct TaskSlot {
+struct TaskSlot<'a> {
+    ready_preparation: Option<crate::tikv::PreparationUnwindGuard<'a>>,
     generation: u64,
     task: Option<NativeTask>,
 }
@@ -969,7 +983,7 @@ pub(super) struct NativeBatchHosts<'a> {
     diagnostic_parents: &'a [diagnostic_source::CompiledDiagnosticParent],
     numeric_parents: &'a [CompiledNumericParent],
     native_values: Option<&'a RefCell<NativeValueStore>>,
-    slots: Vec<TaskSlot>,
+    slots: Vec<TaskSlot<'a>>,
     generation: u64,
     max_retained_bytes: usize,
     native_error: Option<EvalError>,
@@ -1049,6 +1063,7 @@ impl<'a> NativeBatchHosts<'a> {
                     .try_reserve_exact(1)
                     .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
                 self.slots.push(TaskSlot {
+                    ready_preparation: None,
                     generation: 0,
                     task: None,
                 });
@@ -1074,6 +1089,7 @@ impl<'a> NativeBatchHosts<'a> {
                 .ok_or_else(|| resource("SQL host task size overflow"))?,
         )?;
         self.slots[slot] = TaskSlot {
+            ready_preparation: None,
             generation,
             task: Some(task),
         };
@@ -1348,6 +1364,7 @@ impl<'a> NativeBatchHosts<'a> {
                 .ok_or_else(|| resource("native CAST result vector size overflow"))?,
         )?;
         self.slots[id.slot].task = None;
+        self.slots[id.slot].ready_preparation = None;
         Ok(VectorValue::Bytes(output))
     }
     fn resume_nullable(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
@@ -2298,6 +2315,7 @@ impl<'a> NativeBatchHosts<'a> {
             self.context.append_warning(*code, message);
         }
         self.slots[id.slot].task = None;
+        self.slots[id.slot].ready_preparation = None;
         Ok(VectorValue::Bytes(output))
     }
     fn finish_int_cast(
@@ -2384,6 +2402,7 @@ impl<'a> NativeBatchHosts<'a> {
                 .ok_or_else(|| resource("integer character cast result size overflow"))?,
         )?;
         self.slots[id.slot].task = None;
+        self.slots[id.slot].ready_preparation = None;
         Ok(VectorValue::Bytes(output))
     }
     fn native_failure<T>(&mut self, error: EvalError) -> LocalResult<T> {
@@ -2503,6 +2522,7 @@ impl NativeBatchHosts<'_> {
         if self.numeric_parent(invocation.slot).is_some() {
             return self.start_numeric_parent(invocation);
         }
+        let mut ready_preparation = None;
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
                 if let Some(NativeHostMetadata::JsonSchema(meta)) =
@@ -2514,6 +2534,24 @@ impl NativeBatchHosts<'_> {
                         return Err(binding("schema declaration differs"));
                     }
                     SqlDemand::JsonSchema(Box::new(json_schema_source::SchemaTask::Schema))
+                } else if let Some(NativeHostMetadata::FinalState(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.arguments.len() != invocation.arg_types.len()
+                    {
+                        return Err(binding("final state declaration differs"));
+                    }
+                    if meta.name.starts_with("aes_") {
+                        ready_preparation = self
+                            .context
+                            .ready_value_cache()
+                            .map(|cache| cache.preparation_unwind_guard());
+                    }
+                    SqlDemand::FinalState(Box::new(final_state_source::FinalTask::start(
+                        meta,
+                        self.context,
+                    )))
                 } else if let Some(NativeHostMetadata::Stateful(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
@@ -3329,8 +3367,9 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate = matches!(demand, SqlDemand::JsonSchema(_))
-            && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::JsonSchema(meta)) if meta.arguments.len()!=2)
+        let immediate = matches!(&demand,SqlDemand::FinalState(task) if task.immediate)
+            || matches!(demand, SqlDemand::JsonSchema(_))
+                && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::JsonSchema(meta)) if meta.arguments.len()!=2)
             || matches!(demand, SqlDemand::Stateful(_))
                 && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::Stateful(meta)) if meta.descriptor.argument_types.len()!=meta.descriptor.operation.arity() || invocation.arg_types.is_empty())
             || matches!(demand, SqlDemand::UserVariableRead { .. })
@@ -3349,6 +3388,9 @@ impl NativeBatchHosts<'_> {
             invocation.arg_types.len(),
             demand,
         )?;
+        if let HostStart::Pending { task, .. } = &start {
+            self.slots[task.slot].ready_preparation = ready_preparation;
+        }
         if immediate {
             let HostStart::Pending { task, .. } = start else {
                 unreachable!()
@@ -3374,6 +3416,11 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::JsonSchema(_)
             ) {
                 guard.provider.resume_json_schema(&guard.task, None)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::FinalState(_)
+            ) {
+                guard.provider.resume_final_state(&guard.task, None)
             } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::Stateful(_)
@@ -3429,6 +3476,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("schema source cannot be wire NULL"));
             };
             return self.resume_json_schema(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::FinalState(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("final state source cannot be wire NULL"));
+            };
+            return self.resume_final_state(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Stateful(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -3855,6 +3908,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         if let Some(slot) = self.slots.get_mut(id.slot) {
             if slot.generation == id.generation {
                 slot.task = None;
+                slot.ready_preparation = None;
             }
         }
     }

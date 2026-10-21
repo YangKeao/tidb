@@ -2279,7 +2279,7 @@ fn integer_identities_preserve_first_argument_flags_and_all_bits() {
 }
 
 #[test]
-fn pure_niladic_pi_uses_explicit_rows_without_admitting_stateful_calls() {
+fn pure_niladic_pi_and_stateful_rand_use_distinct_explicit_row_profiles() {
     let field = real_ty();
     let pi = || call("pi", field.clone(), vec![]);
     for selected in [
@@ -2323,18 +2323,32 @@ fn pure_niladic_pi_uses_explicit_rows_without_admitting_stateful_calls() {
             assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
         }
     }
-    // An empty argument list is only arity; the registry still decides purity.
+    // An empty argument list is only arity. RAND now has an explicit stateful
+    // host route; without a session provider it retains its original SQL error.
     let random = suite(call("rand", field.clone(), vec![]));
-    assert!(PreparedBatch::compile(
+    let worker = PreparedBatch::compile(
         &random,
         &[],
         true,
         1,
         limits(),
         ExecutionLimits::default(),
-        usize::MAX
+        usize::MAX,
     )
-    .is_err());
+    .unwrap();
+    assert!(worker.source.context_row_only);
+    let mut input = Chunk::new_with_capacity(&[], 3);
+    input.set_num_virtual_rows(3);
+    let mut output = output_for(&field);
+    assert!(matches!(
+        random.run_with_tikv_batch(&Context::new(true), &mut input, &mut output, &[]),
+        Err(EvaluatorError::Eval(EvalError::Unsupported(
+            "RAND requires a session"
+        )))
+    ));
+    assert_eq!(output.num_rows(), 0);
+    let route = random.batch_route_snapshot();
+    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
     let pure = suite(pi());
     let mut source_limits = limits();
     source_limits.tree.max_nodes = 0;
@@ -34090,3 +34104,6 @@ mod stateful_tests;
 
 #[path = "batch_json_schema_tests.rs"]
 mod json_schema_tests;
+
+#[path = "batch_final_state_tests.rs"]
+mod final_state_tests;

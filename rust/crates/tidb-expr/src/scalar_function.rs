@@ -1433,6 +1433,50 @@ impl ScalarFunction {
     }
 
     #[cfg(test)]
+    pub(crate) fn eval_original_final_state(
+        &self,
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        // Exact pre-extraction discarded stored header, including deferred and
+        // parameter Constant headers. No replacement expression is constructed.
+        let _stored_name = self.uservar_name();
+        let name = self.func_name.lowercase();
+        let value = match name {
+            "rand" => {
+                let vals: Vec<Datum> = self
+                    .args
+                    .iter()
+                    .map(|a| a.eval(ctx, row))
+                    .collect::<Result<_, _>>()?;
+                let arg_is_constant = matches!(self.args.first(), Some(Expression::Constant(_)));
+                crate::math_fn::eval_rand_values(
+                    &vals,
+                    ctx,
+                    Some(std::ptr::from_ref(self) as usize),
+                    arg_is_constant,
+                )?
+            }
+            "tidb_is_ddl_owner" => {
+                if !self.args.is_empty() {
+                    return Err(EvalError::WrongParameterCount("tidb_is_ddl_owner"));
+                }
+                let is_owner = ctx.ddl_owner_info()?;
+                Datum::Int(i64::from(is_owner))
+            }
+            "aes_encrypt" | "aes_decrypt" => crate::builtin_ext::crypto::eval_aes_lazy_original(
+                name,
+                self.args.len(),
+                |i| self.args[i].eval(ctx, row),
+                ctx,
+            )
+            .expect("original AES control")?,
+            _ => unreachable!("test original final state families"),
+        };
+        self.coerce_to_ret_type(value)
+    }
+
+    #[cfg(test)]
     pub(crate) fn eval_original_json_schema(
         &self,
         ctx: &dyn Columns,
@@ -2710,11 +2754,7 @@ impl ScalarFunction {
         // NULL. A context without the provider fails exactly as Go's
         // `getPropProvider` does.
         if name == "tidb_is_ddl_owner" {
-            if !self.args.is_empty() {
-                return Err(EvalError::WrongParameterCount("tidb_is_ddl_owner"));
-            }
-            let is_owner = ctx.ddl_owner_info()?;
-            return Ok(Datum::Int(i64::from(is_owner)));
+            return stateful::ddl_owner(self.args.len(), ctx);
         }
         // The collation-aware string builtins. Go gives each of these a
         // `baseBuiltinFunc.collator` taken from the derived result collation

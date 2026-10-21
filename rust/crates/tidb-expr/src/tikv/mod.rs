@@ -181,9 +181,9 @@ pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
 pub(crate) use ready_value::{
-    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_bytes_in,
+    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_bytes_in, evaluate_closed_args,
     evaluate_prepared_args_in, evaluate_regexp_in, native_time_result_contract_error,
-    EvaluatedBytesResult, RegexpFunction,
+    EvaluatedBytesResult, PreparationUnwindGuard, RegexpFunction,
 };
 pub use ready_value::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,

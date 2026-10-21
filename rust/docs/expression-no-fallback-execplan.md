@@ -4587,3 +4587,9 @@ Full frontend1985/exact3/95ignored,444batch/exact346warnings,Projection26 includ
 two appended schema cohorts,lint/dual10fmt/reconstruction are retained in
 no-fallback-n18.md. SDKad73b11 stays unchanged; N16fresh gates remain valid.
 Continue RAND/owner/AES and global optional/PB/public entry closure immediately.
+
+## N19: random occurrence, DDL owner and lazy AES
+
+Completed the same SDK HostFrame source and shared value/context phases for RAND, TIDB_IS_DDL_OWNER and AES encrypt/decrypt. Retain genuine original occurrence pointers and structural Constant classification, all eager RAND demands before arity, owner arity before children, and AES stored header/cache/mode/arity/input/key/optional-IV order. Actual value leases and callback re-authentication precede cipher execution and publication; actual cache ownership and unwind/cancellation are preserved. No nested expression driver or dummy IV/NULL source was added. Original39312/139A40582F6B294D, full actual727716/092E0C47BF46492F and preserved-control121286/286849C89B032D6E pass. All 1997 frontend tests pass apart from the exact original three failures (95 ignored), all456batch/346warnings, Projection27, lint, dual13fmt and reconstruction checks are recorded in evidence/no-fallback-n19.md. SDKad73b11 remains unchanged. No push is authorized.
+
+Continue global optional/protobuf/source metadata and public/AST/filter/Expand/unistore entry closure, generic Admission deletion, full-server and final performance immediately. A function or family checkpoint does not complete task #4.

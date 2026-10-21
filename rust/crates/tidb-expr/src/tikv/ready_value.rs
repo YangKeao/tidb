@@ -150,6 +150,12 @@ impl Default for ReadyValueCache {
 }
 
 impl ReadyValueCache {
+    /// Extends the original preparation unwind policy across broker suspensions.
+    /// Normal errors and cancellation leave the lane reusable.
+    pub(crate) fn preparation_unwind_guard(&self) -> PreparationUnwindGuard<'_> {
+        PreparationUnwindGuard(self)
+    }
+
     /// Creates an empty lane cache; no worker is prepared before first demand.
     #[must_use]
     pub fn new() -> Self {
@@ -253,6 +259,22 @@ impl ReadyValueCache {
     #[must_use]
     pub fn prepared_worker_count(&self) -> usize {
         self.workers.borrow().len()
+    }
+}
+
+pub(crate) struct PreparationUnwindGuard<'a>(&'a ReadyValueCache);
+
+impl PreparationUnwindGuard<'_> {
+    pub(crate) fn cache(&self) -> &ReadyValueCache {
+        self.0
+    }
+}
+
+impl Drop for PreparationUnwindGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.poison();
+        }
     }
 }
 
@@ -1607,6 +1629,25 @@ pub(crate) fn evaluate_args_in<T>(
     pack: impl FnOnce(EvaluatedBytesResult) -> Result<T, EvalError>,
 ) -> Result<T, EvalError> {
     evaluate_prepared_args_in(ctx, || Ok((operation, coerce()?)), pack)
+}
+
+/// Execute only prepared values on the actual cache selected before preparation.
+/// Absence keeps the original post-preparation one-shot lifecycle.
+pub(crate) fn evaluate_closed_args(
+    cache: Option<&ReadyValueCache>,
+    operation: EvaluatedBytesOp,
+    args: EvaluatedArgs,
+) -> Result<EvaluatedBytesResult, EvalError> {
+    let one_shot;
+    let cache = match cache {
+        Some(cache) => cache,
+        None => {
+            one_shot = ReadyValueCache::new();
+            &one_shot
+        }
+    };
+    evaluate_cached_args(cache, || Ok((operation, args)), Ok)
+        .map_err(ReadyValueBoundaryError::into_eval_error)
 }
 
 /// The original legacy integer signatures have distinct signedness and

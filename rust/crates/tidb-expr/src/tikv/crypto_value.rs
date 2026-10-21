@@ -63,7 +63,7 @@ pub(crate) fn before_body(op: O, ctx: &dyn Columns) {
         );
     }
 }
-pub(super) fn input<'a>(
+pub(crate) fn input<'a>(
     value: &'a Datum,
     hash: bool,
     maximum: usize,

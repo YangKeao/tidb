@@ -5042,4 +5042,219 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn final_state_random_and_aes_share_serial_parallel_projection_with_ordered_roots() {
+        let integer = longlong();
+        let string = FieldType::new(FieldTypeCode::VarString);
+        let real = FieldType::new(FieldTypeCode::Double)
+            .with_flen(22)
+            .with_decimal(-1);
+        let call = |name: &str, field, args| {
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), field, args))
+        };
+        let text = |value: &str| {
+            Expression::Constant(Constant::new(Datum::new_string(value), string.clone()))
+        };
+        let literal =
+            |value| Expression::Constant(Constant::new(Datum::Int(value), integer.clone()));
+        let column = || {
+            let mut c = Column::new(1, integer.clone());
+            c.index = 0;
+            Expression::Column(c)
+        };
+        let parameter = || {
+            let mut c = Constant::new(Datum::Int(99), integer.clone());
+            c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
+            Expression::Constant(c)
+        };
+        let aes = |name: &str, input| {
+            call(
+                name,
+                string.clone(),
+                vec![input, text("key"), text("1234567890123456")],
+            )
+        };
+        let mut roots = vec![
+            call("rand", real.clone(), vec![literal(7)]),
+            call("rand", real.clone(), vec![parameter()]),
+            call("rand", real.clone(), vec![column()]),
+            aes("aes_encrypt", column()),
+            aes("aes_decrypt", aes("aes_encrypt", column())),
+            call(
+                "ifnull",
+                string.clone(),
+                vec![
+                    aes(
+                        "aes_encrypt",
+                        Expression::Constant(Constant::new(Datum::Null, string.clone())),
+                    ),
+                    text("NULL"),
+                ],
+            ),
+            call(
+                "if",
+                integer.clone(),
+                vec![
+                    literal(0),
+                    call("tidb_is_ddl_owner", integer.clone(), vec![]),
+                    literal(9),
+                ],
+            ),
+            call(
+                "benchmark",
+                integer.clone(),
+                vec![literal(3), aes("aes_encrypt", column())],
+            ),
+        ];
+        let mut deferred = Constant::new(Datum::new_string("stored"), string.clone());
+        deferred.deferred_expr = Some(Box::new(aes("aes_decrypt", aes("aes_encrypt", column()))));
+        roots.push(Expression::Constant(deferred));
+        let mut fields = vec![
+            real.clone(),
+            real.clone(),
+            real.clone(),
+            string.clone(),
+            string.clone(),
+            string.clone(),
+            integer.clone(),
+            integer.clone(),
+            string.clone(),
+        ];
+        let first = (roots.clone(), fields.clone());
+        roots.push(call(
+            "setvar",
+            real.clone(),
+            vec![
+                text("n19-final"),
+                call("rand", real.clone(), vec![literal(7)]),
+            ],
+        ));
+        fields.push(real.clone());
+        roots.push(call("getvar_real", real.clone(), vec![text("n19-final")]));
+        fields.push(real.clone());
+        let modes = [
+            tidb_expr::BlockEncryptionMode::Aes128Ecb,
+            tidb_expr::BlockEncryptionMode::Aes192Cbc,
+            tidb_expr::BlockEncryptionMode::Aes256Cfb,
+        ];
+        for (roots, fields) in [first, (roots, fields)] {
+            for mode in modes {
+                for enabled in [false, true] {
+                    let context = || {
+                        crate::StmtContext::for_query()
+                            .with_enable_vectorized_expression(enabled)
+                            .with_prepared_params(vec![Datum::Int(7)].into())
+                            .with_block_encryption_mode(mode)
+                    };
+                    let reference = context();
+                    let suite = EvaluatorSuite::new(roots.clone(), false);
+                    let mut input =
+                        Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+                    for row in 0..3 {
+                        input.append_int64(0, row);
+                        input.append_int64(1, row * 2);
+                    }
+                    let mut expected = Chunk::new_with_capacity(&fields, 0);
+                    suite.run(&reference, &mut input, &mut expected).unwrap();
+                    let warnings = reference.take_warnings();
+                    for workers in [0, 2] {
+                        let actual_context = context();
+                        let (source, _) = NumberSource::new(3, 3);
+                        let schema = Schema::new(
+                            fields
+                                .iter()
+                                .enumerate()
+                                .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
+                                .collect(),
+                        );
+                        let mut projection = ProjectionExec::new(
+                            ExecutorMeta::new(schema, 1, 3, 1024),
+                            roots.clone(),
+                            source,
+                            actual_context.clone(),
+                        )
+                        .with_workers(workers);
+                        projection.open().unwrap();
+                        let mut actual = projection.new_chunk();
+                        projection.next(&mut actual).unwrap();
+                        assert_eq!(actual.num_rows(), 3);
+                        for row in 0..3 {
+                            for col in 0..fields.len() {
+                                assert_eq!(
+                                    actual.get_row(row).is_null(col),
+                                    expected.get_row(row).is_null(col)
+                                );
+                                assert_eq!(actual.column(col).get_raw(row).as_ref(),expected.column(col).get_raw(row).as_ref(),"mode={mode:?} flag={enabled} workers={workers} row={row} col={col}");
+                            }
+                        }
+                        assert_eq!(actual_context.take_warnings(), warnings);
+                        assert_eq!(
+                            tidb_expr::Columns::get_uservar(&actual_context, "n19-final"),
+                            tidb_expr::Columns::get_uservar(&reference, "n19-final")
+                        );
+                        if workers == 0 {
+                            let route = projection.evaluator_suite.batch_route_snapshot();
+                            assert_eq!((route.refusals, route.fallback), (0, 0));
+                        }
+                        projection.close().unwrap();
+                    }
+                }
+            }
+        }
+        // The real executor context has no DDL owner provider. Preserve that
+        // original optional-property error without Admission or a retry.
+        let mut raw_deferred = Constant::new(Datum::new_string("stored"), string.clone());
+        raw_deferred.deferred_expr = Some(Box::new(aes("aes_encrypt", column())));
+        for (root, error_text, field) in [
+            (
+                call("tidb_is_ddl_owner", integer.clone(), vec![]),
+                "OptPropDDLOwnerInfo",
+                integer.clone(),
+            ),
+            (
+                Expression::Constant(raw_deferred),
+                "deferred conversion diagnostic routing is not yet ported",
+                string.clone(),
+            ),
+        ] {
+            for enabled in [false, true] {
+                for workers in [0, 2] {
+                    let roots = vec![root.clone()];
+                    let reference =
+                        crate::StmtContext::for_query().with_enable_vectorized_expression(enabled);
+                    let original = EvaluatorSuite::new(roots.clone(), false);
+                    let mut input =
+                        Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 1);
+                    input.append_int64(0, 0);
+                    input.append_int64(1, 0);
+                    let expected = original
+                        .run(
+                            &reference,
+                            &mut input,
+                            &mut Chunk::new_with_capacity(std::slice::from_ref(&field), 0),
+                        )
+                        .unwrap_err();
+                    assert!(format!("{expected:?}").contains(error_text));
+                    let (source, _) = NumberSource::new(3, 3);
+                    let schema = Schema::new(vec![Column::new(1, field.clone())]);
+                    let mut projection = ProjectionExec::new(
+                        ExecutorMeta::new(schema, 1, 3, 1024),
+                        roots,
+                        source,
+                        reference,
+                    )
+                    .with_workers(workers);
+                    projection.open().unwrap();
+                    let mut output = projection.new_chunk();
+                    let error = projection.next(&mut output).unwrap_err();
+                    assert!(format!("{error:?}").contains(error_text));
+                    if workers == 0 {
+                        let route = projection.evaluator_suite.batch_route_snapshot();
+                        assert_eq!((route.refusals, route.fallback), (0, 0));
+                    }
+                    projection.close().unwrap();
+                }
+            }
+        }
+    }
 }

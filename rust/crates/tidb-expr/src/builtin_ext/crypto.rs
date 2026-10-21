@@ -105,12 +105,53 @@ fn uncompressed_length(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalErro
     )
 }
 
+#[path = "aes_value.rs"]
+mod aes_value;
+pub(crate) use aes_value::AesPreparation;
+
 /// Evaluates AES arguments in Go's signature order. ECB deliberately ignores
 /// a third argument without evaluating it and emits warning 1618; IV modes
 /// require and evaluate exactly three arguments. Keeping the evaluator as a
 /// closure lets both AST and chunk paths share this ordering without copying
 /// their row-access machinery.
 pub(crate) fn eval_aes_lazy<F>(
+    name: &str,
+    arg_count: usize,
+    mut eval: F,
+    ctx: &dyn Columns,
+) -> Option<Result<Datum, EvalError>>
+where
+    F: FnMut(usize) -> Result<Datum, EvalError>,
+{
+    let function = if name.eq_ignore_ascii_case("aes_encrypt") {
+        "aes_encrypt"
+    } else if name.eq_ignore_ascii_case("aes_decrypt") {
+        "aes_decrypt"
+    } else {
+        return None;
+    };
+    Some(crate::tikv::evaluate_prepared_args_in(
+        ctx,
+        || {
+            let mut preparation = AesPreparation::new(function, arg_count, ctx);
+            preparation.validate_arity()?;
+            loop {
+                let value = eval(preparation.next_argument())?;
+                if let Some(ready) = preparation.accept(&value, ctx)? {
+                    return Ok(ready);
+                }
+            }
+        },
+        |computed| {
+            Ok(computed
+                .into_bytes()?
+                .map_or(Datum::Null, Datum::new_string))
+        },
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn eval_aes_lazy_original<F>(
     name: &str,
     arg_count: usize,
     mut eval: F,
@@ -173,7 +214,10 @@ where
 
 /// Only immutable signature metadata selects the recipe; the worker receives
 /// the complete password and IV and owns key derivation and cipher policy.
-fn aes_operation(encrypt: bool, mode: BlockEncryptionMode) -> crate::tikv::EvaluatedBytesOp {
+pub(crate) fn aes_operation(
+    encrypt: bool,
+    mode: BlockEncryptionMode,
+) -> crate::tikv::EvaluatedBytesOp {
     use crate::tikv::EvaluatedBytesOp as Op;
     use BlockEncryptionMode::*;
     match (encrypt, mode) {

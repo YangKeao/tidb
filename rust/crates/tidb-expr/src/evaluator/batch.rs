@@ -66,8 +66,8 @@ use numeric_source::PendingNumeric;
 mod native_values;
 use hosts::{
     CompiledDiagnosticParent, CompiledNumericParent, NativeBatchHosts, NativeCachedList,
-    NativeHostMetadata, NativeJsonSchema, NativeRawValueOperation, NativeStateful,
-    NativeTypedContext, NativeTypedDescriptor, NativeValuePreparation, NumericPlan,
+    NativeFinalState, NativeHostMetadata, NativeJsonSchema, NativeRawValueOperation,
+    NativeStateful, NativeTypedContext, NativeTypedDescriptor, NativeValuePreparation, NumericPlan,
     NumericPlanBody, WindowArithmeticMetadata, WindowArithmeticSource,
 };
 use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
@@ -441,6 +441,7 @@ fn promoted_native_root_view(
         return Ok(None);
     };
     let row_control = native_json_schema_call(function)
+        || native_final_state_call(function)
         || native_stateful_call(function)
         || native_cached_list_call(function)
         || matches!(
@@ -533,6 +534,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
             if native_json_schema_call(function)
+                || native_final_state_call(function)
                 || native_stateful_call(function)
                 || native_cached_list_call(function) =>
         {
@@ -626,6 +628,7 @@ fn contains_context_value(node: &Expression, depth: usize, remaining: &mut usize
         Expression::CorrelatedColumn(_) => true,
         Expression::ScalarFunction(f) => {
             native_json_schema_call(f)
+                || native_final_state_call(f)
                 || native_stateful_call(f)
                 || native_cached_list_call(f)
                 || f.args
@@ -1321,7 +1324,10 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
     }
 }
 fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
-    if native_json_schema_call(function) || native_stateful_call(function) {
+    if native_json_schema_call(function)
+        || native_final_state_call(function)
+        || native_stateful_call(function)
+    {
         return NativeView::ValueToken;
     }
     if native_cached_list_call(function) {
@@ -1959,6 +1965,15 @@ fn native_json_schema_call(function: &ScalarFunction) -> bool {
         && function.get_static_type().is_some()
         && function.args.iter().all(|a| a.static_type().is_some())
 }
+fn native_final_state_call(function: &ScalarFunction) -> bool {
+    matches!(
+        function.func_name.lowercase(),
+        "rand" | "tidb_is_ddl_owner" | "aes_encrypt" | "aes_decrypt"
+    ) && function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && function.get_static_type().is_some()
+        && function.args.iter().all(|a| a.static_type().is_some())
+}
 fn native_stateful_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::stateful::Operation::from_name(function.func_name.lowercase()).is_some()
         && function.pb_signature().is_none()
@@ -1976,6 +1991,7 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_json_schema_call(function)
+        || native_final_state_call(function)
         || native_stateful_call(function)
         || native_cached_list_call(function)
         || crate::scalar_function::eager_values::supports(function)
@@ -2026,6 +2042,9 @@ fn source_prefix_probe<'a>(
     function: &'a ScalarFunction,
     operation: SqlBatchHostOperation,
 ) -> Option<&'a Datum> {
+    if native_final_state_call(function) {
+        return function.identity_constant_probe();
+    }
     if host_has_embedded_probe(operation)
         || crate::scalar_function::argument_policy::classify(function)
             == crate::scalar_function::argument_policy::ArgumentPolicy::BeforeNameProbe
@@ -2083,7 +2102,9 @@ fn resolve_specific_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
-    if (native_json_schema_call(function) || native_stateful_call(function))
+    if (native_json_schema_call(function)
+        || native_final_state_call(function)
+        || native_stateful_call(function))
         && view.value_role().is_some()
     {
         return Ok((
@@ -3480,6 +3501,10 @@ fn preflight_view<'a>(
                             budget.array::<NativeJsonSchema>(1)?;
                             budget.array::<usize>(arity)?;
                             budget.field(sql, 1)?;
+                        } else if native_final_state_call(function) {
+                            budget.array::<NativeFinalState>(1)?;
+                            budget.array::<usize>(arity)?;
+                            budget.field(sql, 1)?;
                         } else if native_stateful_call(function) {
                             budget.array::<NativeStateful>(1)?;
                             budget.array::<usize>(arity)?;
@@ -4852,6 +4877,19 @@ fn lower_view_policy(
                                     cacheable:sql.args.first().is_some_and(|a|a.const_level()>=crate::expression::ConstLevel::ONLY_IN_CONTEXT),
                                     cache:sql.shared_json_schema_cache(),result_type:snapshot_field_type(item.declared_sql()),output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("schema output view missing"))?,
+                                }))
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if native_final_state_call(sql) => {
+                                let mut arguments=Vec::new(); reserve(&mut arguments,*arity)?;
+                                let mut child=ordinal+1;
+                                for _ in 0..*arity { arguments.push(child);child=checked.get(child).ok_or_else(||binding("final state child absent"))?.subtree_end; }
+                                NativeHostMetadata::FinalState(Box::new(NativeFinalState {
+                                    arguments:arguments.into_boxed_slice(),
+                                    name:match sql.func_name.lowercase() { "rand"=>"rand", "tidb_is_ddl_owner"=>"tidb_is_ddl_owner", "aes_encrypt"=>"aes_encrypt", "aes_decrypt"=>"aes_decrypt", _=>unreachable!() },
+                                    function_key:std::ptr::from_ref(sql) as usize,
+                                    constant_seed:matches!(sql.args.first(),Some(Expression::Constant(_))),
+                                    result_type:snapshot_field_type(item.declared_sql()), output_node:ordinal,
+                                    output_role:item.view.value_role().ok_or_else(||binding("final state output role absent"))?,
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_stateful_call(sql) => {

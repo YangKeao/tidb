@@ -359,3 +359,11 @@ pub(crate) fn original_eval(
     })()?;
     super::coerce_function_result(name, function.get_static_type(), value)
 }
+
+/// The actual optional owner provider, after arity and before result coercion.
+pub(crate) fn ddl_owner(argument_count: usize, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    if argument_count != 0 {
+        return Err(EvalError::WrongParameterCount("tidb_is_ddl_owner"));
+    }
+    Ok(Datum::Int(i64::from(ctx.ddl_owner_info()?)))
+}
