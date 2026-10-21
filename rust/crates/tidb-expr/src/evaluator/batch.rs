@@ -536,7 +536,8 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
             if native_json_schema_call(function)
                 || native_final_state_call(function)
                 || native_stateful_call(function)
-                || native_cached_list_call(function) =>
+                || native_cached_list_call(function)
+                || native_optional_selection_call(function) =>
         {
             NativeView::RootValue
         }
@@ -2074,6 +2075,21 @@ fn native_optional_value_call(function: &ScalarFunction) -> bool {
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
+// Selection owns raw argument demands and optional result coercion. Protocol
+// aliases that belong to the common scalar body retain that original owner.
+fn native_optional_selection_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && !crate::scalar_function::eager_values::supports(function)
+        && native_selection_operation(function).is_some_and(|op| {
+            op != SqlBatchHostOperation::XorNative && op.accepts_arity(function.args.len())
+        })
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|a| a.static_type().is_none()))
+}
+fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
+    native_optional_value_call(function) || native_optional_selection_call(function)
+}
 fn native_value_call(function: &ScalarFunction) -> bool {
     native_json_schema_call(function)
         || native_final_state_call(function)
@@ -2601,8 +2617,9 @@ fn resolve_specific_call_in_view(
             })
         {
             if !operation.accepts_arity(function.args.len())
-                || function.get_static_type().is_none()
-                || function.args.iter().any(|arg| arg.static_type().is_none())
+                || ((function.get_static_type().is_none()
+                    || function.args.iter().any(|arg| arg.static_type().is_none()))
+                    && !native_optional_selection_call(function))
             {
                 return Err(BatchFailure::admission(
                     "native nullable control requires typed arguments and valid arity",
@@ -3227,7 +3244,7 @@ fn preflight_view<'a>(
                     Expression::Constant(_)
                         | Expression::CorrelatedColumn(_)
                         | Expression::Column(_)
-                ) && !matches!(node,Expression::ScalarFunction(f) if native_optional_value_call(f))
+                ) && !matches!(node,Expression::ScalarFunction(f) if native_optional_declarations_call(f))
             {
                 return Err(BatchFailure::admission(
                     "optional SQL consumer needs its explicit profile",
@@ -3242,7 +3259,9 @@ fn preflight_view<'a>(
             budget.add(charset.len())?;
             budget.add(collate.len())?;
             match node {
-                Expression::ScalarFunction(function) if native_optional_value_call(function) => {
+                Expression::ScalarFunction(function)
+                    if native_optional_declarations_call(function) =>
+                {
                     check_batch_call(function, view)?;
                     let arity = function.args.len();
                     budget.add(function.func_name.original().len())?;
@@ -3251,7 +3270,11 @@ fn preflight_view<'a>(
                     budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
                     budget.array::<NativeHostMetadata>(1)?;
                     budget.array::<Option<Datum>>(1)?;
-                    budget_value_call_metadata(&mut budget, function, None)?;
+                    if native_optional_selection_call(function) {
+                        budget.array::<usize>(arity)?;
+                    } else {
+                        budget_value_call_metadata(&mut budget, function, None)?;
+                    }
                     let (CallTarget::Host(operation), _) = resolve_call_in_view(function, view)?
                     else {
                         unreachable!("native optional value owner");
@@ -3479,7 +3502,7 @@ fn preflight_view<'a>(
                     .args
                     .iter()
                     .any(|argument| argument.static_type().is_none())
-                    && !native_optional_value_call(function)
+                    && !native_optional_declarations_call(function)
                 {
                     return Err(BatchFailure::admission(
                         "optional function argument needs its explicit profile",
@@ -3686,7 +3709,7 @@ fn preflight_view<'a>(
                     // Optional value calls retain only their selected owner metadata.
                     // A name may also have a typed specialization whose required
                     // declarations were not selected by this call's source.
-                    if !native_optional_value_call(function) {
+                    if !native_optional_declarations_call(function) {
                         if native_crypto_call(function).is_some() && view.value_role().is_some() {
                             budget.field(sql, 1)?;
                             budget.array::<usize>(arity)?;
@@ -3926,7 +3949,7 @@ fn preflight_view<'a>(
                     for argument in &function.args {
                         if let Some(field) = argument.static_type() {
                             budget.field(field, 1)?;
-                        } else if !native_optional_value_call(function) {
+                        } else if !native_optional_declarations_call(function) {
                             return Err(BatchFailure::admission(
                                 "host argument has no static declaration",
                             ));
@@ -5610,7 +5633,7 @@ fn lower_view_policy(
                                 }
                                 NativeHostMetadata::Selection {
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     argument_nodes: argument_nodes.into_boxed_slice(),
                                     output_node: ordinal,
                                     output_role: item.view.value_role().ok_or_else(|| {

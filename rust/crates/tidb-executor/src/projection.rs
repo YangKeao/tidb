@@ -4931,6 +4931,21 @@ mod tests {
             "aes_encrypt",
             "json_schema_valid",
             "find_in_set",
+            "if",
+            "case",
+            "ifnull",
+            "coalesce",
+            "and",
+            "or",
+            "not",
+            "isnull",
+            "istrue",
+            "isfalse",
+            "isnottrue",
+            "isnotfalse",
+            "isunknown",
+            "isnotunknown",
+            "istrue_with_null",
         ] {
             for mask in [0u8, 1, 2, 3] {
                 let field = if name == "rand" {
@@ -4951,6 +4966,14 @@ mod tests {
                         "rand" => vec![number(5)],
                         "aes_encrypt" => vec![text("hello"), text("key"), text("ignored IV")],
                         "find_in_set" => vec![parameter(2, string.clone()), text("1,123,3")],
+                        "if" | "case" => vec![parameter(0, integer.clone()), number(7), number(0)],
+                        "ifnull" | "coalesce" | "and" | "or" => {
+                            vec![parameter(0, integer.clone()), number(7)]
+                        }
+                        "not" | "isnull" | "istrue" | "isfalse" | "isnottrue" | "isnotfalse"
+                        | "isunknown" | "isnotunknown" | "istrue_with_null" => {
+                            vec![parameter(0, integer.clone())]
+                        }
                         _ => vec![text(r#"{"type":"integer"}"#), parameter(1, string.clone())],
                     };
                     ScalarFunction::new(CiString::new(name), field.clone(), args)
@@ -4967,65 +4990,103 @@ mod tests {
                 fields.push(field);
             }
         }
-        for enabled in [false, true] {
-            let context = || {
-                crate::StmtContext::for_query()
-                    .with_enable_vectorized_expression(enabled)
-                    .with_current_insert_values(vec![Datum::Int(9)])
-                    .with_prepared_params(
-                        vec![
-                            Datum::Int(7),
-                            Datum::new_string("7"),
-                            Datum::new_string("123"),
-                        ]
-                        .into(),
-                    )
-            };
-            let reference = context();
-            let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
-            for row in 0..3 {
-                input.append_int64(0, row);
-                input.append_int64(1, row * 2);
-            }
-            let mut expected = Chunk::new_with_capacity(&fields, 3);
-            EvaluatorSuite::new(roots.clone(), false)
-                .run(&reference, &mut input, &mut expected)
-                .unwrap();
-            let warnings = reference.take_warnings();
-            for workers in [0, 2] {
-                let context = context();
-                let (source, _) = NumberSource::new(3, 3);
-                let schema = Schema::new(
-                    fields
-                        .iter()
-                        .enumerate()
-                        .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
-                        .collect(),
-                );
-                let mut projection = ProjectionExec::new(
-                    ExecutorMeta::new(schema, 1, 3, 1024),
-                    roots.clone(),
-                    source,
-                    context.clone(),
-                )
-                .with_workers(workers);
-                projection.open().unwrap();
-                let mut output = projection.new_chunk();
-                projection.next(&mut output).unwrap();
-                assert_eq!(output.num_rows(), expected.num_rows());
-                for i in 0..fields.len() {
-                    assert_eq!(
-                        output.column(i),
-                        expected.column(i),
-                        "column={i} flag={enabled} workers={workers}"
+        // Preserve the original unordered state/cache fixture separately.
+        // The added controls also cover fully declared typed parameters, whose
+        // old whole-column phases are still outside optional row admission.
+        let unordered = (roots[..28].to_vec(), fields[..28].to_vec());
+        roots.push(Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("setvar"),
+            integer.clone(),
+            vec![text("n25-selection"), parameter(0, integer.clone())],
+        )));
+        fields.push(integer.clone());
+        roots.push(Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("getvar_int"),
+            integer.clone(),
+            vec![text("n25-selection")],
+        )));
+        fields.push(integer.clone());
+        let mut configurations = vec![unordered];
+        // Each real suite keeps its normal per-calculation metadata allowance;
+        // multiplying unrelated roots must not dilute the AES/cache admission.
+        for start in (28..88).step_by(12) {
+            let end = (start + 12).min(88);
+            let mut selected = roots[start..end].to_vec();
+            let mut declared = fields[start..end].to_vec();
+            selected.push(roots[0].clone());
+            declared.push(fields[0].clone());
+            selected.extend_from_slice(&roots[88..]);
+            declared.extend_from_slice(&fields[88..]);
+            configurations.push((selected, declared));
+        }
+        for (roots, fields) in configurations {
+            for enabled in [false, true] {
+                let context = || {
+                    crate::StmtContext::for_query()
+                        .with_enable_vectorized_expression(enabled)
+                        .with_user_vars(std::sync::Arc::new(std::sync::Mutex::new(
+                            std::collections::HashMap::new(),
+                        )))
+                        .with_current_insert_values(vec![Datum::Int(9)])
+                        .with_prepared_params(
+                            vec![
+                                Datum::Int(7),
+                                Datum::new_string("7"),
+                                Datum::new_string("123"),
+                            ]
+                            .into(),
+                        )
+                };
+                let reference = context();
+                let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+                for row in 0..3 {
+                    input.append_int64(0, row);
+                    input.append_int64(1, row * 2);
+                }
+                let mut expected = Chunk::new_with_capacity(&fields, 3);
+                EvaluatorSuite::new(roots.clone(), false)
+                    .run(&reference, &mut input, &mut expected)
+                    .unwrap();
+                let warnings = reference.take_warnings();
+                for workers in [0, 2] {
+                    let context = context();
+                    let (source, _) = NumberSource::new(3, 3);
+                    let schema = Schema::new(
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
+                            .collect(),
                     );
+                    let mut projection = ProjectionExec::new(
+                        ExecutorMeta::new(schema, 1, 3, 1024),
+                        roots.clone(),
+                        source,
+                        context.clone(),
+                    )
+                    .with_workers(workers);
+                    projection.open().unwrap();
+                    let mut output = projection.new_chunk();
+                    projection.next(&mut output).unwrap();
+                    assert_eq!(output.num_rows(), expected.num_rows());
+                    for i in 0..fields.len() {
+                        assert_eq!(
+                            output.column(i),
+                            expected.column(i),
+                            "column={i} flag={enabled} workers={workers}"
+                        );
+                    }
+                    assert_eq!(context.take_warnings(), warnings);
+                    assert_eq!(
+                        tidb_expr::Columns::get_uservar(&context, "n25-selection"),
+                        tidb_expr::Columns::get_uservar(&reference, "n25-selection"),
+                    );
+                    if workers == 0 {
+                        let route = projection.evaluator_suite.batch_route_snapshot();
+                        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                    }
+                    projection.close().unwrap();
                 }
-                assert_eq!(context.take_warnings(), warnings);
-                if workers == 0 {
-                    let route = projection.evaluator_suite.batch_route_snapshot();
-                    assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
-                }
-                projection.close().unwrap();
             }
         }
     }

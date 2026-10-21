@@ -379,7 +379,7 @@ pub(super) enum NativeHostMetadata {
     },
     Selection {
         name: Box<str>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         argument_nodes: Box<[usize]>,
         output_node: usize,
         output_role: NativeValueRole,
@@ -454,6 +454,7 @@ impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
             Self::EagerValues { result_type, .. } => result_type.as_ref(),
+            Self::Selection { result_type, .. } => result_type.as_ref(),
             Self::JsonSchema(metadata) => metadata.result_type.as_ref(),
             Self::Stateful(metadata) => metadata.result_type.as_ref(),
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
@@ -483,7 +484,6 @@ impl NativeHostMetadata {
             | Self::JsonSumCrc32 { result_type, .. }
             | Self::RawValues { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
-            | Self::Selection { result_type, .. }
             | Self::Comparison { result_type, .. }
             | Self::Arithmetic { result_type, .. }
             | Self::Math { result_type, .. }
@@ -1343,6 +1343,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::Stateful(_)
                 | NativeHostMetadata::FinalState(_)
                 | NativeHostMetadata::CachedList(_)
+                | NativeHostMetadata::Selection { .. }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {
@@ -1478,7 +1479,8 @@ impl<'a> NativeBatchHosts<'a> {
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
         let value =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
+            match crate::scalar_function::coerce_function_result(name, result_type.as_ref(), value)
+            {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
@@ -2061,11 +2063,14 @@ impl<'a> NativeBatchHosts<'a> {
         };
         let result = crate::tikv::boolean_value(function, truth)?;
         let result = result.map_or(Datum::Null, Datum::Int);
-        let result =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
+        let result = match crate::scalar_function::coerce_function_result(
+            name,
+            result_type.as_ref(),
+            result,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
     }
     fn resume_logical(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
@@ -2147,11 +2152,14 @@ impl<'a> NativeBatchHosts<'a> {
         }
         let result = crate::tikv::logical_value(function, left, right)?;
         let result = result.map_or(Datum::Null, Datum::Int);
-        let result =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), result) {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
+        let result = match crate::scalar_function::coerce_function_result(
+            name,
+            result_type.as_ref(),
+            result,
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
             .map(HostStep::Ready)
     }
@@ -4276,81 +4284,83 @@ mod tests {
     }
     #[test]
     fn native_nullable_selected_input_keeps_resource_and_provenance_failures_terminal() {
-        let argument = projected(&native_bytes_type(), true).unwrap();
-        let args = vec![argument.clone(), argument.clone()];
-        let output = argument.clone();
-        let catalog = HostCatalog::for_sql_batch(vec![(
-            SqlBatchHostOperation::IfNullNative,
-            HostSignature {
-                arg_types: args.clone().into_boxed_slice(),
-                return_type: output.clone(),
-            },
-        )])
-        .unwrap();
-        let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::Selection {
-            name: "ifnull".into(),
-            result_type: native_bytes_type(),
-            argument_nodes: vec![3, 8].into_boxed_slice(),
-            output_node: 2,
-            output_role: NativeValueRole::Output,
-        }];
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
-        store.borrow_mut().begin_window().unwrap();
-        let row = InputRow {
-            occurrence: 0,
-            input_row: 0,
-        };
-        let origin = NativeValueOrigin { node: 3, row };
-        let large = store
-            .borrow_mut()
-            .insert_clone(
-                &Datum::Bytes(vec![b'x'; 16384]),
-                NativeValueRole::CharInput,
-                origin,
-            )
+        for result_type in [Some(native_bytes_type()), None] {
+            let argument = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![argument.clone(), argument.clone()];
+            let output = argument.clone();
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::IfNullNative,
+                HostSignature {
+                    arg_types: args.clone().into_boxed_slice(),
+                    return_type: output.clone(),
+                },
+            )])
             .unwrap();
-        let wrong = store
-            .borrow_mut()
-            .insert_clone(&Datum::Null, NativeValueRole::Output, origin)
-            .unwrap();
-        let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
-            .with_native_values(Some(&store));
-        let mut ctx = EvalContext::default();
-        for (token, resource_failure) in [(large, true), (wrong, false)] {
-            let HostStart::Pending { task, .. } = provider
-                .start(
-                    &mut ctx,
-                    HostInvocation {
-                        slot,
-                        row,
-                        arg_types: &args,
-                        return_type: &output,
-                    },
-                )
-                .unwrap()
-            else {
-                panic!("request")
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::Selection {
+                name: "ifnull".into(),
+                result_type: result_type.clone(),
+                argument_nodes: vec![3, 8].into_boxed_slice(),
+                output_node: 2,
+                output_role: NativeValueRole::Output,
+            }];
+            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 0,
+                input_row: 0,
             };
-            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-            let error = provider
-                .resume(
-                    &mut ctx,
-                    &task,
-                    HostArgReply {
-                        index: 0,
-                        field_type: &argument,
-                        values: &values,
-                    },
+            let origin = NativeValueOrigin { node: 3, row };
+            let large = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Bytes(vec![b'x'; 16384]),
+                    NativeValueRole::CharInput,
+                    origin,
                 )
-                .unwrap_err();
-            if resource_failure {
-                assert!(matches!(error, LocalError::ResourceLimit(_)));
-            } else {
-                assert!(matches!(error, LocalError::BindingContract(_)));
+                .unwrap();
+            let wrong = store
+                .borrow_mut()
+                .insert_clone(&Datum::Null, NativeValueRole::Output, origin)
+                .unwrap();
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
+                .with_native_values(Some(&store));
+            let mut ctx = EvalContext::default();
+            for (token, resource_failure) in [(large, true), (wrong, false)] {
+                let HostStart::Pending { task, .. } = provider
+                    .start(
+                        &mut ctx,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &output,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!("request")
+                };
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let error = provider
+                    .resume(
+                        &mut ctx,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &argument,
+                            values: &values,
+                        },
+                    )
+                    .unwrap_err();
+                if resource_failure {
+                    assert!(matches!(error, LocalError::ResourceLimit(_)));
+                } else {
+                    assert!(matches!(error, LocalError::BindingContract(_)));
+                }
+                assert!(provider.take_native_error().is_none());
+                provider.cancel(&task);
             }
-            assert!(provider.take_native_error().is_none());
-            provider.cancel(&task);
         }
     }
 }

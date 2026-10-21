@@ -1589,3 +1589,210 @@ fn run_common_invalid_numeric_arity_matrix(compare: bool) {
     }
     assert!(gaps.is_empty());
 }
+
+#[test]
+fn optional_selection_original_metadata_and_lazy_demands() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_selection_original_metadata_and_lazy_demands",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_selection_matrix(false);
+}
+#[test]
+fn optional_selection_actual_metadata_and_lazy_demands() {
+    if isolate_common_corpus("stateful_tests::optional_selection_actual_metadata_and_lazy_demands")
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_selection_matrix(true);
+}
+fn run_optional_selection_matrix(compare: bool) {
+    let names = [
+        "if",
+        "case",
+        "ifnull",
+        "coalesce",
+        "and",
+        "or",
+        "not",
+        "isnull",
+        "istrue",
+        "isfalse",
+        "isnottrue",
+        "isnotfalse",
+        "isunknown",
+        "isnotunknown",
+        "istrue_with_null",
+    ];
+    let values = [
+        [Datum::Null, Datum::new_string("selected")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+    ];
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    let mut retained_bulk_gaps = 0usize;
+    for name in names {
+        for shape in 0..5 {
+            for mask in 0..8 {
+                for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for (vi, values) in values.iter().cloned().enumerate() {
+                        for profile in [0, 4, 5] {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let p0 = parameter(0, string_ty());
+                                        let p1 = parameter(1, string_ty());
+                                        let fallback =
+                                            literal(Datum::new_string("fallback"), string_ty());
+                                        let mut args = match name {
+                                            "if" | "case" => vec![p0, p1, fallback],
+                                            "ifnull" | "coalesce" | "and" | "or" => vec![p0, p1],
+                                            _ => vec![p0],
+                                        };
+                                        match shape {
+                                            1 => {
+                                                for (index, arg) in args.iter_mut().enumerate() {
+                                                    let mut c = Constant::new(
+                                                        Datum::new_string("stored deferred"),
+                                                        string_ty(),
+                                                    );
+                                                    c.deferred_expr =
+                                                        Some(Box::new(leaf::assignment(
+                                                            &format!("selected{index}"),
+                                                            arg.clone(),
+                                                            &string_ty(),
+                                                        )));
+                                                    *arg = Expression::Constant(c);
+                                                }
+                                            }
+                                            2 => {
+                                                let last = args.len() - 1;
+                                                args[last] = call(
+                                                    "__actual_unselected_error__",
+                                                    string_ty(),
+                                                    vec![],
+                                                );
+                                            }
+                                            3 => {
+                                                let index = usize::from(args.len() > 1);
+                                                args[index] = string_column(0);
+                                            }
+                                            4 => {
+                                                let index = usize::from(args.len() > 1);
+                                                args[index] = call(
+                                                    "ifnull",
+                                                    string_ty(),
+                                                    vec![
+                                                        args[index].clone(),
+                                                        literal(
+                                                            Datum::new_string("nested"),
+                                                            string_ty(),
+                                                        ),
+                                                    ],
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                        let mut e = call(name, field.clone(), args);
+                                        erase_optional_call_declarations(&mut e, mask);
+                                        suite(e)
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let old = C::new(profile, enabled, values.clone());
+                                    let new = C::new(profile, enabled, values.clone());
+                                    // Record retained whole-selection profiles
+                                    // separately; they are an explicit existing
+                                    // entry gap, not an optional row declaration.
+                                    let root = &original.program.calculated[0];
+                                    let whole = original.program.vectorizable
+                                        && crate::scalar_function::static_batch_target(root)
+                                            .is_some()
+                                        && contains_context_value(root, 128, &mut 4096);
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let mut c = chunk(
+                                                &[string_ty()],
+                                                &[
+                                                    vec![Datum::new_string("a")],
+                                                    vec![Datum::new_string("b")],
+                                                    vec![Datum::new_string("c")],
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&field);
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let label=format!("optional-selection/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&field);
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[string_ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || left.column(0) != right.column(0)
+                                                || old.snapshot() != new.snapshot()
+                                            {
+                                                eprintln!("OPTIONAL SELECTION DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if route.fallback != 0 || route.refusals != 0 {
+                                                if whole {
+                                                    retained_bulk_gaps += 1;
+                                                } else if gaps.len() < 20 {
+                                                    gaps.push(format!("{label}: {route:?}"));
+                                                }
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("OPTIONAL SELECTION ORIGINAL {count}/{hash:016X}; retained whole profiles {retained_bulk_gaps}");
+    assert_eq!((count, hash), (388800, 0xED53E168732558ED));
+    if !gaps.is_empty() {
+        eprintln!("OPTIONAL SELECTION ROW ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}
