@@ -4328,6 +4328,61 @@ mod tests {
         let ordered_stateful_mix = std::iter::once(0)
             .chain(stateful_start..roots.len())
             .collect::<Vec<_>>();
+        let schema_start = roots.len();
+        let schema_json = FieldType::new(FieldTypeCode::Json);
+        let schema_check =
+            |schema, document| call("json_schema_valid", integer.clone(), vec![schema, document]);
+        let schema_integer = || early_literal(r#"{"type":"integer"}"#);
+        let root = schema_check(schema_integer(), context_parameter());
+        roots.push(root.clone());
+        fields.push(integer.clone());
+        roots.push(call("cast_char", string.clone(), vec![root]));
+        fields.push(string.clone());
+        roots.push(schema_check(
+            call(
+                "ifnull",
+                string.clone(),
+                vec![
+                    typed_deferred(schema_integer(), string.clone(), false),
+                    early_literal("false"),
+                ],
+            ),
+            column(0),
+        ));
+        fields.push(integer.clone());
+        roots.push(schema_check(
+            early_literal(r#"{"type":"object","required":["a"]}"#),
+            call(
+                "json_object",
+                schema_json.clone(),
+                vec![early_literal("a"), context_parameter()],
+            ),
+        ));
+        fields.push(integer.clone());
+        roots.push(schema_check(
+            early_literal(r##"{"$ref":"#/$defs/missing"}"##),
+            Expression::Constant(Constant::new(Datum::Null, schema_json.clone())),
+        ));
+        fields.push(integer.clone());
+        let schema_mix = std::iter::once(0)
+            .chain(cached_start..stateful_start)
+            .chain(schema_start..roots.len())
+            .collect::<Vec<_>>();
+        roots.push(call(
+            "setvar",
+            integer.clone(),
+            vec![
+                variable_name(),
+                schema_check(schema_integer(), context_parameter()),
+            ],
+        ));
+        fields.push(integer.clone());
+        roots.push(read_variable());
+        fields.push(integer.clone());
+        let ordered_schema_mix = std::iter::once(0)
+            .chain(stateful_start..schema_start)
+            .chain(schema_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
         let mut configurations = vec![
             (
@@ -4592,6 +4647,20 @@ mod tests {
                 .map(|&i| roots[i].clone())
                 .collect(),
             ordered_stateful_mix
+                .iter()
+                .map(|&i| fields[i].clone())
+                .collect(),
+        ));
+        configurations.push((
+            schema_mix.iter().map(|&i| roots[i].clone()).collect(),
+            schema_mix.iter().map(|&i| fields[i].clone()).collect(),
+        ));
+        configurations.push((
+            ordered_schema_mix
+                .iter()
+                .map(|&i| roots[i].clone())
+                .collect(),
+            ordered_schema_mix
                 .iter()
                 .map(|&i| fields[i].clone())
                 .collect(),

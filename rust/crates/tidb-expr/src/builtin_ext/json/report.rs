@@ -45,7 +45,7 @@ use tidb_chunk::row::Row;
 pub(crate) struct JsonSchemaCache(BuiltinFuncCache<Option<PreparedJsonSchema>>);
 
 #[derive(Debug)]
-struct PreparedJsonSchema {
+pub(crate) struct PreparedJsonSchema {
     schema: Json,
     validator: std::sync::OnceLock<Result<jsonschema::Validator, EvalError>>,
 }
@@ -56,8 +56,101 @@ impl Clone for JsonSchemaCache {
     }
 }
 
+/// An actual prepared owner across the existing argument-demand suspension.
+/// Cache handles share the original SQL owner; dynamic schemas stay owned.
+#[derive(Debug)]
+pub(crate) enum PreparedSchemaValue {
+    Cached(std::sync::Arc<Option<PreparedJsonSchema>>),
+    Owned(Option<PreparedJsonSchema>),
+}
+impl PreparedSchemaValue {
+    fn prepared(&self) -> Option<&PreparedJsonSchema> {
+        match self {
+            Self::Cached(value) => value.as_ref().as_ref(),
+            Self::Owned(value) => value.as_ref(),
+        }
+    }
+    /// Logical retained tree allowance for dynamic schemas. Cached values
+    /// already belong to the original external SQL cache owner. This observes
+    /// retained ownership, not validator/HTTP transients or allocator peaks.
+    pub(crate) fn owned_payload_bytes(&self) -> Option<usize> {
+        fn heap(value: &Json) -> Option<usize> {
+            match value {
+                Json::String(value) => Some(value.capacity()),
+                Json::Array(values) => values.iter().try_fold(
+                    values.capacity().checked_mul(std::mem::size_of::<Json>())?,
+                    |total, value| total.checked_add(heap(value)?),
+                ),
+                Json::Object(values) => values.iter().try_fold(
+                    values
+                        .len()
+                        .checked_mul(2 * std::mem::size_of::<(String, Json)>())?,
+                    |total, (key, value)| {
+                        total.checked_add(key.capacity())?.checked_add(heap(value)?)
+                    },
+                ),
+                _ => Some(0),
+            }
+        }
+        match self {
+            Self::Owned(Some(value)) => heap(&value.schema),
+            _ => Some(0),
+        }
+    }
+    pub(crate) fn is_absent(&self) -> bool {
+        self.prepared().is_none()
+    }
+    pub(crate) fn validate_value(&self, document: &Datum) -> Result<Datum, EvalError> {
+        self.prepared().map_or(Ok(Datum::Null), |schema| {
+            validate_json_schema(schema, document)
+        })
+    }
+}
+
 impl JsonSchemaCache {
+    /// Explicit invocation sharing; ordinary Clone deliberately stays empty.
+    pub(crate) fn share_for_invocation(&self) -> Self {
+        Self(self.0.share_for_invocation())
+    }
+    /// Both branches call the unchanged original value-only preparation owner.
+    /// Context lookup and expression demand belong to the caller's phases.
+    pub(crate) fn prepare_value(
+        &self,
+        value: &Datum,
+        context: Option<u64>,
+    ) -> Result<PreparedSchemaValue, EvalError> {
+        match context {
+            Some(context) => self
+                .0
+                .get_or_init_cache(context, || prepare_json_schema(value))
+                .map(PreparedSchemaValue::Cached),
+            None => prepare_json_schema(value).map(PreparedSchemaValue::Owned),
+        }
+    }
     pub(crate) fn eval(
+        &self,
+        args: &[Expression],
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        let [schema_arg, document_arg] = args else {
+            return Err(EvalError::WrongParameterCount("json_schema_valid"));
+        };
+        let schema = schema_arg.eval(ctx, row)?;
+        if schema.is_null() {
+            return Ok(Datum::Null);
+        }
+        let context =
+            (schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT).then(|| ctx.context_id());
+        let prepared = self.prepare_value(&schema, context)?;
+        if prepared.is_absent() {
+            return Ok(Datum::Null);
+        }
+        prepared.validate_value(&document_arg.eval(ctx, row)?)
+    }
+    // Exact executed pre-extraction demand/cache wrapper; tests only.
+    #[cfg(test)]
+    pub(crate) fn original_eval(
         &self,
         args: &[Expression],
         ctx: &dyn Columns,

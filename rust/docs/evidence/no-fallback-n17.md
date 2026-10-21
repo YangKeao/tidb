@@ -75,8 +75,8 @@ borrowing, panic and generation mutation, consumed-task replay and real resource
 or SQL failures. Loan tests cover ordinary/error unwind, active-payload accounting
 through reset, namespace replacement, slot reuse and budget failure before transfer.
 
-Long checks use 2,051 and 2,057 physical rows, selections crossing the existing
-1,024-row window, reverse/duplicate/empty selections, late child errors and public/
+Long checks use 2,051 and 2,057 physical rows, selections beyond the nominal
+1,024-row bulk width, reverse/duplicate/empty selections, late child errors and public/
 shared-frame alternation on the same source owner. Pending BENCHMARK-body and owned
 GET_LOCK-timeout cancellation each run 128 times, with stale cancellation/reply
 rejection and fresh NULL count/timeout recovery on the same provider.

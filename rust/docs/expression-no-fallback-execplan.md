@@ -4562,3 +4562,28 @@ unwind/cancellation/recovery and two appended heterogeneous Projection cohorts
 pass. Full frontend1974/exact3/95ignored,433batch/exact346warnings,Projection26,
 lint/dual12fmt/reconstruction are recorded in evidence/no-fallback-n17.md.
 Continue the remaining policies and global entry closure without checkpoint pause.
+
+## N18: JSON-schema preparation and document demand
+
+JSON_SCHEMA_VALID now uses the same HostFrame with real schema/document value
+capabilities and the existing serialized SQL-cache owner. Schema demand always
+precedes cache lookup; SQL NULL skips lookup and document demand. Context callback
+authentication precedes cache publication. Preparation commits before requesting
+the actual document Fresh. Original document NULL/parse checks precede the
+OnceLock's validator success/error cache and external reference loading.
+
+Original19,440/5A44B7F912410B39 and independent3,240/8EEBA8F200EECE0C were
+captured/rerun before public sharing; exact old cache wrapper stays cfg(test).
+Original pure prepare/build/validate bodies are unchanged. Actual39,336/
+DC8D2D5F9AEF7D85 covers all149 input values and eleven return declarations;
+file/loopback HTTP, forged/stale/panic/generation/cancel128/resourceNULL recovery,
+large cache-hit arguments, nested Fresh bodies and large selected/public-frame
+alternation pass. Dynamic parsed-tree retention is observed; cached validators and
+library transients remain the original host-library boundary, not a whole-heap
+tracker. Existing per-row windows already bound large input lifetimes; no new
+value-store protocol or raised limit was necessary.
+
+Full frontend1985/exact3/95ignored,444batch/exact346warnings,Projection26 including
+two appended schema cohorts,lint/dual10fmt/reconstruction are retained in
+no-fallback-n18.md. SDKad73b11 stays unchanged; N16fresh gates remain valid.
+Continue RAND/owner/AES and global optional/PB/public entry closure immediately.

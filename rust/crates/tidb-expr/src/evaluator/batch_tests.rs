@@ -34087,3 +34087,6 @@ mod cached_list_tests;
 
 #[path = "batch_stateful_tests.rs"]
 mod stateful_tests;
+
+#[path = "batch_json_schema_tests.rs"]
+mod json_schema_tests;

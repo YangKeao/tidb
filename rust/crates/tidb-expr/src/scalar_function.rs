@@ -1432,6 +1432,20 @@ impl ScalarFunction {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn eval_original_json_schema(
+        &self,
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        let value = self.json_schema_cache.original_eval(&self.args, ctx, row)?;
+        coerce_function_result(self.func_name.lowercase(), self.ret_type.as_ref(), value)
+    }
+
+    pub(crate) fn shared_json_schema_cache(&self) -> crate::builtin_ext::JsonSchemaCache {
+        self.json_schema_cache.share_for_invocation()
+    }
+
     /// Share only the actual original SQL cache owner, without reading or
     /// initializing it. Compilation never snapshots a context value.
     pub(crate) fn shared_find_in_set_cache(

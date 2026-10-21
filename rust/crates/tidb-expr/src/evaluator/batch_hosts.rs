@@ -168,7 +168,12 @@ pub(super) use cached_list_source::NativeCachedList;
 mod stateful_source;
 pub(super) use stateful_source::NativeStateful;
 
+#[path = "batch_json_schema.rs"]
+mod json_schema_source;
+pub(super) use json_schema_source::NativeJsonSchema;
+
 pub(super) enum NativeHostMetadata {
+    JsonSchema(Box<NativeJsonSchema>),
     Stateful(Box<NativeStateful>),
     CachedList(Box<NativeCachedList>),
     TypedContext(NativeTypedContext),
@@ -431,6 +436,7 @@ pub(super) enum NativeHostMetadata {
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
+            Self::JsonSchema(metadata) => Some(&metadata.result_type),
             Self::Stateful(metadata) => Some(&metadata.result_type),
             Self::CachedList(metadata) => Some(&metadata.result_type),
             Self::In(metadata) => Some(&metadata.result_type),
@@ -480,6 +486,7 @@ mod compression_source;
 
 enum SqlDemand {
     Consumed,
+    JsonSchema(Box<json_schema_source::SchemaTask>),
     Stateful(Box<stateful_source::StatefulTask>),
     CachedList(Box<cached_list_source::CachedListTask>),
     TypedWindow(Box<typed_window::TypedWindowTask>),
@@ -639,6 +646,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Consumed => Ok(None),
+            SqlDemand::JsonSchema(task) => Ok(Some(task.next_argument())),
             SqlDemand::Stateful(task) => Ok(Some(task.next_argument())),
             SqlDemand::CachedList(task) => Ok(Some(task.next_argument())),
             SqlDemand::TypedWindow(_) => Ok(Some(0)),
@@ -700,6 +708,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::JsonSchema(_) => Err(binding("schema host cannot buffer wire values")),
             SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
             SqlDemand::CachedList(_) => Err(binding("cached list cannot buffer wire values")),
             SqlDemand::Diagnostic(_) => Err(binding("diagnostic demand cannot buffer wire values")),
@@ -783,6 +792,11 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::JsonSchema(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("schema retained extent overflow"));
+        }
         if let SqlDemand::Stateful(task) = &self.demand {
             return bytes
                 .checked_add(task.retained_bytes()?)
@@ -2491,7 +2505,16 @@ impl NativeBatchHosts<'_> {
         }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
-                if let Some(NativeHostMetadata::Stateful(meta)) =
+                if let Some(NativeHostMetadata::JsonSchema(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.arguments.len() != invocation.arg_types.len()
+                    {
+                        return Err(binding("schema declaration differs"));
+                    }
+                    SqlDemand::JsonSchema(Box::new(json_schema_source::SchemaTask::Schema))
+                } else if let Some(NativeHostMetadata::Stateful(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
                     if self.native_values.is_none()
@@ -3306,8 +3329,10 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate = matches!(demand, SqlDemand::Stateful(_))
-            && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::Stateful(meta)) if meta.descriptor.argument_types.len()!=meta.descriptor.operation.arity() || invocation.arg_types.is_empty())
+        let immediate = matches!(demand, SqlDemand::JsonSchema(_))
+            && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::JsonSchema(meta)) if meta.arguments.len()!=2)
+            || matches!(demand, SqlDemand::Stateful(_))
+                && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::Stateful(meta)) if meta.descriptor.argument_types.len()!=meta.descriptor.operation.arity() || invocation.arg_types.is_empty())
             || matches!(demand, SqlDemand::UserVariableRead { .. })
             || (matches!(
                 demand,
@@ -3345,6 +3370,11 @@ impl NativeBatchHosts<'_> {
                 task,
             };
             let result = if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::JsonSchema(_)
+            ) {
+                guard.provider.resume_json_schema(&guard.task, None)
+            } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::Stateful(_)
             ) {
@@ -3394,6 +3424,12 @@ impl NativeBatchHosts<'_> {
     ) -> LocalResult<HostStep> {
         self.validate_row_reply(id, reply)?;
         let task = self.task(id)?;
+        if matches!(task.demand, SqlDemand::JsonSchema(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("schema source cannot be wire NULL"));
+            };
+            return self.resume_json_schema(id, Some(token));
+        }
         if matches!(task.demand, SqlDemand::Stateful(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
                 return Err(binding("stateful source cannot be wire NULL"));

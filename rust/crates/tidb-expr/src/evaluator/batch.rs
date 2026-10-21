@@ -66,9 +66,9 @@ use numeric_source::PendingNumeric;
 mod native_values;
 use hosts::{
     CompiledDiagnosticParent, CompiledNumericParent, NativeBatchHosts, NativeCachedList,
-    NativeHostMetadata, NativeRawValueOperation, NativeStateful, NativeTypedContext,
-    NativeTypedDescriptor, NativeValuePreparation, NumericPlan, NumericPlanBody,
-    WindowArithmeticMetadata, WindowArithmeticSource,
+    NativeHostMetadata, NativeJsonSchema, NativeRawValueOperation, NativeStateful,
+    NativeTypedContext, NativeTypedDescriptor, NativeValuePreparation, NumericPlan,
+    NumericPlanBody, WindowArithmeticMetadata, WindowArithmeticSource,
 };
 use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
 use std::cell::RefCell;
@@ -440,7 +440,8 @@ fn promoted_native_root_view(
     let Expression::ScalarFunction(function) = root else {
         return Ok(None);
     };
-    let row_control = native_stateful_call(function)
+    let row_control = native_json_schema_call(function)
+        || native_stateful_call(function)
         || native_cached_list_call(function)
         || matches!(
             function.func_name.lowercase(),
@@ -531,7 +532,9 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
-            if native_stateful_call(function) || native_cached_list_call(function) =>
+            if native_json_schema_call(function)
+                || native_stateful_call(function)
+                || native_cached_list_call(function) =>
         {
             NativeView::RootValue
         }
@@ -622,7 +625,8 @@ fn contains_context_value(node: &Expression, depth: usize, remaining: &mut usize
         Expression::Constant(c) => c.param_marker.is_some() || c.deferred_expr.is_some(),
         Expression::CorrelatedColumn(_) => true,
         Expression::ScalarFunction(f) => {
-            native_stateful_call(f)
+            native_json_schema_call(f)
+                || native_stateful_call(f)
                 || native_cached_list_call(f)
                 || f.args
                     .iter()
@@ -1317,7 +1321,7 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
     }
 }
 fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
-    if native_stateful_call(function) {
+    if native_json_schema_call(function) || native_stateful_call(function) {
         return NativeView::ValueToken;
     }
     if native_cached_list_call(function) {
@@ -1948,6 +1952,13 @@ fn native_identity_call(function: &ScalarFunction) -> bool {
         ("any_value", 1) | ("name_const", 2)
     )
 }
+fn native_json_schema_call(function: &ScalarFunction) -> bool {
+    function.func_name.lowercase() == "json_schema_valid"
+        && function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && function.get_static_type().is_some()
+        && function.args.iter().all(|a| a.static_type().is_some())
+}
 fn native_stateful_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::stateful::Operation::from_name(function.func_name.lowercase()).is_some()
         && function.pb_signature().is_none()
@@ -1964,7 +1975,8 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
         && function.args.iter().all(|arg| arg.static_type().is_some())
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_stateful_call(function)
+    native_json_schema_call(function)
+        || native_stateful_call(function)
         || native_cached_list_call(function)
         || crate::scalar_function::eager_values::supports(function)
         || matches!(
@@ -2071,7 +2083,9 @@ fn resolve_specific_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
-    if native_stateful_call(function) && view.value_role().is_some() {
+    if (native_json_schema_call(function) || native_stateful_call(function))
+        && view.value_role().is_some()
+    {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
             function.args.len(),
@@ -3462,7 +3476,11 @@ fn preflight_view<'a>(
                         resolve_call_in_view(function, view)?.0,
                         CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
                     ) {
-                        if native_stateful_call(function) {
+                        if native_json_schema_call(function) {
+                            budget.array::<NativeJsonSchema>(1)?;
+                            budget.array::<usize>(arity)?;
+                            budget.field(sql, 1)?;
+                        } else if native_stateful_call(function) {
                             budget.array::<NativeStateful>(1)?;
                             budget.array::<usize>(arity)?;
                             budget.array::<Option<FieldType>>(arity)?;
@@ -4824,6 +4842,17 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if native_json_schema_call(sql) => {
+                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
+                                let mut child=ordinal+1;
+                                for _ in 0..*arity {arguments.push(child);child=checked.get(child).ok_or_else(||binding("schema child absent"))?.subtree_end;}
+                                NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema{
+                                    arguments:arguments.into_boxed_slice(),
+                                    cacheable:sql.args.first().is_some_and(|a|a.const_level()>=crate::expression::ConstLevel::ONLY_IN_CONTEXT),
+                                    cache:sql.shared_json_schema_cache(),result_type:snapshot_field_type(item.declared_sql()),output_node:ordinal,
+                                    output_role:item.view.value_role().ok_or_else(||binding("schema output view missing"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_stateful_call(sql) => {
                                 let mut arguments=Vec::new(); reserve(&mut arguments,*arity)?;
