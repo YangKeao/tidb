@@ -5145,6 +5145,9 @@ mod tests {
                             .with_enable_vectorized_expression(enabled)
                             .with_prepared_params(vec![Datum::Int(7)].into())
                             .with_block_encryption_mode(mode)
+                            .with_user_vars(std::sync::Arc::new(std::sync::Mutex::new(
+                                std::collections::HashMap::new(),
+                            )))
                     };
                     let reference = context();
                     let suite = EvaluatorSuite::new(roots.clone(), false);
