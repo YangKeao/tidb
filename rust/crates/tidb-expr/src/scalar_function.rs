@@ -29,6 +29,7 @@
 //! `crate::memory_usage`; the remaining structural gap is per-signature
 //! collation.
 
+pub(crate) mod header_value;
 mod pb_builtin;
 
 #[cfg(test)]
@@ -2177,7 +2178,7 @@ impl ScalarFunction {
                 | "isnotunknown"
         ) {
             if self.args.len() != 1 {
-                return Err(EvalError::WrongParameterCount("is true or false"));
+                return Err(header_value::truth_arity_error());
             }
             let operand = self.args[0].eval(ctx, row)?;
             let truthy = crate::truthy_of(&operand)?;

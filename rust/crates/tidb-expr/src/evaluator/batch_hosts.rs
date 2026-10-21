@@ -176,6 +176,13 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    HeaderOutcome {
+        kind: crate::scalar_function::header_value::HeaderKind,
+        arity: usize,
+        result_type: Option<FieldType>,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     JsonSchema(Box<NativeJsonSchema>),
     Stateful(Box<NativeStateful>),
     FinalState(Box<NativeFinalState>),
@@ -455,6 +462,7 @@ impl NativeHostMetadata {
         match self {
             Self::EagerValues { result_type, .. } => result_type.as_ref(),
             Self::Selection { result_type, .. } => result_type.as_ref(),
+            Self::HeaderOutcome { result_type, .. } => result_type.as_ref(),
             Self::Comparison { result_type, .. } => result_type.as_ref(),
             Self::RawValues { result_type, .. } => result_type.as_ref(),
             Self::JsonSchema(metadata) => metadata.result_type.as_ref(),
@@ -503,6 +511,7 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    HeaderOutcome,
     Consumed,
     JsonSchema(Box<json_schema_source::SchemaTask>),
     Stateful(Box<stateful_source::StatefulTask>),
@@ -664,7 +673,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
-            SqlDemand::Consumed => Ok(None),
+            SqlDemand::Consumed | SqlDemand::HeaderOutcome => Ok(None),
             SqlDemand::JsonSchema(task) => Ok(Some(task.next_argument())),
             SqlDemand::Stateful(task) => Ok(Some(task.next_argument())),
             SqlDemand::FinalState(task) => Ok(Some(task.next)),
@@ -728,6 +737,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
             SqlDemand::JsonSchema(_) => Err(binding("schema host cannot buffer wire values")),
             SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
             SqlDemand::FinalState(_) => Err(binding("final state host cannot buffer wire values")),
@@ -1312,6 +1322,32 @@ impl<'a> NativeBatchHosts<'a> {
         };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
     }
+    fn finish_header_outcome(&mut self, id: &HostTaskId) -> LocalResult<HostStep> {
+        let task = self.task(id)?;
+        let Some(NativeHostMetadata::HeaderOutcome {
+            kind,
+            output_node,
+            output_role,
+            ..
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("header outcome descriptor missing"));
+        };
+        let (kind, node, role, row) = (*kind, *output_node, *output_role, task.row);
+        self.slots[id.slot]
+            .task
+            .as_mut()
+            .expect("live header task")
+            .demand = SqlDemand::Consumed;
+        let base = self.retained_bytes()?;
+        self.check_bytes(base)?;
+        let result = match kind.evaluate(self.context) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
+        self.finish_native_value(id, result, node, role, row, base)
+            .map(HostStep::Ready)
+    }
     fn finish_native_value(
         &mut self,
         id: &HostTaskId,
@@ -1344,6 +1380,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::FinalState(_)
                 | NativeHostMetadata::CachedList(_)
                 | NativeHostMetadata::Selection { .. }
+                | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
                 | NativeHostMetadata::RawValues { .. }
         ) {
@@ -2560,7 +2597,25 @@ impl NativeBatchHosts<'_> {
         let mut ready_preparation = None;
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
-                if let Some(NativeHostMetadata::JsonSchema(meta)) =
+                if let Some(NativeHostMetadata::HeaderOutcome {
+                    kind,
+                    arity,
+                    output_role,
+                    ..
+                }) = self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || *arity != invocation.arg_types.len()
+                        || !kind.accepts_arity(*arity)
+                        || !matches!(
+                            output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                    {
+                        return Err(binding("header outcome declaration differs"));
+                    }
+                    SqlDemand::HeaderOutcome
+                } else if let Some(NativeHostMetadata::JsonSchema(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
                     if self.native_values.is_none()
@@ -3404,7 +3459,8 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate = matches!(&demand,SqlDemand::FinalState(task) if task.immediate)
+        let immediate = matches!(demand, SqlDemand::HeaderOutcome)
+            || matches!(&demand,SqlDemand::FinalState(task) if task.immediate)
             || matches!(demand, SqlDemand::JsonSchema(_))
                 && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::JsonSchema(meta)) if meta.arguments.len()!=2)
             || matches!(demand, SqlDemand::Stateful(_))
@@ -3449,6 +3505,11 @@ impl NativeBatchHosts<'_> {
                 task,
             };
             let result = if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::HeaderOutcome
+            ) {
+                guard.provider.finish_header_outcome(&guard.task)
+            } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::JsonSchema(_)
             ) {

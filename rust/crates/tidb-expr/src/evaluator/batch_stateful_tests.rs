@@ -1968,3 +1968,298 @@ fn optional_operator_full_actual_values_keep_raw_domains_and_facts() {
     eprintln!("OPERATOR FULL ACTUAL {count}/{hash:016X}");
     assert_eq!((count, hash), (121584, 0x762EE08F41914785));
 }
+
+#[test]
+fn no_argument_header_original_outcomes_and_skipped_children() {
+    if isolate_common_corpus(
+        "stateful_tests::no_argument_header_original_outcomes_and_skipped_children",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_no_argument_header_matrix(false);
+}
+#[test]
+fn no_argument_header_actual_outcomes_and_skipped_children() {
+    if isolate_common_corpus(
+        "stateful_tests::no_argument_header_actual_outcomes_and_skipped_children",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_no_argument_header_matrix(true);
+}
+fn run_no_argument_header_matrix(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for name in [
+        "istrue",
+        "istrue_with_null",
+        "isnottrue",
+        "isfalse",
+        "isnotfalse",
+        "isunknown",
+        "isnotunknown",
+        "case",
+        "coalesce",
+    ] {
+        for arity in 0..=6 {
+            if if matches!(name, "case" | "coalesce") {
+                arity != 0
+            } else {
+                arity == 1
+            } {
+                continue;
+            }
+            for shape in 0..4 {
+                for mask in 0..8 {
+                    for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        for profile in [0, 4, 5] {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let args = (0..arity)
+                                            .map(|index| {
+                                                let param = parameter(index % 2, string_ty());
+                                                match shape {
+                                                    1 => {
+                                                        let mut c = Constant::new(
+                                                            Datum::new_string(
+                                                                "unread stored value",
+                                                            ),
+                                                            string_ty(),
+                                                        );
+                                                        c.deferred_expr =
+                                                            Some(Box::new(leaf::assignment(
+                                                                &format!("unread{index}"),
+                                                                param,
+                                                                &string_ty(),
+                                                            )));
+                                                        Expression::Constant(c)
+                                                    }
+                                                    2 => string_column(0),
+                                                    3 => literal(
+                                                        Datum::Decimal(
+                                                            tidb_datatype::Decimal::from_raw_parts(
+                                                                true,
+                                                                vec![0, 255, b'0'],
+                                                                u32::MAX,
+                                                                3,
+                                                            ),
+                                                        ),
+                                                        string_ty(),
+                                                    ),
+                                                    _ => param,
+                                                }
+                                            })
+                                            .collect();
+                                        let mut root = call(name, field.clone(), args);
+                                        erase_optional_call_declarations(&mut root, mask);
+                                        suite(root)
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let values =
+                                        [Datum::new_string("1bad"), Datum::new_string("bad")];
+                                    let old = C::new(profile, enabled, values.clone());
+                                    let new = C::new(profile, enabled, values);
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let mut c = chunk(
+                                                &[string_ty()],
+                                                &[
+                                                    vec![Datum::new_string("a")],
+                                                    vec![Datum::new_string("b")],
+                                                    vec![Datum::new_string("c")],
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&field);
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let label=format!("no-argument-header/{name}/{arity}/{shape}/{mask}/{fi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&field);
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[string_ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || right.column(0) != left.column(0)
+                                                || new.snapshot() != old.snapshot()
+                                            {
+                                                eprintln!("HEADER DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if (route.fallback != 0 || route.refusals != 0)
+                                                && gaps.len() < 20
+                                            {
+                                                gaps.push(format!("{label}: {route:?}"));
+                                            }
+                                        }
+                                        assert_eq!(
+                                            (old.reads[0].get(), old.reads[1].get()),
+                                            (0, 0),
+                                            "{label}"
+                                        );
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("HEADER ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (152064, 0x0A12BC1F0AB942C5));
+    if !gaps.is_empty() {
+        eprintln!("HEADER ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}
+
+#[test]
+fn no_argument_header_nested_consumers_keep_skips_and_prefixes() {
+    if isolate_common_corpus(
+        "stateful_tests::no_argument_header_nested_consumers_keep_skips_and_prefixes",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in [
+        "istrue",
+        "istrue_with_null",
+        "isnottrue",
+        "isfalse",
+        "isnotfalse",
+        "isunknown",
+        "isnotunknown",
+        "case",
+        "coalesce",
+    ] {
+        for mask in 0..8 {
+            for wrapper in 0..5 {
+                for profile in [0, 4, 5] {
+                    for enabled in [false, true] {
+                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                            let make = || {
+                                let args = if matches!(name, "case" | "coalesce") {
+                                    vec![]
+                                } else {
+                                    vec![parameter(0, string_ty()), parameter(1, string_ty())]
+                                };
+                                let mut header = call(name, ty(), args);
+                                erase_optional_call_declarations(&mut header, mask);
+                                let root = match wrapper {
+                                    0 => call("any_value", ty(), vec![header]),
+                                    1 => call("if", ty(), vec![column(0), header, int(9)]),
+                                    2 => call("if", ty(), vec![int(0), header, int(9)]),
+                                    3 => call("coalesce", ty(), vec![int(7), header]),
+                                    _ => {
+                                        let mut c = Constant::new(Datum::Int(99), ty());
+                                        c.deferred_expr = Some(Box::new(header));
+                                        Expression::Constant(c)
+                                    }
+                                };
+                                suite(root)
+                            };
+                            let original = make();
+                            let actual = make();
+                            let values = [Datum::new_string("1bad"), Datum::new_string("bad")];
+                            let old = C::new(profile, enabled, values.clone());
+                            let new = C::new(profile, enabled, values);
+                            for reuse in 0..2 {
+                                let input = || {
+                                    let mut c = chunk(
+                                        &[ty()],
+                                        &[
+                                            vec![Datum::Int(0)],
+                                            vec![Datum::Int(1)],
+                                            vec![Datum::Int(2)],
+                                        ],
+                                    );
+                                    c.set_sel(selection.clone());
+                                    c
+                                };
+                                let mut a = input();
+                                let mut left = output_for(&ty());
+                                left.append_null(0);
+                                let expected =
+                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let mut b = input();
+                                let mut right = output_for(&ty());
+                                right.append_null(0);
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                                });
+                                let label=format!("nested-header/{name}/{mask}/{wrapper}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                if got != expected
+                                    || left.column(0) != right.column(0)
+                                    || old.snapshot() != new.snapshot()
+                                {
+                                    eprintln!("NESTED HEADER DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                }
+                                assert_eq!(got, expected, "{label}");
+                                assert_eq!(right.column(0), left.column(0), "{label}");
+                                assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                let route = actual.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.fallback, route.refusals),
+                                    (0, 0),
+                                    "{label}: {route:?}"
+                                );
+                                assert_eq!(
+                                    (old.reads[0].get(), old.reads[1].get()),
+                                    (0, 0),
+                                    "{label}"
+                                );
+                                for byte in format!(
+                                    "{label}|{expected}|{:?}|{}",
+                                    left.column(0),
+                                    old.snapshot()
+                                )
+                                .bytes()
+                                {
+                                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("NESTED HEADER {count}/{hash:016X}");
+    assert_eq!((count, hash), (12960, 0xBAEC627349AA50FD));
+}

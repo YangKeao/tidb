@@ -538,7 +538,8 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_stateful_call(function)
                 || native_cached_list_call(function)
                 || native_optional_selection_call(function)
-                || native_optional_operator_call(function) =>
+                || native_optional_operator_call(function)
+                || native_no_argument_header_call(function) =>
         {
             NativeView::RootValue
         }
@@ -1263,6 +1264,12 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
+    if native_no_argument_header_call(function) {
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
+        return Ok(());
+    }
     if native_json_schema_call(function) {
         budget.array::<NativeJsonSchema>(1)?;
         budget.array::<usize>(arity)?;
@@ -2105,13 +2112,18 @@ fn native_optional_operator_call(function: &ScalarFunction) -> bool {
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
+fn native_no_argument_header_call(function: &ScalarFunction) -> bool {
+    crate::scalar_function::header_value::HeaderKind::for_function(function).is_some()
+}
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
     native_optional_value_call(function)
         || native_optional_selection_call(function)
         || native_optional_operator_call(function)
+        || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_json_schema_call(function)
+    native_no_argument_header_call(function)
+        || native_json_schema_call(function)
         || native_final_state_call(function)
         || native_stateful_call(function)
         || native_cached_list_call(function)
@@ -2179,6 +2191,12 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if view.value_role().is_some() && native_no_argument_header_call(function) {
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            function.args.len(),
+        ));
+    }
     if view.value_role().is_some() && native_optional_value_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
@@ -5046,6 +5064,15 @@ fn lower_view_policy(
                                         .view
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
+                                }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if native_no_argument_header_call(sql) => {
+                                NativeHostMetadata::HeaderOutcome {
+                                    kind: crate::scalar_function::header_value::HeaderKind::for_function(sql).expect("checked original header"),
+                                    arity: *arity,
+                                    result_type: item.sql.map(snapshot_field_type),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role().ok_or_else(||binding("header output view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_json_schema_call(sql) => {

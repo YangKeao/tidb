@@ -34282,3 +34282,131 @@ mod final_state_tests;
 
 #[path = "batch_optional_eager_tests.rs"]
 mod optional_eager_tests;
+
+#[test]
+fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
+    use crate::scalar_function::header_value::HeaderKind;
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostInvocation, HostStart, LocalHostServices};
+    let field = projected(&native_bytes_type(), true).unwrap();
+    for (kind, arity) in [
+        (HeaderKind::TruthArity, 2),
+        (HeaderKind::EmptyCase, 0),
+        (HeaderKind::EmptyCoalesce, 0),
+    ] {
+        for result_type in [Some(ty()), None] {
+            for forged in [false, true] {
+                let arity = if forged { 1 } else { arity };
+                let arguments = vec![field.clone(); arity];
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::EagerValuesNative,
+                    HostSignature {
+                        arg_types: arguments.clone().into(),
+                        return_type: field.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::HeaderOutcome {
+                    kind,
+                    arity,
+                    result_type: result_type.clone(),
+                    output_node: 7,
+                    output_role: NativeValueRole::Output,
+                }];
+                let store = RefCell::new(NativeValueStore::new(4096).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let mut provider =
+                    NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 4096)
+                        .with_native_values(Some(&store));
+                let mut eval = EvalContext::default();
+                for occurrence in 0..128 {
+                    store.borrow_mut().begin_window().unwrap();
+                    let row = InputRow {
+                        occurrence,
+                        input_row: 2,
+                    };
+                    let result = provider.start(
+                        &mut eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &arguments,
+                            return_type: &field,
+                        },
+                    );
+                    if forged {
+                        assert!(matches!(result, Err(LocalError::BindingContract(_))));
+                        assert!(provider.take_native_error().is_none());
+                    } else if matches!(kind, HeaderKind::TruthArity) {
+                        assert!(result.is_err());
+                        assert_eq!(
+                            provider.take_native_error(),
+                            Some(EvalError::WrongParameterCount("is true or false"))
+                        );
+                    } else {
+                        let HostStart::Ready(values) = result.unwrap() else {
+                            panic!("a real zero-demand outcome must never expose a task")
+                        };
+                        let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                            panic!("SQL NULL must remain an authenticated native value")
+                        };
+                        assert_eq!(
+                            *store
+                                .borrow()
+                                .get(
+                                    token,
+                                    NativeValueRole::Output,
+                                    NativeValueOrigin { node: 7, row }
+                                )
+                                .unwrap(),
+                            Datum::Null
+                        );
+                        assert!(provider.take_native_error().is_none());
+                    }
+                }
+                if !forged && !matches!(kind, HeaderKind::TruthArity) {
+                    let row = InputRow {
+                        occurrence: 0,
+                        input_row: 2,
+                    };
+                    let origin = NativeValueOrigin { node: 99, row };
+                    loop {
+                        if store
+                            .borrow_mut()
+                            .insert_clone(&Datum::Null, NativeValueRole::Output, origin)
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    let result = provider.start(
+                        &mut eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &arguments,
+                            return_type: &field,
+                        },
+                    );
+                    assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
+                    assert!(provider.take_native_error().is_none());
+                    store.borrow_mut().begin_window().unwrap();
+                    assert!(matches!(
+                        provider.start(
+                            &mut eval,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &arguments,
+                                return_type: &field
+                            }
+                        ),
+                        Ok(HostStart::Ready(_))
+                    ));
+                    assert!(provider.take_native_error().is_none());
+                }
+            }
+        }
+    }
+}
