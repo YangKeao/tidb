@@ -7,7 +7,7 @@ pub(in super::super) struct NativeJsonSchema {
     pub arguments: Box<[usize]>,
     pub cacheable: bool,
     pub cache: JsonSchemaCache,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
@@ -149,15 +149,13 @@ impl NativeBatchHosts<'_> {
                     }
                 };
                 match progress {
-                    Progress::Ready(value) => Ok(Progress::Ready(
-                        crate::tikv::identity_actual::coerce_result(
-                            "json_schema_valid",
-                            &meta.result_type,
-                            value,
-                            tidb_query_expr::local::value_kernel_work_remaining()
-                                .expect("schema finite lexical scope"),
-                        )?,
-                    )),
+                    Progress::Ready(value) => Ok(Progress::Ready(coerce_optional_value_result(
+                        "json_schema_valid",
+                        meta.result_type.as_ref(),
+                        value,
+                        tidb_query_expr::local::value_kernel_work_remaining()
+                            .expect("schema finite lexical scope"),
+                    )?)),
                     more => Ok(more),
                 }
             })();

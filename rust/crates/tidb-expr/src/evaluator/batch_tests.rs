@@ -26877,6 +26877,82 @@ fn common_policy_constant_probe_precedes_isnull_and_respects_early_skip() {
     }
 }
 
+// Retain actual absence independently at the root and original child nodes.
+fn erase_optional_call_declarations(root: &mut Expression, mask: u8) {
+    let Expression::ScalarFunction(function) = root else {
+        panic!("actual scalar owner");
+    };
+    if mask & 1 != 0 {
+        function.ret_type = None;
+    }
+    for (index, arg) in function.args.iter_mut().enumerate() {
+        if mask & 4 == 0 && !(mask & 2 != 0 && index == 0) {
+            continue;
+        }
+        match arg {
+            Expression::Constant(c) => c.ret_type = None,
+            Expression::Column(c) => c.ret_type = None,
+            Expression::CorrelatedColumn(c) => c.column.ret_type = None,
+            Expression::ScalarFunction(f) => f.ret_type = None,
+        }
+    }
+}
+fn observe_optional_phase_case<C: Columns>(
+    label: &str,
+    owners: [&EvaluatorSuite; 2],
+    contexts: [&C; 2],
+    snapshot: impl Fn(&C) -> String,
+    input: impl Fn() -> Chunk,
+    fields: (&FieldType, &[FieldType]),
+    observed: &mut (usize, u64, Vec<String>),
+) {
+    for reuse in 0..2 {
+        let mut a = input();
+        let mut left = output_for(fields.0);
+        left.append_null(0);
+        let expected = session_read_outcome(|| owners[0].run(contexts[0], &mut a, &mut left));
+        let label = format!("{label}/reuse{reuse}");
+        {
+            let mut b = input();
+            let mut right = output_for(fields.0);
+            right.append_null(0);
+            let got = session_read_outcome(|| {
+                owners[1].run_with_tikv_batch(contexts[1], &mut b, &mut right, fields.1)
+            });
+            if got != expected
+                || left.column(0) != right.column(0)
+                || snapshot(contexts[0]) != snapshot(contexts[1])
+            {
+                eprintln!("OPTIONAL PHASE DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),snapshot(contexts[0]),snapshot(contexts[1]));
+            }
+            assert_eq!(got, expected, "outcome {label}");
+            assert_eq!(right.column(0), left.column(0), "column {label}");
+            assert_eq!(
+                snapshot(contexts[1]),
+                snapshot(contexts[0]),
+                "effects {label}"
+            );
+            let route = owners[1].batch_route_snapshot();
+            if (route.fallback != 0 || route.refusals != 0 || route.prepared != reuse + 1)
+                && observed.2.len() < 20
+            {
+                observed.2.push(format!("{label}: {route:?}"));
+            }
+        }
+        for byte in format!(
+            "{label}|{expected}|{:?}|{}|{:?}",
+            left.column(0),
+            snapshot(contexts[0]),
+            a.sel()
+        )
+        .bytes()
+        {
+            observed.1 = (observed.1 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+        observed.0 += 1;
+    }
+}
+
 fn isolate_common_corpus(which: &str) -> bool {
     const KEY: &str = "TIDB_COMMON_SOURCE_CORPUS";
     if std::env::var(KEY).as_deref() == Ok(which) {

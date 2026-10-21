@@ -6,7 +6,7 @@ pub(in super::super) struct NativeStateful {
     pub arguments: Box<[usize]>,
     pub descriptor: Descriptor,
     pub repeated_subtree: Option<std::ops::Range<usize>>,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
@@ -219,14 +219,12 @@ impl NativeBatchHosts<'_> {
                     Progress::Ready(value) => {
                         let maximum = tidb_query_expr::local::value_kernel_work_remaining()
                             .expect("stateful lexical work scope");
-                        Ok(Progress::Ready(
-                            crate::tikv::identity_actual::coerce_result(
-                                meta.descriptor.operation_name(),
-                                &meta.result_type,
-                                value,
-                                maximum,
-                            )?,
-                        ))
+                        Ok(Progress::Ready(coerce_optional_value_result(
+                            meta.descriptor.operation_name(),
+                            meta.result_type.as_ref(),
+                            value,
+                            maximum,
+                        )?))
                     }
                     more => Ok(more),
                 }

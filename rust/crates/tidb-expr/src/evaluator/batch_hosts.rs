@@ -437,13 +437,26 @@ pub(super) enum NativeHostMetadata {
         argument_node: usize,
     },
 }
+// Absence is actual SQL metadata; do not synthesize a coercion target.
+fn coerce_optional_value_result(
+    name: &str,
+    result_type: Option<&FieldType>,
+    value: Datum,
+    maximum: usize,
+) -> std::result::Result<Datum, EvalError> {
+    match result_type {
+        Some(field) => crate::tikv::identity_actual::coerce_result(name, field, value, maximum),
+        None => Ok(value),
+    }
+}
+
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
             Self::EagerValues { result_type, .. } => result_type.as_ref(),
-            Self::JsonSchema(metadata) => Some(&metadata.result_type),
-            Self::Stateful(metadata) => Some(&metadata.result_type),
-            Self::FinalState(metadata) => Some(&metadata.result_type),
+            Self::JsonSchema(metadata) => metadata.result_type.as_ref(),
+            Self::Stateful(metadata) => metadata.result_type.as_ref(),
+            Self::FinalState(metadata) => metadata.result_type.as_ref(),
             Self::CachedList(metadata) => Some(&metadata.result_type),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
@@ -1323,8 +1336,14 @@ impl<'a> NativeBatchHosts<'a> {
             // Context leaves already applied their consumer's expression view.
             // A root Constant broadcast deliberately publishes the raw Datum.
             result
-        } else if let NativeHostMetadata::EagerValues { result_type, .. } = metadata {
-            crate::expression::apply_enum_set_integer_view(result, result_type.as_ref())
+        } else if matches!(
+            metadata,
+            NativeHostMetadata::EagerValues { .. }
+                | NativeHostMetadata::JsonSchema(_)
+                | NativeHostMetadata::Stateful(_)
+                | NativeHostMetadata::FinalState(_)
+        ) {
+            crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {
             let field = metadata
                 .result_type()

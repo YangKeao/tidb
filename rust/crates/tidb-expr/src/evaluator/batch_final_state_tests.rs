@@ -643,203 +643,209 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
             }
         }
     }
-    let Expression::ScalarFunction(function) = root("aes_encrypt", 1) else {
-        unreachable!()
-    };
-    let wire = projected(&native_bytes_type(), true).unwrap();
-    let args = vec![wire.clone(); 3];
-    let catalog = HostCatalog::for_sql_batch(vec![(
-        SqlBatchHostOperation::EagerValuesNative,
-        HostSignature {
-            arg_types: args.clone().into(),
-            return_type: wire.clone(),
-        },
-    )])
-    .unwrap();
-    let slot = catalog.slot(0).unwrap();
-    let metadata = [hosts::NativeHostMetadata::FinalState(Box::new(
-        hosts::NativeFinalState {
-            arguments: vec![3, 4, 5].into(),
-            name: "aes_encrypt",
-            function_key: std::ptr::from_ref(&function) as usize,
-            constant_seed: true,
-            result_type: string_ty(),
-            output_node: 2,
-            output_role: NativeValueRole::Output,
-        },
-    ))];
-    let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
-    store.borrow_mut().begin_window().unwrap();
-    let ctx = D {
-        store: &store,
-        ready: crate::ReadyValueCache::new(),
-        action: Cell::new(0),
-        warnings: Cell::new(0),
-    };
-    let mut p = hosts::NativeBatchHosts::new(catalog, &metadata, &ctx, 16384)
-        .with_native_values(Some(&store));
-    let mut eval = EvalContext::default();
-    let row = InputRow {
-        occurrence: 2,
-        input_row: 7,
-    };
-    let origin = |node| NativeValueOrigin { node, row };
-    let insert = |value: &Datum, role, node| {
-        store
-            .borrow_mut()
-            .insert_clone(value, role, origin(node))
-            .unwrap()
-    };
-    let begin = |p: &mut hosts::NativeBatchHosts<'_>, eval: &mut EvalContext| {
-        let HostStart::Pending { task, request } = p
-            .start(
+    for optional in [false, true] {
+        let Expression::ScalarFunction(mut function) = root("aes_encrypt", 1) else {
+            unreachable!()
+        };
+        if optional {
+            function.ret_type = None;
+        }
+        let wire = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![wire.clone(); 3];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: wire.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [hosts::NativeHostMetadata::FinalState(Box::new(
+            hosts::NativeFinalState {
+                arguments: vec![3, 4, 5].into(),
+                name: "aes_encrypt",
+                function_key: std::ptr::from_ref(&function) as usize,
+                constant_seed: true,
+                result_type: (!optional).then(string_ty),
+                output_node: 2,
+                output_role: NativeValueRole::Output,
+            },
+        ))];
+        let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let ctx = D {
+            store: &store,
+            ready: crate::ReadyValueCache::new(),
+            action: Cell::new(0),
+            warnings: Cell::new(0),
+        };
+        let mut p = hosts::NativeBatchHosts::new(catalog, &metadata, &ctx, 16384)
+            .with_native_values(Some(&store));
+        let mut eval = EvalContext::default();
+        let row = InputRow {
+            occurrence: 2,
+            input_row: 7,
+        };
+        let origin = |node| NativeValueOrigin { node, row };
+        let insert = |value: &Datum, role, node| {
+            store
+                .borrow_mut()
+                .insert_clone(value, role, origin(node))
+                .unwrap()
+        };
+        let begin = |p: &mut hosts::NativeBatchHosts<'_>, eval: &mut EvalContext| {
+            let HostStart::Pending { task, request } = p
+                .start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &wire,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(request.index, 0);
+            task
+        };
+        let reply = |p: &mut hosts::NativeBatchHosts<'_>,
+                     eval: &mut EvalContext,
+                     task: &HostTaskId,
+                     index,
+                     token| {
+            p.resume(
                 eval,
-                HostInvocation {
-                    slot,
-                    row,
-                    arg_types: &args,
-                    return_type: &wire,
+                task,
+                HostArgReply {
+                    index,
+                    field_type: &wire,
+                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
                 },
             )
-            .unwrap()
-        else {
-            panic!()
         };
-        assert_eq!(request.index, 0);
-        task
-    };
-    let reply = |p: &mut hosts::NativeBatchHosts<'_>,
-                 eval: &mut EvalContext,
-                 task: &HostTaskId,
-                 index,
-                 token| {
-        p.resume(
-            eval,
-            task,
-            HostArgReply {
-                index,
-                field_type: &wire,
-                values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-            },
-        )
-    };
-    let original = insert(&Datum::Null, NativeValueRole::CharInput, 3);
-    let mut bad = original.clone();
-    bad[0] ^= 1;
-    let mut short = original.clone();
-    short.pop();
-    let mut long = original.clone();
-    long.push(0);
-    store.borrow_mut().begin_window().unwrap();
-    let mut foreign = NativeValueStore::new(4096).unwrap();
-    foreign.begin_window().unwrap();
-    let foreign = foreign
-        .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin(3))
-        .unwrap();
-    let wrong_row = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Null,
-            NativeValueRole::CharInput,
-            NativeValueOrigin {
-                node: 3,
-                row: InputRow {
-                    occurrence: 3,
-                    ..row
-                },
-            },
-        )
-        .unwrap();
-    let wrong_physical = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Null,
-            NativeValueRole::CharInput,
-            NativeValueOrigin {
-                node: 3,
-                row: InputRow {
-                    input_row: 8,
-                    ..row
-                },
-            },
-        )
-        .unwrap();
-    for token in [
-        None,
-        Some(original),
-        Some(bad),
-        Some(short),
-        Some(long),
-        Some(foreign),
-        Some(wrong_row),
-        Some(wrong_physical),
-        Some(insert(&Datum::Null, NativeValueRole::Output, 3)),
-        Some(insert(&Datum::Null, NativeValueRole::CharInput, 4)),
-    ] {
-        let task = begin(&mut p, &mut eval);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &task, 0, token),
-            Err(LocalError::BindingContract(_))
-        ));
-        assert_eq!(ctx.warnings.get(), 0);
-        assert_eq!(ctx.ready.prepared_worker_count(), 0);
-        p.cancel(&task);
-    }
-    let task = begin(&mut p, &mut eval);
-    let input = insert(&Datum::new_string("abc"), NativeValueRole::CharInput, 3);
-    assert!(matches!(
-        reply(&mut p, &mut eval, &task, 0, Some(input)),
-        Ok(HostStep::NeedArg(_))
-    ));
-    ctx.action.set(2);
-    let key = insert(&Datum::new_string("key"), NativeValueRole::CharInput, 4);
-    assert!(matches!(
-        reply(&mut p, &mut eval, &task, 1, Some(key)),
-        Err(LocalError::BindingContract(_))
-    ));
-    assert_eq!(ctx.warnings.get(), 1);
-    assert_eq!(
-        ctx.ready.prepared_worker_count(),
-        0,
-        "invalidated inputs must not reach the cipher worker"
-    );
-    p.cancel(&task);
-    ctx.action.set(0);
-    for _ in 0..128 {
+        let original = insert(&Datum::Null, NativeValueRole::CharInput, 3);
+        let mut bad = original.clone();
+        bad[0] ^= 1;
+        let mut short = original.clone();
+        short.pop();
+        let mut long = original.clone();
+        long.push(0);
         store.borrow_mut().begin_window().unwrap();
-        let abandoned = begin(&mut p, &mut eval);
+        let mut foreign = NativeValueStore::new(4096).unwrap();
+        foreign.begin_window().unwrap();
+        let foreign = foreign
+            .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin(3))
+            .unwrap();
+        let wrong_row = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Null,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        occurrence: 3,
+                        ..row
+                    },
+                },
+            )
+            .unwrap();
+        let wrong_physical = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Null,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        input_row: 8,
+                        ..row
+                    },
+                },
+            )
+            .unwrap();
+        for token in [
+            None,
+            Some(original),
+            Some(bad),
+            Some(short),
+            Some(long),
+            Some(foreign),
+            Some(wrong_row),
+            Some(wrong_physical),
+            Some(insert(&Datum::Null, NativeValueRole::Output, 3)),
+            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4)),
+        ] {
+            let task = begin(&mut p, &mut eval);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &task, 0, token),
+                Err(LocalError::BindingContract(_))
+            ));
+            assert_eq!(ctx.warnings.get(), 0);
+            assert_eq!(ctx.ready.prepared_worker_count(), 0);
+            p.cancel(&task);
+        }
+        let task = begin(&mut p, &mut eval);
         let input = insert(&Datum::new_string("abc"), NativeValueRole::CharInput, 3);
         assert!(matches!(
-            reply(&mut p, &mut eval, &abandoned, 0, Some(input)),
+            reply(&mut p, &mut eval, &task, 0, Some(input)),
             Ok(HostStep::NeedArg(_))
         ));
-        p.cancel(&abandoned);
-        let current = begin(&mut p, &mut eval);
-        p.cancel(&abandoned);
-        let stale = insert(&Datum::new_string("key"), NativeValueRole::CharInput, 4);
-        assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(stale)).is_err());
-        let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
-        let HostStep::Ready(values) = reply(&mut p, &mut eval, &current, 0, Some(null)).unwrap()
-        else {
-            panic!()
-        };
-        let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
-            panic!()
-        };
-        assert_eq!(
-            store
-                .borrow()
-                .get(token, NativeValueRole::Output, origin(2))
-                .unwrap(),
-            &Datum::Null
-        );
+        ctx.action.set(2);
+        let key = insert(&Datum::new_string("key"), NativeValueRole::CharInput, 4);
+        assert!(matches!(
+            reply(&mut p, &mut eval, &task, 1, Some(key)),
+            Err(LocalError::BindingContract(_))
+        ));
         assert_eq!(ctx.warnings.get(), 1);
         assert_eq!(
             ctx.ready.prepared_worker_count(),
-            1,
-            "stale cancel must retain the current actual cache binding"
+            0,
+            "invalidated inputs must not reach the cipher worker"
         );
-        p.cancel(&current);
+        p.cancel(&task);
+        ctx.action.set(0);
+        for _ in 0..128 {
+            store.borrow_mut().begin_window().unwrap();
+            let abandoned = begin(&mut p, &mut eval);
+            let input = insert(&Datum::new_string("abc"), NativeValueRole::CharInput, 3);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &abandoned, 0, Some(input)),
+                Ok(HostStep::NeedArg(_))
+            ));
+            p.cancel(&abandoned);
+            let current = begin(&mut p, &mut eval);
+            p.cancel(&abandoned);
+            let stale = insert(&Datum::new_string("key"), NativeValueRole::CharInput, 4);
+            assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(stale)).is_err());
+            let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
+            let HostStep::Ready(values) =
+                reply(&mut p, &mut eval, &current, 0, Some(null)).unwrap()
+            else {
+                panic!()
+            };
+            let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                panic!()
+            };
+            assert_eq!(
+                store
+                    .borrow()
+                    .get(token, NativeValueRole::Output, origin(2))
+                    .unwrap(),
+                &Datum::Null
+            );
+            assert_eq!(ctx.warnings.get(), 1);
+            assert_eq!(
+                ctx.ready.prepared_worker_count(),
+                1,
+                "stale cancel must retain the current actual cache binding"
+            );
+            p.cancel(&current);
+        }
     }
 }
 
@@ -1232,4 +1238,80 @@ fn final_state_niladic_services_use_actual_context_over_virtual_rows_without_col
             }
         }
     }
+}
+
+#[test]
+fn optional_phase_final_state_original_and_source() {
+    if isolate_common_corpus("final_state_tests::optional_phase_final_state_original_and_source") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut observed = (0usize, 0xcbf29ce484222325u64, Vec::new());
+    for name in NAMES {
+        for shape in 0..7 {
+            for mask in 0..8 {
+                for mode in [M::Aes128Ecb, M::Aes128Cbc] {
+                    for profile in 0..6 {
+                        for enabled in [false, true] {
+                            for (vi, values) in values().into_iter().enumerate() {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let mut e = root(name, shape);
+                                        erase_optional_call_declarations(&mut e, mask);
+                                        suite(e)
+                                    };
+                                    let owner = make();
+                                    let actual = make();
+                                    let old = C::new(values.clone(), profile, enabled, mode);
+                                    let new = C::new(values.clone(), profile, enabled, mode);
+                                    let field = if name == "rand" {
+                                        real_ty()
+                                    } else if name == "tidb_is_ddl_owner" {
+                                        ty()
+                                    } else {
+                                        string_ty()
+                                    };
+                                    let schema = [string_ty()];
+                                    let input = || {
+                                        let mut c = chunk(
+                                            &schema,
+                                            &vec![
+                                                vec![match &values[0] {
+                                                    Datum::Int(v) =>
+                                                        Datum::new_string(v.to_string()),
+                                                    v => v.clone(),
+                                                }];
+                                                3
+                                            ],
+                                        );
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let label = format!("final_state/{name}/{shape}/{mask}/{mode:?}/{profile}/{enabled}/{vi}/{selection:?}");
+                                    observe_optional_phase_case(
+                                        &label,
+                                        [&owner, &actual],
+                                        [&old, &new],
+                                        |c| c.snapshot(),
+                                        input,
+                                        (&field, &schema),
+                                        &mut observed,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "OPTIONAL PHASE final_state ORIGINAL {}/{:016X}",
+        observed.0, observed.1
+    );
+    assert_eq!((observed.0, observed.1), (193536, 0x687909A43FB9D9D5));
+    if !observed.2.is_empty() {
+        eprintln!("OPTIONAL PHASE final_state ADMISSION RED {:?}", observed.2);
+    }
+    assert!(observed.2.is_empty());
 }

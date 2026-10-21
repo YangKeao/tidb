@@ -1255,6 +1255,41 @@ fn budget_eager_metadata(
     }
     Ok(())
 }
+fn budget_value_call_metadata(
+    budget: &mut Budget,
+    function: &ScalarFunction,
+    result: Option<&FieldType>,
+) -> LocalResult<()> {
+    let arity = function.args.len();
+    if native_json_schema_call(function) {
+        budget.array::<NativeJsonSchema>(1)?;
+        budget.array::<usize>(arity)?;
+    } else if native_final_state_call(function) {
+        budget.array::<NativeFinalState>(1)?;
+        budget.array::<usize>(arity)?;
+    } else if native_stateful_call(function) {
+        budget.array::<NativeStateful>(1)?;
+        budget.array::<usize>(arity)?;
+        budget.array::<Option<FieldType>>(arity)?;
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
+        for arg in &function.args {
+            if let Some(field) = arg.static_type() {
+                budget.field(field, 1)?;
+            }
+        }
+        return Ok(());
+    } else if native_cached_list_call(function) {
+        budget.array::<NativeCachedList>(1)?;
+    } else {
+        return budget_eager_metadata(budget, function, result);
+    }
+    if let Some(result) = result {
+        budget.field(result, 1)?;
+    }
+    Ok(())
+}
 fn check_type(sql: &FieldType) -> Result<()> {
     const DOCUMENTED: u64 = (1 << 25) - 1;
     let excluded = u64::from(
@@ -2007,8 +2042,6 @@ fn native_json_schema_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "json_schema_valid"
         && function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && function.get_static_type().is_some()
-        && function.args.iter().all(|a| a.static_type().is_some())
 }
 fn native_final_state_call(function: &ScalarFunction) -> bool {
     matches!(
@@ -2016,15 +2049,11 @@ fn native_final_state_call(function: &ScalarFunction) -> bool {
         "rand" | "tidb_is_ddl_owner" | "aes_encrypt" | "aes_decrypt"
     ) && function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && function.get_static_type().is_some()
-        && function.args.iter().all(|a| a.static_type().is_some())
 }
 fn native_stateful_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::stateful::Operation::from_name(function.func_name.lowercase()).is_some()
         && function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && function.get_static_type().is_some()
-        && function.args.iter().all(|a| a.static_type().is_some())
 }
 fn native_cached_list_call(function: &ScalarFunction) -> bool {
     function.func_name.lowercase() == "find_in_set"
@@ -2034,12 +2063,15 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
         && function.get_static_type().is_some()
         && function.args.iter().all(|arg| arg.static_type().is_some())
 }
-// Complete common value owners retain actual optional metadata and demand
-// policy. Specialized lazy families keep their distinct source contracts.
-fn native_optional_eager_call(function: &ScalarFunction) -> bool {
+// Closed value owners retain actual optional metadata and their own demand
+// policy, including the distinct stateful, schema and lazy AES continuations.
+fn native_optional_value_call(function: &ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && crate::scalar_function::eager_values::supports(function)
+        && (crate::scalar_function::eager_values::supports(function)
+            || native_stateful_call(function)
+            || native_final_state_call(function)
+            || native_json_schema_call(function))
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
@@ -2112,7 +2144,7 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
-    if view.value_role().is_some() && native_optional_eager_call(function) {
+    if view.value_role().is_some() && native_optional_value_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
             function.args.len(),
@@ -3196,7 +3228,7 @@ fn preflight_view<'a>(
                     Expression::Constant(_)
                         | Expression::CorrelatedColumn(_)
                         | Expression::Column(_)
-                ) && !matches!(node,Expression::ScalarFunction(f) if native_optional_eager_call(f))
+                ) && !matches!(node,Expression::ScalarFunction(f) if native_optional_value_call(f))
             {
                 return Err(BatchFailure::admission(
                     "optional SQL consumer needs its explicit profile",
@@ -3211,7 +3243,7 @@ fn preflight_view<'a>(
             budget.add(charset.len())?;
             budget.add(collate.len())?;
             match node {
-                Expression::ScalarFunction(function) if native_optional_eager_call(function) => {
+                Expression::ScalarFunction(function) if native_optional_value_call(function) => {
                     check_batch_call(function, view)?;
                     let arity = function.args.len();
                     budget.add(function.func_name.original().len())?;
@@ -3220,7 +3252,16 @@ fn preflight_view<'a>(
                     budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
                     budget.array::<NativeHostMetadata>(1)?;
                     budget.array::<Option<Datum>>(1)?;
-                    budget_eager_metadata(&mut budget, function, None)?;
+                    budget_value_call_metadata(&mut budget, function, None)?;
+                    let (CallTarget::Host(operation), _) = resolve_call_in_view(function, view)?
+                    else {
+                        unreachable!("native optional value owner");
+                    };
+                    if let Some(probe) = source_prefix_probe(function, operation) {
+                        budget.add(crate::tikv::identity_actual::copy_extent(probe).map_err(
+                            |_| resource("optional source prefix probe copy overflow"),
+                        )?)?;
+                    }
                     if matches!(
                         function.func_name.lowercase(),
                         "abs" | "cot" | "pow" | "power"
@@ -3439,7 +3480,7 @@ fn preflight_view<'a>(
                     .args
                     .iter()
                     .any(|argument| argument.static_type().is_none())
-                    && !native_optional_eager_call(function)
+                    && !native_optional_value_call(function)
                 {
                     return Err(BatchFailure::admission(
                         "optional function argument needs its explicit profile",
@@ -3473,7 +3514,7 @@ fn preflight_view<'a>(
                             })
                         });
                 if contextual_numeric
-                    && (!native_optional_eager_call(function)
+                    && (!native_optional_value_call(function)
                         || matches!(
                             function.func_name.lowercase(),
                             "abs" | "cot" | "exp" | "pow" | "power"
@@ -3641,36 +3682,12 @@ fn preflight_view<'a>(
                         resolve_call_in_view(function, view)?.0,
                         CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
                     ) {
-                        if native_json_schema_call(function) {
-                            budget.array::<NativeJsonSchema>(1)?;
-                            budget.array::<usize>(arity)?;
-                            budget.field(sql, 1)?;
-                        } else if native_final_state_call(function) {
-                            budget.array::<NativeFinalState>(1)?;
-                            budget.array::<usize>(arity)?;
-                            budget.field(sql, 1)?;
-                        } else if native_stateful_call(function) {
-                            budget.array::<NativeStateful>(1)?;
-                            budget.array::<usize>(arity)?;
-                            budget.array::<Option<FieldType>>(arity)?;
-                            budget.field(sql, 1)?;
-                            for arg in &function.args {
-                                budget.field(
-                                    arg.static_type().expect("checked stateful argument"),
-                                    1,
-                                )?;
-                            }
-                        } else if native_cached_list_call(function) {
-                            budget.array::<NativeCachedList>(1)?;
-                            budget.field(sql, 1)?;
-                        } else {
-                            budget_eager_metadata(&mut budget, function, Some(sql))?;
-                        }
+                        budget_value_call_metadata(&mut budget, function, Some(sql))?;
                     }
-                    // Optional common calls retain only their common metadata.
+                    // Optional value calls retain only their selected owner metadata.
                     // A name may also have a typed specialization whose required
                     // declarations were not selected by this call's source.
-                    if !native_optional_eager_call(function) {
+                    if !native_optional_value_call(function) {
                         if native_crypto_call(function).is_some() && view.value_role().is_some() {
                             budget.field(sql, 1)?;
                             budget.array::<usize>(arity)?;
@@ -3910,7 +3927,7 @@ fn preflight_view<'a>(
                     for argument in &function.args {
                         if let Some(field) = argument.static_type() {
                             budget.field(field, 1)?;
-                        } else if !native_optional_eager_call(function) {
+                        } else if !native_optional_value_call(function) {
                             return Err(BatchFailure::admission(
                                 "host argument has no static declaration",
                             ));
@@ -4995,7 +5012,7 @@ fn lower_view_policy(
                                 NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema{
                                     arguments:arguments.into_boxed_slice(),
                                     cacheable:sql.args.first().is_some_and(|a|a.const_level()>=crate::expression::ConstLevel::ONLY_IN_CONTEXT),
-                                    cache:sql.shared_json_schema_cache(),result_type:snapshot_field_type(item.declared_sql()),output_node:ordinal,
+                                    cache:sql.shared_json_schema_cache(),result_type:item.sql.map(snapshot_field_type),output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("schema output view missing"))?,
                                 }))
                             }
@@ -5008,7 +5025,7 @@ fn lower_view_policy(
                                     name:match sql.func_name.lowercase() { "rand"=>"rand", "tidb_is_ddl_owner"=>"tidb_is_ddl_owner", "aes_encrypt"=>"aes_encrypt", "aes_decrypt"=>"aes_decrypt", _=>unreachable!() },
                                     function_key:std::ptr::from_ref(sql) as usize,
                                     constant_seed:matches!(sql.args.first(),Some(Expression::Constant(_))),
-                                    result_type:snapshot_field_type(item.declared_sql()), output_node:ordinal,
+                                    result_type:item.sql.map(snapshot_field_type), output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("final state output role absent"))?,
                                 }))
                             }
@@ -5020,7 +5037,7 @@ fn lower_view_policy(
                                     repeated_subtree: if sql.func_name.lowercase()=="benchmark" && *arity==2 { Some(arguments[1]..checked[arguments[1]].subtree_end) } else { None },
                                     arguments:arguments.into_boxed_slice(),
                                     descriptor:crate::scalar_function::stateful::Descriptor::capture(sql).expect("stateful descriptor"),
-                                    result_type:snapshot_field_type(item.declared_sql()),output_node:ordinal,
+                                    result_type:item.sql.map(snapshot_field_type),output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("stateful result role absent"))?,
                                 }))
                             }

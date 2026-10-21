@@ -810,66 +810,70 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             5
         }
     }
-    let wire = projected(&native_bytes_type(), true).unwrap();
-    let args = vec![wire.clone(); 2];
-    let catalog = HostCatalog::for_sql_batch(vec![(
-        SqlBatchHostOperation::EagerValuesNative,
-        HostSignature {
-            arg_types: args.clone().into(),
-            return_type: wire.clone(),
-        },
-    )])
-    .unwrap();
-    let slot = catalog.slot(0).unwrap();
-    let metadata = [NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema {
-        arguments: vec![3, 4].into_boxed_slice(),
-        cacheable: true,
-        cache: crate::builtin_ext::JsonSchemaCache::default(),
-        result_type: ty(),
-        output_node: 2,
-        output_role: NativeValueRole::Output,
-    }))];
-    let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
-    store.borrow_mut().begin_window().unwrap();
-    let ctx = D {
-        store: &store,
-        action: Cell::new(0),
-        calls: Cell::new(0),
-    };
-    let mut p =
-        NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
-    let mut eval = EvalContext::default();
-    let row = InputRow {
-        occurrence: 2,
-        input_row: 7,
-    };
-    let origin = |node| NativeValueOrigin { node, row };
-    let insert = |value: &Datum, role, node| {
-        store
-            .borrow_mut()
-            .insert_clone(value, role, origin(node))
-            .unwrap()
-    };
-    let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-        let HostStart::Pending { task, request } = p
-            .start(
-                eval,
-                HostInvocation {
-                    slot,
-                    row,
-                    arg_types: &args,
-                    return_type: &wire,
-                },
-            )
-            .unwrap()
-        else {
-            panic!()
+    for optional in [false, true] {
+        let wire = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![wire.clone(); 2];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: wire.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema {
+            arguments: vec![3, 4].into_boxed_slice(),
+            cacheable: true,
+            cache: crate::builtin_ext::JsonSchemaCache::default(),
+            result_type: (!optional).then(ty),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        }))];
+        let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let ctx = D {
+            store: &store,
+            action: Cell::new(0),
+            calls: Cell::new(0),
         };
-        assert_eq!(request.index, 0);
-        task
-    };
-    let reply =
-        |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext, task: &HostTaskId, index, token| {
+        let mut p =
+            NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
+        let mut eval = EvalContext::default();
+        let row = InputRow {
+            occurrence: 2,
+            input_row: 7,
+        };
+        let origin = |node| NativeValueOrigin { node, row };
+        let insert = |value: &Datum, role, node| {
+            store
+                .borrow_mut()
+                .insert_clone(value, role, origin(node))
+                .unwrap()
+        };
+        let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+            let HostStart::Pending { task, request } = p
+                .start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &wire,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(request.index, 0);
+            task
+        };
+        let reply = |p: &mut NativeBatchHosts<'_>,
+                     eval: &mut EvalContext,
+                     task: &HostTaskId,
+                     index,
+                     token| {
             p.resume(
                 eval,
                 task,
@@ -880,222 +884,223 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
                 },
             )
         };
-    let check = |step: HostStep, expected: &Datum| {
-        let HostStep::Ready(values) = step else {
-            panic!()
+        let check = |step: HostStep, expected: &Datum| {
+            let HostStep::Ready(values) = step else {
+                panic!()
+            };
+            let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                panic!()
+            };
+            assert_eq!(
+                store
+                    .borrow()
+                    .get(token, NativeValueRole::Output, origin(2))
+                    .unwrap(),
+                expected
+            );
         };
-        let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
-            panic!()
-        };
-        assert_eq!(
-            store
-                .borrow()
-                .get(token, NativeValueRole::Output, origin(2))
-                .unwrap(),
-            expected
-        );
-    };
-    let original = insert(&Datum::Null, NativeValueRole::CharInput, 3);
-    let mut bad = original.clone();
-    bad[0] ^= 1;
-    let mut short = original.clone();
-    short.pop();
-    let mut long = original.clone();
-    long.push(0);
-    store.borrow_mut().begin_window().unwrap();
-    let mut foreign = NativeValueStore::new(4096).unwrap();
-    foreign.begin_window().unwrap();
-    let foreign = foreign
-        .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin(3))
-        .unwrap();
-    let wrong_row = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Null,
-            NativeValueRole::CharInput,
-            NativeValueOrigin {
-                node: 3,
-                row: InputRow {
-                    occurrence: 3,
-                    ..row
-                },
-            },
-        )
-        .unwrap();
-    let wrong_physical = store
-        .borrow_mut()
-        .insert_clone(
-            &Datum::Null,
-            NativeValueRole::CharInput,
-            NativeValueOrigin {
-                node: 3,
-                row: InputRow {
-                    input_row: 8,
-                    ..row
-                },
-            },
-        )
-        .unwrap();
-    for token in [
-        None,
-        Some(original),
-        Some(bad),
-        Some(short),
-        Some(long),
-        Some(foreign),
-        Some(wrong_row),
-        Some(wrong_physical),
-        Some(insert(&Datum::Null, NativeValueRole::Output, 3)),
-        Some(insert(&Datum::Null, NativeValueRole::CharInput, 4)),
-    ] {
-        let task = begin(&mut p, &mut eval);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &task, 0, token),
-            Err(LocalError::BindingContract(_))
-        ));
-        assert_eq!(ctx.calls.get(), 0);
-        p.cancel(&task);
-    }
-    for action in [1, 2] {
-        ctx.action.set(action);
-        let task = begin(&mut p, &mut eval);
-        let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
-        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            reply(&mut p, &mut eval, &task, 0, Some(schema.clone()))
-        }));
-        if action == 1 {
-            assert!(got.is_err())
-        } else {
-            assert!(matches!(got.unwrap(), Err(LocalError::BindingContract(_))))
-        }
-        let before = ctx.calls.get();
-        assert!(reply(&mut p, &mut eval, &task, 0, Some(schema)).is_err());
-        assert_eq!(ctx.calls.get(), before);
-        p.cancel(&task);
-        ctx.action.set(0);
-    }
-    // Neither failed context callback was allowed to publish a prepared true
-    // schema. The same SQL context must still reject a genuinely invalid one.
-    let task = begin(&mut p, &mut eval);
-    let bad = insert(&Datum::new_string("[]"), NativeValueRole::CharInput, 3);
-    assert!(reply(&mut p, &mut eval, &task, 0, Some(bad)).is_err());
-    assert!(p.take_native_error().is_some());
-    p.cancel(&task);
-    for _ in 0..128 {
+        let original = insert(&Datum::Null, NativeValueRole::CharInput, 3);
+        let mut bad = original.clone();
+        bad[0] ^= 1;
+        let mut short = original.clone();
+        short.pop();
+        let mut long = original.clone();
+        long.push(0);
         store.borrow_mut().begin_window().unwrap();
-        let abandoned = begin(&mut p, &mut eval);
-        let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &abandoned, 0, Some(schema)),
-            Ok(HostStep::NeedArg(_))
-        ));
-        p.cancel(&abandoned);
-        let current = begin(&mut p, &mut eval);
-        p.cancel(&abandoned);
-        let before = ctx.calls.get();
-        let unused = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
-        assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused)).is_err());
-        assert_eq!(ctx.calls.get(), before);
-        let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
-        check(
-            reply(&mut p, &mut eval, &current, 0, Some(null)).unwrap(),
-            &Datum::Null,
-        );
-        assert_eq!(ctx.calls.get(), before);
-        p.cancel(&current);
-    }
-    let task = begin(&mut p, &mut eval);
-    let schema = insert(&Datum::new_string("false"), NativeValueRole::CharInput, 3);
-    assert!(matches!(
-        reply(&mut p, &mut eval, &task, 0, Some(schema)),
-        Ok(HostStep::NeedArg(_))
-    ));
-    // The abandoned valid constructor committed before document demand, so
-    // this actual false input hits that original true cache item.
-    let before = ctx.calls.get();
-    let wrong = insert(&Datum::new_string("7"), NativeValueRole::Output, 4);
-    assert!(reply(&mut p, &mut eval, &task, 1, Some(wrong)).is_err());
-    assert_eq!(ctx.calls.get(), before);
-    let doc = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
-    check(
-        reply(&mut p, &mut eval, &task, 1, Some(doc)).unwrap(),
-        &Datum::Int(1),
-    );
-    p.cancel(&task);
-    let task = begin(&mut p, &mut eval);
-    let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
-    assert!(matches!(
-        reply(&mut p, &mut eval, &task, 0, Some(schema)),
-        Ok(HostStep::NeedArg(_))
-    ));
-    store.borrow_mut().begin_window().unwrap();
-    let before = ctx.calls.get();
-    let doc = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
-    assert!(matches!(
-        reply(&mut p, &mut eval, &task, 1, Some(doc)),
-        Err(LocalError::BindingContract(_))
-    ));
-    assert_eq!(ctx.calls.get(), before);
-    p.cancel(&task);
-
-    // A dynamic schema's retained parsed tree must fit before document demand.
-    // The existing provider policy stays fixed and must recover on real NULL.
-    let catalog = HostCatalog::for_sql_batch(vec![(
-        SqlBatchHostOperation::EagerValuesNative,
-        HostSignature {
-            arg_types: args.clone().into(),
-            return_type: wire.clone(),
-        },
-    )])
-    .unwrap();
-    let slot = catalog.slot(0).unwrap();
-    let metadata = [NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema {
-        arguments: vec![3, 4].into_boxed_slice(),
-        cacheable: false,
-        cache: crate::builtin_ext::JsonSchemaCache::default(),
-        result_type: ty(),
-        output_node: 2,
-        output_role: NativeValueRole::Output,
-    }))];
-    let mut dynamic =
-        NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
-    let start = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-        let HostStart::Pending { task, .. } = p
-            .start(
-                eval,
-                HostInvocation {
-                    slot,
-                    row,
-                    arg_types: &args,
-                    return_type: &wire,
+        let mut foreign = NativeValueStore::new(4096).unwrap();
+        foreign.begin_window().unwrap();
+        let foreign = foreign
+            .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin(3))
+            .unwrap();
+        let wrong_row = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Null,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        occurrence: 3,
+                        ..row
+                    },
                 },
             )
-            .unwrap()
-        else {
-            panic!()
+            .unwrap();
+        let wrong_physical = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Null,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        input_row: 8,
+                        ..row
+                    },
+                },
+            )
+            .unwrap();
+        for token in [
+            None,
+            Some(original),
+            Some(bad),
+            Some(short),
+            Some(long),
+            Some(foreign),
+            Some(wrong_row),
+            Some(wrong_physical),
+            Some(insert(&Datum::Null, NativeValueRole::Output, 3)),
+            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4)),
+        ] {
+            let task = begin(&mut p, &mut eval);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &task, 0, token),
+                Err(LocalError::BindingContract(_))
+            ));
+            assert_eq!(ctx.calls.get(), 0);
+            p.cancel(&task);
+        }
+        for action in [1, 2] {
+            ctx.action.set(action);
+            let task = begin(&mut p, &mut eval);
+            let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
+            let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                reply(&mut p, &mut eval, &task, 0, Some(schema.clone()))
+            }));
+            if action == 1 {
+                assert!(got.is_err())
+            } else {
+                assert!(matches!(got.unwrap(), Err(LocalError::BindingContract(_))))
+            }
+            let before = ctx.calls.get();
+            assert!(reply(&mut p, &mut eval, &task, 0, Some(schema)).is_err());
+            assert_eq!(ctx.calls.get(), before);
+            p.cancel(&task);
+            ctx.action.set(0);
+        }
+        // Neither failed context callback was allowed to publish a prepared true
+        // schema. The same SQL context must still reject a genuinely invalid one.
+        let task = begin(&mut p, &mut eval);
+        let bad = insert(&Datum::new_string("[]"), NativeValueRole::CharInput, 3);
+        assert!(reply(&mut p, &mut eval, &task, 0, Some(bad)).is_err());
+        assert!(p.take_native_error().is_some());
+        p.cancel(&task);
+        for _ in 0..128 {
+            store.borrow_mut().begin_window().unwrap();
+            let abandoned = begin(&mut p, &mut eval);
+            let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &abandoned, 0, Some(schema)),
+                Ok(HostStep::NeedArg(_))
+            ));
+            p.cancel(&abandoned);
+            let current = begin(&mut p, &mut eval);
+            p.cancel(&abandoned);
+            let before = ctx.calls.get();
+            let unused = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
+            assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused)).is_err());
+            assert_eq!(ctx.calls.get(), before);
+            let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
+            check(
+                reply(&mut p, &mut eval, &current, 0, Some(null)).unwrap(),
+                &Datum::Null,
+            );
+            assert_eq!(ctx.calls.get(), before);
+            p.cancel(&current);
+        }
+        let task = begin(&mut p, &mut eval);
+        let schema = insert(&Datum::new_string("false"), NativeValueRole::CharInput, 3);
+        assert!(matches!(
+            reply(&mut p, &mut eval, &task, 0, Some(schema)),
+            Ok(HostStep::NeedArg(_))
+        ));
+        // The abandoned valid constructor committed before document demand, so
+        // this actual false input hits that original true cache item.
+        let before = ctx.calls.get();
+        let wrong = insert(&Datum::new_string("7"), NativeValueRole::Output, 4);
+        assert!(reply(&mut p, &mut eval, &task, 1, Some(wrong)).is_err());
+        assert_eq!(ctx.calls.get(), before);
+        let doc = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
+        check(
+            reply(&mut p, &mut eval, &task, 1, Some(doc)).unwrap(),
+            &Datum::Int(1),
+        );
+        p.cancel(&task);
+        let task = begin(&mut p, &mut eval);
+        let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
+        assert!(matches!(
+            reply(&mut p, &mut eval, &task, 0, Some(schema)),
+            Ok(HostStep::NeedArg(_))
+        ));
+        store.borrow_mut().begin_window().unwrap();
+        let before = ctx.calls.get();
+        let doc = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
+        assert!(matches!(
+            reply(&mut p, &mut eval, &task, 1, Some(doc)),
+            Err(LocalError::BindingContract(_))
+        ));
+        assert_eq!(ctx.calls.get(), before);
+        p.cancel(&task);
+
+        // A dynamic schema's retained parsed tree must fit before document demand.
+        // The existing provider policy stays fixed and must recover on real NULL.
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: wire.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema {
+            arguments: vec![3, 4].into_boxed_slice(),
+            cacheable: false,
+            cache: crate::builtin_ext::JsonSchemaCache::default(),
+            result_type: (!optional).then(ty),
+            output_node: 2,
+            output_role: NativeValueRole::Output,
+        }))];
+        let mut dynamic =
+            NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
+        let start = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+            let HostStart::Pending { task, .. } = p
+                .start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &wire,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            task
         };
-        task
-    };
-    ctx.action.set(1);
-    let before = ctx.calls.get();
-    let task = start(&mut dynamic, &mut eval);
-    let large = Datum::new_string(format!(r#"{{"$comment":"{}"}}"#, "x".repeat(32 << 10)));
-    let token = insert(&large, NativeValueRole::CharInput, 3);
-    assert!(matches!(
-        reply(&mut dynamic, &mut eval, &task, 0, Some(token)),
-        Err(LocalError::ResourceLimit(_))
-    ));
-    assert_eq!(ctx.calls.get(), before);
-    dynamic.cancel(&task);
-    let task = start(&mut dynamic, &mut eval);
-    let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
-    check(
-        reply(&mut dynamic, &mut eval, &task, 0, Some(null)).unwrap(),
-        &Datum::Null,
-    );
-    assert_eq!(ctx.calls.get(), before);
-    dynamic.cancel(&task);
-    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+        ctx.action.set(1);
+        let before = ctx.calls.get();
+        let task = start(&mut dynamic, &mut eval);
+        let large = Datum::new_string(format!(r#"{{"$comment":"{}"}}"#, "x".repeat(32 << 10)));
+        let token = insert(&large, NativeValueRole::CharInput, 3);
+        assert!(matches!(
+            reply(&mut dynamic, &mut eval, &task, 0, Some(token)),
+            Err(LocalError::ResourceLimit(_))
+        ));
+        assert_eq!(ctx.calls.get(), before);
+        dynamic.cancel(&task);
+        let task = start(&mut dynamic, &mut eval);
+        let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
+        check(
+            reply(&mut dynamic, &mut eval, &task, 0, Some(null)).unwrap(),
+            &Datum::Null,
+        );
+        assert_eq!(ctx.calls.get(), before);
+        dynamic.cancel(&task);
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+    }
 }
 
 #[test]
@@ -1277,4 +1282,66 @@ fn json_schema_nested_fresh_bodies_keep_schema_reads_and_cache_history() {
             }
         }
     }
+}
+
+#[test]
+fn optional_phase_json_schema_original_and_source() {
+    if isolate_common_corpus("json_schema_tests::optional_phase_json_schema_original_and_source") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut observed = (0usize, 0xcbf29ce484222325u64, Vec::new());
+    for name in ["json_schema_valid"] {
+        for shape in 0..9 {
+            for mask in 0..8 {
+                for mode in [0usize] {
+                    for profile in 0..6 {
+                        for enabled in [false, true] {
+                            for (vi, values) in pairs().into_iter().enumerate() {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let mut e = schema_root(shape);
+                                        erase_optional_call_declarations(&mut e, mask);
+                                        suite(e)
+                                    };
+                                    let owner = make();
+                                    let actual = make();
+                                    let old =
+                                        SchemaContext::new(values.clone(), profile, enabled, 93);
+                                    let new =
+                                        SchemaContext::new(values.clone(), profile, enabled, 93);
+                                    let field = ty();
+                                    let schema = [string_ty(), string_ty()];
+                                    let input = || {
+                                        let mut c = chunk(&schema, &vec![values.to_vec(); 3]);
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let label = format!("json_schema/{name}/{shape}/{mask}/{mode:?}/{profile}/{enabled}/{vi}/{selection:?}");
+                                    observe_optional_phase_case(
+                                        &label,
+                                        [&owner, &actual],
+                                        [&old, &new],
+                                        |c| c.snapshot(),
+                                        input,
+                                        (&field, &schema),
+                                        &mut observed,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "OPTIONAL PHASE json_schema ORIGINAL {}/{:016X}",
+        observed.0, observed.1
+    );
+    assert_eq!((observed.0, observed.1), (62208, 0xC769E4015B559C79));
+    if !observed.2.is_empty() {
+        eprintln!("OPTIONAL PHASE json_schema ADMISSION RED {:?}", observed.2);
+    }
+    assert!(observed.2.is_empty());
 }

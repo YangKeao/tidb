@@ -568,276 +568,282 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
             Ok(3)
         }
     }
-    for name in NAMES {
-        let Expression::ScalarFunction(mut function) = root(name, 0) else {
-            unreachable!()
-        };
-        if name == "benchmark" {
-            function.args[0] = parameter(0, string_ty());
-        }
-        let descriptor = crate::scalar_function::stateful::Descriptor::capture(&function).unwrap();
-        let arity = descriptor.argument_types.len();
-        let field = projected(&native_bytes_type(), true).unwrap();
-        let args = vec![field.clone(); arity];
-        let catalog = HostCatalog::for_sql_batch(vec![(
-            SqlBatchHostOperation::EagerValuesNative,
-            HostSignature {
-                arg_types: args.clone().into(),
-                return_type: field.clone(),
-            },
-        )])
-        .unwrap();
-        let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::Stateful(Box::new(NativeStateful {
-            arguments: (3..3 + arity).collect(),
-            descriptor,
-            repeated_subtree: (name == "benchmark").then_some(4..5),
-            result_type: ty(),
-            output_node: 2,
-            output_role: NativeValueRole::Output,
-        }))];
-        let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
-        store.borrow_mut().begin_window().unwrap();
-        let ctx = D {
-            store: &store,
-            action: Cell::new(0),
-            events: RefCell::new(vec![]),
-        };
-        let mut p =
-            NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
-        let mut eval = EvalContext::default();
-        let row = InputRow {
-            occurrence: 2,
-            input_row: 7,
-        };
-        let start = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-            p.start(
-                eval,
-                HostInvocation {
-                    slot,
-                    row,
-                    arg_types: &args,
-                    return_type: &field,
-                },
-            )
-        };
-        let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-            let HostStart::Pending { task, request } = start(p, eval).unwrap() else {
-                panic!()
+    for optional in [false, true] {
+        for name in NAMES {
+            let Expression::ScalarFunction(mut function) = root(name, 0) else {
+                unreachable!()
             };
-            assert_eq!(request.index, 0);
-            task
-        };
-        let reply = |p: &mut NativeBatchHosts<'_>,
-                     eval: &mut EvalContext,
-                     task: &HostTaskId,
-                     index,
-                     token| {
-            p.resume(
-                eval,
-                task,
-                HostArgReply {
-                    index,
-                    field_type: &field,
-                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-                },
-            )
-        };
-        let insert = |value: &Datum, role, node, row| {
-            store
-                .borrow_mut()
-                .insert_clone(value, role, NativeValueOrigin { node, row })
-                .unwrap()
-        };
-        if arity == 0 {
-            for action in [1, 2] {
-                ctx.action.set(action);
-                assert!(start(&mut p, &mut eval).is_err());
-                assert!(p.take_native_error().is_some());
+            if name == "benchmark" {
+                function.args[0] = parameter(0, string_ty());
             }
-            for _ in 0..128 {
-                ctx.action.set(3);
+            if optional {
+                function.ret_type = None;
+            }
+            let descriptor =
+                crate::scalar_function::stateful::Descriptor::capture(&function).unwrap();
+            let arity = descriptor.argument_types.len();
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); arity];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::EagerValuesNative,
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::Stateful(Box::new(NativeStateful {
+                arguments: (3..3 + arity).collect(),
+                descriptor,
+                repeated_subtree: (name == "benchmark").then_some(4..5),
+                result_type: (!optional).then(ty),
+                output_node: 2,
+                output_role: NativeValueRole::Output,
+            }))];
+            let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let ctx = D {
+                store: &store,
+                action: Cell::new(0),
+                events: RefCell::new(vec![]),
+            };
+            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 16384)
+                .with_native_values(Some(&store));
+            let mut eval = EvalContext::default();
+            let row = InputRow {
+                occurrence: 2,
+                input_row: 7,
+            };
+            let start = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                p.start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+            };
+            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                let HostStart::Pending { task, request } = start(p, eval).unwrap() else {
+                    panic!()
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         eval: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token| {
+                p.resume(
+                    eval,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                    },
+                )
+            };
+            let insert = |value: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(value, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            if arity == 0 {
+                for action in [1, 2] {
+                    ctx.action.set(action);
+                    assert!(start(&mut p, &mut eval).is_err());
+                    assert!(p.take_native_error().is_some());
+                }
+                for _ in 0..128 {
+                    ctx.action.set(3);
+                    assert!(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start(
+                            &mut p, &mut eval
+                        )))
+                        .is_err()
+                    );
+                }
+                ctx.action.set(0);
+                assert!(matches!(
+                    start(&mut p, &mut eval).unwrap(),
+                    HostStart::Ready(_)
+                ));
+                continue;
+            }
+            let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            let mut corrupt = good.clone();
+            corrupt[0] ^= 1;
+            let mut short = good.clone();
+            short.pop();
+            let mut long = good;
+            long.push(0);
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign = foreign
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(short),
+                Some(long),
+                Some(stale),
+                Some(foreign),
+                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row)),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 3,
+                        ..row
+                    },
+                )),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        input_row: 8,
+                        ..row
+                    },
+                )),
+            ] {
+                let task = begin(&mut p, &mut eval);
                 assert!(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start(
-                        &mut p, &mut eval
-                    )))
-                    .is_err()
+                    matches!(
+                        reply(&mut p, &mut eval, &task, 0, bad),
+                        Err(LocalError::BindingContract(_))
+                    ),
+                    "{name}"
                 );
+                assert!(ctx.events.borrow().is_empty());
+                p.cancel(&task);
+            }
+            // Convert a real count/name or invoke a real service after consuming
+            // the phase. Both panic and generation mutation must reject replay.
+            for action in [3, 4] {
+                ctx.action.set(action);
+                ctx.events.borrow_mut().clear();
+                let task = begin(&mut p, &mut eval);
+                let first = if name == "sleep" {
+                    Datum::Null
+                } else {
+                    Datum::new_string(if name == "benchmark" { "3" } else { "L" })
+                };
+                let token = insert(&first, NativeValueRole::CharInput, 3, row);
+                let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let result = reply(&mut p, &mut eval, &task, 0, Some(token.clone()));
+                    if let Ok(HostStep::NeedArg(request)) = result {
+                        let second = insert(&Datum::Int(1), NativeValueRole::CharInput, 4, row);
+                        reply(&mut p, &mut eval, &task, request.index, Some(second))
+                    } else {
+                        result
+                    }
+                }));
+                if action == 3 {
+                    assert!(got.is_err(), "panic {name}");
+                } else {
+                    assert!(got.unwrap().is_err(), "generation {name}");
+                }
+                let before = ctx.events.borrow().clone();
+                assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
+                assert_eq!(*ctx.events.borrow(), before);
+                p.cancel(&task);
             }
             ctx.action.set(0);
-            assert!(matches!(
-                start(&mut p, &mut eval).unwrap(),
-                HostStart::Ready(_)
-            ));
-            continue;
-        }
-        let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        let mut corrupt = good.clone();
-        corrupt[0] ^= 1;
-        let mut short = good.clone();
-        short.pop();
-        let mut long = good;
-        long.push(0);
-        let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        store.borrow_mut().begin_window().unwrap();
-        let mut foreign = NativeValueStore::new(4096).unwrap();
-        foreign.begin_window().unwrap();
-        let foreign = foreign
-            .insert_clone(
-                &Datum::Null,
-                NativeValueRole::CharInput,
-                NativeValueOrigin { node: 3, row },
-            )
-            .unwrap();
-        for bad in [
-            None,
-            Some(corrupt),
-            Some(short),
-            Some(long),
-            Some(stale),
-            Some(foreign),
-            Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row)),
-            Some(insert(
-                &Datum::Null,
-                NativeValueRole::CharInput,
-                3,
-                InputRow {
-                    occurrence: 3,
-                    ..row
-                },
-            )),
-            Some(insert(
-                &Datum::Null,
-                NativeValueRole::CharInput,
-                3,
-                InputRow {
-                    input_row: 8,
-                    ..row
-                },
-            )),
-        ] {
-            let task = begin(&mut p, &mut eval);
-            assert!(
-                matches!(
-                    reply(&mut p, &mut eval, &task, 0, bad),
-                    Err(LocalError::BindingContract(_))
-                ),
-                "{name}"
-            );
-            assert!(ctx.events.borrow().is_empty());
-            p.cancel(&task);
-        }
-        // Convert a real count/name or invoke a real service after consuming
-        // the phase. Both panic and generation mutation must reject replay.
-        for action in [3, 4] {
-            ctx.action.set(action);
             ctx.events.borrow_mut().clear();
+            let old = begin(&mut p, &mut eval);
+            p.cancel(&old);
             let task = begin(&mut p, &mut eval);
+            p.cancel(&old);
             let first = if name == "sleep" {
                 Datum::Null
             } else {
                 Datum::new_string(if name == "benchmark" { "3" } else { "L" })
             };
-            let token = insert(&first, NativeValueRole::CharInput, 3, row);
-            let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let result = reply(&mut p, &mut eval, &task, 0, Some(token.clone()));
-                if let Ok(HostStep::NeedArg(request)) = result {
-                    let second = insert(&Datum::Int(1), NativeValueRole::CharInput, 4, row);
-                    reply(&mut p, &mut eval, &task, request.index, Some(second))
-                } else {
-                    result
+            let first = insert(&first, NativeValueRole::CharInput, 3, row);
+            let mut step = reply(&mut p, &mut eval, &task, 0, Some(first.clone())).unwrap();
+            let mut count = 0;
+            while let HostStep::NeedArg(request) = step {
+                assert_eq!(request.index, 1);
+                let token = insert(&Datum::Int(1), NativeValueRole::CharInput, 4, row);
+                step = reply(&mut p, &mut eval, &task, 1, Some(token.clone())).unwrap();
+                count += 1;
+                if name == "benchmark" {
+                    assert!(store
+                        .borrow()
+                        .get(
+                            &token,
+                            NativeValueRole::CharInput,
+                            NativeValueOrigin { node: 4, row }
+                        )
+                        .is_err());
                 }
-            }));
-            if action == 3 {
-                assert!(got.is_err(), "panic {name}");
+            }
+            if name == "benchmark" {
+                assert_eq!(count, 3);
+            } else if name == "get_lock" {
+                assert_eq!(count, 1);
             } else {
-                assert!(got.unwrap().is_err(), "generation {name}");
+                assert_eq!(count, 0);
             }
             let before = ctx.events.borrow().clone();
-            assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
+            assert!(reply(&mut p, &mut eval, &task, 0, Some(first)).is_err());
             assert_eq!(*ctx.events.borrow(), before);
             p.cancel(&task);
-        }
-        ctx.action.set(0);
-        ctx.events.borrow_mut().clear();
-        let old = begin(&mut p, &mut eval);
-        p.cancel(&old);
-        let task = begin(&mut p, &mut eval);
-        p.cancel(&old);
-        let first = if name == "sleep" {
-            Datum::Null
-        } else {
-            Datum::new_string(if name == "benchmark" { "3" } else { "L" })
-        };
-        let first = insert(&first, NativeValueRole::CharInput, 3, row);
-        let mut step = reply(&mut p, &mut eval, &task, 0, Some(first.clone())).unwrap();
-        let mut count = 0;
-        while let HostStep::NeedArg(request) = step {
-            assert_eq!(request.index, 1);
-            let token = insert(&Datum::Int(1), NativeValueRole::CharInput, 4, row);
-            step = reply(&mut p, &mut eval, &task, 1, Some(token.clone())).unwrap();
-            count += 1;
-            if name == "benchmark" {
-                assert!(store
-                    .borrow()
-                    .get(
-                        &token,
-                        NativeValueRole::CharInput,
-                        NativeValueOrigin { node: 4, row }
-                    )
-                    .is_err());
-            }
-        }
-        if name == "benchmark" {
-            assert_eq!(count, 3);
-        } else if name == "get_lock" {
-            assert_eq!(count, 1);
-        } else {
-            assert_eq!(count, 0);
-        }
-        let before = ctx.events.borrow().clone();
-        assert!(reply(&mut p, &mut eval, &task, 0, Some(first)).is_err());
-        assert_eq!(*ctx.events.borrow(), before);
-        p.cancel(&task);
-        if matches!(name, "benchmark" | "get_lock") {
-            for _ in 0..128 {
-                store.borrow_mut().begin_window().unwrap();
-                let abandoned = begin(&mut p, &mut eval);
-                let first = if name == "benchmark" {
-                    Datum::Int(3)
-                } else {
-                    Datum::new_string("L")
-                };
-                let first = insert(&first, NativeValueRole::CharInput, 3, row);
-                assert!(matches!(
-                    reply(&mut p, &mut eval, &abandoned, 0, Some(first)),
-                    Ok(HostStep::NeedArg(_))
-                ));
-                p.cancel(&abandoned); // Repeated body / owned-name timeout is pending.
-                let current = begin(&mut p, &mut eval);
-                p.cancel(&abandoned); // Its reused slot now belongs to this call.
-                let before = ctx.events.borrow().clone();
-                let unused = insert(&Datum::Int(0), NativeValueRole::CharInput, 4, row);
-                assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused)).is_err());
-                assert_eq!(*ctx.events.borrow(), before);
-                let first = if name == "benchmark" {
-                    Datum::Null
-                } else {
-                    Datum::new_string("L")
-                };
-                let first = insert(&first, NativeValueRole::CharInput, 3, row);
-                let mut step = reply(&mut p, &mut eval, &current, 0, Some(first)).unwrap();
-                if name == "get_lock" {
-                    assert!(matches!(step, HostStep::NeedArg(_)));
-                    let timeout = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-                    step = reply(&mut p, &mut eval, &current, 1, Some(timeout)).unwrap();
+            if matches!(name, "benchmark" | "get_lock") {
+                for _ in 0..128 {
+                    store.borrow_mut().begin_window().unwrap();
+                    let abandoned = begin(&mut p, &mut eval);
+                    let first = if name == "benchmark" {
+                        Datum::Int(3)
+                    } else {
+                        Datum::new_string("L")
+                    };
+                    let first = insert(&first, NativeValueRole::CharInput, 3, row);
+                    assert!(matches!(
+                        reply(&mut p, &mut eval, &abandoned, 0, Some(first)),
+                        Ok(HostStep::NeedArg(_))
+                    ));
+                    p.cancel(&abandoned); // Repeated body / owned-name timeout is pending.
+                    let current = begin(&mut p, &mut eval);
+                    p.cancel(&abandoned); // Its reused slot now belongs to this call.
+                    let before = ctx.events.borrow().clone();
+                    let unused = insert(&Datum::Int(0), NativeValueRole::CharInput, 4, row);
+                    assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused)).is_err());
+                    assert_eq!(*ctx.events.borrow(), before);
+                    let first = if name == "benchmark" {
+                        Datum::Null
+                    } else {
+                        Datum::new_string("L")
+                    };
+                    let first = insert(&first, NativeValueRole::CharInput, 3, row);
+                    let mut step = reply(&mut p, &mut eval, &current, 0, Some(first)).unwrap();
+                    if name == "get_lock" {
+                        assert!(matches!(step, HostStep::NeedArg(_)));
+                        let timeout = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
+                        step = reply(&mut p, &mut eval, &current, 1, Some(timeout)).unwrap();
+                    }
+                    assert!(matches!(step, HostStep::Ready(_)));
+                    p.cancel(&current);
                 }
-                assert!(matches!(step, HostStep::Ready(_)));
-                p.cancel(&current);
             }
+            assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
         }
-        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
     }
 }
 
@@ -1219,4 +1225,142 @@ fn stateful_long_selections_reuse_sources_across_public_and_frame_invocations() 
             }
         }
     }
+}
+
+#[test]
+fn optional_phase_stateful_original_and_source() {
+    if isolate_common_corpus("stateful_tests::optional_phase_stateful_original_and_source") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut observed = (0usize, 0xcbf29ce484222325u64, Vec::new());
+    for name in NAMES {
+        for shape in 0..4 {
+            for mask in 0..8 {
+                for mode in [0usize] {
+                    for profile in 0..6 {
+                        for enabled in [false, true] {
+                            for (vi, values) in values().into_iter().enumerate() {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let mut e = root(name, shape);
+                                        erase_optional_call_declarations(&mut e, mask);
+                                        suite(e)
+                                    };
+                                    let owner = make();
+                                    let actual = make();
+                                    let old = C::new(profile, enabled, values.clone());
+                                    let new = C::new(profile, enabled, values.clone());
+                                    let field = ty();
+                                    let schema = [ty()];
+                                    let input = || {
+                                        let mut c = chunk(
+                                            &schema,
+                                            &vec![
+                                                vec![Datum::Int(1)],
+                                                vec![Datum::Int(2)],
+                                                vec![Datum::Int(3)],
+                                            ],
+                                        );
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let label = format!("stateful/{name}/{shape}/{mask}/{mode:?}/{profile}/{enabled}/{vi}/{selection:?}");
+                                    observe_optional_phase_case(
+                                        &label,
+                                        [&owner, &actual],
+                                        [&old, &new],
+                                        |c| c.snapshot(),
+                                        input,
+                                        (&field, &schema),
+                                        &mut observed,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "OPTIONAL PHASE stateful ORIGINAL {}/{:016X}",
+        observed.0, observed.1
+    );
+    assert_eq!((observed.0, observed.1), (165888, 0xA8DFEEFEACCBFF75));
+    if !observed.2.is_empty() {
+        eprintln!("OPTIONAL PHASE stateful ADMISSION RED {:?}", observed.2);
+    }
+    assert!(observed.2.is_empty());
+}
+
+#[test]
+fn optional_phase_stateful_full_actual_values_keep_raw_returns_and_casts() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_phase_stateful_full_actual_values_keep_raw_returns_and_casts",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut observed = (0usize, 0xcbf29ce484222325u64, Vec::new());
+    for name in NAMES {
+        for mask in [1, 2, 3, 7] {
+            for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                .into_iter()
+                .enumerate()
+            {
+                for enabled in [false, true] {
+                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                        // BENCHMARK receives one genuine iteration; all 149
+                        // values are actual discarded body results, never an
+                        // unbounded loop count in the original reference.
+                        let values = if name == "benchmark" {
+                            [Datum::Int(1), value.clone()]
+                        } else {
+                            [value.clone(), Datum::Int(0)]
+                        };
+                        let make = || {
+                            let mut e = root(name, 0);
+                            erase_optional_call_declarations(&mut e, mask);
+                            suite(e)
+                        };
+                        let owner = make();
+                        let actual = make();
+                        let old = C::new(0, enabled, values.clone());
+                        let new = C::new(0, enabled, values);
+                        let schema = [ty()];
+                        let input = || {
+                            let mut c = chunk(
+                                &schema,
+                                &[
+                                    vec![Datum::Int(1)],
+                                    vec![Datum::Int(2)],
+                                    vec![Datum::Int(3)],
+                                ],
+                            );
+                            c.set_sel(selection.clone());
+                            c
+                        };
+                        let label =
+                            format!("full-stateful/{name}/{mask}/{vi}/{enabled}/{selection:?}");
+                        observe_optional_phase_case(
+                            &label,
+                            [&owner, &actual],
+                            [&old, &new],
+                            |c| c.snapshot(),
+                            input,
+                            (&ty(), &schema),
+                            &mut observed,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "OPTIONAL STATEFUL FULL ACTUAL {}/{:016X}",
+        observed.0, observed.1
+    );
+    assert_eq!((observed.0, observed.1), (57216, 0xD17BF84FC6D34845));
+    assert!(observed.2.is_empty(), "{:?}", observed.2);
 }

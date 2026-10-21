@@ -9,7 +9,7 @@ pub(in super::super) struct NativeFinalState {
     // The original, borrowed ScalarFunction occurrence; never a compiled slot.
     pub function_key: usize,
     pub constant_seed: bool,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
@@ -171,15 +171,13 @@ impl NativeBatchHosts<'_> {
                     }
                     _ => unreachable!("closed final state source"),
                 };
-                Ok(Progress::Ready(
-                    crate::tikv::identity_actual::coerce_result(
-                        meta.name,
-                        &meta.result_type,
-                        result,
-                        tidb_query_expr::local::value_kernel_work_remaining()
-                            .expect("finite final state scope"),
-                    )?,
-                ))
+                Ok(Progress::Ready(coerce_optional_value_result(
+                    meta.name,
+                    meta.result_type.as_ref(),
+                    result,
+                    tidb_query_expr::local::value_kernel_work_remaining()
+                        .expect("finite final state scope"),
+                )?))
             })();
             remaining = tidb_query_expr::local::value_kernel_work_remaining()
                 .expect("finite preparation scope");
@@ -206,9 +204,9 @@ impl NativeBatchHosts<'_> {
                         let value = crate::tikv::evaluate_closed_args(cache, operation, args)?
                             .into_bytes()?
                             .map_or(Datum::Null, Datum::new_string);
-                        crate::tikv::identity_actual::coerce_result(
+                        coerce_optional_value_result(
                             meta.name,
-                            &meta.result_type,
+                            meta.result_type.as_ref(),
                             value,
                             tidb_query_expr::local::value_kernel_work_remaining()
                                 .expect("finite cipher return scope"),
