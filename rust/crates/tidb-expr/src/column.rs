@@ -236,18 +236,13 @@ impl Column {
     /// Go `Column.Eval`: read this column's cell (`row.GetDatum(Index, RetType)`).
     /// The `EvalContext` is unused, as in Go.
     pub fn eval(&self, row: Row<'_>) -> Result<Datum, EvalError> {
-        let ret_type = self
-            .ret_type
-            .as_ref()
-            .ok_or(EvalError::Unsupported("column has no result type"))?;
-        let index = usize::try_from(self.index)
-            .map_err(|_| EvalError::Unsupported("column index is negative"))?;
-        if index >= row.len() {
-            return Err(EvalError::Unsupported(
-                "column index is outside the input row",
-            ));
-        }
-        Ok(row.get_datum(index, ret_type))
+        let index = column_read_index(self.ret_type.is_some(), self.index, row.len())?;
+        Ok(row.get_datum(
+            index,
+            self.ret_type
+                .as_ref()
+                .expect("validated column declaration"),
+        ))
     }
 }
 
@@ -486,59 +481,13 @@ impl CorrelatedColumn {
         ctx: &dyn crate::Columns,
         target: tidb_datatype::EvalType,
     ) -> Result<Datum, EvalError> {
-        use tidb_datatype::{EvalType, FieldTypeCode, StringDatum};
         let value = self.eval();
-        if value.is_null() {
-            return Ok(value);
-        }
-        let field = self.get_static_type().ok_or(EvalError::Unsupported(
-            "correlated column has no result type",
-        ))?;
-        if target == EvalType::Int && field.is_hybrid() {
-            let warnings = crate::constant::ConversionWarnings(ctx);
-            let zone = ctx.time_zone();
-            let context = tidb_datatype::ConversionContext::new(
-                ctx.type_flags(),
-                tidb_datatype::ConversionLocation::from_time_zone(&zone),
-                &warnings,
-            );
-            // ToInt64's MysqlBit case reinterprets the unsigned result. Other
-            // hybrids use the signed conversion's normal bounds and errors.
-            if let Datum::Bit(value) = value {
-                let (integer, error) = value.to_int_with_context(&context);
-                return error.map_or(Ok(Datum::Int(integer as i64)), |error| {
-                    Err(EvalError::Conversion(error))
-                });
-            }
-            let converted = value
-                .convert_to_in_context(&FieldType::new(FieldTypeCode::LongLong), &context, &zone)
-                .map_err(|_| EvalError::Unsupported("correlated integer conversion failed"))?;
-            return converted.error.map_or(Ok(converted.value), |error| {
-                Err(EvalError::Conversion(error))
-            });
-        }
-        match (target, value) {
-            (EvalType::Int, Datum::Int(value)) => Ok(Datum::Int(value)),
-            (EvalType::Int, Datum::UInt(value)) => Ok(Datum::Int(value as i64)),
-            (EvalType::Real, Datum::Real(value) | Datum::Float32(value)) => Ok(Datum::Real(value)),
-            (EvalType::String, value) => Ok(Datum::String(StringDatum::new(
-                value.sql_bytes().map_err(|_| {
-                    EvalError::Unsupported("correlated value cannot be converted to string")
-                })?,
-                field
-                    .runtime_collator_with_mode(true)
-                    .new_collation()
-                    .unwrap_or(tidb_datatype::Collation::Binary),
-            ))),
-            (EvalType::Decimal, value @ Datum::Decimal(_))
-            | (EvalType::Datetime | EvalType::Timestamp, value @ Datum::Time(_))
-            | (EvalType::Duration, value @ Datum::Duration(_))
-            | (EvalType::Json, value @ Datum::Json(_))
-            | (EvalType::VectorFloat32, value @ Datum::VectorFloat32(_)) => Ok(value),
-            _ => Err(EvalError::Unsupported(
-                "correlated value is not in its requested evaluation domain",
-            )),
-        }
+        crate::typed_context_value::typed_correlated_value(
+            self.get_static_type(),
+            ctx,
+            target,
+            value,
+        )
     }
 }
 
@@ -923,4 +872,22 @@ mod tests {
 
         assert_eq!(inner_expression.eval(), Datum::Int(42));
     }
+}
+
+pub(crate) fn column_read_index(
+    has_type: bool,
+    index: i64,
+    columns: usize,
+) -> Result<usize, EvalError> {
+    if !has_type {
+        return Err(EvalError::Unsupported("column has no result type"));
+    }
+    let index =
+        usize::try_from(index).map_err(|_| EvalError::Unsupported("column index is negative"))?;
+    if index >= columns {
+        return Err(EvalError::Unsupported(
+            "column index is outside the input row",
+        ));
+    }
+    Ok(index)
 }

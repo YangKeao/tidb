@@ -176,9 +176,10 @@ impl NativeBatchHosts<'_> {
                 values.get(token, NativeValueRole::CharInput, origin(i))?;
             }
         }
+        drop(tokens);
         let result = match result {
             Ok(v) => v,
-            Err(e) => return self.native_failure(e),
+            Err(e) => return self.begin_math_diagnostic(id, e),
         };
         let held = base
             .checked_add(

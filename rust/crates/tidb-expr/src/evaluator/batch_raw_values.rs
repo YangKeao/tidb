@@ -136,6 +136,13 @@ impl NativeBatchHosts<'_> {
                 },
             )
         };
+        // Authentication and copies precede consumption. A warning callback
+        // can unwind, so it must never leave this same demand replayable.
+        self.slots[id.slot]
+            .task
+            .as_mut()
+            .expect("validated raw value task")
+            .demand = SqlDemand::Consumed;
         let available = self
             .max_retained_bytes
             .checked_sub(base)
@@ -169,6 +176,15 @@ impl NativeBatchHosts<'_> {
                 self.context,
             ),
         };
+        // Context callbacks may invalidate native capabilities. No store borrow
+        // crosses the callback; check both original inputs again before output.
+        {
+            let store = store.borrow();
+            store.get(left_token, NativeValueRole::CharInput, left_origin)?;
+            if let Some(origin) = right_origin {
+                store.get(token, NativeValueRole::CharInput, origin)?;
+            }
+        }
         let result = match computed {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
@@ -493,6 +509,346 @@ mod tests {
                 provider.cancel(&task);
                 assert!(provider.task(&task).is_err());
             }
+        }
+    }
+    #[test]
+    fn native_raw_unary_consumes_before_warning_callback_and_reauthenticates_after_it() {
+        struct C<'a> {
+            store: &'a RefCell<NativeValueStore>,
+            action: Cell<u8>,
+            calls: Cell<usize>,
+        }
+        impl Columns for C<'_> {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("no invented input")
+            }
+            fn handle_truncate(&self, _: &str) -> std::result::Result<(), EvalError> {
+                let mut store = self.store.borrow_mut();
+                self.calls.set(self.calls.get() + 1);
+                match self.action.replace(0) {
+                    1 => panic!("raw unary conversion callback"),
+                    2 => {
+                        store.begin_window().unwrap();
+                    }
+                    _ => (),
+                }
+                Ok(())
+            }
+        }
+        let field: tipb::FieldType = tidb_query_datatype::FieldTypeTp::Blob.into();
+        let args = [field.clone()];
+        let operation = NativeRawValueOperation::UnarySign {
+            sign: tidb_query_expr::impl_op::NativeUnarySign::Minus,
+            unsigned: false,
+            constant: true,
+        };
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            operation.sql_operation(),
+            HostSignature {
+                arg_types: args.to_vec().into(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::RawValues {
+            operation,
+            name: "unaryminus".into(),
+            result_type: FieldType::new(FieldTypeCode::Double),
+            left_node: 1,
+            right_node: None,
+            output_node: 0,
+            output_role: NativeValueRole::Output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let ctx = C {
+            store: &store,
+            action: Cell::new(0),
+            calls: Cell::new(0),
+        };
+        let mut provider =
+            NativeBatchHosts::new(catalog, &metadata, &ctx, 65536).with_native_values(Some(&store));
+        let row = InputRow {
+            occurrence: 7,
+            input_row: 2,
+        };
+        let origin = NativeValueOrigin { node: 1, row };
+        let mut eval = EvalContext::default();
+        for action in [1, 2, 0] {
+            ctx.calls.set(0);
+            ctx.action.set(action);
+            let HostStart::Pending { task, request } = provider
+                .start(
+                    &mut eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("actual unary argument required")
+            };
+            assert_eq!(request.index, 0);
+            let wrong = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::new_string("12tail"),
+                    NativeValueRole::Output,
+                    origin,
+                )
+                .unwrap();
+            let wrong = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong)), 1);
+            assert!(provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &wrong
+                    }
+                )
+                .is_err());
+            assert_eq!(ctx.calls.get(), 0);
+            let token = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::new_string("12tail"),
+                    NativeValueRole::CharInput,
+                    origin,
+                )
+                .unwrap();
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                provider.resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+            }));
+            assert_eq!(ctx.calls.get(), 1);
+            match action {
+                1 => assert!(outcome.is_err(), "warning callback must unwind unchanged"),
+                2 => assert!(
+                    matches!(outcome.unwrap(), Err(LocalError::BindingContract(_))),
+                    "callback invalidated the original generation"
+                ),
+                _ => {
+                    let HostStep::Ready(output) = outcome.unwrap().unwrap() else {
+                        panic!("unary result required")
+                    };
+                    let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                        panic!()
+                    };
+                    assert_eq!(
+                        *store
+                            .borrow()
+                            .get(
+                                token,
+                                NativeValueRole::Output,
+                                NativeValueOrigin { node: 0, row }
+                            )
+                            .unwrap(),
+                        Datum::Real(-12.0)
+                    );
+                }
+            }
+            assert!(
+                provider
+                    .resume(
+                        &mut eval,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &values
+                        }
+                    )
+                    .is_err(),
+                "a consumed unary callback must not replay"
+            );
+            assert_eq!(
+                ctx.calls.get(),
+                1,
+                "replay must not call the warning handler again"
+            );
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+        }
+    }
+    #[test]
+    fn abs_context_math_consumes_warning_callback_and_reauthenticates_after_it() {
+        struct C<'a> {
+            store: &'a RefCell<NativeValueStore>,
+            action: Cell<u8>,
+            calls: Cell<usize>,
+        }
+        impl Columns for C<'_> {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("no invented input")
+            }
+            fn handle_truncate(&self, _: &str) -> std::result::Result<(), EvalError> {
+                let mut store = self.store.borrow_mut();
+                self.calls.set(self.calls.get() + 1);
+                match self.action.replace(0) {
+                    1 => panic!("ABS numeric callback"),
+                    2 => {
+                        store.begin_window().unwrap();
+                    }
+                    _ => (),
+                }
+                Ok(())
+            }
+        }
+        let field: tipb::FieldType = tidb_query_datatype::FieldTypeTp::Blob.into();
+        let args = [field.clone()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::AbsNative,
+            HostSignature {
+                arg_types: args.to_vec().into(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::Math {
+            name: "abs".into(),
+            result_type: FieldType::new(FieldTypeCode::Double),
+            argument_node: 1,
+            output_node: 0,
+            output_role: NativeValueRole::Output,
+            overflow_expression: None,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let ctx = C {
+            store: &store,
+            action: Cell::new(0),
+            calls: Cell::new(0),
+        };
+        let mut provider =
+            NativeBatchHosts::new(catalog, &metadata, &ctx, 65536).with_native_values(Some(&store));
+        let row = InputRow {
+            occurrence: 7,
+            input_row: 2,
+        };
+        let origin = NativeValueOrigin { node: 1, row };
+        let mut eval = EvalContext::default();
+        for action in [1, 2, 0] {
+            ctx.calls.set(0);
+            ctx.action.set(action);
+            let HostStart::Pending { task, request } = provider
+                .start(
+                    &mut eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("actual math argument required")
+            };
+            assert_eq!(request.index, 0);
+            let wrong = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::new_string("12tail"),
+                    NativeValueRole::Output,
+                    origin,
+                )
+                .unwrap();
+            let wrong = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong)), 1);
+            assert!(provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &wrong
+                    }
+                )
+                .is_err());
+            assert_eq!(ctx.calls.get(), 0);
+            let token = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::new_string("12tail"),
+                    NativeValueRole::CharInput,
+                    origin,
+                )
+                .unwrap();
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                provider.resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+            }));
+            assert_eq!(ctx.calls.get(), 1);
+            match action {
+                1 => assert!(outcome.is_err(), "warning callback must unwind unchanged"),
+                2 => assert!(
+                    matches!(outcome.unwrap(), Err(LocalError::BindingContract(_))),
+                    "callback invalidated the original generation"
+                ),
+                _ => {
+                    let HostStep::Ready(output) = outcome.unwrap().unwrap() else {
+                        panic!("math result required")
+                    };
+                    let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                        panic!()
+                    };
+                    assert_eq!(
+                        *store
+                            .borrow()
+                            .get(
+                                token,
+                                NativeValueRole::Output,
+                                NativeValueOrigin { node: 0, row }
+                            )
+                            .unwrap(),
+                        Datum::Real(12.0)
+                    );
+                }
+            }
+            assert!(
+                provider
+                    .resume(
+                        &mut eval,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &field,
+                            values: &values
+                        }
+                    )
+                    .is_err(),
+                "a consumed math callback must not replay"
+            );
+            assert_eq!(
+                ctx.calls.get(),
+                1,
+                "replay must not call the warning handler again"
+            );
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
         }
     }
 }

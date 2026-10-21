@@ -4145,8 +4145,99 @@ mod tests {
         let ordered_context_mix = std::iter::once(0)
             .chain(context_start..roots.len())
             .collect::<Vec<_>>();
+        let typed_context_start = roots.len();
+        let typed_deferred = |child: Expression, field: FieldType, parameter: bool| {
+            let mut value = Constant::new(Datum::Int(99), field);
+            value.deferred_expr = Some(Box::new(child));
+            if parameter {
+                value.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
+            }
+            Expression::Constant(value)
+        };
+        for name in ["unaryplus", "unaryminus", "abs"] {
+            roots.push(call(name, integer.clone(), vec![context_parameter()]));
+            fields.push(integer.clone());
+        }
+        roots.push(call(
+            "cast_json",
+            FieldType::new(FieldTypeCode::Json),
+            vec![context_parameter()],
+        ));
+        fields.push(FieldType::new(FieldTypeCode::Json));
+        for name in ["plus", "minus", "mul", "mod", "div", "intdiv"] {
+            let field = if name == "div" {
+                FieldType::new(FieldTypeCode::NewDecimal)
+            } else {
+                integer.clone()
+            };
+            roots.push(call(
+                name,
+                field.clone(),
+                vec![
+                    context_parameter(),
+                    Expression::Constant(Constant::new(Datum::Int(2), integer.clone())),
+                ],
+            ));
+            fields.push(field);
+        }
+        let deferred_plus = || {
+            call(
+                "plus",
+                integer.clone(),
+                vec![context_parameter(), column(0)],
+            )
+        };
+        roots.push(typed_deferred(
+            deferred_plus(),
+            integer.clone().with_unsigned(true),
+            false,
+        ));
+        fields.push(integer.clone().with_unsigned(true));
+        roots.push(typed_deferred(deferred_plus(), integer.clone(), true));
+        fields.push(integer.clone());
+        let deferred_text = typed_deferred(
+            call(
+                "char_length",
+                integer.clone(),
+                vec![call("cast_char", string.clone(), vec![context_parameter()])],
+            ),
+            integer.clone(),
+            false,
+        );
+        roots.push(deferred_text);
+        fields.push(integer.clone());
+        let nested = typed_deferred(
+            typed_deferred(deferred_plus(), integer.clone(), true),
+            integer.clone(),
+            false,
+        );
+        roots.push(call("cast_char", string.clone(), vec![nested]));
+        fields.push(string.clone());
+        let typed_context_mix = std::iter::once(0)
+            .chain(typed_context_start..roots.len())
+            .collect::<Vec<_>>();
+        let ordered_typed_start = roots.len();
+        roots.push(call(
+            "setvar",
+            integer.clone(),
+            vec![
+                variable_name(),
+                call(
+                    "plus",
+                    integer.clone(),
+                    vec![context_parameter(), column(0)],
+                ),
+            ],
+        ));
+        fields.push(integer.clone());
+        roots.push(read_variable());
+        fields.push(integer.clone());
+        let ordered_typed_mix = std::iter::once(0)
+            .chain(typed_context_start..ordered_typed_start)
+            .chain(ordered_typed_start..roots.len())
+            .collect::<Vec<_>>();
         let interval_mix = [0, 7, 28, 29, 30, 31, 32, 33];
-        let configurations = [
+        let mut configurations = vec![
             (
                 clock_mix.iter().map(|&i| roots[i].clone()).collect(),
                 clock_mix.iter().map(|&i| fields[i].clone()).collect(),
@@ -4365,6 +4456,26 @@ mod tests {
         let early_configuration = configurations.len() - 3;
         let context_configuration = configurations.len() - 2;
         let ordered_context_configuration = configurations.len() - 1;
+        configurations.push((
+            typed_context_mix
+                .iter()
+                .map(|&i| roots[i].clone())
+                .collect(),
+            typed_context_mix
+                .iter()
+                .map(|&i| fields[i].clone())
+                .collect(),
+        ));
+        configurations.push((
+            ordered_typed_mix
+                .iter()
+                .map(|&i| roots[i].clone())
+                .collect(),
+            ordered_typed_mix
+                .iter()
+                .map(|&i| fields[i].clone())
+                .collect(),
+        ));
         let with_session = |context: crate::StmtContext| {
             context
                 .with_session_state(Some("dbé会话".into()), Some("8.0-session".into()))
@@ -4493,7 +4604,7 @@ mod tests {
                     }
                     if workers == 0 {
                         let route = projection.evaluator_suite.batch_route_snapshot();
-                        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0));
+                        assert_eq!((route.prepared, route.fallback, route.refusals), (1, 0, 0), "configuration={configuration} flag={enabled} workers={workers}: {route:?}");
                     }
                     projection.close().unwrap();
                 }

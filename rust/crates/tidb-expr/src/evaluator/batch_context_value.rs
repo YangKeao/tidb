@@ -15,6 +15,7 @@ impl NativeBatchHosts<'_> {
         let Some(NativeHostMetadata::ContextValue {
             descriptor,
             argument,
+            diagnostic,
             output_node,
             output_role,
         }) = self.metadata.get(slot.index())
@@ -54,8 +55,10 @@ impl NativeBatchHosts<'_> {
         };
         *consumed = true;
         let maximum = self.max_retained_bytes - live;
-        let shortcut =
-            self.constant_root_shortcut && *output_node == 0 && descriptor.root_broadcast;
+        let shortcut = diagnostic.is_none()
+            && self.constant_root_shortcut
+            && *output_node == 0
+            && descriptor.root_broadcast;
         let value = if shortcut && self.root_value.is_some() {
             crate::tikv::identity_actual::copy_bounded(self.root_value.as_ref().unwrap(), maximum)
         } else if let (Some(token), Some(origin)) = (token, origin) {
@@ -84,6 +87,30 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
+        if let Some(policy) = diagnostic {
+            let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+                let value = crate::scalar_function::eager_values::audit_work_result(
+                    descriptor
+                        .finish_raw(value, self.context)
+                        .map_err(|(_, error)| error),
+                )?;
+                policy.render(&value)
+            });
+            if let (Some(token), Some(origin)) = (token, origin) {
+                store
+                    .borrow()
+                    .get(token, NativeValueRole::CharInput, origin)?;
+            }
+            let text = match result {
+                Ok(text) => text,
+                Err(error) => return self.native_failure(error),
+            };
+            let node = *output_node;
+            self.cancel(id);
+            return self
+                .emit_diagnostic_result(text, node, row)
+                .map(HostStep::Ready);
+        }
         let value = if shortcut {
             Ok(value)
         } else {

@@ -41,10 +41,21 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("unary window descriptor missing"));
         };
+        let actual = if actual == SqlBatchHostOperation::EagerValuesWindowNative
+            && self.diagnostic_parent(invocation.slot).is_some()
+            && *operation == SqlBatchHostOperation::AbsIntWindowNative
+        {
+            *operation
+        } else {
+            actual
+        };
+        let arity = self
+            .diagnostic_parent(invocation.slot)
+            .map_or(1, |p| p.main_arity + p.arguments.len());
         if *operation != actual
             || signature.arg_types.as_ref() != invocation.arg_types
             || &signature.return_type != invocation.return_type
-            || invocation.arg_types.len() != 1
+            || invocation.arg_types.len() != arity
             || invocation.physical_rows.is_empty()
             || invocation
                 .occurrence_start
@@ -85,7 +96,7 @@ impl NativeBatchHosts<'_> {
                 occurrence: invocation.occurrence_start,
                 input_row: rows[0],
             },
-            1,
+            arity,
             SqlDemand::WindowUnary { rows },
         )
     }
@@ -197,6 +208,13 @@ impl NativeBatchHosts<'_> {
                     let result = match tidb_query_expr::impl_math::native_abs_int_value(bits) {
                         Ok(value) => value,
                         Err(_) => {
+                            if self.diagnostic_parent(slot).is_some() {
+                                return self.begin_window_math_diagnostic(
+                                    id,
+                                    position,
+                                    EvalError::IntOverflow,
+                                );
+                            }
                             let error = if let Some(expression) = overflow_expression {
                                 self.check_bytes(
                                     current

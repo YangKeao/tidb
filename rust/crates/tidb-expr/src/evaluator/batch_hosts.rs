@@ -62,6 +62,8 @@ mod str_to_date_source;
 mod timestamp_diff_source;
 #[path = "batch_tso.rs"]
 mod tso_source;
+#[path = "batch_typed_window.rs"]
+mod typed_window;
 #[path = "batch_vector.rs"]
 mod vector;
 #[path = "batch_wildcard.rs"]
@@ -76,6 +78,9 @@ pub(super) use interval_source::{NativeIntervalArgument, NativeIntervalMetadata}
 #[path = "batch_in.rs"]
 mod in_source;
 pub(super) use in_source::{NativeInArgument, NativeInMetadata};
+#[path = "batch_numeric_parent.rs"]
+mod numeric_parent;
+pub(super) use numeric_parent::{CompiledNumericParent, NumericPlan, NumericPlanBody};
 #[path = "batch_quotient.rs"]
 mod quotient;
 #[path = "batch_raw_values.rs"]
@@ -86,11 +91,18 @@ mod unary_window;
 mod window_values;
 
 #[derive(Clone, Copy, Debug)]
+pub(super) enum NativeValuePreparation {
+    Literal,
+    Computed,
+    TypedReady,
+}
+#[derive(Clone, Copy, Debug)]
 pub(super) enum WindowArithmeticSource {
     Literal,
     Column,
     Computed,
     IntegerReady,
+    TypedReady,
 }
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WindowArithmeticMetadata {
@@ -144,10 +156,16 @@ impl NativeRawValueOperation {
 #[path = "batch_eager_values.rs"]
 mod eager_values_source;
 
+#[path = "batch_typed_context.rs"]
+mod typed_context_source;
+pub(super) use typed_context_source::{NativeTypedContext, NativeTypedDescriptor};
+
 pub(super) enum NativeHostMetadata {
+    TypedContext(NativeTypedContext),
     ContextValue {
         descriptor: Box<crate::context_value::ContextValue>,
         argument: Option<usize>,
+        diagnostic: Option<crate::scalar_function::dynamic_diagnostic::LiteralPolicy>,
         output_node: usize,
         output_role: NativeValueRole,
     },
@@ -388,7 +406,7 @@ pub(super) enum NativeHostMetadata {
         cast_type: tidb_ast::CastType,
         name: Box<str>,
         source_type: FieldType,
-        input_is_literal: bool,
+        input: NativeValuePreparation,
         result_type: FieldType,
         argument_node: usize,
         output_node: usize,
@@ -449,6 +467,14 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    Consumed,
+    TypedWindow(Box<typed_window::TypedWindowTask>),
+    Numeric(Box<numeric_parent::NumericTask>),
+    NumericWindow(Box<numeric_parent::window::NumericWindowTask>),
+    TypedContext {
+        consumed: bool,
+    },
+    Diagnostic(Box<diagnostic_source::DiagnosticTask>),
     ContextValue {
         consumed: bool,
     },
@@ -598,6 +624,14 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Consumed => Ok(None),
+            SqlDemand::TypedWindow(_) => Ok(Some(0)),
+            SqlDemand::Numeric(task) => Ok(Some(task.next_argument())),
+            SqlDemand::NumericWindow(task) => Ok(Some(task.next_argument())),
+            SqlDemand::Diagnostic(task) => task.next_argument(),
+            SqlDemand::TypedContext { consumed } => {
+                Ok((!*consumed && self.arity == 1).then_some(0))
+            }
             SqlDemand::ContextValue { consumed } => {
                 Ok((!*consumed && self.arity == 1).then_some(0))
             }
@@ -649,6 +683,11 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::Diagnostic(_) => Err(binding("diagnostic demand cannot buffer wire values")),
+            SqlDemand::TypedContext { .. } => {
+                Err(binding("typed context cannot buffer a wire prefix"))
+            }
             SqlDemand::ContextValue { .. } => {
                 Err(binding("context values cannot buffer a wire prefix"))
             }
@@ -695,6 +734,9 @@ impl NativeTask {
             | SqlDemand::Comparison { .. }
             | SqlDemand::RawValues { .. }
             | SqlDemand::Arithmetic { .. }
+            | SqlDemand::Numeric(_)
+            | SqlDemand::NumericWindow(_)
+            | SqlDemand::TypedWindow(_)
             | SqlDemand::Math => Err(LocalError::HostContract(
                 "native nullable control does not buffer a prefix".into(),
             )),
@@ -723,6 +765,26 @@ impl NativeTask {
                     .ok_or_else(|| resource("SQL host prefix retained size overflow"))
             },
         )?;
+        if let SqlDemand::TypedWindow(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("typed forward retained extent overflow"));
+        }
+        if let SqlDemand::NumericWindow(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("numeric window retained extent overflow"));
+        }
+        if let SqlDemand::Numeric(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("numeric retained bytes overflow"));
+        }
+        if let SqlDemand::Diagnostic(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("diagnostic retained bytes overflow"));
+        }
         if let SqlDemand::UserVariableRead { name, .. }
         | SqlDemand::UserVariableWrite { name, .. } = &self.demand
         {
@@ -861,6 +923,9 @@ pub(super) struct NativeBatchHosts<'a> {
     context: &'a dyn Columns,
     metadata: &'a [NativeHostMetadata],
     constant_probes: &'a [Option<Datum>],
+    diagnostic_slots: &'a [usize],
+    diagnostic_parents: &'a [diagnostic_source::CompiledDiagnosticParent],
+    numeric_parents: &'a [CompiledNumericParent],
     native_values: Option<&'a RefCell<NativeValueStore>>,
     slots: Vec<TaskSlot>,
     generation: u64,
@@ -868,8 +933,14 @@ pub(super) struct NativeBatchHosts<'a> {
     native_error: Option<EvalError>,
     constant_root_shortcut: bool,
     root_value: Option<Datum>,
+    typed_values: Box<[Option<Datum>]>,
+    input: Option<&'a Chunk>,
 }
 impl<'a> NativeBatchHosts<'a> {
+    pub(super) fn with_input(mut self, input: &'a Chunk) -> Self {
+        self.input = Some(input);
+        self
+    }
     pub(super) fn new(
         catalog: HostCatalog,
         metadata: &'a [NativeHostMetadata],
@@ -880,6 +951,9 @@ impl<'a> NativeBatchHosts<'a> {
             catalog,
             metadata,
             constant_probes: &[],
+            diagnostic_slots: &[],
+            diagnostic_parents: &[],
+            numeric_parents: &[],
             native_values: None,
             context,
             slots: Vec::new(),
@@ -888,6 +962,8 @@ impl<'a> NativeBatchHosts<'a> {
             native_error: None,
             constant_root_shortcut: false,
             root_value: None,
+            typed_values: Box::new([]),
+            input: None,
         }
     }
     pub(super) fn with_constant_root_shortcut(mut self, enabled: bool) -> Self {
@@ -969,11 +1045,26 @@ impl<'a> NativeBatchHosts<'a> {
         })
     }
     fn retained_bytes(&self) -> LocalResult<usize> {
+        let typed = self.typed_values.iter().try_fold(
+            array_bytes::<Option<Datum>>(self.typed_values.len())?,
+            |n, value| {
+                n.checked_add(
+                    value
+                        .as_ref()
+                        .map(native_payload_bytes)
+                        .transpose()?
+                        .unwrap_or(0),
+                )
+                .ok_or_else(|| resource("typed cache retained size overflow"))
+            },
+        )?;
         self.slots
             .iter()
             .filter_map(|slot| slot.task.as_ref())
             .try_fold(
                 array_bytes::<TaskSlot>(self.slots.capacity())?
+                    .checked_add(typed)
+                    .ok_or_else(|| resource("typed cache and task layout overflow"))?
                     .checked_add(
                         self.root_value
                             .as_ref()
@@ -1072,7 +1163,7 @@ impl<'a> NativeBatchHosts<'a> {
             cast_type,
             name,
             source_type,
-            input_is_literal,
+            input,
             result_type,
             argument_node,
             output_node,
@@ -1111,15 +1202,23 @@ impl<'a> NativeBatchHosts<'a> {
         // No warning buffer or expression callback is retained by this host.
         let result = if matches!(cast_type, tidb_ast::CastType::Json) {
             let target = source_type.eval_type();
-            let value = if *input_is_literal {
-                crate::constant::typed_constant_value(source_type, self.context, target, value)
-            } else {
-                crate::scalar_function::normalize_numeric_row_value(
-                    value,
-                    Some(source_type),
-                    target,
-                    self.context,
-                )
+            let value = match input {
+                NativeValuePreparation::Literal => {
+                    crate::constant::typed_constant_value(source_type, self.context, target, value)
+                }
+                NativeValuePreparation::Computed => {
+                    crate::scalar_function::normalize_numeric_row_value(
+                        value,
+                        Some(source_type),
+                        target,
+                        self.context,
+                    )
+                }
+                NativeValuePreparation::TypedReady => Ok(match (target, value) {
+                    (NativeEvalType::Int, Datum::UInt(value)) => Datum::Int(value as i64),
+                    (NativeEvalType::Real, Datum::Float32(value)) => Datum::Real(value),
+                    (_, value) => value,
+                }),
             };
             value.and_then(|value| {
                 crate::builtin_ext::json::cast_json_prepared(
@@ -1159,7 +1258,10 @@ impl<'a> NativeBatchHosts<'a> {
             .metadata
             .get(self.task(id)?.slot.index())
             .ok_or_else(|| binding("native SQL result lacks its metadata"))?;
-        let result = if matches!(metadata, NativeHostMetadata::ContextValue { .. }) {
+        let result = if matches!(
+            metadata,
+            NativeHostMetadata::ContextValue { .. } | NativeHostMetadata::TypedContext(_)
+        ) {
             // Context leaves already applied their consumer's expression view.
             // A root Constant broadcast deliberately publishes the raw Datum.
             result
@@ -1509,7 +1611,7 @@ impl<'a> NativeBatchHosts<'a> {
         self.finish_arithmetic_row_value(id, prepared.compute(available), base)
     }
 
-    fn finish_math(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
+    fn finish_math(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
         let task = self.task(id)?;
         let Some(NativeHostMetadata::Math {
             name,
@@ -1523,6 +1625,7 @@ impl<'a> NativeBatchHosts<'a> {
             return Err(binding("math descriptor missing"));
         };
         let row = task.row;
+        let slot = task.slot;
         let origin = NativeValueOrigin {
             node: *argument_node,
             row,
@@ -1547,6 +1650,13 @@ impl<'a> NativeBatchHosts<'a> {
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
+        // A context warning can unwind. Keep the authenticated task record,
+        // but consume the value demand before crossing that callback boundary.
+        self.slots[id.slot]
+            .task
+            .as_mut()
+            .expect("authenticated math task")
+            .demand = SqlDemand::Consumed;
         let available = self
             .max_retained_bytes
             .checked_sub(base)
@@ -1563,6 +1673,9 @@ impl<'a> NativeBatchHosts<'a> {
                 Datum::Int(value) => match native_abs_int_value(Some(value)) {
                     Ok(value) => value.map_or(Datum::Null, Datum::Int),
                     Err(_) => {
+                        if self.diagnostic_parent(slot).is_some() {
+                            return self.begin_math_diagnostic(id, EvalError::IntOverflow);
+                        }
                         let error =
                             if let Some(expression) = overflow_expression {
                                 self.check_bytes(
@@ -1602,7 +1715,11 @@ impl<'a> NativeBatchHosts<'a> {
                     Datum::Decimal(value)
                 }
                 value => {
-                    let ready = match crate::math_fn::numeric_arg(&value, self.context) {
+                    let ready = crate::math_fn::numeric_arg(&value, self.context);
+                    store
+                        .borrow()
+                        .get(token, NativeValueRole::CharInput, origin)?;
+                    let ready = match ready {
                         Ok(value) => value,
                         Err(error) => return self.native_failure(error),
                     };
@@ -1615,6 +1732,7 @@ impl<'a> NativeBatchHosts<'a> {
                 Err(error) => return self.native_failure(error),
             };
         self.finish_native_value(id, value, *output_node, *output_role, row, base)
+            .map(HostStep::Ready)
     }
 
     fn resume_comparison(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
@@ -2310,11 +2428,8 @@ impl<'a> NativeBatchHosts<'a> {
         Ok(VectorValue::from_scalar(&ScalarValue::Int(result), 1))
     }
 }
-impl LocalHostServices for NativeBatchHosts<'_> {
-    fn catalog_key(&self) -> &HostCatalogKey {
-        self.catalog.key()
-    }
-    fn start(
+impl NativeBatchHosts<'_> {
+    fn start_sql(
         &mut self,
         _ctx: &mut EvalContext,
         invocation: HostInvocation<'_>,
@@ -2343,17 +2458,45 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return self.native_failure(error);
             }
         }
+        if self.numeric_parent(invocation.slot).is_some() {
+            return self.start_numeric_parent(invocation);
+        }
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
             SqlBatchHostOperation::EagerValuesNative => {
-                if let Some(NativeHostMetadata::ContextValue {
+                if matches!(
+                    self.metadata.get(invocation.slot.index()),
+                    Some(NativeHostMetadata::TypedContext(_))
+                ) {
+                    self.validate_typed_context(&invocation)?;
+                    SqlDemand::TypedContext { consumed: false }
+                } else if let Some(NativeHostMetadata::Math { name, .. }) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || name.as_ref() != "abs"
+                        || self.diagnostic_parent(invocation.slot).is_none()
+                    {
+                        return Err(binding("eager math transport lacks its diagnostic parent"));
+                    }
+                    SqlDemand::Math
+                } else if let Some(NativeHostMetadata::ContextValue {
                     descriptor,
                     argument,
+                    diagnostic,
+                    output_role,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
                 {
                     if self.native_values.is_none()
                         || usize::from(descriptor.demands_child()) != invocation.arg_types.len()
                         || argument.is_some() != descriptor.demands_child()
+                        || (diagnostic.is_some() && *output_role != NativeValueRole::CharInput)
+                        || (diagnostic.is_some()
+                            && !matches!(
+                                &descriptor.read,
+                                crate::context_value::ContextRead::Parameter(_)
+                                    | crate::context_value::ContextRead::Deferred
+                            ))
                     {
                         return Err(binding("context descriptor arity differs"));
                     }
@@ -2368,7 +2511,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                     else {
                         return Err(binding("eager values descriptor absent"));
                     };
-                    if self.native_values.is_none() || arguments.len() != invocation.arg_types.len()
+                    if self.native_values.is_none()
+                        || arguments.len().checked_add(
+                            self.diagnostic_parent(invocation.slot)
+                                .map_or(0, |p| p.arguments.len()),
+                        ) != Some(invocation.arg_types.len())
                     {
                         return Err(binding("eager values descriptor differs"));
                     }
@@ -2831,7 +2978,8 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             | SqlBatchHostOperation::IntegerDivideWindowNative
             | SqlBatchHostOperation::AbsIntWindowNative
             | SqlBatchHostOperation::CastDecimalWindowNative
-            | SqlBatchHostOperation::CastJsonWindowNative => {
+            | SqlBatchHostOperation::CastJsonWindowNative
+            | SqlBatchHostOperation::EagerValuesWindowNative => {
                 return Err(binding(
                     "window operation requires its explicit window callbacks",
                 ));
@@ -3113,6 +3261,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 demand,
                 SqlDemand::EagerValues { .. }
                     | SqlDemand::ContextValue { .. }
+                    | SqlDemand::TypedContext { .. }
                     | SqlDemand::Clock
                     | SqlDemand::Tso
                     | SqlDemand::Epoch { .. }
@@ -3145,6 +3294,11 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             };
             let result = if matches!(
                 guard.provider.task(&guard.task)?.demand,
+                SqlDemand::TypedContext { .. }
+            ) {
+                guard.provider.finish_typed_context(&guard.task, None)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
                 SqlDemand::ContextValue { .. }
             ) {
                 guard.provider.finish_context_value(&guard.task, None)
@@ -3167,7 +3321,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             };
             return match result {
                 Ok(HostStep::Ready(value)) => Ok(HostStart::Ready(value)),
-                Ok(HostStep::NeedArg(_)) => {
+                Ok(HostStep::NeedArg(_) | HostStep::NeedArgRow { .. }) => {
                     Err(binding("niladic host unexpectedly demanded an argument"))
                 }
                 Err(error) => Err(error),
@@ -3175,63 +3329,22 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         }
         Ok(start)
     }
-    fn start_window(
-        &mut self,
-        _ctx: &mut EvalContext,
-        invocation: HostWindowInvocation<'_>,
-    ) -> LocalResult<HostStart> {
-        if matches!(
-            self.metadata.get(invocation.slot.index()),
-            Some(NativeHostMetadata::UnaryWindow { .. })
-        ) {
-            self.start_unary_window(invocation)
-        } else if matches!(
-            self.metadata.get(invocation.slot.index()),
-            Some(NativeHostMetadata::DecimalFast { .. })
-        ) {
-            self.start_decimal_fast_window(invocation)
-        } else {
-            self.start_arithmetic_window(invocation)
-        }
-    }
-    fn resume_window(
-        &mut self,
-        _ctx: &mut EvalContext,
-        id: &HostTaskId,
-        reply: HostWindowArgReply<'_>,
-    ) -> LocalResult<HostStep> {
-        if matches!(self.task(id)?.demand, SqlDemand::WindowUnary { .. }) {
-            self.resume_unary_window(id, reply)
-        } else if matches!(self.task(id)?.demand, SqlDemand::WindowDecimalFast { .. }) {
-            self.resume_decimal_fast_window(id, reply)
-        } else {
-            self.resume_arithmetic_window(id, reply)
-        }
-    }
-    fn resume(
+    fn resume_sql(
         &mut self,
         _ctx: &mut EvalContext,
         id: &HostTaskId,
         reply: HostArgReply<'_>,
     ) -> LocalResult<HostStep> {
+        self.validate_row_reply(id, reply)?;
         let task = self.task(id)?;
-        if task.next_argument()? != Some(reply.index)
-            || self
-                .catalog
-                .signature(task.slot)?
-                .arg_types
-                .get(reply.index)
-                != Some(reply.field_type)
-            || reply.values.len() != 1
-            || reply.values.eval_type()
-                != match &task.demand {
-                    SqlDemand::CastCharInt { .. } => TikvEvalType::Int,
-                    _ => TikvEvalType::Bytes,
-                }
-        {
-            return Err(LocalError::HostContract(
-                "SQL host reply differs from its demanded argument".into(),
-            ));
+        if matches!(task.demand, SqlDemand::TypedWindow(_)) {
+            return Err(binding("typed forward requires its window reply"));
+        }
+        if matches!(task.demand, SqlDemand::NumericWindow(_)) {
+            return Err(binding("numeric window requires a window reply"));
+        }
+        if matches!(task.demand, SqlDemand::Numeric(_)) {
+            return self.resume_numeric_parent(id, reply);
         }
         if matches!(task.demand, SqlDemand::TimestampDiff { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -3250,6 +3363,12 @@ impl LocalHostServices for NativeBatchHosts<'_> {
                 return Err(binding("crypto source cannot be wire NULL"));
             };
             return self.resume_crypto(id, token);
+        }
+        if matches!(task.demand, SqlDemand::TypedContext { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("typed context operand cannot be wire NULL"));
+            };
+            return self.finish_typed_context(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::ContextValue { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -3405,7 +3524,7 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
                 return Err(binding("math argument cannot be wire NULL"));
             };
-            return self.finish_math(id, token).map(HostStep::Ready);
+            return self.finish_math(id, token);
         }
         if matches!(task.demand, SqlDemand::Comparison { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -3533,6 +3652,99 @@ impl LocalHostServices for NativeBatchHosts<'_> {
             })),
             None => self.finish(id).map(HostStep::Ready),
         }
+    }
+    fn validate_row_reply(&self, id: &HostTaskId, reply: HostArgReply<'_>) -> LocalResult<()> {
+        let task = self.task(id)?;
+        if task.next_argument()? != Some(reply.index)
+            || self
+                .catalog
+                .signature(task.slot)?
+                .arg_types
+                .get(reply.index)
+                != Some(reply.field_type)
+            || reply.values.len() != 1
+            || reply.values.eval_type()
+                != match &task.demand {
+                    SqlDemand::CastCharInt { .. } => TikvEvalType::Int,
+                    _ => TikvEvalType::Bytes,
+                }
+        {
+            return Err(LocalError::HostContract(
+                "SQL host reply differs from its demanded argument".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl LocalHostServices for NativeBatchHosts<'_> {
+    fn catalog_key(&self) -> &HostCatalogKey {
+        self.catalog.key()
+    }
+    fn start(
+        &mut self,
+        ctx: &mut EvalContext,
+        invocation: HostInvocation<'_>,
+    ) -> LocalResult<HostStart> {
+        self.diagnostic_start(ctx, invocation)
+    }
+    fn start_window(
+        &mut self,
+        _ctx: &mut EvalContext,
+        invocation: HostWindowInvocation<'_>,
+    ) -> LocalResult<HostStart> {
+        if matches!(
+            self.metadata.get(invocation.slot.index()),
+            Some(NativeHostMetadata::TypedContext(_))
+        ) {
+            return self.start_typed_window(invocation);
+        }
+        if self.numeric_parent(invocation.slot).is_some() {
+            return self.start_numeric_window(invocation);
+        }
+        if matches!(
+            self.metadata.get(invocation.slot.index()),
+            Some(NativeHostMetadata::UnaryWindow { .. })
+        ) {
+            self.start_unary_window(invocation)
+        } else if matches!(
+            self.metadata.get(invocation.slot.index()),
+            Some(NativeHostMetadata::DecimalFast { .. })
+        ) {
+            self.start_decimal_fast_window(invocation)
+        } else {
+            self.start_arithmetic_window(invocation)
+        }
+    }
+    fn resume_window(
+        &mut self,
+        _ctx: &mut EvalContext,
+        id: &HostTaskId,
+        reply: HostWindowArgReply<'_>,
+    ) -> LocalResult<HostStep> {
+        if matches!(self.task(id)?.demand, SqlDemand::TypedWindow(_)) {
+            return self.resume_typed_window(id, reply);
+        }
+        if matches!(self.task(id)?.demand, SqlDemand::NumericWindow(_)) {
+            return self.resume_numeric_window(id, reply);
+        }
+        if matches!(self.task(id)?.demand, SqlDemand::Diagnostic(_)) {
+            self.resume_window_math_diagnostic(id, reply)
+        } else if matches!(self.task(id)?.demand, SqlDemand::WindowUnary { .. }) {
+            self.resume_unary_window(id, reply)
+        } else if matches!(self.task(id)?.demand, SqlDemand::WindowDecimalFast { .. }) {
+            self.resume_decimal_fast_window(id, reply)
+        } else {
+            self.resume_arithmetic_window(id, reply)
+        }
+    }
+    fn resume(
+        &mut self,
+        ctx: &mut EvalContext,
+        id: &HostTaskId,
+        reply: HostArgReply<'_>,
+    ) -> LocalResult<HostStep> {
+        self.diagnostic_resume(ctx, id, reply)
     }
     fn cancel(&mut self, id: &HostTaskId) {
         if let Some(slot) = self.slots.get_mut(id.slot) {
@@ -3808,7 +4020,7 @@ mod tests {
                     cast_type: tidb_ast::CastType::Signed,
                     name: "cast_signed".into(),
                     source_type: native_bytes_type(),
-                    input_is_literal: false,
+                    input: NativeValuePreparation::Computed,
                     result_type: FieldType::new(FieldTypeCode::LongLong),
                     argument_node: 3,
                     output_node: 2,
@@ -3964,3 +4176,8 @@ mod tests {
 
 #[path = "batch_context_value.rs"]
 mod context_value_source;
+
+#[path = "batch_diagnostic.rs"]
+mod diagnostic_source;
+
+pub(super) use diagnostic_source::CompiledDiagnosticParent;

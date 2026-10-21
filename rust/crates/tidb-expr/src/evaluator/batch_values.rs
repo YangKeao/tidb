@@ -39,6 +39,8 @@ pub(super) struct NativeValueOrigin {
 }
 enum StoredValue {
     Sql(Datum),
+    DiagnosticUnavailable,
+    DiagnosticText(Box<str>),
     DecimalFast(tidb_query_expr::NativeDecimalFastOutcome),
 }
 struct Entry {
@@ -175,7 +177,54 @@ impl NativeValueStore {
             .value
         {
             StoredValue::DecimalFast(value) => Ok(value),
-            StoredValue::Sql(_) => Err(invalid_handle()),
+            StoredValue::Sql(_)
+            | StoredValue::DiagnosticUnavailable
+            | StoredValue::DiagnosticText(_) => Err(invalid_handle()),
+        }
+    }
+    /// A real suppressed diagnostic failure, distinct from every SQL Datum.
+    /// It may only travel inside an explicitly annotated diagnostic subtree.
+    pub(super) fn insert_diagnostic_unavailable(
+        &mut self,
+        origin: NativeValueOrigin,
+    ) -> LocalResult<Vec<u8>> {
+        self.insert_with(NativeValueRole::CharInput, origin, 0, || {
+            StoredValue::DiagnosticUnavailable
+        })
+    }
+    pub(super) fn diagnostic_unavailable(
+        &self,
+        token: &[u8],
+        origin: NativeValueOrigin,
+    ) -> LocalResult<bool> {
+        match self.entry(token, NativeValueRole::CharInput, origin)?.value {
+            StoredValue::DiagnosticUnavailable => Ok(true),
+            StoredValue::Sql(_) => Ok(false),
+            StoredValue::DecimalFast(_) | StoredValue::DiagnosticText(_) => Err(invalid_handle()),
+        }
+    }
+    pub(super) fn insert_diagnostic_text(
+        &mut self,
+        text: String,
+        origin: NativeValueOrigin,
+    ) -> LocalResult<Vec<u8>> {
+        let charge = text
+            .capacity()
+            .checked_mul(2)
+            .ok_or_else(|| resource("diagnostic text extent overflow"))?;
+        self.insert_with(NativeValueRole::CharInput, origin, charge, || {
+            StoredValue::DiagnosticText(text.into_boxed_str())
+        })
+    }
+    pub(super) fn diagnostic_text(
+        &self,
+        token: &[u8],
+        origin: NativeValueOrigin,
+    ) -> LocalResult<Option<&str>> {
+        match &self.entry(token, NativeValueRole::CharInput, origin)?.value {
+            StoredValue::DiagnosticUnavailable => Ok(None),
+            StoredValue::DiagnosticText(text) => Ok(Some(text)),
+            _ => Err(invalid_handle()),
         }
     }
     fn insert_with(
@@ -244,7 +293,9 @@ impl NativeValueStore {
     ) -> LocalResult<&Datum> {
         match &self.entry(handle, role, origin)?.value {
             StoredValue::Sql(value) => Ok(value),
-            StoredValue::DecimalFast(_) => Err(invalid_handle()),
+            StoredValue::DecimalFast(_)
+            | StoredValue::DiagnosticUnavailable
+            | StoredValue::DiagnosticText(_) => Err(invalid_handle()),
         }
     }
     fn entry(
@@ -296,7 +347,9 @@ impl NativeValueStore {
         )?;
         match &entry.value {
             StoredValue::Sql(value) => Ok(value.clone()),
-            StoredValue::DecimalFast(_) => Err(invalid_handle()),
+            StoredValue::DecimalFast(_)
+            | StoredValue::DiagnosticUnavailable
+            | StoredValue::DiagnosticText(_) => Err(invalid_handle()),
         }
     }
 }
@@ -313,6 +366,55 @@ mod tests {
                 input_row: 7,
             },
         }
+    }
+    #[test]
+    fn diagnostic_failures_are_authenticated_completions_and_never_sql_null() {
+        let mut store = NativeValueStore::new(4096).unwrap();
+        assert!(store.insert_diagnostic_unavailable(origin()).is_err());
+        store.begin_window().unwrap();
+        let failed = store.insert_diagnostic_unavailable(origin()).unwrap();
+        assert!(store.diagnostic_unavailable(&failed, origin()).unwrap());
+        for role in [
+            NativeValueRole::CharInput,
+            NativeValueRole::Output,
+            NativeValueRole::DecimalFast,
+        ] {
+            assert!(store.get(&failed, role, origin()).is_err());
+            assert!(store.clone_for_kernel(&failed, role, origin()).is_err());
+            let mut forged = failed.clone();
+            forged[32..40].copy_from_slice(&(role as u64).to_le_bytes());
+            assert!(store.get(&forged, role, origin()).is_err());
+        }
+        let sql = store
+            .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin())
+            .unwrap();
+        assert!(!store.diagnostic_unavailable(&sql, origin()).unwrap());
+        assert_eq!(
+            store
+                .get(&sql, NativeValueRole::CharInput, origin())
+                .unwrap(),
+            &Datum::Null
+        );
+        let mut wrong = origin();
+        wrong.node += 1;
+        assert!(store.diagnostic_unavailable(&failed, wrong).is_err());
+        wrong = origin();
+        wrong.row.occurrence += 1;
+        assert!(store.diagnostic_unavailable(&failed, wrong).is_err());
+        wrong = origin();
+        wrong.row.input_row += 1;
+        assert!(store.diagnostic_unavailable(&failed, wrong).is_err());
+        let mut foreign = NativeValueStore::new(4096).unwrap();
+        foreign.begin_window().unwrap();
+        assert!(foreign.diagnostic_unavailable(&failed, origin()).is_err());
+        store.begin_window().unwrap();
+        assert!(store.diagnostic_unavailable(&failed, origin()).is_err());
+        store.max_logical_bytes = 0;
+        assert!(matches!(
+            store.insert_diagnostic_unavailable(origin()),
+            Err(LocalError::ResourceLimit(_))
+        ));
+        assert!(store.entries.is_empty());
     }
     #[test]
     fn decimal_fast_outcomes_are_distinct_from_sql_values_and_keep_provenance() {

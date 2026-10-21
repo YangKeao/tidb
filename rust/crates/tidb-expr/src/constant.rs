@@ -132,11 +132,8 @@ impl Constant {
         ctx: &dyn crate::Columns,
     ) -> Result<std::borrow::Cow<'_, FieldType>, EvalError> {
         if let Some(marker) = self.param_marker {
-            let order = usize::try_from(marker.order)
-                .map_err(|_| EvalError::Unsupported("unbound prepared parameter"))?;
-            return Ok(std::borrow::Cow::Owned(
-                tidb_datatype::infer_param_type_from_datum(&ctx.param_value(order)?),
-            ));
+            return crate::context_value::read_parameter_type(marker.order, ctx)
+                .map(std::borrow::Cow::Owned);
         }
         self.ret_type
             .as_ref()
@@ -152,6 +149,9 @@ impl Constant {
         ctx: &dyn crate::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<Datum, EvalError> {
+        if self.param_marker.is_some() || self.deferred_expr.is_some() {
+            return self.eval_typed_context_on_row(ctx, row, None);
+        }
         self.eval_typed_as_on_row(ctx, row, self.get_type(ctx)?.eval_type())
     }
 
@@ -163,17 +163,34 @@ impl Constant {
         row: tidb_chunk::row::Row<'_>,
         target: tidb_datatype::EvalType,
     ) -> Result<Datum, EvalError> {
-        let field = self.get_type(ctx)?;
-        let value = if let Some(marker) = self.param_marker {
-            let order = usize::try_from(marker.order)
-                .map_err(|_| EvalError::Unsupported("unbound prepared parameter"))?;
-            ctx.param_value(order)?
-        } else if let Some(deferred) = self.deferred_expr.as_deref() {
-            deferred.eval(ctx, row)?
-        } else {
-            self.value.clone()
-        };
-        typed_constant_value(&field, ctx, target, value)
+        if self.param_marker.is_some() || self.deferred_expr.is_some() {
+            return self.eval_typed_context_on_row(ctx, row, Some(target));
+        }
+        typed_constant_value(
+            self.get_type(ctx)?.as_ref(),
+            ctx,
+            target,
+            self.value.clone(),
+        )
+    }
+
+    fn eval_typed_context_on_row(
+        &self,
+        ctx: &dyn crate::Columns,
+        row: tidb_chunk::row::Row<'_>,
+        target: Option<tidb_datatype::EvalType>,
+    ) -> Result<Datum, EvalError> {
+        match crate::typed_context_value::begin_constant(self, ctx, target)? {
+            crate::typed_context_value::TypedRead::Ready(value) => Ok(value),
+            crate::typed_context_value::TypedRead::Child(state) => {
+                let value = self
+                    .deferred_expr
+                    .as_deref()
+                    .expect("demanded deferred child")
+                    .eval(ctx, row)?;
+                state.finish(value, ctx)
+            }
+        }
     }
 
     /// Go `IsCorrelated`: a constant is never correlated.
@@ -334,6 +351,10 @@ pub(crate) fn typed_constant_value(
         &warnings,
     );
     let convert = |value: &Datum, code| -> Result<Datum, EvalError> {
+        crate::typed_context_value::charge_numeric_value_work(value)?;
+        if code == FieldTypeCode::Double && matches!(value, Datum::Decimal(_)) {
+            crate::scalar_function::eager_values::charge_string_work(value)?;
+        }
         let converted = value
             .convert_to_in_context(&FieldType::new(code), &context, &zone)
             .map_err(|_| {
@@ -347,6 +368,7 @@ pub(crate) fn typed_constant_value(
     match target {
         EvalType::Int => match value {
             Datum::Bit(value) | Datum::BinaryLiteral(value) => {
+                crate::typed_context_value::charge_binary_numeric_work(&value)?;
                 let (value, error) = value.to_int_with_context(&context);
                 if let Some(error) = error {
                     return Err(EvalError::Conversion(error));
@@ -364,6 +386,7 @@ pub(crate) fn typed_constant_value(
         },
         EvalType::Real => match value {
             Datum::BinaryLiteral(value) => {
+                crate::typed_context_value::charge_binary_numeric_work(&value)?;
                 let (value, error) = value.to_int_with_context(&context);
                 if let Some(error) = error {
                     return Err(EvalError::Conversion(error));
@@ -376,16 +399,20 @@ pub(crate) fn typed_constant_value(
             Datum::Real(value) | Datum::Float32(value) => Ok(Datum::Real(value)),
             _ => Err(EvalError::Unsupported("constant is not in its real domain")),
         },
-        EvalType::String => Ok(Datum::String(tidb_datatype::StringDatum::new(
-            value
-                .sql_bytes()
-                .map_err(|_| EvalError::Unsupported("constant cannot be converted to string"))?,
-            field
-                .runtime_collator_with_mode(true)
-                .new_collation()
-                .unwrap_or(tidb_datatype::Collation::Binary),
-        ))),
+        EvalType::String => {
+            crate::scalar_function::eager_values::charge_string_work(&value)?;
+            Ok(Datum::String(tidb_datatype::StringDatum::new(
+                value.sql_bytes().map_err(|_| {
+                    EvalError::Unsupported("constant cannot be converted to string")
+                })?,
+                field
+                    .runtime_collator_with_mode(true)
+                    .new_collation()
+                    .unwrap_or(tidb_datatype::Collation::Binary),
+            )))
+        }
         EvalType::Decimal => {
+            crate::typed_context_value::charge_numeric_value_work(&value)?;
             let (value, error) = value
                 .to_decimal_with_context(&context)
                 .map_err(|_| EvalError::Unsupported("constant cannot be converted to decimal"))?;

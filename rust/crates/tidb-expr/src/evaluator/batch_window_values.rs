@@ -39,6 +39,15 @@ impl NativeBatchHosts<'_> {
         reply: &HostWindowArgReply<'_>,
         facts: WindowSourceFacts<'_>,
     ) -> LocalResult<WindowSourceValues> {
+        self.collect_window_source_charged(reply, facts, 0, None)
+    }
+    pub(super) fn collect_window_source_charged(
+        &mut self,
+        reply: &HostWindowArgReply<'_>,
+        facts: WindowSourceFacts<'_>,
+        held: usize,
+        auth: Option<&numeric_parent::NumericAuthentication<'_>>,
+    ) -> LocalResult<WindowSourceValues> {
         let WindowSourceFacts {
             field,
             owner,
@@ -50,7 +59,10 @@ impl NativeBatchHosts<'_> {
         let store = self
             .native_values
             .ok_or_else(|| binding("window source store missing"))?;
-        let base = self.retained_bytes()?;
+        let base = self
+            .retained_bytes()?
+            .checked_add(held)
+            .ok_or_else(|| resource("window detached owner extent overflow"))?;
         self.check_bytes(
             base.checked_add(array_bytes::<Datum>(count)?)
                 .ok_or_else(|| resource("window source vector allowance overflow"))?,
@@ -105,7 +117,19 @@ impl NativeBatchHosts<'_> {
                 } else {
                     2
                 };
-                let conversion = conversion_work_bound(&value, multiplier)?;
+                // Forwarded values have already crossed their typed owner.
+                // Copy capacity is billed separately; no display/formatter
+                // work occurs in these branches, including Decimal + NULL.
+                let conversion = if matches!(
+                    owner,
+                    WindowArithmeticSource::TypedReady | WindowArithmeticSource::IntegerReady
+                ) || (matches!(owner, WindowArithmeticSource::Computed)
+                    && source != NativeEvalType::Int)
+                {
+                    0
+                } else {
+                    conversion_work_bound(&value, multiplier)?
+                };
                 self.check_bytes(
                     base.checked_add(retained_values)
                         .and_then(|bytes| bytes.checked_add(conversion))
@@ -131,10 +155,13 @@ impl NativeBatchHosts<'_> {
                             self.context,
                         )
                     }
-                    WindowArithmeticSource::Computed | WindowArithmeticSource::IntegerReady => {
-                        Ok(value)
-                    }
+                    WindowArithmeticSource::Computed
+                    | WindowArithmeticSource::IntegerReady
+                    | WindowArithmeticSource::TypedReady => Ok(value),
                 };
+                if let Some(auth) = auth {
+                    auth.check()?;
+                }
                 match value {
                     Ok(value) => value,
                     Err(error) => return self.native_failure(error),

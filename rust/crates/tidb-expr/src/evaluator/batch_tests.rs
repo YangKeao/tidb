@@ -416,7 +416,8 @@ fn signed_int_family_reuses_the_same_batch_substrate() {
             | SourceKind::Constant { .. }
             | SourceKind::NativeConstant { .. }
             | SourceKind::Column { .. }
-            | SourceKind::ContextValue { .. } => None,
+            | SourceKind::ContextValue { .. }
+            | SourceKind::TypedContext { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -14083,6 +14084,9 @@ fn native_timestamp_diff_providers_authenticate_all_prefixes_bound_work_and_reus
                     );
                     match step {
                         Ok(HostStep::NeedArg(request)) => assert_eq!(request.index, index + 1),
+                        Ok(HostStep::NeedArgRow { .. }) => {
+                            panic!("row vector provider cannot demand a window row")
+                        }
                         Ok(HostStep::Ready(v)) => {
                             ready = Some(v);
                             break;
@@ -19495,7 +19499,7 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                     Err(_) => Err(provider.take_native_error().expect(
                         "these small or ignored values are SQL outcomes, not host capacity",
                     )),
-                    Ok(HostStep::NeedArg(_)) => panic!(),
+                    Ok(HostStep::NeedArg(_) | HostStep::NeedArgRow { .. }) => panic!(),
                 };
                 let events = context.events.borrow().clone();
                 context.events.borrow_mut().clear();
@@ -21361,7 +21365,7 @@ fn native_vector_capabilities_resources_and_cancel_cleanup() {
                     Err(_) => Err(provider.take_native_error().expect(
                         "these small or ignored values are SQL outcomes, not host capacity",
                     )),
-                    Ok(HostStep::NeedArg(_)) => panic!(),
+                    Ok(HostStep::NeedArg(_) | HostStep::NeedArgRow { .. }) => panic!(),
                 };
                 let events = context.events.borrow().clone();
                 context.events.borrow_mut().clear();
@@ -21951,7 +21955,7 @@ fn native_grouping_capabilities_resources_and_cancel_cleanup() {
                     Err(_) => Err(provider.take_native_error().expect(
                         "these small or ignored values are SQL outcomes, not host capacity",
                     )),
-                    Ok(HostStep::NeedArg(_)) => panic!(),
+                    Ok(HostStep::NeedArg(_) | HostStep::NeedArgRow { .. }) => panic!(),
                 };
                 let events = context.events.borrow().clone();
                 context.events.borrow_mut().clear();
@@ -22733,6 +22737,9 @@ fn native_wildcard_capabilities_callbacks_resources_panic_and_reuse() {
                         Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
                     ) {
                         Ok(HostStep::NeedArg(request)) => assert_eq!(request.index, index + 1),
+                        Ok(HostStep::NeedArgRow { .. }) => {
+                            panic!("row provider cannot demand a window row")
+                        }
                         Ok(HostStep::Ready(output)) => {
                             let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0)
                             else {
@@ -26590,6 +26597,9 @@ fn eager_scalar_capabilities_eager_stages_callbacks_consumption_and_recovery() {
                         Some(insert(value, NativeValueRole::CharInput, 3 + i, row)),
                     )? {
                         HostStep::NeedArg(r) => assert_eq!(r.index, i + 1),
+                        HostStep::NeedArgRow { .. } => {
+                            panic!("row provider cannot demand a window row")
+                        }
                         HostStep::Ready(v) => {
                             assert_eq!(i + 1, arity);
                             final_value = Some(v);
@@ -28561,6 +28571,7 @@ fn dynamic_leaf_host_authentication_callbacks_consumption_and_recovery() {
                     convert_deferred: deferred,
                     root_broadcast: false,
                 }),
+                diagnostic: None,
                 argument: deferred.then_some(3),
                 output_node: 2,
                 output_role: role,
@@ -28855,4 +28866,5218 @@ fn dynamic_leaf_resource_failures_are_terminal_and_same_worker_null_recovers() {
             "{kind}"
         );
     }
+}
+
+#[test]
+fn typed_dynamic_actual_roots_do_not_fallback() {
+    use crate::tikv::typed_dynamic_tests as proof;
+    let mut failures = vec![];
+    for which in 0..17 {
+        let root = proof::root(
+            which,
+            &Datum::Int(7),
+            std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(7))),
+        );
+        let field = root.static_type().unwrap().clone();
+        let owner = suite(root);
+        let ctx = proof::Context::new(0, vec![Datum::Int(7)]);
+        let mut input = crate::tikv::dynamic_leaf_tests::input(false);
+        let mut output = output_for(&field);
+        let _ = session_read_outcome(|| {
+            owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let route = owner.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((which, route));
+        }
+    }
+    assert!(failures.is_empty(), "typed dynamic roots {failures:?}");
+}
+
+#[test]
+fn dynamic_diagnostic_host_completions_preserve_sql_failure_boundaries_and_contracts() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, LocalHostServices,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        action: Cell<u8>,
+        events: RefCell<Vec<&'static str>>,
+    }
+    impl crate::Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no invented diagnostic input")
+        }
+        fn param_value(&self, _: usize) -> std::result::Result<Datum, EvalError> {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("param");
+            match self.action.get() {
+                1 => Err(EvalError::Unsupported("secondary SQL diagnostic failure")),
+                2 => Err(EvalError::ExpressionRuntimeFailure(
+                    crate::ExpressionRuntimeFailure::from_local_eval(
+                        LocalError::ResourceLimit("actual callback resource".into()),
+                        None,
+                    ),
+                )),
+                3 => panic!("diagnostic parameter callback"),
+                4 => Err(EvalError::ExpressionRuntimeFailure(
+                    crate::ExpressionRuntimeFailure::from_local_eval(
+                        LocalError::BindingContract("actual callback contract".into()),
+                        None,
+                    ),
+                )),
+                _ => Ok(Datum::Null),
+            }
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("zone");
+            if self.action.get() == 3 {
+                panic!("diagnostic conversion callback");
+            }
+            tidb_datatype::SessionTimeZone::utc()
+        }
+        fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+            let _exclusive = self.store.borrow_mut();
+            self.events.borrow_mut().push("flags");
+            tidb_datatype::DEFAULT_STATEMENT_FLAGS
+        }
+    }
+    for deferred in [false, true] {
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); usize::from(deferred)];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: args.clone().into(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::ContextValue {
+            descriptor: Box::new(crate::context_value::ContextValue {
+                read: if deferred {
+                    crate::context_value::ContextRead::Deferred
+                } else {
+                    crate::context_value::ContextRead::Parameter(0)
+                },
+                target: Some(ty()),
+                convert_deferred: deferred,
+                root_broadcast: false,
+            }),
+            diagnostic: None,
+            argument: deferred.then_some(3),
+            output_node: 2,
+            output_role: NativeValueRole::CharInput,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let ctx = C {
+            store: &store,
+            action: Cell::new(1),
+            events: RefCell::new(vec![]),
+        };
+        let mut provider = NativeBatchHosts::new(catalog.clone(), &metadata, &ctx, 8192)
+            .with_native_values(Some(&store))
+            .with_diagnostic_slots(&[0])
+            .unwrap();
+        assert!(
+            NativeBatchHosts::new(catalog.clone(), &metadata, &ctx, 8192)
+                .with_diagnostic_slots(&[0, 0])
+                .is_err()
+        );
+        assert!(
+            NativeBatchHosts::new(catalog.clone(), &metadata, &ctx, 8192)
+                .with_diagnostic_slots(&[1])
+                .is_err()
+        );
+        let row = InputRow {
+            occurrence: 2,
+            input_row: 7,
+        };
+        let invocation = || HostInvocation {
+            slot,
+            row,
+            arg_types: &args,
+            return_type: &field,
+        };
+        let mut eval = EvalContext::default();
+        let check = |value: &VectorValue, unavailable: bool| {
+            let ScalarValueRef::Bytes(Some(token)) = value.get_scalar_ref(0) else {
+                panic!()
+            };
+            let values = store.borrow();
+            assert_eq!(
+                values
+                    .diagnostic_unavailable(token, NativeValueOrigin { node: 2, row })
+                    .unwrap(),
+                unavailable
+            );
+            assert_eq!(
+                values
+                    .get(
+                        token,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: 2, row }
+                    )
+                    .is_err(),
+                unavailable
+            );
+            if !unavailable {
+                assert_eq!(
+                    values
+                        .get(
+                            token,
+                            NativeValueRole::CharInput,
+                            NativeValueOrigin { node: 2, row }
+                        )
+                        .unwrap(),
+                    &Datum::Null
+                );
+            }
+        };
+        if !deferred {
+            for action in [1, 1, 0, 2, 4, 0] {
+                ctx.action.set(action);
+                let result = provider.start(&mut eval, invocation());
+                match action {
+                    2 | 4 => {
+                        assert!(result.is_err());
+                        assert!(matches!(
+                            provider.take_native_error(),
+                            Some(EvalError::ExpressionRuntimeFailure(_))
+                        ));
+                    }
+                    _ => {
+                        let HostStart::Ready(value) = result.unwrap() else {
+                            panic!()
+                        };
+                        check(&value, action == 1);
+                        assert!(provider.take_native_error().is_none());
+                    }
+                }
+            }
+            for _ in 0..64 {
+                ctx.action.set(3);
+                assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || provider.start(&mut eval, invocation())
+                ))
+                .is_err());
+                assert!(provider.take_native_error().is_none());
+            }
+            ctx.action.set(0);
+            let HostStart::Ready(value) = provider.start(&mut eval, invocation()).unwrap() else {
+                panic!()
+            };
+            check(&value, false);
+            continue;
+        }
+        let reply = |p: &mut NativeBatchHosts<'_>,
+                     eval: &mut EvalContext,
+                     task: &tidb_query_expr::local::HostTaskId,
+                     index,
+                     token: Option<Vec<u8>>| {
+            p.resume(
+                eval,
+                task,
+                HostArgReply {
+                    index,
+                    field_type: &field,
+                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                },
+            )
+        };
+        let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+            let HostStart::Pending { task, request } = p.start(eval, invocation()).unwrap() else {
+                panic!()
+            };
+            assert_eq!(request.index, 0);
+            task
+        };
+        let insert = |value: &Datum, node, row| {
+            store
+                .borrow_mut()
+                .insert_clone(
+                    value,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node, row },
+                )
+                .unwrap()
+        };
+        let failed = store
+            .borrow_mut()
+            .insert_diagnostic_unavailable(NativeValueOrigin { node: 3, row })
+            .unwrap();
+        let wrong_node = store
+            .borrow_mut()
+            .insert_diagnostic_unavailable(NativeValueOrigin { node: 4, row })
+            .unwrap();
+        for (index, token) in [(1, Some(failed.clone())), (0, None), (0, Some(wrong_node))] {
+            let task = begin(&mut provider, &mut eval);
+            assert!(reply(&mut provider, &mut eval, &task, index, token).is_err());
+            assert!(ctx.events.borrow().is_empty());
+            provider.cancel(&task);
+        }
+        let task = begin(&mut provider, &mut eval);
+        let HostStep::Ready(value) =
+            reply(&mut provider, &mut eval, &task, 0, Some(failed.clone())).unwrap()
+        else {
+            panic!()
+        };
+        check(&value, true);
+        assert!(ctx.events.borrow().is_empty());
+        assert!(reply(&mut provider, &mut eval, &task, 0, Some(failed)).is_err());
+        // A real conversion SQL error is suppressed only in this explicitly
+        // annotated subtree, after its genuine context calls have occurred.
+        ctx.action.set(0);
+        let task = begin(&mut provider, &mut eval);
+        let HostStep::Ready(value) = reply(
+            &mut provider,
+            &mut eval,
+            &task,
+            0,
+            Some(insert(&Datum::Raw(vec![1]), 3, row)),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        check(&value, true);
+        assert_eq!(*ctx.events.borrow(), ["zone", "flags"]);
+        ctx.events.borrow_mut().clear();
+        ctx.action.set(3);
+        let task = begin(&mut provider, &mut eval);
+        let token = insert(&Datum::Int(7), 3, row);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                &mut provider,
+                &mut eval,
+                &task,
+                0,
+                Some(token.clone())
+            )))
+            .is_err()
+        );
+        let before = ctx.events.borrow().clone();
+        assert!(reply(&mut provider, &mut eval, &task, 0, Some(token)).is_err());
+        assert_eq!(*ctx.events.borrow(), before);
+        provider.cancel(&task);
+        ctx.events.borrow_mut().clear();
+        ctx.action.set(0);
+        let task = begin(&mut provider, &mut eval);
+        let HostStep::Ready(value) = reply(
+            &mut provider,
+            &mut eval,
+            &task,
+            0,
+            Some(insert(&Datum::Null, 3, row)),
+        )
+        .unwrap() else {
+            panic!()
+        };
+        check(&value, false);
+        assert!(ctx.events.borrow().is_empty());
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+    }
+}
+
+#[test]
+fn typed_dynamic_optional_actual_roots_do_not_invent_declarations_or_fallback() {
+    let mut failures = vec![];
+    for kind in std::iter::once("literal").chain(crate::tikv::dynamic_leaf_tests::KINDS) {
+        let owner = suite(crate::tikv::typed_dynamic_tests::optional_root(
+            kind,
+            &Datum::Int(7),
+        ));
+        let ctx = crate::tikv::typed_dynamic_tests::Context::new(0, vec![Datum::Int(7)]);
+        let mut input = crate::tikv::dynamic_leaf_tests::input(false);
+        let mut output = output();
+        let _ = session_read_outcome(|| {
+            owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let route = owner.batch_route_snapshot();
+        if (route.refusals, route.fallback) != (0, 0) {
+            failures.push((kind, route));
+        }
+    }
+    assert!(failures.is_empty(), "optional dynamic roots {failures:?}");
+}
+
+#[test]
+fn typed_dynamic_optional_actual_sources_preserve_absence_storage_phases_and_reuse() {
+    if isolate_common_corpus(
+        "typed_dynamic_optional_actual_sources_preserve_absence_storage_phases_and_reuse",
+    ) {
+        return;
+    }
+    use crate::tikv::typed_dynamic_tests as proof;
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for kind in std::iter::once("literal").chain(crate::tikv::dynamic_leaf_tests::KINDS) {
+        for field in crate::tikv::eager_scalar_value_tests::types() {
+            for profile in 0..4 {
+                for (vi, value) in crate::tikv::session_read_tests::values()
+                    .into_iter()
+                    .enumerate()
+                {
+                    for (sel_id, selection) in [None, Some(vec![2, 0, 2]), Some(vec![])]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let actual = suite(proof::optional_root(kind, &value));
+                        for enabled in [false, true] {
+                            let reference = suite(proof::optional_root(kind, &value));
+                            let ctx = proof::Context::new(profile, vec![value.clone()]);
+                            let old = proof::Context::new(profile, vec![value.clone()]);
+                            ctx.inner.enabled.set(enabled);
+                            old.inner.enabled.set(enabled);
+                            let (mut input, mut oldinput) = (
+                                crate::tikv::dynamic_leaf_tests::input(true),
+                                crate::tikv::dynamic_leaf_tests::input(true),
+                            );
+                            input.set_sel(selection.clone());
+                            oldinput.set_sel(selection.clone());
+                            let (mut output, mut expected) =
+                                (output_for(&field), output_for(&field));
+                            output.append_null(0);
+                            expected.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                            });
+                            let want = session_read_outcome(|| {
+                                reference.run(&old, &mut oldinput, &mut expected)
+                            });
+                            let label=format!("{kind} output={field:?} p={profile} v={vi} sel={sel_id} flag={enabled}");
+                            assert_eq!(got, want, "{label}");
+                            assert_eq!(ctx.snapshot(), old.snapshot(), "context {label}");
+                            assert_eq!(output.column(0), expected.column(0), "storage {label}");
+                            assert_eq!(input.sel(), selection.as_deref());
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.refusals, route.fallback),
+                                (0, 0),
+                                "{label} {route:?}"
+                            );
+                            let witness=format!("{kind}|{field:?}|{profile}|{vi}|{sel_id}|{enabled}|{want}|{:?}|rows:{}|{}",expected.column(0),expected.num_rows(),old.snapshot());
+                            for b in witness.bytes() {
+                                hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (50160, 0xA9F134CB35861E1F));
+    eprintln!("TYPED DYNAMIC OPTIONAL ACTUAL {count} {hash:016X}");
+}
+
+#[test]
+fn dynamic_diagnostic_text_is_an_authenticated_non_sql_completion() {
+    let mut store = NativeValueStore::new(8192).unwrap();
+    store.begin_window().unwrap();
+    let row = InputRow {
+        occurrence: 2,
+        input_row: 7,
+    };
+    let origin = NativeValueOrigin { node: 3, row };
+    for text in ["", "NULL", "-9223372036854775808"] {
+        let token = store.insert_diagnostic_text(text.into(), origin).unwrap();
+        assert_eq!(store.diagnostic_text(&token, origin).unwrap(), Some(text));
+        assert!(store.diagnostic_unavailable(&token, origin).is_err());
+        for role in [
+            NativeValueRole::CharInput,
+            NativeValueRole::Output,
+            NativeValueRole::DecimalFast,
+        ] {
+            assert!(store.get(&token, role, origin).is_err());
+            assert!(store.clone_for_kernel(&token, role, origin).is_err());
+        }
+        assert!(store
+            .diagnostic_text(&token, NativeValueOrigin { node: 4, row })
+            .is_err());
+        assert!(store
+            .diagnostic_text(
+                &token,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        occurrence: 3,
+                        ..row
+                    }
+                }
+            )
+            .is_err());
+        assert!(store
+            .diagnostic_text(
+                &token,
+                NativeValueOrigin {
+                    node: 3,
+                    row: InputRow {
+                        input_row: 8,
+                        ..row
+                    }
+                }
+            )
+            .is_err());
+        let mut foreign = NativeValueStore::new(8192).unwrap();
+        foreign.begin_window().unwrap();
+        assert!(foreign.diagnostic_text(&token, origin).is_err());
+        store.begin_window().unwrap();
+        assert!(store.diagnostic_text(&token, origin).is_err());
+    }
+    let unavailable = store.insert_diagnostic_unavailable(origin).unwrap();
+    assert_eq!(store.diagnostic_text(&unavailable, origin).unwrap(), None);
+    let sql = store
+        .insert_clone(
+            &Datum::new_string("NULL"),
+            NativeValueRole::CharInput,
+            origin,
+        )
+        .unwrap();
+    assert!(store.diagnostic_text(&sql, origin).is_err());
+    let mut store = NativeValueStore::new(0).unwrap();
+    store.begin_window().unwrap();
+    assert!(matches!(
+        store.insert_diagnostic_text("text".into(), origin),
+        Err(LocalError::ResourceLimit(_))
+    ));
+}
+
+#[test]
+fn dynamic_diagnostic_constant_projection_keeps_raw_enum_skips_unused_names_and_bounds_formatting()
+{
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use crate::scalar_function::dynamic_diagnostic::LiteralPolicy;
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostInvocation, HostSignature, HostStart, LocalHostServices};
+    let big = Datum::new_enum(
+        tidb_datatype::MysqlEnum::new("a".repeat(1_000_000), 7),
+        Collation::Binary,
+    );
+    for (policy, value, expected, resource) in [
+        (LiteralPolicy::Math, Datum::Null, Some("NULL"), false),
+        (LiteralPolicy::Math, Datum::Int(7), Some("7"), false),
+        (LiteralPolicy::Math, Datum::new_string("abc"), None, false),
+        (
+            LiteralPolicy::Numeric(false),
+            Datum::new_string("abc"),
+            Some("abc"),
+            false,
+        ),
+        (LiteralPolicy::Math, big.clone(), None, false),
+        (LiteralPolicy::Numeric(true), big, None, false),
+        (
+            LiteralPolicy::Math,
+            Datum::Decimal(Decimal::from_raw_parts(
+                false,
+                vec![b'1'],
+                1_000_000,
+                1_000_000,
+            )),
+            None,
+            true,
+        ),
+    ] {
+        let ret = FieldType::new(FieldTypeCode::Enum)
+            .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT);
+        let expression =
+            crate::tikv::dynamic_leaf_tests::expression("param", 0, &value, Some(&ret), None);
+        let descriptor = crate::context_value::ContextValue::capture(&expression).unwrap();
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: vec![].into(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::ContextValue {
+            descriptor: Box::new(descriptor),
+            argument: None,
+            diagnostic: Some(policy),
+            output_node: 0,
+            output_role: NativeValueRole::CharInput,
+        }];
+        let store = RefCell::new(NativeValueStore::new(65536).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, value);
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 65536)
+            .with_native_values(Some(&store))
+            .with_constant_root_shortcut(true)
+            .with_diagnostic_slots(&[0])
+            .unwrap();
+        let row = InputRow {
+            occurrence: 2,
+            input_row: 7,
+        };
+        let mut eval = EvalContext::default();
+        for n in 0..3 {
+            let result = provider.start(
+                &mut eval,
+                HostInvocation {
+                    slot,
+                    row,
+                    arg_types: &[],
+                    return_type: &field,
+                },
+            );
+            if resource {
+                assert!(result.is_err());
+                assert!(
+                    matches!(provider.take_native_error(),Some(EvalError::ExpressionRuntimeFailure(e)) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
+                );
+            } else {
+                let HostStart::Ready(values) = result.unwrap() else {
+                    panic!()
+                };
+                let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                    panic!()
+                };
+                let storage = store.borrow();
+                assert_eq!(
+                    storage
+                        .diagnostic_text(token, NativeValueOrigin { node: 0, row })
+                        .unwrap(),
+                    expected
+                );
+                assert!(storage
+                    .get(
+                        token,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: 0, row }
+                    )
+                    .is_err());
+            }
+            assert_eq!(
+                ctx.calls.get(),
+                n + 1,
+                "diagnostic reads must never use root broadcast cache"
+            );
+            assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+        }
+    }
+}
+
+#[test]
+fn dynamic_diagnostic_math_parent_demands_text_after_overflow_and_authenticates_resume() {
+    use super::hosts::{CompiledDiagnosticParent, NativeBatchHosts, NativeHostMetadata};
+    use crate::scalar_function::{
+        dynamic_diagnostic::DynamicDiagnostic, eager_values::EagerValueKernel,
+    };
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostSignature, HostStart, HostStep, LocalHostServices,
+    };
+    for nested in [false, true] {
+        for text in [Some("7"), None] {
+            let parameter = crate::tikv::dynamic_leaf_tests::expression(
+                "param",
+                0,
+                &Datum::Int(0),
+                Some(&ty()),
+                None,
+            );
+            let function = ScalarFunction::new(CiString::new("cot"), real_ty(), vec![parameter]);
+            let (plan, bindings) = DynamicDiagnostic::capture_math(&function, 32, 65536).unwrap();
+            assert_eq!(bindings.len(), 1);
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); 2];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::EagerValuesNative,
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
+            .unwrap();
+            let slot = catalog.slot(0).unwrap();
+            let metadata = [NativeHostMetadata::EagerValues {
+                arguments: vec![1].into(),
+                kernel: EagerValueKernel::capture(&function),
+                probe: None,
+                result_type: real_ty(),
+                output_node: 0,
+                output_role: if nested {
+                    NativeValueRole::CharInput
+                } else {
+                    NativeValueRole::Output
+                },
+            }];
+            let parents = [CompiledDiagnosticParent {
+                slot: 0,
+                main_arity: 1,
+                arguments: vec![2].into(),
+                plan,
+            }];
+            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Int(0));
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 65536)
+                .with_native_values(Some(&store))
+                .with_diagnostic_parents(&parents)
+                .unwrap();
+            if nested {
+                provider = provider.with_diagnostic_slots(&[0]).unwrap();
+            }
+            let row = InputRow {
+                occurrence: 2,
+                input_row: 7,
+            };
+            let mut eval = EvalContext::default();
+            let HostStart::Pending { task, request } = provider
+                .start(
+                    &mut eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("math must demand its actual operand")
+            };
+            assert_eq!(request.index, 0);
+            let token = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Int(0),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 1, row },
+                )
+                .unwrap();
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
+            let HostStep::NeedArg(request) = provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &values,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("overflow must demand its diagnostic")
+            };
+            assert_eq!(request.index, 1);
+            assert!(provider.take_native_error().is_none());
+            // A genuine SQL NULL cannot masquerade as diagnostic unavailability.
+            let sql = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 2, row },
+                )
+                .unwrap();
+            let bad = VectorValue::from_scalar(&ScalarValue::Bytes(Some(sql.to_vec())), 1);
+            assert!(provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &bad
+                    }
+                )
+                .is_err());
+            assert!(provider.take_native_error().is_none());
+            let origin = NativeValueOrigin { node: 2, row };
+            let token = if let Some(text) = text {
+                store
+                    .borrow_mut()
+                    .insert_diagnostic_text(text.into(), origin)
+                    .unwrap()
+            } else {
+                store
+                    .borrow_mut()
+                    .insert_diagnostic_unavailable(origin)
+                    .unwrap()
+            };
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
+            let result = provider.resume(
+                &mut eval,
+                &task,
+                HostArgReply {
+                    index: 1,
+                    field_type: &field,
+                    values: &values,
+                },
+            );
+            if nested {
+                let HostStep::Ready(values) = result.unwrap() else {
+                    panic!()
+                };
+                let ScalarValueRef::Bytes(Some(token)) = values.get_scalar_ref(0) else {
+                    panic!()
+                };
+                assert!(store
+                    .borrow()
+                    .diagnostic_unavailable(token, NativeValueOrigin { node: 0, row })
+                    .unwrap());
+                assert!(provider.take_native_error().is_none());
+            } else {
+                assert!(result.is_err());
+                let error = provider.take_native_error().unwrap();
+                match (text, error) {
+                    (Some(_), EvalError::DataOutOfRange { value, expression }) => {
+                        assert_eq!(value, "DOUBLE");
+                        assert_eq!(expression, "cot(7)");
+                    }
+                    (None, EvalError::FloatOverflow) => (),
+                    (_, other) => panic!("wrong primary error {other:?}"),
+                }
+            }
+            assert!(provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &values
+                    }
+                )
+                .is_err());
+            provider.cancel(&task);
+        }
+    }
+}
+
+#[test]
+fn dynamic_math_actual_sources_preserve_diagnostic_reads_and_coerced_exp_errors() {
+    if isolate_common_corpus(
+        "dynamic_math_actual_sources_preserve_diagnostic_reads_and_coerced_exp_errors",
+    ) {
+        return;
+    }
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut cases = 0;
+        let scripts = proof::scripts().into_iter().chain([
+            vec![Datum::Int(0), Datum::Int(7)],
+            vec![Datum::Real(1e308), Datum::Int(7)],
+            vec![Datum::Int(1000), Datum::Int(7)],
+        ]);
+        for script in scripts {
+            for name in ["cot", "exp", "pow", "power"] {
+                for kind in leaf::KINDS {
+                    let make = || {
+                        let mut args = vec![leaf::expression(
+                            kind,
+                            0,
+                            &script[0],
+                            Some(&ty()),
+                            Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                script[0].clone(),
+                            ))),
+                        )];
+                        if matches!(name, "pow" | "power") {
+                            args.push(int(2));
+                        }
+                        call(name, real_ty(), args)
+                    };
+                    let actual = suite(make());
+                    for profile in 0..4 {
+                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                            for enabled in [false, true] {
+                                let reference = suite(make());
+                                let ctx = proof::Context::new(profile, script.clone());
+                                let old = proof::Context::new(profile, script.clone());
+                                ctx.inner.enabled.set(enabled);
+                                old.inner.enabled.set(enabled);
+                                let (mut input, mut oldinput) =
+                                    (leaf::input(true), leaf::input(true));
+                                input.set_sel(selection.clone());
+                                oldinput.set_sel(selection.clone());
+                                let (mut output, mut expected) =
+                                    (output_for(&real_ty()), output_for(&real_ty()));
+                                output.append_null(0);
+                                expected.append_null(0);
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(
+                                        &ctx,
+                                        &mut input,
+                                        &mut output,
+                                        &[ty()],
+                                    )
+                                });
+                                let want = session_read_outcome(|| {
+                                    reference.run(&old, &mut oldinput, &mut expected)
+                                });
+                                let label=format!("{name} {kind} {script:?} p={profile} flag={enabled} sel={selection:?}");
+                                assert_eq!(got, want, "result {label}");
+                                assert_eq!(output.column(0), expected.column(0), "output {label}");
+                                assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                                assert_eq!(input.sel(), selection.as_deref(), "selection {label}");
+                                let route = actual.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.refusals, route.fallback),
+                                    (0, 0),
+                                    "source {label} {route:?}"
+                                );
+                                cases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 23328);
+        eprintln!("DYNAMIC MATH ACTUAL SOURCES {cases}");
+    });
+}
+
+#[test]
+fn dynamic_math_actual_nested_diagnostics_finish_inner_reads_before_outer_failure() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let make = || {
+        let param = leaf::expression("param", 0, &Datum::Int(0), Some(&ty()), None);
+        let child = call("pow", real_ty(), vec![param, int(2)]);
+        let mut deferred = Constant::new(Datum::Int(99), real_ty());
+        deferred.deferred_expr = Some(Box::new(child));
+        call("cot", real_ty(), vec![Expression::Constant(deferred)])
+    };
+    let actual = suite(make());
+    let mut cases = 0;
+    for script in [
+        vec![Datum::Int(0), Datum::Real(1e308), Datum::Int(7)],
+        vec![Datum::Int(0), Datum::Null],
+        vec![Datum::Int(0), Datum::Int(1)],
+        vec![Datum::Int(0), Datum::new_string("2tail")],
+        vec![
+            Datum::Int(0),
+            Datum::Real(1e308),
+            Datum::new_string("unrenderable"),
+        ],
+    ] {
+        for enabled in [false, true] {
+            let reference = suite(make());
+            let ctx = proof::Context::new(0, script.clone());
+            let old = proof::Context::new(0, script.clone());
+            ctx.inner.enabled.set(enabled);
+            old.inner.enabled.set(enabled);
+            let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+            input.set_sel(Some(vec![2, 0, 2]));
+            oldinput.set_sel(Some(vec![2, 0, 2]));
+            let (mut output, mut expected) = (output_for(&real_ty()), output_for(&real_ty()));
+            let got = session_read_outcome(|| {
+                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+            });
+            let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+            assert_eq!(got, want, "{script:?} flag={enabled}");
+            assert_eq!(ctx.snapshot(), old.snapshot(), "{script:?} flag={enabled}");
+            assert_eq!(output.column(0), expected.column(0));
+            let route = actual.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0), "{route:?}");
+            cases += 1;
+        }
+    }
+    assert_eq!(cases, 10);
+}
+
+#[test]
+fn typed_work_parameter_probe_is_bounded_before_empty_input_and_recovers() {
+    use crate::tikv::dynamic_leaf_tests as proof;
+    let mut root = Constant::new(Datum::Int(0), ty());
+    root.param_marker = Some(crate::constant::ParamMarker { order: 0 });
+    root.deferred_expr = Some(Box::new(call("__unknown_type_probe__", ty(), vec![int(1)])));
+    let actual = suite(Expression::Constant(root));
+    let sparse = Datum::Decimal(Decimal::from_raw_parts(
+        false,
+        vec![b'1'],
+        1_000_000_000,
+        1_000_000_000,
+    ));
+    let ctx = proof::Context::new(0, sparse);
+    ctx.enabled.set(true);
+    let mut input = proof::input(false);
+    input.set_sel(Some(vec![]));
+    let mut output = output_for(&ty());
+    output.append_null(0);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+    }));
+    assert!(
+        matches!(result,Ok(Err(crate::evaluator::EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(ref e)))) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit),
+        "bounded parameter type probe {result:?}"
+    );
+    assert_eq!(ctx.calls.get(), 1);
+    assert_eq!(*ctx.events.borrow(), ["flag:true", "param:0:0"]);
+    assert_eq!(output.num_rows(), 1);
+    let next = proof::Context::new(0, Datum::Null);
+    next.enabled.set(true);
+    actual
+        .run_with_tikv_batch(&next, &mut input, &mut output, &[ty()])
+        .unwrap();
+    assert_eq!(next.calls.get(), 1);
+    let next = proof::Context::new(0, ctx.value.clone());
+    next.enabled.set(false);
+    actual
+        .run_with_tikv_batch(&next, &mut input, &mut output, &[ty()])
+        .unwrap();
+    assert_eq!(next.calls.get(), 0);
+    let route = actual.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0));
+    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+}
+
+#[path = "batch_typed_context_tests.rs"]
+mod typed_context_tests;
+
+#[test]
+fn unary_context_source_constant_facts_preserve_original_ignored_deferred_shape() {
+    let mut failures = Vec::new();
+    for kind in crate::tikv::dynamic_leaf_tests::KINDS {
+        for field in [Some(ty()), None] {
+            let expression = crate::tikv::dynamic_leaf_tests::expression(
+                kind,
+                0,
+                &Datum::Int(i64::MIN),
+                field.as_ref(),
+                Some(std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(7)))),
+            );
+            let original = crate::constant_fold::folds_to_constant(&expression);
+            let checked = preflight(&expression, &[ty()], limits()).unwrap();
+            if checked[0].folds_to_constant != original {
+                failures.push(format!("{kind} {field:?}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "original Constant shape facts {failures:?}"
+    );
+}
+
+#[test]
+fn unary_context_existing_static_root_keeps_typed_function_result_normalization() {
+    let fields = [
+        FieldType::new(FieldTypeCode::Float),
+        FieldType::new(FieldTypeCode::Enum)
+            .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+    ];
+    let mut failures = Vec::new();
+    for (field, value) in fields
+        .into_iter()
+        .zip([Datum::Float32(1.25), Datum::UInt(u64::MAX)])
+    {
+        let make = || {
+            call(
+                "unaryplus",
+                field.clone(),
+                vec![literal(value.clone(), real_ty())],
+            )
+        };
+        let actual = suite(make());
+        let reference = suite(make());
+        let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+        let old = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+        ctx.enabled.set(true);
+        old.enabled.set(true);
+        let (mut input, mut oldinput) = (
+            crate::tikv::dynamic_leaf_tests::input(false),
+            crate::tikv::dynamic_leaf_tests::input(false),
+        );
+        let (mut output, mut expected) = (output_for(&field), output_for(&field));
+        output.append_null(0);
+        expected.append_null(0);
+        let got = session_read_outcome(|| {
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+        let route = actual.batch_route_snapshot();
+        if got != want
+            || output.column(0) != expected.column(0)
+            || ctx.snapshot() != old.snapshot()
+            || (route.refusals, route.fallback) != (0, 0)
+        {
+            failures.push(format!(
+                "{field:?}: {got}/{want} data={:?}/{:?} effects={}/{} route={route:?}",
+                output.column(0),
+                expected.column(0),
+                ctx.snapshot(),
+                old.snapshot()
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "typed function root result {failures:?}"
+    );
+}
+
+#[test]
+fn unary_context_actual_source_keeps_whole_batch_publication_on_later_failure() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let make = || {
+        call(
+            "unaryminus",
+            ty(),
+            vec![leaf::expression(
+                "param",
+                0,
+                &Datum::Int(7),
+                Some(&ty()),
+                None,
+            )],
+        )
+    };
+    let actual = suite(make());
+    for enabled in [false, true] {
+        let reference = suite(make());
+        let script = vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))];
+        let ctx = proof::Context::new(0, script.clone());
+        let old = proof::Context::new(0, script);
+        ctx.inner.enabled.set(enabled);
+        old.inner.enabled.set(enabled);
+        let (mut input, mut oldinput) = (leaf::input(false), leaf::input(false));
+        let (mut output, mut expected) = (output_for(&ty()), output_for(&ty()));
+        output.append_null(0);
+        expected.append_null(0);
+        let got = session_read_outcome(|| {
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+        assert_eq!(got, want, "flag={enabled}");
+        assert_eq!(ctx.snapshot(), old.snapshot(), "flag={enabled}");
+        assert_eq!(
+            output.column(0),
+            expected.column(0),
+            "publication flag={enabled}"
+        );
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0), "{route:?}");
+    }
+}
+
+#[test]
+fn unary_context_actual_sources_preserve_types_state_selection_and_reuse() {
+    if isolate_common_corpus(
+        "unary_context_actual_sources_preserve_types_state_selection_and_reuse",
+    ) {
+        return;
+    }
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+        ]);
+        let mut cases = 0;
+        for name in ["unaryplus", "unaryminus"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS {
+                        for (si, script) in scripts.iter().enumerate() {
+                            let make = || {
+                                call(
+                                    name,
+                                    ret.clone(),
+                                    vec![leaf::expression(
+                                        kind,
+                                        0,
+                                        &script[0],
+                                        Some(argument),
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                            script[0].clone(),
+                                        ))),
+                                    )],
+                                )
+                            };
+                            let actual = suite(make());
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(make());
+                                        let ctx = proof::Context::new(profile, script.clone());
+                                        let old = proof::Context::new(profile, script.clone());
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name} arg={ai} ret={ri} {kind} script={si} p={profile} sel={selection:?} flag={enabled}");
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(
+                                            input.sel(),
+                                            selection.as_deref(),
+                                            "selection {label}"
+                                        );
+                                        let route = actual.batch_route_snapshot();
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label} {route:?}"
+                                        );
+                                        cases += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 2291328);
+        eprintln!("UNARY CONTEXT ACTUAL SOURCES {cases}");
+    });
+}
+
+#[test]
+fn typed_cast_original_sources_preserve_complete_types_and_phase_observations() {
+    if isolate_common_corpus(
+        "typed_cast_original_sources_preserve_complete_types_and_phase_observations",
+    ) {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in ["cast_decimal", "cast_json"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let child = if kind == "literal" {
+                                            leaf::literal(script[0].clone(), argument.clone())
+                                        } else {
+                                            leaf::expression(
+                                                kind,
+                                                0,
+                                                &script[0],
+                                                Some(argument),
+                                                Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                                    script[0].clone(),
+                                                ))),
+                                            )
+                                        };
+                                        let owner = suite(call(name, ret.clone(), vec![child]));
+                                        let ctx = proof::Context::new(profile, script.clone());
+                                        ctx.inner.enabled.set(enabled);
+                                        let mut input = leaf::input(true);
+                                        input.set_sel(selection.clone());
+                                        let mut output = output_for(ret);
+                                        output.append_null(0);
+                                        let result = session_read_outcome(|| {
+                                            owner.run(&ctx, &mut input, &mut output)
+                                        });
+                                        let observed=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}|{result:?}|{:?}|{}|{:?}",output.column(0),ctx.snapshot(),input.sel());
+                                        for b in observed.bytes() {
+                                            hash =
+                                                (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("TYPED CAST ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (2839680, 0x0EAB866CE231BC47));
+    });
+}
+
+#[test]
+fn typed_cast_row_parameter_source_preserves_inferred_type_and_read_phase() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let json = FieldType::new(FieldTypeCode::Json);
+    let script = vec![Datum::Int(7), Datum::Int(8), Datum::Int(9), Datum::Int(10)];
+    let make = || {
+        leaf::assignment(
+            "typed_json",
+            call(
+                "cast_json",
+                json.clone(),
+                vec![leaf::expression(
+                    "param",
+                    0,
+                    &Datum::Int(7),
+                    Some(&ty()),
+                    None,
+                )],
+            ),
+            &json,
+        )
+    };
+    for enabled in [false, true] {
+        let (actual, reference) = (suite(make()), suite(make()));
+        let (ctx, old) = (
+            proof::Context::new(0, script.clone()),
+            proof::Context::new(0, script.clone()),
+        );
+        ctx.inner.enabled.set(enabled);
+        old.inner.enabled.set(enabled);
+        let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+        let (mut output, mut expected) = (output_for(&json), output_for(&json));
+        let got = session_read_outcome(|| {
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+        assert_eq!(got, want);
+        assert_eq!(
+            output.column(0),
+            expected.column(0),
+            "actual typed parameter value"
+        );
+        assert_eq!(
+            ctx.snapshot(),
+            old.snapshot(),
+            "type and value are separate reads"
+        );
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0), "{route:?}");
+    }
+}
+#[test]
+fn typed_cast_bulk_saved_enum_retains_original_typed_ordinal_conversion() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let json = FieldType::new(FieldTypeCode::Json);
+    let enum_int = FieldType::new(FieldTypeCode::Enum)
+        .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT);
+    let make = || {
+        call(
+            "cast_json",
+            json.clone(),
+            vec![leaf::literal(
+                Datum::Enum(
+                    tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                    tidb_datatype::Collation::DEFAULT,
+                ),
+                enum_int.clone(),
+            )],
+        )
+    };
+    let (actual, reference) = (suite(make()), suite(make()));
+    let (ctx, old) = (
+        proof::Context::new(0, vec![Datum::Null]),
+        proof::Context::new(0, vec![Datum::Null]),
+    );
+    ctx.inner.enabled.set(true);
+    old.inner.enabled.set(true);
+    let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+    let (mut output, mut expected) = (output_for(&json), output_for(&json));
+    let got =
+        session_read_outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()]));
+    let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+    assert_eq!(got, want);
+    assert_eq!(
+        output.column(0),
+        expected.column(0),
+        "original typed Enum conversion precedes expression integer view"
+    );
+    assert_eq!(ctx.snapshot(), old.snapshot());
+    let route = actual.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0), "{route:?}");
+}
+#[test]
+fn typed_cast_row_sources_preserve_types_effects_selection_and_reuse() {
+    if isolate_common_corpus("typed_cast_row_sources_preserve_types_effects_selection_and_reuse") {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        let mut count = 0usize;
+        for name in ["cast_json"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let make = || {
+                                            let child = if kind == "literal" {
+                                                leaf::literal(script[0].clone(), argument.clone())
+                                            } else {
+                                                leaf::expression(
+                                                    kind,
+                                                    0,
+                                                    &script[0],
+                                                    Some(argument),
+                                                    Some(std::sync::Arc::new(
+                                                        std::sync::RwLock::new(script[0].clone()),
+                                                    )),
+                                                )
+                                            };
+                                            leaf::assignment(
+                                                "typed_cast",
+                                                call(name, ret.clone(), vec![child]),
+                                                ret,
+                                            )
+                                        };
+                                        let (actual, reference) = (suite(make()), suite(make()));
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(
+                                            input.sel(),
+                                            selection.as_deref(),
+                                            "selection {label}"
+                                        );
+                                        let route = actual.batch_route_snapshot();
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label}: {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("TYPED CAST ROW ACTUAL {count}");
+        assert_eq!(count, 1419840);
+    });
+}
+#[test]
+fn typed_cast_actual_sources_preserve_types_bulk_phases_selection_and_reuse() {
+    if isolate_common_corpus(
+        "typed_cast_actual_sources_preserve_types_bulk_phases_selection_and_reuse",
+    ) {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        let mut count = 0usize;
+        for name in ["cast_decimal", "cast_json"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let make = || {
+                                            let child = if kind == "literal" {
+                                                leaf::literal(script[0].clone(), argument.clone())
+                                            } else {
+                                                leaf::expression(
+                                                    kind,
+                                                    0,
+                                                    &script[0],
+                                                    Some(argument),
+                                                    Some(std::sync::Arc::new(
+                                                        std::sync::RwLock::new(script[0].clone()),
+                                                    )),
+                                                )
+                                            };
+                                            call(name, ret.clone(), vec![child])
+                                        };
+                                        let (actual, reference) = (suite(make()), suite(make()));
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(
+                                            input.sel(),
+                                            selection.as_deref(),
+                                            "selection {label}"
+                                        );
+                                        let route = actual.batch_route_snapshot();
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label}: {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("TYPED CAST ACTUAL {count}");
+        assert_eq!(count, 2839680);
+    });
+}
+
+#[test]
+fn typed_cast_sources_reuse_long_selected_inputs_with_fresh_invocation_caches() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let mut count = 0;
+    for name in ["cast_decimal", "cast_json"] {
+        let field = FieldType::new(if name == "cast_json" {
+            FieldTypeCode::Json
+        } else {
+            FieldTypeCode::NewDecimal
+        });
+        for arg in [
+            ty(),
+            string_ty(),
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        ] {
+            for kind in leaf::KINDS {
+                let (binding, oldbinding) = (
+                    std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(7))),
+                    std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(7))),
+                );
+                let make = |binding| {
+                    call(
+                        name,
+                        field.clone(),
+                        vec![leaf::expression(
+                            kind,
+                            0,
+                            &Datum::Int(7),
+                            Some(&arg),
+                            Some(binding),
+                        )],
+                    )
+                };
+                let (actual, reference) = (
+                    suite(make(std::sync::Arc::clone(&binding))),
+                    suite(make(std::sync::Arc::clone(&oldbinding))),
+                );
+                for round in 0..8 {
+                    let script = match round {
+                        0 => vec![Datum::Int(7)],
+                        1 => vec![Datum::Null],
+                        2 => vec![Datum::Int(8), Datum::Int(9)],
+                        3 => vec![Datum::MinNotNull],
+                        4 => vec![Datum::Enum(
+                            tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                            tidb_datatype::Collation::DEFAULT,
+                        )],
+                        5 => vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+                        _ => vec![Datum::Int(11)],
+                    };
+                    *binding.write().unwrap() = script[0].clone();
+                    *oldbinding.write().unwrap() = script[0].clone();
+                    let (mut ctx, mut old) = (
+                        proof::Context::new(round % 4, script.clone()),
+                        proof::Context::new(round % 4, script),
+                    );
+                    ctx.inner.binding = Some(std::sync::Arc::clone(&binding));
+                    old.inner.binding = Some(std::sync::Arc::clone(&oldbinding));
+                    ctx.inner.enabled.set(round % 2 == 0);
+                    old.inner.enabled.set(round % 2 == 0);
+                    let make_input = || {
+                        let mut c = Chunk::new_with_capacity(&[ty()], 2051);
+                        for i in 0..2051 {
+                            if i % 7 == 0 {
+                                c.append_null(0);
+                            } else {
+                                c.append_int64(0, i as i64);
+                            }
+                        }
+                        c
+                    };
+                    let (mut input, mut oldinput) = (make_input(), make_input());
+                    let selection = match round % 4 {
+                        0 => None,
+                        1 => Some((0..2057).map(|i| (2050 - i % 2051) % 2051).collect()),
+                        2 => Some(vec![2, 0, 2]),
+                        _ => Some(vec![]),
+                    };
+                    input.set_sel(selection.clone());
+                    oldinput.set_sel(selection.clone());
+                    let (mut output, mut expected) = (output_for(&field), output_for(&field));
+                    output.append_null(0);
+                    expected.append_null(0);
+                    let got = session_read_outcome(|| {
+                        actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                    });
+                    let want =
+                        session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+                    let label = format!("{name} {arg:?} {kind} round={round}");
+                    assert_eq!(got, want, "outcome {label}");
+                    assert_eq!(output.column(0), expected.column(0), "output {label}");
+                    assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                    assert_eq!(input.sel(), selection.as_deref());
+                    let route = actual.batch_route_snapshot();
+                    assert_eq!(
+                        (route.refusals, route.fallback),
+                        (0, 0),
+                        "source {label} {route:?}"
+                    );
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(count, 432);
+}
+
+#[test]
+fn typed_cast_numeric_warning_resource_is_terminal_and_same_source_recovers() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let json = FieldType::new(FieldTypeCode::Json);
+    let owner = suite(call(
+        "cast_json",
+        json.clone(),
+        vec![leaf::expression(
+            "param",
+            0,
+            &Datum::Int(7),
+            Some(&ty()),
+            None,
+        )],
+    ));
+    for row_domain in [false, true] {
+        let mut worker = PreparedBatch::compile_calculation_profile(
+            &owner,
+            0,
+            &[ty()],
+            true,
+            218,
+            limits(),
+            ExecutionLimits::default(),
+            65536,
+            true,
+        )
+        .unwrap();
+        let input = leaf::input(true);
+        let mut output = output_for(&json);
+        output.append_null(0);
+        let ctx = proof::Context::new(
+            0,
+            vec![Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(
+                vec![255; 32768],
+            ))],
+        );
+        worker
+            .validate_invocation(&owner, &input, &output, &[ty()])
+            .unwrap();
+        let result = worker.execute_profile(
+            &ctx,
+            &mut EvalContext::default(),
+            &input,
+            &mut output,
+            row_domain,
+            None,
+        );
+        assert!(
+            matches!(&result,Err(error) if error.refusal()==BatchRefusal::Resource),
+            "numeric diagnostics bypassed the finite worker"
+        );
+        assert_eq!(output.num_rows(), 1);
+        assert!(output.column(0).is_null(0));
+        assert_eq!(
+            *ctx.inner.events.borrow(),
+            ["param:0:0", "param:0:1", "zone", "flags"]
+        );
+        let ctx = proof::Context::new(0, vec![Datum::Null]);
+        worker
+            .validate_invocation(&owner, &input, &output, &[ty()])
+            .unwrap();
+        worker
+            .execute_profile(
+                &ctx,
+                &mut EvalContext::default(),
+                &input,
+                &mut output,
+                row_domain,
+                None,
+            )
+            .unwrap();
+        assert_eq!(output.num_rows(), 4);
+        for row in 0..4 {
+            assert!(output.column(0).is_null(row));
+        }
+        let expected = (0..if row_domain { 6 } else { 2 })
+            .map(|i| format!("param:0:{i}"))
+            .collect::<Vec<_>>();
+        assert_eq!(*ctx.inner.events.borrow(), expected);
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+    }
+}
+#[test]
+fn typed_numeric_roots_original_types_phases_and_diagnostics() {
+    if isolate_common_corpus("typed_numeric_roots_original_types_phases_and_diagnostics") {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        scripts.extend([
+            vec![Datum::Int(i64::MAX)],
+            vec![Datum::Int(i64::MIN)],
+            vec![Datum::UInt(u64::MAX)],
+            vec![Datum::Real(f64::MAX)],
+            vec![Datum::Real(f64::INFINITY)],
+            vec![Datum::Real(f64::NEG_INFINITY)],
+            vec![Datum::Real(f64::NAN)],
+            vec![Datum::Real(1e-30)],
+            vec![Datum::Real(1e100), Datum::Real(1.25), Datum::Int(7)],
+        ]);
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in ["abs", "plus", "minus", "mul", "mod", "div", "intdiv"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let child = if kind == "literal" {
+                                            leaf::literal(script[0].clone(), argument.clone())
+                                        } else {
+                                            leaf::expression(
+                                                kind,
+                                                0,
+                                                &script[0],
+                                                Some(argument),
+                                                Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                                    script[0].clone(),
+                                                ))),
+                                            )
+                                        };
+                                        let args = if name == "abs" {
+                                            vec![child]
+                                        } else {
+                                            vec![
+                                                child,
+                                                leaf::literal(
+                                                    Datum::Int(if name == "mul" { 2 } else { 1 }),
+                                                    ty(),
+                                                ),
+                                            ]
+                                        };
+                                        let owner = suite(call(name, ret.clone(), args));
+                                        let ctx = proof::Context::new(profile, script.clone());
+                                        ctx.inner.enabled.set(enabled);
+                                        let mut input = leaf::input(true);
+                                        input.set_sel(selection.clone());
+                                        let mut output = output_for(ret);
+                                        output.append_null(0);
+                                        let result = session_read_outcome(|| {
+                                            owner.run(&ctx, &mut input, &mut output)
+                                        });
+                                        let observed=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}|{result:?}|{:?}|{}|{:?}",output.column(0),ctx.snapshot(),input.sel());
+                                        for b in observed.bytes() {
+                                            hash =
+                                                (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("TYPED NUMERIC ROOT ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (13023360, 0x0CF2861942A0B059));
+    });
+}
+#[test]
+fn abs_context_actual_sources_keep_types_phases_diagnostics_and_reuse() {
+    if isolate_common_corpus("abs_context_actual_sources_keep_types_phases_diagnostics_and_reuse") {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        scripts.extend([
+            vec![Datum::Int(i64::MAX)],
+            vec![Datum::Int(i64::MIN)],
+            vec![Datum::UInt(u64::MAX)],
+            vec![Datum::Real(f64::MAX)],
+            vec![Datum::Real(f64::INFINITY)],
+            vec![Datum::Real(f64::NEG_INFINITY)],
+            vec![Datum::Real(f64::NAN)],
+            vec![Datum::Real(1e-30)],
+            vec![Datum::Real(1e100), Datum::Real(1.25), Datum::Int(7)],
+        ]);
+        let mut count = 0usize;
+        for name in ["abs"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            let make = || {
+                                let child = if kind == "literal" {
+                                    leaf::literal(script[0].clone(), argument.clone())
+                                } else {
+                                    leaf::expression(
+                                        kind,
+                                        0,
+                                        &script[0],
+                                        Some(argument),
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                            script[0].clone(),
+                                        ))),
+                                    )
+                                };
+                                call(name, ret.clone(), vec![child])
+                            };
+                            let actual = suite(make());
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(make());
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label} {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("ABS CONTEXT ACTUAL {count}");
+        assert_eq!(count, 1860480);
+    });
+}
+#[test]
+fn abs_context_window_diagnostic_authenticates_real_text_scope_and_terminal_resume() {
+    use super::hosts::{
+        CompiledDiagnosticParent, NativeBatchHosts, NativeHostMetadata, WindowArithmeticSource,
+    };
+    use tidb_query_expr::local::{
+        HostArgReply, HostSignature, HostStart, HostStep, HostWindowArgReply, HostWindowInvocation,
+        LocalHostServices,
+    };
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = [field.clone(), field.clone()];
+    let root = crate::tikv::dynamic_leaf_tests::call(
+        "abs",
+        ty(),
+        vec![crate::tikv::dynamic_leaf_tests::expression(
+            "param",
+            0,
+            &Datum::Int(7),
+            Some(&ty()),
+            None,
+        )],
+    );
+    let Expression::ScalarFunction(function) = &root else {
+        unreachable!()
+    };
+    let (plan, bindings) =
+        crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic::capture_math(
+            function,
+            128,
+            1 << 20,
+        )
+        .unwrap();
+    assert_eq!(bindings.len(), 1);
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::EagerValuesWindowNative,
+        HostSignature {
+            arg_types: args.to_vec().into(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let metadata = [NativeHostMetadata::UnaryWindow {
+        operation: SqlBatchHostOperation::AbsIntWindowNative,
+        result_type: ty(),
+        source_type: ty(),
+        source: WindowArithmeticSource::TypedReady,
+        argument_node: 1,
+        output_node: 0,
+        output_role: NativeValueRole::Output,
+        overflow_expression: None,
+    }];
+    let parents = [CompiledDiagnosticParent {
+        slot: 0,
+        main_arity: 1,
+        arguments: vec![2].into_boxed_slice(),
+        plan,
+    }];
+    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+    let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 65536)
+        .with_native_values(Some(&store))
+        .with_diagnostic_parents(&parents)
+        .unwrap();
+    let mut eval = EvalContext::default();
+    let rows = [2, 0, 2];
+    let origin = 11usize;
+    let diagrow = InputRow {
+        occurrence: origin + 1,
+        input_row: 0,
+    };
+    for unavailable in [false, true] {
+        store.borrow_mut().begin_window().unwrap();
+        let HostStart::Pending { task, request } = provider
+            .start_window(
+                &mut eval,
+                HostWindowInvocation {
+                    slot,
+                    occurrence_start: origin,
+                    physical_rows: &rows,
+                    arg_types: &args,
+                    return_type: &field,
+                },
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(request.index, 0);
+        let mut values =
+            ChunkedVecBytes::try_with_capacities(3, 3 * native_values::HANDLE_BYTES).unwrap();
+        for (position, &input_row) in rows.iter().enumerate() {
+            let token = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Int(if position == 1 { i64::MIN } else { 1 }),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin {
+                        node: 1,
+                        row: InputRow {
+                            occurrence: origin + position,
+                            input_row,
+                        },
+                    },
+                )
+                .unwrap();
+            values.push_ref(Some(&token));
+        }
+        let values = VectorValue::Bytes(values);
+        assert!(matches!(
+            provider
+                .resume_window(
+                    &mut eval,
+                    &task,
+                    HostWindowArgReply {
+                        index: 0,
+                        occurrence_start: origin,
+                        physical_rows: &rows,
+                        field_type: &field,
+                        values: &values
+                    }
+                )
+                .unwrap(),
+            HostStep::NeedArgRow {
+                index: 1,
+                position: 1
+            }
+        ));
+        let text = store
+            .borrow_mut()
+            .insert_diagnostic_text(
+                "7".into(),
+                NativeValueOrigin {
+                    node: 2,
+                    row: diagrow,
+                },
+            )
+            .unwrap();
+        let text_values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(text.clone())), 1);
+        // A row callback cannot impersonate the scoped-window continuation.
+        assert!(provider
+            .resume(
+                &mut eval,
+                &task,
+                HostArgReply {
+                    index: 1,
+                    field_type: &field,
+                    values: &text_values
+                }
+            )
+            .is_err());
+        let mut foreign = NativeValueStore::new(4096).unwrap();
+        foreign.begin_window().unwrap();
+        let foreign = foreign
+            .insert_diagnostic_text(
+                "7".into(),
+                NativeValueOrigin {
+                    node: 2,
+                    row: diagrow,
+                },
+            )
+            .unwrap();
+        let sqlnull = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Null,
+                NativeValueRole::CharInput,
+                NativeValueOrigin {
+                    node: 2,
+                    row: diagrow,
+                },
+            )
+            .unwrap();
+        let wrongnode = store
+            .borrow_mut()
+            .insert_diagnostic_text(
+                "7".into(),
+                NativeValueOrigin {
+                    node: 3,
+                    row: diagrow,
+                },
+            )
+            .unwrap();
+        let wrongrow = store
+            .borrow_mut()
+            .insert_diagnostic_text(
+                "7".into(),
+                NativeValueOrigin {
+                    node: 2,
+                    row: InputRow {
+                        occurrence: origin,
+                        input_row: 0,
+                    },
+                },
+            )
+            .unwrap();
+        let wrongphysical = store
+            .borrow_mut()
+            .insert_diagnostic_text(
+                "7".into(),
+                NativeValueOrigin {
+                    node: 2,
+                    row: InputRow {
+                        input_row: 2,
+                        ..diagrow
+                    },
+                },
+            )
+            .unwrap();
+        let wrongrole = store
+            .borrow_mut()
+            .insert_clone(
+                &Datum::Int(7),
+                NativeValueRole::Output,
+                NativeValueOrigin {
+                    node: 2,
+                    row: diagrow,
+                },
+            )
+            .unwrap();
+        for token in [
+            foreign,
+            sqlnull,
+            wrongnode,
+            wrongrow,
+            wrongphysical,
+            wrongrole,
+        ] {
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            assert!(provider
+                .resume_window(
+                    &mut eval,
+                    &task,
+                    HostWindowArgReply {
+                        index: 1,
+                        occurrence_start: diagrow.occurrence,
+                        physical_rows: &[0],
+                        field_type: &field,
+                        values: &values
+                    }
+                )
+                .is_err());
+            assert!(provider.take_native_error().is_none());
+        }
+        let wire_null = VectorValue::from_scalar(&ScalarValue::Bytes(None), 1);
+        for (index, start, physical, values) in [
+            (0, diagrow.occurrence, 0, &text_values),
+            (1, origin, 0, &text_values),
+            (1, diagrow.occurrence, 2, &text_values),
+            (1, diagrow.occurrence, 0, &wire_null),
+        ] {
+            assert!(provider
+                .resume_window(
+                    &mut eval,
+                    &task,
+                    HostWindowArgReply {
+                        index,
+                        occurrence_start: start,
+                        physical_rows: &[physical],
+                        field_type: &field,
+                        values
+                    }
+                )
+                .is_err());
+        }
+        let text = if unavailable {
+            store
+                .borrow_mut()
+                .insert_diagnostic_unavailable(NativeValueOrigin {
+                    node: 2,
+                    row: diagrow,
+                })
+                .unwrap()
+        } else {
+            text
+        };
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(text)), 1);
+        assert!(provider
+            .resume_window(
+                &mut eval,
+                &task,
+                HostWindowArgReply {
+                    index: 1,
+                    occurrence_start: diagrow.occurrence,
+                    physical_rows: &[0],
+                    field_type: &field,
+                    values: &values
+                }
+            )
+            .is_err());
+        assert_eq!(
+            provider.take_native_error(),
+            Some(if unavailable {
+                EvalError::IntOverflow
+            } else {
+                EvalError::DataOutOfRange {
+                    value: "BIGINT",
+                    expression: "abs(7)".into(),
+                }
+            })
+        );
+        assert!(provider
+            .resume_window(
+                &mut eval,
+                &task,
+                HostWindowArgReply {
+                    index: 1,
+                    occurrence_start: diagrow.occurrence,
+                    physical_rows: &[0],
+                    field_type: &field,
+                    values: &values
+                }
+            )
+            .is_err());
+        assert!(provider.take_native_error().is_none());
+        provider.cancel(&task);
+        assert!(ctx.events.borrow().is_empty());
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+    }
+}
+
+#[test]
+fn typed_numeric_fallback_original_switches_requested_domain_after_integer_probe() {
+    if isolate_common_corpus(
+        "typed_numeric_fallback_original_switches_requested_domain_after_integer_probe",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let scripts = vec![
+        vec![Datum::Int(7)],
+        vec![Datum::UInt(u64::MAX)],
+        vec![Datum::Null],
+        vec![Datum::Real(2.5)],
+        vec![Datum::new_string("12tail")],
+        vec![Datum::Int(7), Datum::Int(8), Datum::Int(9), Datum::Int(10)],
+        vec![Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(
+            vec![1],
+        ))],
+        vec![Datum::Enum(
+            tidb_datatype::MysqlEnum::new("ordinal", 17),
+            tidb_datatype::Collation::DEFAULT,
+        )],
+    ];
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in ["plus", "minus", "mul"] {
+        for ret in [
+            real_ty(),
+            FieldType::new(FieldTypeCode::NewDecimal),
+            string_ty(),
+        ] {
+            for (si, script) in scripts.iter().enumerate() {
+                for profile in 0..4 {
+                    for selection in [None, Some(vec![])] {
+                        for enabled in [false, true] {
+                            let mut left = Constant::new(
+                                Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![3])),
+                                ty(),
+                            );
+                            left.param_marker = Some(crate::constant::ParamMarker { order: 0 });
+                            let right = leaf::assignment(
+                                "fallback_seen",
+                                leaf::literal(
+                                    Datum::VectorFloat32(VectorFloat32::init(2)),
+                                    FieldType::new(FieldTypeCode::VectorFloat32),
+                                ),
+                                &ty(),
+                            );
+                            let owner = suite(call(
+                                name,
+                                ret.clone(),
+                                vec![Expression::Constant(left), right],
+                            ));
+                            let ctx = proof::Context::new(profile, script.clone());
+                            ctx.inner.enabled.set(enabled);
+                            let mut input = leaf::input(true);
+                            input.set_sel(selection.clone());
+                            let mut output = output_for(&ret);
+                            output.append_null(0);
+                            let result =
+                                session_read_outcome(|| owner.run(&ctx, &mut input, &mut output));
+                            let observed=format!("{name}/{ret:?}/{si}/{profile}/{selection:?}/{enabled}|{result:?}|{:?}|{}",output.column(0),ctx.snapshot());
+                            for b in observed.bytes() {
+                                hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                            }
+                            if name == "plus"
+                                && ret == real_ty()
+                                && si == 0
+                                && profile == 0
+                                && selection.is_none()
+                                && !enabled
+                            {
+                                assert!(
+                                    format!("{result:?}")
+                                        .contains("constant is not in its real domain"),
+                                    "{observed}"
+                                );
+                                assert_eq!(
+                                    ctx.inner.calls.get(),
+                                    4,
+                                    "first Int type/value then fresh Real type/value"
+                                );
+                                assert_eq!(
+                                    ctx.inner
+                                        .events
+                                        .borrow()
+                                        .iter()
+                                        .filter(|e| e.starts_with("set:"))
+                                        .count(),
+                                    1,
+                                    "right side is demanded only for the integer probe"
+                                );
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("TYPED NUMERIC FALLBACK ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (1152, 0x4483FB661E03551F));
+}
+#[test]
+fn numeric_operand_static_enum_preserves_original_requested_view() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let make = || {
+        call(
+            "plus",
+            ty(),
+            vec![
+                leaf::literal(
+                    Datum::Enum(
+                        tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                        tidb_datatype::Collation::DEFAULT,
+                    ),
+                    FieldType::new(FieldTypeCode::Enum)
+                        .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+                ),
+                literal(Datum::Int(1), ty()),
+            ],
+        )
+    };
+    for enabled in [false, true] {
+        let (actual, reference) = (suite(make()), suite(make()));
+        let (ctx, old) = (
+            proof::Context::new(0, vec![Datum::Null]),
+            proof::Context::new(0, vec![Datum::Null]),
+        );
+        ctx.inner.enabled.set(enabled);
+        old.inner.enabled.set(enabled);
+        let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+        let (mut output, mut expected) = (output_for(&ty()), output_for(&ty()));
+        let got = session_read_outcome(|| {
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        });
+        let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+        assert_eq!(got, want);
+        assert_eq!(
+            output.column(0),
+            expected.column(0),
+            "original typed Enum ordinal precedes expression view, flag={enabled}"
+        );
+        assert_eq!(ctx.snapshot(), old.snapshot());
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0), "{route:?}");
+    }
+}
+
+#[test]
+fn numeric_context_row_sources_keep_types_phases_diagnostics_and_reuse() {
+    if isolate_common_corpus("numeric_context_row_sources_keep_types_phases_diagnostics_and_reuse")
+    {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        scripts.extend([
+            vec![Datum::Int(i64::MAX)],
+            vec![Datum::Int(i64::MIN)],
+            vec![Datum::UInt(u64::MAX)],
+            vec![Datum::Real(f64::MAX)],
+            vec![Datum::Real(f64::INFINITY)],
+            vec![Datum::Real(f64::NEG_INFINITY)],
+            vec![Datum::Real(f64::NAN)],
+            vec![Datum::Real(1e-30)],
+            vec![Datum::Real(1e100), Datum::Real(1.25), Datum::Int(7)],
+        ]);
+        let mut count = 0usize;
+        for name in ["plus", "minus", "mul"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            let make = || {
+                                let child = if kind == "literal" {
+                                    leaf::literal(script[0].clone(), argument.clone())
+                                } else {
+                                    leaf::expression(
+                                        kind,
+                                        0,
+                                        &script[0],
+                                        Some(argument),
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                            script[0].clone(),
+                                        ))),
+                                    )
+                                };
+                                leaf::assignment(
+                                    "numeric_result",
+                                    call(
+                                        name,
+                                        ret.clone(),
+                                        vec![
+                                            child,
+                                            leaf::literal(
+                                                Datum::Int(if name == "mul" { 2 } else { 1 }),
+                                                ty(),
+                                            ),
+                                        ],
+                                    ),
+                                    ret,
+                                )
+                            };
+                            let actual = suite(make());
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(make());
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label} {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("NUMERIC ROW CONTEXT ACTUAL {count}");
+        assert_eq!(count, 5581440);
+    });
+}
+
+#[test]
+fn numeric_window_context_sources_keep_types_phases_diagnostics_and_reuse() {
+    if isolate_common_corpus(
+        "numeric_window_context_sources_keep_types_phases_diagnostics_and_reuse",
+    ) {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        scripts.extend([
+            vec![Datum::Int(i64::MAX)],
+            vec![Datum::Int(i64::MIN)],
+            vec![Datum::UInt(u64::MAX)],
+            vec![Datum::Real(f64::MAX)],
+            vec![Datum::Real(f64::INFINITY)],
+            vec![Datum::Real(f64::NEG_INFINITY)],
+            vec![Datum::Real(f64::NAN)],
+            vec![Datum::Real(1e-30)],
+            vec![Datum::Real(1e100), Datum::Real(1.25), Datum::Int(7)],
+        ]);
+        let mut count = 0usize;
+        for name in ["plus", "minus", "mul"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            let make = || {
+                                let child = if kind == "literal" {
+                                    leaf::literal(script[0].clone(), argument.clone())
+                                } else {
+                                    leaf::expression(
+                                        kind,
+                                        0,
+                                        &script[0],
+                                        Some(argument),
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                            script[0].clone(),
+                                        ))),
+                                    )
+                                };
+                                call(
+                                    name,
+                                    ret.clone(),
+                                    vec![
+                                        child,
+                                        leaf::literal(
+                                            Datum::Int(if name == "mul" { 2 } else { 1 }),
+                                            ty(),
+                                        ),
+                                    ],
+                                )
+                            };
+                            let actual = suite(make());
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(make());
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        if got != want
+                                            || output.column(0) != expected.column(0)
+                                            || ctx.snapshot() != old.snapshot()
+                                        {
+                                            eprintln!("WINDOW MISMATCH {label}\n got:{got:?} {:?} {}\nwant:{want:?} {:?} {}", output.column(0),ctx.snapshot(), expected.column(0),old.snapshot());
+                                        }
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.refusals, route.fallback) != (0, 0) {
+                                            eprintln!("WINDOW ROUTE {label} {route:?}");
+                                        }
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label} {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("NUMERIC WINDOW CONTEXT ACTUAL {count}");
+        assert_eq!(count, 5581440);
+    });
+}
+
+#[test]
+fn numeric_context_actual_failed_integer_probe_keeps_original_general_domain_and_effects() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let scripts = vec![
+        vec![Datum::Int(7)],
+        vec![Datum::UInt(u64::MAX)],
+        vec![Datum::Null],
+        vec![Datum::Real(2.5)],
+        vec![Datum::new_string("12tail")],
+        vec![Datum::Int(7), Datum::Int(8), Datum::Int(9), Datum::Int(10)],
+        vec![Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(
+            vec![1],
+        ))],
+        vec![Datum::Enum(
+            tidb_datatype::MysqlEnum::new("ordinal", 17),
+            tidb_datatype::Collation::DEFAULT,
+        )],
+    ];
+    let mut count = 0;
+    for name in ["plus", "minus", "mul"] {
+        for ret in [
+            real_ty(),
+            FieldType::new(FieldTypeCode::NewDecimal),
+            string_ty(),
+        ] {
+            let mut left = Constant::new(
+                Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![3])),
+                ty(),
+            );
+            left.param_marker = Some(crate::constant::ParamMarker { order: 0 });
+            let right = leaf::assignment(
+                "fallback_seen",
+                leaf::literal(
+                    Datum::VectorFloat32(VectorFloat32::init(2)),
+                    FieldType::new(FieldTypeCode::VectorFloat32),
+                ),
+                &ty(),
+            );
+            let root = call(name, ret.clone(), vec![Expression::Constant(left), right]);
+            let actual = suite(root.clone());
+            for script in &scripts {
+                for profile in 0..4 {
+                    for selection in [None, Some(vec![])] {
+                        for enabled in [false, true] {
+                            let reference = suite(root.clone());
+                            let (ctx, old) = (
+                                proof::Context::new(profile, script.clone()),
+                                proof::Context::new(profile, script.clone()),
+                            );
+                            ctx.inner.enabled.set(enabled);
+                            old.inner.enabled.set(enabled);
+                            let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+                            input.set_sel(selection.clone());
+                            oldinput.set_sel(selection.clone());
+                            let (mut output, mut expected) = (output_for(&ret), output_for(&ret));
+                            output.append_null(0);
+                            expected.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                            });
+                            let want = session_read_outcome(|| {
+                                reference.run(&old, &mut oldinput, &mut expected)
+                            });
+                            let label = format!(
+                                "{name}/{ret:?}/{script:?}/{profile}/{selection:?}/{enabled}"
+                            );
+                            assert_eq!(got, want, "outcome {label}");
+                            assert_eq!(output.column(0), expected.column(0), "output {label}");
+                            assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                            assert_eq!(input.sel(), selection.as_deref());
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.refusals, route.fallback),
+                                (0, 0),
+                                "source {label}: {route:?}"
+                            );
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(count, 1152);
+}
+#[test]
+fn numeric_context_sources_reuse_long_original_rows_across_overflow_null_and_empty_invocations() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let mut count = 0;
+    for name in ["plus", "minus", "mul"] {
+        let mut column = Column::new(1, ty());
+        column.index = 0;
+        column.orig_name = "t.n".into();
+        let root = call(
+            name,
+            ty(),
+            vec![
+                Expression::Column(column),
+                leaf::expression("param", 0, &Datum::Int(1), Some(&ty()), None),
+            ],
+        );
+        let actual = suite(root.clone());
+        for script in [
+            vec![Datum::Int(2)],
+            vec![Datum::Null],
+            vec![Datum::Int(1), Datum::Int(-1), Datum::Int(2)],
+        ] {
+            for enabled in [false, true] {
+                for selection in [
+                    None,
+                    Some(
+                        (0..2057)
+                            .map(|i| (2050 - i % 2051) as usize)
+                            .collect::<Vec<_>>(),
+                    ),
+                    Some(vec![2050, 1, 2050, 0, 1024]),
+                    Some(vec![]),
+                ] {
+                    let reference = suite(root.clone());
+                    let (ctx, old) = (
+                        proof::Context::new(0, script.clone()),
+                        proof::Context::new(0, script.clone()),
+                    );
+                    ctx.inner.enabled.set(enabled);
+                    old.inner.enabled.set(enabled);
+                    let mut input = Chunk::new(&[ty()], 2051, 2051);
+                    for position in 0..2051 {
+                        input.append_int64(
+                            0,
+                            if position == 1024 {
+                                i64::MAX
+                            } else if position == 2050 {
+                                i64::MIN
+                            } else {
+                                1
+                            },
+                        );
+                    }
+                    input.set_sel(selection.clone());
+                    let mut oldinput = input.clone();
+                    let (mut output, mut expected) = (output_for(&ty()), output_for(&ty()));
+                    output.append_null(0);
+                    expected.append_null(0);
+                    let got = session_read_outcome(|| {
+                        actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                    });
+                    let want =
+                        session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+                    let label = format!(
+                        "{name}/{script:?}/{enabled}/{}",
+                        selection.as_ref().map_or(2051, Vec::len)
+                    );
+                    assert_eq!(got, want, "outcome {label}");
+                    assert_eq!(output.column(0), expected.column(0), "output {label}");
+                    assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                    assert_eq!(input.sel(), selection.as_deref());
+                    let route = actual.batch_route_snapshot();
+                    assert_eq!(
+                        (route.refusals, route.fallback),
+                        (0, 0),
+                        "source {label}: {route:?}"
+                    );
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(count, 72);
+}
+#[test]
+fn numeric_context_window_null_does_not_budget_unused_decimal_display_scale() {
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let field = FieldType::new(FieldTypeCode::NewDecimal);
+    let sparse = Datum::Decimal(Decimal::from_raw_parts(
+        false,
+        vec![b'1'],
+        1_000_000_000,
+        1_000_000_000,
+    ));
+    let root = call(
+        "plus",
+        field.clone(),
+        vec![
+            leaf::expression(
+                "correlated",
+                0,
+                &sparse,
+                Some(&field),
+                Some(std::sync::Arc::new(std::sync::RwLock::new(sparse.clone()))),
+            ),
+            literal(Datum::Null, field.clone()),
+        ],
+    );
+    let actual = suite(root.clone());
+    let reference = suite(root);
+    let ctx = leaf::Context::new(0, Datum::Null);
+    ctx.enabled.set(true);
+    let old = leaf::Context::new(0, Datum::Null);
+    old.enabled.set(true);
+    let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+    let (mut output, mut expected) = (output_for(&field), output_for(&field));
+    let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+    let got =
+        session_read_outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()]));
+    assert_eq!(
+        got, want,
+        "unused decimal scale must not refuse a NULL arithmetic result"
+    );
+    assert_eq!(output.column(0), expected.column(0));
+    assert_eq!(ctx.snapshot(), old.snapshot());
+    let route = actual.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0));
+}
+
+struct PairedQuotientContext {
+    inner: crate::tikv::typed_dynamic_tests::Context,
+    profile: usize,
+    precision: Cell<usize>,
+    events: RefCell<Vec<String>>,
+}
+impl PairedQuotientContext {
+    fn new(profile: usize, script: Vec<Datum>) -> Self {
+        Self {
+            inner: crate::tikv::typed_dynamic_tests::Context::new(
+                if profile == 3 { 3 } else { 0 },
+                script,
+            ),
+            profile,
+            precision: Cell::new(0),
+            events: RefCell::new(vec![]),
+        }
+    }
+    fn snapshot(&self) -> String {
+        format!(
+            "{}|precision:{}|{:?}",
+            self.inner.snapshot(),
+            self.precision.get(),
+            self.events.borrow()
+        )
+    }
+}
+impl Columns for PairedQuotientContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn param_value(&self, index: usize) -> std::result::Result<Datum, EvalError> {
+        self.inner.param_value(index)
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.inner.enable_vectorized_expression()
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.inner.time_zone()
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.inner.type_flags()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.inner.append_warning(code, message);
+    }
+    fn get_uservar(&self, name: &str) -> Option<Datum> {
+        self.inner.get_uservar(name)
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.inner.set_uservar(name, value);
+    }
+    fn div_precision_increment(&self) -> u32 {
+        let n = self.precision.get();
+        self.precision.set(n + 1);
+        self.events.borrow_mut().push(format!("precision:{n}"));
+        [0, 4, 31][n % 3]
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.events.borrow_mut().push("truncate-level".into());
+        match self.profile {
+            1 => crate::ErrorLevel::Error,
+            2 => crate::ErrorLevel::Ignore,
+            _ => crate::ErrorLevel::Warn,
+        }
+    }
+    fn division_by_zero_level(&self) -> crate::ErrorLevel {
+        self.events.borrow_mut().push("division-zero-level".into());
+        match self.profile {
+            0 => crate::ErrorLevel::Ignore,
+            2 => crate::ErrorLevel::Error,
+            _ => crate::ErrorLevel::Warn,
+        }
+    }
+}
+fn paired_quotient_fields() -> Vec<FieldType> {
+    vec![
+        ty(),
+        ty().with_flags(FieldTypeFlags::UNSIGNED),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal),
+        string_ty(),
+        FieldType::new(FieldTypeCode::Bit),
+        FieldType::new(FieldTypeCode::Enum).with_flags(FieldTypeFlags::ENUM_SET_AS_INT),
+    ]
+}
+fn paired_quotient_scripts() -> Vec<Vec<Datum>> {
+    vec![
+        [Datum::Null, Datum::Real(1e100)], [Datum::Real(1e100), Datum::Null],
+        [Datum::Int(7), Datum::Int(0)], [Datum::Int(i64::MIN), Datum::Int(-1)],
+        [Datum::Decimal(Decimal::from_literal("9999999999999999999999999999999999999999999999999999999999999999999999999999999999.0000")), Datum::Decimal(Decimal::from_literal("0"))],
+        [Datum::Real(f64::MAX), Datum::Real(f64::MIN_POSITIVE)],
+        [Datum::new_string("-7tail"), Datum::new_string("0")],
+        [Datum::UInt(u64::MAX), Datum::Int(-1)],
+        [Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+        [Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![3])), Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![2]))],
+    ].into_iter().map(|[left, right]| vec![left.clone(), left.clone(), right.clone(), right.clone(), left, right]).collect()
+}
+fn paired_quotient_expression(
+    name: &str,
+    ret: &FieldType,
+    left: &FieldType,
+    right: &FieldType,
+    script: &[Datum],
+    effect: bool,
+) -> Expression {
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let argument = |value: &Datum, field: &FieldType| {
+        let mut c = Constant::new(value.clone(), field.clone());
+        c.param_marker = Some(crate::constant::ParamMarker { order: 0 });
+        Expression::Constant(c)
+    };
+    let right_value = argument(&script[2], right);
+    call(
+        name,
+        ret.clone(),
+        vec![
+            argument(&script[0], left),
+            if effect {
+                leaf::assignment("quotient_right", right_value, right)
+            } else {
+                right_value
+            },
+        ],
+    )
+}
+#[test]
+fn paired_quotient_original_domains_precision_zero_and_diagnostic_phases() {
+    if isolate_common_corpus(
+        "paired_quotient_original_domains_precision_zero_and_diagnostic_phases",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let mut count = 0usize;
+    let mut hash = 0xcbf29ce484222325u64;
+    let fields = paired_quotient_fields();
+    let scripts = paired_quotient_scripts();
+    for name in ["mod", "div", "intdiv"] {
+        for (li, left) in fields.iter().enumerate() {
+            for (ri, right) in fields.iter().enumerate() {
+                for (ti, ret) in [
+                    ty(),
+                    real_ty(),
+                    FieldType::new(FieldTypeCode::NewDecimal),
+                    string_ty(),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    for (si, script) in scripts.iter().enumerate() {
+                        for effect in [false, true] {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let owner = suite(paired_quotient_expression(
+                                            name, ret, left, right, script, effect,
+                                        ));
+                                        let ctx =
+                                            PairedQuotientContext::new(profile, script.clone());
+                                        ctx.inner.inner.enabled.set(enabled);
+                                        let mut input = leaf::input(true);
+                                        input.set_sel(selection.clone());
+                                        let mut output = output_for(ret);
+                                        output.append_null(0);
+                                        let outcome = session_read_outcome(|| {
+                                            owner.run(&ctx, &mut input, &mut output)
+                                        });
+                                        let observed = format!("{name}/{li}/{ri}/{ti}/{si}/{effect}/{profile}/{selection:?}/{enabled}|{outcome:?}|{:?}|{}|{:?}", output.column(0), ctx.snapshot(), input.sel());
+                                        for b in observed.bytes() {
+                                            hash =
+                                                (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("PAIRED QUOTIENT ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (282240, 0x1A4A2ABFEC2B5A5B));
+}
+
+#[test]
+fn quotient_context_root_sources_keep_types_phases_diagnostics_and_reuse() {
+    if isolate_common_corpus(
+        "quotient_context_root_sources_keep_types_phases_diagnostics_and_reuse",
+    ) {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        scripts.extend([
+            vec![Datum::Int(i64::MAX)],
+            vec![Datum::Int(i64::MIN)],
+            vec![Datum::UInt(u64::MAX)],
+            vec![Datum::Real(f64::MAX)],
+            vec![Datum::Real(f64::INFINITY)],
+            vec![Datum::Real(f64::NEG_INFINITY)],
+            vec![Datum::Real(f64::NAN)],
+            vec![Datum::Real(1e-30)],
+            vec![Datum::Real(1e100), Datum::Real(1.25), Datum::Int(7)],
+        ]);
+        let mut count = 0usize;
+        for name in ["mod", "div"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            let make = || {
+                                let child = if kind == "literal" {
+                                    leaf::literal(script[0].clone(), argument.clone())
+                                } else {
+                                    leaf::expression(
+                                        kind,
+                                        0,
+                                        &script[0],
+                                        Some(argument),
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                            script[0].clone(),
+                                        ))),
+                                    )
+                                };
+                                call(
+                                    name,
+                                    ret.clone(),
+                                    vec![
+                                        child,
+                                        leaf::literal(
+                                            Datum::Int(if name == "mul" { 2 } else { 1 }),
+                                            ty(),
+                                        ),
+                                    ],
+                                )
+                            };
+                            let actual = suite(make());
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(make());
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        if got != want
+                                            || output.column(0) != expected.column(0)
+                                            || ctx.snapshot() != old.snapshot()
+                                        {
+                                            eprintln!("WINDOW MISMATCH {label}\n got:{got:?} {:?} {}\nwant:{want:?} {:?} {}", output.column(0),ctx.snapshot(), expected.column(0),old.snapshot());
+                                        }
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.refusals, route.fallback) != (0, 0) {
+                                            eprintln!("WINDOW ROUTE {label} {route:?}");
+                                        }
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label} {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("QUOTIENT ROOT CONTEXT ACTUAL {count}");
+        assert_eq!(count, 3720960);
+    });
+}
+
+#[test]
+fn paired_quotient_actual_mod_div_keep_domains_precision_zero_and_diagnostic_phases() {
+    if isolate_common_corpus(
+        "paired_quotient_actual_mod_div_keep_domains_precision_zero_and_diagnostic_phases",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let fields = paired_quotient_fields();
+    let scripts = paired_quotient_scripts();
+    let mut count = 0;
+    for name in ["mod", "div"] {
+        for (li, left) in fields.iter().enumerate() {
+            for (ri, right) in fields.iter().enumerate() {
+                for (ti, ret) in [
+                    ty(),
+                    real_ty(),
+                    FieldType::new(FieldTypeCode::NewDecimal),
+                    string_ty(),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    for (si, script) in scripts.iter().enumerate() {
+                        for effect in [false, true] {
+                            let actual = suite(paired_quotient_expression(
+                                name, ret, left, right, script, effect,
+                            ));
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(paired_quotient_expression(
+                                            name, ret, left, right, script, effect,
+                                        ));
+                                        let (ctx, old) = (
+                                            PairedQuotientContext::new(profile, script.clone()),
+                                            PairedQuotientContext::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.inner.enabled.set(enabled);
+                                        old.inner.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label = format!("{name}/{li}/{ri}/{ti}/{si}/{effect}/{profile}/{selection:?}/{enabled}");
+                                        if got != want
+                                            || output.column(0) != expected.column(0)
+                                            || ctx.snapshot() != old.snapshot()
+                                        {
+                                            eprintln!("PAIRED MISMATCH {label}\\n got:{got:?} {:?} {}\\nwant:{want:?} {:?} {}", output.column(0), ctx.snapshot(), expected.column(0), old.snapshot());
+                                        }
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.refusals, route.fallback) != (0, 0) {
+                                            eprintln!("PAIRED SOURCE {label} {route:?}");
+                                        }
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label}: {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("PAIRED QUOTIENT ACTUAL MOD DIV {count}");
+    assert_eq!(count, 188160);
+}
+
+#[test]
+fn integer_division_operand_preparation_matches_independent_original_before_retirement() {
+    if isolate_common_corpus(
+        "integer_division_operand_preparation_matches_independent_original_before_retirement",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::scalar_function::NumericOperandStep;
+    let mut fields = crate::tikv::eager_scalar_value_tests::types();
+    for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+        for flags in [0, FieldTypeFlags::ENUM_SET_AS_INT] {
+            fields.push(FieldType::new(code).with_flags(flags));
+        }
+    }
+    fields.push(FieldType::new(FieldTypeCode::Null));
+    let values = crate::ops::arithmetic::tests::fixtures();
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let observe = |body: &mut dyn FnMut() -> std::result::Result<Datum, EvalError>,
+                   ctx: &PairedQuotientContext| {
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+            Ok(result) => format!("{result:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        };
+        format!("{result}|{}", ctx.snapshot())
+    };
+    for (fi, field) in fields.iter().enumerate() {
+        for (vi, value) in values.iter().enumerate() {
+            for profile in 0..4 {
+                let old = PairedQuotientContext::new(profile, vec![Datum::Int(0)]);
+                let ctx = PairedQuotientContext::new(profile, vec![Datum::Int(0)]);
+                let expected = observe(
+                    &mut || {
+                        crate::ops::decimal_div_operand_value(
+                            value.clone(),
+                            Some(field),
+                            &old,
+                            || Some("original_operand".into()),
+                        )
+                        .map(Datum::Decimal)
+                    },
+                    &old,
+                );
+                let got = observe(
+                    &mut || {
+                        let value =
+                            match crate::scalar_function::prepare_native_integer_division_operand(
+                                field,
+                                value.clone(),
+                                &ctx,
+                            )? {
+                                NumericOperandStep::Ready(value) => value,
+                                NumericOperandStep::Subject(pending) => {
+                                    pending.finish(field, Some("original_operand"), &ctx)?
+                                }
+                            };
+                        match value {
+                            value @ Datum::Decimal(_) => Ok(value),
+                            _ => Err(EvalError::Unsupported("DIV decimal argument domain")),
+                        }
+                    },
+                    &ctx,
+                );
+                if got != expected {
+                    eprintln!(
+                        "INTDIV OPERAND MISMATCH {fi}/{vi}/{profile} got:{got} old:{expected}"
+                    );
+                }
+                assert_eq!(got, expected, "operand {fi}/{vi}/{profile}");
+                for b in expected.bytes() {
+                    hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                }
+                count += 1;
+            }
+        }
+    }
+    eprintln!("INTDIV OPERAND INDEPENDENT {count}/{hash:016X}");
+    assert_eq!((count, hash), (2304, 0x9B8E89E1D40EABEE));
+}
+
+#[test]
+fn integer_division_context_root_sources_keep_types_phases_diagnostics_and_reuse() {
+    if isolate_common_corpus(
+        "integer_division_context_root_sources_keep_types_phases_diagnostics_and_reuse",
+    ) {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        scripts.extend([
+            vec![Datum::Int(i64::MAX)],
+            vec![Datum::Int(i64::MIN)],
+            vec![Datum::UInt(u64::MAX)],
+            vec![Datum::Real(f64::MAX)],
+            vec![Datum::Real(f64::INFINITY)],
+            vec![Datum::Real(f64::NEG_INFINITY)],
+            vec![Datum::Real(f64::NAN)],
+            vec![Datum::Real(1e-30)],
+            vec![Datum::Real(1e100), Datum::Real(1.25), Datum::Int(7)],
+        ]);
+        let mut count = 0usize;
+        for name in ["intdiv"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            let make = || {
+                                let child = if kind == "literal" {
+                                    leaf::literal(script[0].clone(), argument.clone())
+                                } else {
+                                    leaf::expression(
+                                        kind,
+                                        0,
+                                        &script[0],
+                                        Some(argument),
+                                        Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                            script[0].clone(),
+                                        ))),
+                                    )
+                                };
+                                call(
+                                    name,
+                                    ret.clone(),
+                                    vec![
+                                        child,
+                                        leaf::literal(
+                                            Datum::Int(if name == "mul" { 2 } else { 1 }),
+                                            ty(),
+                                        ),
+                                    ],
+                                )
+                            };
+                            let actual = suite(make());
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(make());
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        if got != want
+                                            || output.column(0) != expected.column(0)
+                                            || ctx.snapshot() != old.snapshot()
+                                        {
+                                            eprintln!("WINDOW MISMATCH {label}\n got:{got:?} {:?} {}\nwant:{want:?} {:?} {}", output.column(0),ctx.snapshot(), expected.column(0),old.snapshot());
+                                        }
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.refusals, route.fallback) != (0, 0) {
+                                            eprintln!("WINDOW ROUTE {label} {route:?}");
+                                        }
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label} {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("INTDIV ROOT CONTEXT ACTUAL {count}");
+        assert_eq!(count, 1860480);
+    });
+}
+
+#[test]
+fn integer_division_context_paired_sources_keep_domains_precision_zero_and_diagnostic_phases() {
+    if isolate_common_corpus(
+        "integer_division_context_paired_sources_keep_domains_precision_zero_and_diagnostic_phases",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let fields = paired_quotient_fields();
+    let scripts = paired_quotient_scripts();
+    let mut count = 0;
+    for name in ["intdiv"] {
+        for (li, left) in fields.iter().enumerate() {
+            for (ri, right) in fields.iter().enumerate() {
+                for (ti, ret) in [
+                    ty(),
+                    real_ty(),
+                    FieldType::new(FieldTypeCode::NewDecimal),
+                    string_ty(),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    for (si, script) in scripts.iter().enumerate() {
+                        for effect in [false, true] {
+                            let actual = suite(paired_quotient_expression(
+                                name, ret, left, right, script, effect,
+                            ));
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let reference = suite(paired_quotient_expression(
+                                            name, ret, left, right, script, effect,
+                                        ));
+                                        let (ctx, old) = (
+                                            PairedQuotientContext::new(profile, script.clone()),
+                                            PairedQuotientContext::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.inner.enabled.set(enabled);
+                                        old.inner.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label = format!("{name}/{li}/{ri}/{ti}/{si}/{effect}/{profile}/{selection:?}/{enabled}");
+                                        if got != want
+                                            || output.column(0) != expected.column(0)
+                                            || ctx.snapshot() != old.snapshot()
+                                        {
+                                            eprintln!("PAIRED MISMATCH {label}\\n got:{got:?} {:?} {}\\nwant:{want:?} {:?} {}", output.column(0), ctx.snapshot(), expected.column(0), old.snapshot());
+                                        }
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(input.sel(), selection.as_deref());
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.refusals, route.fallback) != (0, 0) {
+                                            eprintln!("PAIRED SOURCE {label} {route:?}");
+                                        }
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label}: {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("PAIRED QUOTIENT ACTUAL INTDIV {count}");
+    assert_eq!(count, 94080);
+}
+
+#[test]
+fn integer_division_context_strict_report_refinement_and_unavailable_left_keep_original_right_read()
+{
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let mut count = 0;
+    for name in ["plus", "mul", "abs"] {
+        for value in [1e20, 1e30, 1e100] {
+            for strict_left in [false, true] {
+                for source_unsigned in [false, true] {
+                    for output_unsigned in [false, true] {
+                        let source = real_ty().with_unsigned(source_unsigned);
+                        let ret = ty().with_unsigned(output_unsigned);
+                        let make = || {
+                            let strict = |value| {
+                                call(
+                                    name,
+                                    source.clone(),
+                                    if name == "abs" {
+                                        vec![literal(Datum::Real(value), source.clone())]
+                                    } else {
+                                        vec![
+                                            literal(Datum::Real(value), source.clone()),
+                                            literal(
+                                                Datum::Real(if name == "mul" { 1.0 } else { 0.0 }),
+                                                source.clone(),
+                                            ),
+                                        ]
+                                    },
+                                )
+                            };
+                            let param = |value| {
+                                leaf::expression(
+                                    "param",
+                                    0,
+                                    &Datum::Real(value),
+                                    Some(&source),
+                                    None,
+                                )
+                            };
+                            call(
+                                "intdiv",
+                                ret.clone(),
+                                if strict_left {
+                                    vec![strict(value), param(1.0)]
+                                } else {
+                                    vec![param(value), strict(1.0)]
+                                },
+                            )
+                        };
+                        let actual = suite(make());
+                        for profile in 0..4 {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let reference = suite(make());
+                                    let script =
+                                        vec![Datum::Real(if strict_left { 1.0 } else { value })];
+                                    let (ctx, old) = (
+                                        PairedQuotientContext::new(profile, script.clone()),
+                                        PairedQuotientContext::new(profile, script),
+                                    );
+                                    ctx.inner.inner.enabled.set(enabled);
+                                    old.inner.inner.enabled.set(enabled);
+                                    let (mut input, mut oldinput) =
+                                        (leaf::input(true), leaf::input(true));
+                                    input.set_sel(selection.clone());
+                                    oldinput.set_sel(selection.clone());
+                                    let (mut output, mut expected) =
+                                        (output_for(&ret), output_for(&ret));
+                                    output.append_null(0);
+                                    expected.append_null(0);
+                                    let got = session_read_outcome(|| {
+                                        actual.run_with_tikv_batch(
+                                            &ctx,
+                                            &mut input,
+                                            &mut output,
+                                            &[ty()],
+                                        )
+                                    });
+                                    let want = session_read_outcome(|| {
+                                        reference.run(&old, &mut oldinput, &mut expected)
+                                    });
+                                    let label = format!("{name}/{value}/{strict_left}/{source_unsigned}/{output_unsigned}/{profile}/{enabled}/{selection:?}");
+                                    assert_eq!(got, want, "outcome {label}");
+                                    assert_eq!(
+                                        output.column(0),
+                                        expected.column(0),
+                                        "output {label}"
+                                    );
+                                    assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                                    assert_eq!(input.sel(), selection.as_deref());
+                                    if name == "abs"
+                                        && strict_left
+                                        && value == 1e20
+                                        && !enabled
+                                        && profile == 0
+                                        && selection.is_none()
+                                    {
+                                        assert!(
+                                            want.contains("IntOverflow"),
+                                            "left ABS report is unavailable: {want}"
+                                        );
+                                        assert_eq!(old.inner.inner.calls.get(), 3, "right type/value then its fresh report even when left report is unavailable");
+                                    }
+                                    let route = actual.batch_route_snapshot();
+                                    assert_eq!(
+                                        (route.refusals, route.fallback),
+                                        (0, 0),
+                                        "source {label}: {route:?}"
+                                    );
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(count, 1728);
+}
+#[test]
+fn integer_division_context_saved_binary_headers_and_changing_live_values_keep_original_phases() {
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let scripts = [
+        vec![
+            Datum::Real(1e100),
+            Datum::Real(1.25),
+            Datum::Real(1e20),
+            Datum::Int(7),
+        ],
+        vec![Datum::Int(i64::MIN), Datum::Int(-1), Datum::Int(42)],
+        vec![Datum::Null, Datum::Real(1e100)],
+        vec![Datum::Real(1e100), Datum::Null, Datum::Real(f64::MAX)],
+    ];
+    let mut count = 0;
+    for source in [
+        ty(),
+        ty().with_unsigned(true),
+        real_ty(),
+        FieldType::new(FieldTypeCode::NewDecimal),
+    ] {
+        for ret in [
+            ty(),
+            ty().with_unsigned(true),
+            real_ty(),
+            FieldType::new(FieldTypeCode::NewDecimal),
+            string_ty(),
+        ] {
+            for right in [1, -1] {
+                for effect in [false, true] {
+                    let make = || {
+                        let mut left = Constant::new(
+                            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![3])),
+                            source.clone(),
+                        );
+                        left.param_marker = Some(ParamMarker { order: 0 });
+                        let right = literal(Datum::Int(right), ty());
+                        let right = if effect {
+                            leaf::assignment("intdiv_right", right, &ty())
+                        } else {
+                            right
+                        };
+                        call(
+                            "intdiv",
+                            ret.clone(),
+                            vec![Expression::Constant(left), right],
+                        )
+                    };
+                    let actual = suite(make());
+                    for script in &scripts {
+                        for profile in 0..4 {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let reference = suite(make());
+                                    let (ctx, old) = (
+                                        PairedQuotientContext::new(profile, script.clone()),
+                                        PairedQuotientContext::new(profile, script.clone()),
+                                    );
+                                    ctx.inner.inner.enabled.set(enabled);
+                                    old.inner.inner.enabled.set(enabled);
+                                    let (mut input, mut oldinput) =
+                                        (leaf::input(true), leaf::input(true));
+                                    input.set_sel(selection.clone());
+                                    oldinput.set_sel(selection.clone());
+                                    let (mut output, mut expected) =
+                                        (output_for(&ret), output_for(&ret));
+                                    output.append_null(0);
+                                    expected.append_null(0);
+                                    let got = session_read_outcome(|| {
+                                        actual.run_with_tikv_batch(
+                                            &ctx,
+                                            &mut input,
+                                            &mut output,
+                                            &[ty()],
+                                        )
+                                    });
+                                    let want = session_read_outcome(|| {
+                                        reference.run(&old, &mut oldinput, &mut expected)
+                                    });
+                                    let label = format!("{source:?}/{ret:?}/{right}/{effect}/{script:?}/{profile}/{enabled}/{selection:?}");
+                                    assert_eq!(got, want, "outcome {label}");
+                                    assert_eq!(
+                                        output.column(0),
+                                        expected.column(0),
+                                        "output {label}"
+                                    );
+                                    assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                                    assert_eq!(input.sel(), selection.as_deref());
+                                    let route = actual.batch_route_snapshot();
+                                    assert_eq!(
+                                        (route.refusals, route.fallback),
+                                        (0, 0),
+                                        "source {label}: {route:?}"
+                                    );
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(count, 7680);
+}
+
+struct DeferredRootContext {
+    inner: PairedQuotientContext,
+    fault: usize,
+}
+impl DeferredRootContext {
+    fn new(
+        profile: usize,
+        script: Vec<Datum>,
+        binding: std::sync::Arc<std::sync::RwLock<Datum>>,
+    ) -> Self {
+        let mut inner = PairedQuotientContext::new(profile.min(3), script.clone());
+        inner.inner.inner.binding = Some(binding);
+        inner
+            .inner
+            .inner
+            .vars
+            .borrow_mut()
+            .insert("deferred_value".into(), script[0].clone());
+        Self {
+            inner,
+            fault: profile.saturating_sub(3),
+        }
+    }
+    fn snapshot(&self) -> String {
+        self.inner.snapshot()
+    }
+}
+impl Columns for DeferredRootContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        match self.fault {
+            1 => {
+                self.inner
+                    .events
+                    .borrow_mut()
+                    .push("root-param-error".into());
+                Err(EvalError::Unsupported(
+                    "deferred root parameter unavailable",
+                ))
+            }
+            2 => {
+                self.inner
+                    .events
+                    .borrow_mut()
+                    .push("root-param-panic".into());
+                panic!("deferred root parameter callback")
+            }
+            _ => self.inner.param_value(order),
+        }
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.inner.enable_vectorized_expression()
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.inner.time_zone()
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.inner.type_flags()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.inner.append_warning(code, message);
+    }
+    fn get_uservar(&self, name: &str) -> Option<Datum> {
+        self.inner.get_uservar(name)
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.inner.set_uservar(name, value);
+    }
+    fn div_precision_increment(&self) -> u32 {
+        self.inner.div_precision_increment()
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.inner.truncate_level()
+    }
+    fn division_by_zero_level(&self) -> crate::ErrorLevel {
+        self.inner.division_by_zero_level()
+    }
+}
+fn deferred_root_fields() -> Vec<Option<FieldType>> {
+    std::iter::once(None)
+        .chain(
+            crate::tikv::eager_scalar_value_tests::types()
+                .into_iter()
+                .map(Some),
+        )
+        .chain([
+            Some(FieldType::new(FieldTypeCode::Enum).with_flags(FieldTypeFlags::ENUM_SET_AS_INT)),
+            Some(FieldType::new(FieldTypeCode::Null)),
+        ])
+        .collect()
+}
+fn deferred_root_scripts() -> Vec<Vec<Datum>> {
+    let mut scripts = crate::tikv::typed_dynamic_tests::scripts();
+    scripts.extend([
+        vec![
+            Datum::Decimal(Decimal::from_int(1)),
+            Datum::Real(1e100),
+            Datum::Real(1e100),
+            Datum::Real(1.25),
+            Datum::Real(2.5),
+            Datum::Real(3.5),
+            Datum::Real(4.5),
+            Datum::Real(5.5),
+            Datum::Real(6.5),
+        ],
+        vec![
+            Datum::VectorFloat32(VectorFloat32::init(2)),
+            Datum::new_string("[1,2]"),
+            Datum::new_string("[3,4]"),
+            Datum::Null,
+        ],
+        vec![
+            Datum::Time(Time::from_raw_parts(
+                tidb_datatype::CoreTime::from_raw(0),
+                tidb_datatype::TimeType::Timestamp,
+                6,
+            )),
+            Datum::Int(1700000000),
+            Datum::Int(1700000001),
+            Datum::Int(1700000002),
+        ],
+        vec![
+            Datum::Int(7),
+            Datum::new_string("abc"),
+            Datum::Int(9),
+            Datum::VectorFloat32(VectorFloat32::init(2)),
+        ],
+    ]);
+    scripts
+}
+fn deferred_root_expression(
+    which: usize,
+    field: Option<&FieldType>,
+    wrapper: usize,
+    value: &Datum,
+    binding: std::sync::Arc<std::sync::RwLock<Datum>>,
+) -> Expression {
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let param = |field: &FieldType| leaf::expression("param", 0, value, Some(field), None);
+    let child = match which {
+        0 => call(
+            "plus",
+            ty(),
+            vec![param(&ty()), literal(Datum::Int(1), ty())],
+        ),
+        1 => call(
+            "plus",
+            real_ty(),
+            vec![param(&real_ty()), param(&real_ty())],
+        ),
+        2 => call(
+            "plus",
+            FieldType::new(FieldTypeCode::NewDecimal),
+            vec![param(&real_ty()), param(&real_ty())],
+        ),
+        3 => call(
+            "mod",
+            FieldType::new(FieldTypeCode::NewDecimal),
+            vec![param(&real_ty()), param(&real_ty())],
+        ),
+        4 => call("abs", ty(), vec![param(&ty())]),
+        5 => call(
+            "cast_json",
+            FieldType::new(FieldTypeCode::Json),
+            vec![param(&real_ty())],
+        ),
+        6 => call("char_length", ty(), vec![param(&string_ty())]),
+        7 => call("lower", string_ty(), vec![param(&string_ty())]),
+        8 => call(
+            "getvar",
+            FieldType::new(FieldTypeCode::VectorFloat32),
+            vec![literal(Datum::new_string("deferred_value"), string_ty())],
+        ),
+        9 => call(
+            "from_unixtime",
+            FieldType::new(FieldTypeCode::Datetime),
+            vec![param(&ty())],
+        ),
+        10 => call(
+            "sec_to_time",
+            FieldType::new(FieldTypeCode::Duration),
+            vec![param(&real_ty())],
+        ),
+        11 => call(
+            "plus",
+            FieldType::new(FieldTypeCode::NewDecimal),
+            vec![
+                param(&real_ty()),
+                leaf::expression("correlated", 0, value, Some(&real_ty()), Some(binding)),
+            ],
+        ),
+        _ => unreachable!(),
+    };
+    let mut c = Constant::new(Datum::Int(99), field.cloned().unwrap_or_else(ty));
+    c.ret_type = field.cloned();
+    c.deferred_expr = Some(Box::new(child));
+    if wrapper > 0 {
+        c.param_marker = Some(ParamMarker {
+            order: if wrapper == 2 { -1 } else { 0 },
+        });
+    }
+    if wrapper == 3 {
+        let mut outer = Constant::new(Datum::Int(77), field.cloned().unwrap_or_else(ty));
+        outer.ret_type = field.cloned();
+        outer.deferred_expr = Some(Box::new(Expression::Constant(c)));
+        Expression::Constant(outer)
+    } else {
+        Expression::Constant(c)
+    }
+}
+#[test]
+fn deferred_typed_roots_original_live_domains_forwarding_and_publication() {
+    if isolate_common_corpus(
+        "deferred_typed_roots_original_live_domains_forwarding_and_publication",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = deferred_root_fields();
+        let scripts = deferred_root_scripts();
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for which in 0..12 {
+            for (fi, field) in fields.iter().enumerate() {
+                for wrapper in 0..4 {
+                    for (si, script) in scripts.iter().enumerate() {
+                        for profile in 0..6 {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                for enabled in [false, true] {
+                                    let binding = std::sync::Arc::new(std::sync::RwLock::new(
+                                        script[0].clone(),
+                                    ));
+                                    let root = deferred_root_expression(
+                                        which,
+                                        field.as_ref(),
+                                        wrapper,
+                                        &script[0],
+                                        std::sync::Arc::clone(&binding),
+                                    );
+                                    let owner = suite(root);
+                                    let ctx =
+                                        DeferredRootContext::new(profile, script.clone(), binding);
+                                    ctx.inner.inner.inner.enabled.set(enabled);
+                                    let mut input = leaf::input(true);
+                                    input.set_sel(selection.clone());
+                                    let mut output = output_for(field.as_ref().unwrap_or(&ty()));
+                                    output.append_null(0);
+                                    let result = session_read_outcome(|| {
+                                        owner.run(&ctx, &mut input, &mut output)
+                                    });
+                                    let observed = format!("{which}/{fi}/{wrapper}/{si}/{profile}/{selection:?}/{enabled}|{result:?}|{:?}|{}|{:?}", output.column(0), ctx.snapshot(), input.sel());
+                                    for b in observed.bytes() {
+                                        hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("DEFERRED TYPED ROOT ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (677376, 0xB634495626BD8ECB));
+    });
+}
+
+#[test]
+fn deferred_bulk_forward_keeps_complete_child_casts_before_correlated_snapshot() {
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let script = vec![
+        Datum::Real(1e100),
+        Datum::Real(1e100),
+        Datum::Real(1.25),
+        Datum::Real(2.5),
+        Datum::Real(3.5),
+        Datum::Real(4.5),
+        Datum::Real(5.5),
+    ];
+    let make = |binding| {
+        let real = real_ty();
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal);
+        let child = call(
+            "plus",
+            decimal.clone(),
+            vec![
+                leaf::expression("param", 0, &script[0], Some(&real), None),
+                leaf::expression("correlated", 0, &script[0], Some(&real), Some(binding)),
+            ],
+        );
+        let mut c = Constant::new(Datum::Int(99), decimal);
+        c.deferred_expr = Some(Box::new(child));
+        call(
+            "cast_json",
+            FieldType::new(FieldTypeCode::Json),
+            vec![Expression::Constant(c)],
+        )
+    };
+    let old_binding = std::sync::Arc::new(std::sync::RwLock::new(script[0].clone()));
+    let binding = std::sync::Arc::new(std::sync::RwLock::new(script[0].clone()));
+    let actual = suite(make(std::sync::Arc::clone(&binding)));
+    let reference = suite(make(std::sync::Arc::clone(&old_binding)));
+    let ctx = DeferredRootContext::new(0, script.clone(), binding);
+    let old = DeferredRootContext::new(0, script, old_binding);
+    ctx.inner.inner.inner.enabled.set(true);
+    old.inner.inner.inner.enabled.set(true);
+    let (mut input, mut oldinput) = (leaf::input(true), leaf::input(true));
+    let field = FieldType::new(FieldTypeCode::Json);
+    let (mut output, mut expected) = (output_for(&field), output_for(&field));
+    output.append_null(0);
+    expected.append_null(0);
+    let want = session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+    let got =
+        session_read_outcome(|| actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()]));
+    eprintln!(
+        "FORWARD PHASE old:{} actual:{}\nold:{}\ngot:{}",
+        old.inner.inner.inner.calls.get(),
+        ctx.inner.inner.inner.calls.get(),
+        old.snapshot(),
+        ctx.snapshot()
+    );
+    assert_eq!(got, want, "forwarding must keep its complete child program");
+    assert_eq!(output.column(0), expected.column(0));
+    assert_eq!(
+        ctx.snapshot(),
+        old.snapshot(),
+        "correlated right snapshot follows all left casts"
+    );
+    let route = actual.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0));
+}
+
+#[test]
+fn deferred_typed_roots_actual_profiles_keep_live_domains_forwarding_and_publication() {
+    if isolate_common_corpus(
+        "deferred_typed_roots_actual_profiles_keep_live_domains_forwarding_and_publication",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = deferred_root_fields();
+        let scripts = deferred_root_scripts();
+        let mut count = 0usize;
+        for which in 0..12 {
+            for (fi, field) in fields.iter().enumerate() {
+                for wrapper in 0..4 {
+                    for (si, script) in scripts.iter().enumerate() {
+                        let binding =
+                            std::sync::Arc::new(std::sync::RwLock::new(script[0].clone()));
+                        let owner = suite(deferred_root_expression(
+                            which,
+                            field.as_ref(),
+                            wrapper,
+                            &script[0],
+                            std::sync::Arc::clone(&binding),
+                        ));
+                        for profile in 0..6 {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                for enabled in [false, true] {
+                                    *binding.write().unwrap() = script[0].clone();
+                                    let old_binding = std::sync::Arc::new(std::sync::RwLock::new(
+                                        script[0].clone(),
+                                    ));
+                                    let reference = suite(deferred_root_expression(
+                                        which,
+                                        field.as_ref(),
+                                        wrapper,
+                                        &script[0],
+                                        std::sync::Arc::clone(&old_binding),
+                                    ));
+                                    let old = DeferredRootContext::new(
+                                        profile,
+                                        script.clone(),
+                                        old_binding,
+                                    );
+                                    old.inner.inner.inner.enabled.set(enabled);
+                                    let ctx = DeferredRootContext::new(
+                                        profile,
+                                        script.clone(),
+                                        std::sync::Arc::clone(&binding),
+                                    );
+                                    ctx.inner.inner.inner.enabled.set(enabled);
+                                    let mut input = leaf::input(true);
+                                    input.set_sel(selection.clone());
+                                    let mut output = output_for(field.as_ref().unwrap_or(&ty()));
+                                    output.append_null(0);
+                                    let mut oldinput = leaf::input(true);
+                                    oldinput.set_sel(selection.clone());
+                                    let mut expected = output_for(field.as_ref().unwrap_or(&ty()));
+                                    expected.append_null(0);
+                                    let want = session_read_outcome(|| {
+                                        reference.run(&old, &mut oldinput, &mut expected)
+                                    });
+                                    let got = session_read_outcome(|| {
+                                        owner.run_with_tikv_batch(
+                                            &ctx,
+                                            &mut input,
+                                            &mut output,
+                                            &[ty()],
+                                        )
+                                    });
+                                    let label = format!("{which}/{fi}/{wrapper}/{si}/{profile}/{selection:?}/{enabled}");
+                                    assert_eq!(got, want, "result {label}");
+                                    assert_eq!(
+                                        output.column(0),
+                                        expected.column(0),
+                                        "output {label}"
+                                    );
+                                    assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                                    assert_eq!(input.sel(), oldinput.sel(), "selection {label}");
+                                    let route = owner.batch_route_snapshot();
+                                    assert_eq!(
+                                        (route.refusals, route.fallback),
+                                        (0, 0),
+                                        "source {label}: {route:?}"
+                                    );
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("DEFERRED TYPED ROOT ACTUAL {count}");
+        assert_eq!(count, 677376);
+    });
+}
+
+#[test]
+fn deferred_typed_roots_long_publication_and_live_target_reuse() {
+    let mut count = 0;
+    for field in [
+        Some(ty()),
+        Some(ty().with_unsigned(true)),
+        Some(real_ty()),
+        None,
+    ] {
+        for marker in [false, true] {
+            let mut column = Column::new(1, ty());
+            column.index = 0;
+            let child = call(
+                "plus",
+                ty(),
+                vec![Expression::Column(column), literal(Datum::Int(1), ty())],
+            );
+            let mut root = Constant::new(Datum::Int(0), field.clone().unwrap_or_else(ty));
+            root.ret_type = field.clone();
+            root.deferred_expr = Some(Box::new(child));
+            if marker {
+                root.param_marker = Some(ParamMarker { order: 0 });
+            }
+            let root = Expression::Constant(root);
+            let actual = suite(root.clone());
+            for round in 0..12 {
+                let script = match round % 4 {
+                    0 => vec![Datum::Int(7)],
+                    1 => vec![Datum::Real(1.25), Datum::Int(8)],
+                    2 => vec![Datum::Null],
+                    _ => vec![Datum::Int(9)],
+                };
+                let make_ctx = || {
+                    DeferredRootContext::new(
+                        if round == 4 {
+                            4
+                        } else if round == 8 {
+                            5
+                        } else {
+                            0
+                        },
+                        script.clone(),
+                        std::sync::Arc::new(std::sync::RwLock::new(script[0].clone())),
+                    )
+                };
+                let (ctx, old) = (make_ctx(), make_ctx());
+                let enabled = round % 2 == 0;
+                ctx.inner.inner.inner.enabled.set(enabled);
+                old.inner.inner.inner.enabled.set(enabled);
+                let make_input = || {
+                    let mut input = Chunk::new_with_capacity(&[ty()], 2051);
+                    for i in 0..2051 {
+                        if round % 4 == 2 {
+                            input.append_null(0)
+                        } else {
+                            input.append_int64(0, if i == 1024 { i64::MAX } else { 1 });
+                        }
+                    }
+                    input
+                };
+                let (mut input, mut oldinput) = (make_input(), make_input());
+                let selection = match round % 3 {
+                    0 => None,
+                    1 => Some((0..2057).map(|i| (2050 - i % 2051) as usize).collect()),
+                    _ => Some(vec![]),
+                };
+                input.set_sel(selection.clone());
+                oldinput.set_sel(selection.clone());
+                let output_field = field.as_ref().unwrap_or(&ty()).clone();
+                let (mut output, mut expected) =
+                    (output_for(&output_field), output_for(&output_field));
+                output.append_null(0);
+                expected.append_null(0);
+                let reference = suite(root.clone());
+                let want =
+                    session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+                let got = session_read_outcome(|| {
+                    actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                });
+                let label = format!("{field:?}/{marker}/{round}/{enabled}");
+                assert_eq!(got, want, "result {label}");
+                assert_eq!(output.column(0), expected.column(0), "output {label}");
+                assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                assert_eq!(input.sel(), oldinput.sel());
+                let route = actual.batch_route_snapshot();
+                assert_eq!(
+                    (route.refusals, route.fallback),
+                    (0, 0),
+                    "source {label}: {route:?}"
+                );
+                if !marker
+                    && field
+                        .as_ref()
+                        .is_some_and(|f| f.eval_type() == NativeEvalType::Int)
+                    && round == 0
+                {
+                    assert!(
+                        want.contains("DataOutOfRange"),
+                        "late original arithmetic failure {want}"
+                    );
+                    assert_eq!(
+                        expected.column(0).rows(),
+                        1,
+                        "typed publication remains atomic across windows"
+                    );
+                }
+                count += 1;
+            }
+        }
+    }
+    assert_eq!(count, 96);
+}
+
+#[test]
+fn deferred_typed_roots_row_child_is_atomic_across_driver_windows() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let child = call(
+        "char_length",
+        ty(),
+        vec![leaf::expression(
+            "param",
+            0,
+            &Datum::new_string("abc"),
+            Some(&string_ty()),
+            None,
+        )],
+    );
+    let mut root = Constant::new(Datum::Int(0), ty());
+    root.deferred_expr = Some(Box::new(child));
+    let root = Expression::Constant(root);
+    let actual = suite(root.clone());
+    let inspector = PreparedBatch::compile_calculation_profile(
+        &actual,
+        0,
+        &[ty()],
+        true,
+        219,
+        limits(),
+        ExecutionLimits::default(),
+        1 << 24,
+        true,
+    )
+    .unwrap();
+    assert!(
+        !inspector.deferred_profiles.as_ref().unwrap().typed[0]
+            .1
+            .program
+            .requires_whole_selection(),
+        "this regression must cross driver windows"
+    );
+    let mut count = 0;
+    for bad in [false, true] {
+        for enabled in [false, true] {
+            for selection in [
+                None,
+                Some((0..2057).map(|i| 2050 - i % 2051).collect()),
+                Some(vec![]),
+            ] {
+                let mut script = vec![Datum::new_string("é"); 2058];
+                if bad {
+                    script[1025] = Datum::MinNotNull;
+                }
+                let (ctx, old) = (
+                    proof::Context::new(0, script.clone()),
+                    proof::Context::new(0, script),
+                );
+                ctx.inner.enabled.set(enabled);
+                old.inner.enabled.set(enabled);
+                let make_input = || {
+                    let mut input = Chunk::new_with_capacity(&[ty()], 2051);
+                    for i in 0..2051 {
+                        input.append_int64(0, i);
+                    }
+                    input
+                };
+                let (mut input, mut oldinput) = (make_input(), make_input());
+                input.set_sel(selection.clone());
+                oldinput.set_sel(selection.clone());
+                let (mut output, mut expected) = (output_for(&ty()), output_for(&ty()));
+                output.append_null(0);
+                expected.append_null(0);
+                let reference = suite(root.clone());
+                let want =
+                    session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+                let got = session_read_outcome(|| {
+                    actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                });
+                let label = format!(
+                    "{bad}/{enabled}/{}",
+                    selection.as_ref().map_or(2051, Vec::len)
+                );
+                assert_eq!(got, want, "result {label}");
+                assert_eq!(output.column(0), expected.column(0), "output {label}");
+                assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                assert_eq!(input.sel(), oldinput.sel());
+                let route = actual.batch_route_snapshot();
+                assert_eq!(
+                    (route.refusals, route.fallback),
+                    (0, 0),
+                    "source {label}: {route:?}"
+                );
+                if bad && input.num_rows() != 0 {
+                    assert!(
+                        want.contains("range sentinel string coercion"),
+                        "late original error {want}"
+                    );
+                    assert_eq!(old.inner.calls.get(), 1026);
+                    assert_eq!(
+                        expected.column(0).rows(),
+                        if enabled { 1 } else { 1026 },
+                        "typed atomic and generic prefix"
+                    );
+                }
+                count += 1;
+            }
+        }
+    }
+    assert_eq!(count, 12);
+}
+#[test]
+fn deferred_typed_roots_probe_limits_and_error_unwind_clear_selected_profile() {
+    use crate::tikv::dynamic_leaf_tests as leaf;
+    let binding = std::sync::Arc::new(std::sync::RwLock::new(Datum::Int(7)));
+    let owner = suite(deferred_root_expression(
+        0,
+        Some(&ty()),
+        1,
+        &Datum::Int(7),
+        std::sync::Arc::clone(&binding),
+    ));
+    let mut worker = PreparedBatch::compile_calculation_profile(
+        &owner,
+        0,
+        &[ty()],
+        true,
+        220,
+        limits(),
+        ExecutionLimits::default(),
+        65536,
+        true,
+    )
+    .unwrap();
+    for (profile, script, enabled, expected) in [
+        (0, vec![Datum::Int(7)], true, Some(true)),
+        (4, vec![Datum::Int(7)], true, None),
+        (0, vec![Datum::Int(7)], true, Some(true)),
+        (5, vec![Datum::Int(7)], true, None),
+        (0, vec![Datum::Real(1.25)], true, Some(false)),
+        (0, vec![Datum::Int(7)], true, Some(true)),
+        (0, vec![Datum::Int(7)], false, Some(false)),
+        (
+            0,
+            vec![Datum::Decimal(Decimal::from_raw_parts(
+                false,
+                vec![b'1'],
+                1_000_000_000,
+                1_000_000_000,
+            ))],
+            true,
+            None,
+        ),
+        (0, vec![Datum::Int(7)], true, Some(true)),
+    ] {
+        let ctx = DeferredRootContext::new(profile, script, std::sync::Arc::clone(&binding));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            worker.select_deferred_profile(&ctx, enabled)
+        }));
+        if let Some(expected) = expected {
+            assert!(matches!(result, Ok(Ok(v)) if v == expected));
+        } else {
+            assert!(
+                !matches!(result, Ok(Ok(_))),
+                "callback failure cannot select a profile"
+            );
+        }
+        assert_eq!(
+            worker
+                .deferred_profiles
+                .as_ref()
+                .unwrap()
+                .selected
+                .is_some(),
+            expected == Some(true)
+        );
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+    }
+    let denied = PreparedBatch::compile_calculation_profile(
+        &owner,
+        0,
+        &[ty()],
+        true,
+        220,
+        BatchSourceLimits {
+            max_metadata_bytes: 1,
+            ..limits()
+        },
+        ExecutionLimits::default(),
+        65536,
+        true,
+    );
+    assert!(matches!(denied, Err(e) if e.refusal() == BatchRefusal::Resource));
+    // The canonical empty invocation still performs its original one probe;
+    // its bounded refusal happens before any value host and leaves the output.
+    let mut input = leaf::input(false);
+    input.set_sel(Some(vec![]));
+    let mut output = output_for(&ty());
+    output.append_null(0);
+    let sparse = Datum::Decimal(Decimal::from_raw_parts(
+        false,
+        vec![b'1'],
+        1_000_000_000,
+        1_000_000_000,
+    ));
+    let ctx = DeferredRootContext::new(0, vec![sparse], std::sync::Arc::clone(&binding));
+    ctx.inner.inner.inner.enabled.set(true);
+    let result = owner.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()]);
+    assert!(
+        matches!(result, Err(EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(ref e))) if e.class() == crate::ExpressionRuntimeFailureClass::ResourceLimit)
+    );
+    assert_eq!(ctx.inner.inner.inner.calls.get(), 1);
+    assert_eq!(output.num_rows(), 1);
+    let ctx = DeferredRootContext::new(0, vec![Datum::Int(7)], binding);
+    ctx.inner.inner.inner.enabled.set(true);
+    owner
+        .run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+        .unwrap();
+    assert_eq!(ctx.inner.inner.inner.calls.get(), 1);
+    assert_eq!(output.num_rows(), 1);
+    assert_eq!(owner.batch_route_snapshot().refusals, 0);
+}
+
+#[test]
+fn char_cast_context_original_sources_preserve_types_and_publication() {
+    if isolate_common_corpus("char_cast_context_original_sources_preserve_types_and_publication") {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in ["cast_char"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let child = if kind == "literal" {
+                                            leaf::literal(script[0].clone(), argument.clone())
+                                        } else {
+                                            leaf::expression(
+                                                kind,
+                                                0,
+                                                &script[0],
+                                                Some(argument),
+                                                Some(std::sync::Arc::new(std::sync::RwLock::new(
+                                                    script[0].clone(),
+                                                ))),
+                                            )
+                                        };
+                                        let owner = suite(call(name, ret.clone(), vec![child]));
+                                        let ctx = proof::Context::new(profile, script.clone());
+                                        ctx.inner.enabled.set(enabled);
+                                        let mut input = leaf::input(true);
+                                        input.set_sel(selection.clone());
+                                        let mut output = output_for(ret);
+                                        output.append_null(0);
+                                        let result = session_read_outcome(|| {
+                                            owner.run(&ctx, &mut input, &mut output)
+                                        });
+                                        let observed=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}|{result:?}|{:?}|{}|{:?}",output.column(0),ctx.snapshot(),input.sel());
+                                        for b in observed.bytes() {
+                                            hash =
+                                                (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("CHAR CAST CONTEXT ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (1419840, 0x10E3C88C3FFBA67D));
+    });
+}
+
+#[test]
+fn char_cast_context_actual_sources_preserve_types_and_publication() {
+    if isolate_common_corpus("char_cast_context_actual_sources_preserve_types_and_publication") {
+        return;
+    }
+    // The isolated process records panic payloads in the outcome; suppress
+    // duplicate panic-hook log traffic for intentionally malformed SQL data.
+    std::panic::set_hook(Box::new(|_| {}));
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let mut arguments = crate::tikv::eager_scalar_value_tests::types();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                arguments.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut returns = crate::tikv::eager_scalar_value_tests::types();
+        returns.push(
+            FieldType::new(FieldTypeCode::Enum)
+                .with_flags(tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT),
+        );
+        let mut scripts = proof::scripts();
+        scripts.extend([
+            vec![Datum::Int(7), Datum::MinNotNull],
+            vec![Datum::Int(7), Datum::VectorFloat32(VectorFloat32::init(2))],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("large", 9_007_199_254_740_993),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Enum(
+                tidb_datatype::MysqlEnum::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+            vec![Datum::Set(
+                tidb_datatype::MysqlSet::new("largest", u64::MAX),
+                tidb_datatype::Collation::DEFAULT,
+            )],
+        ]);
+        let mut count = 0usize;
+        for name in ["cast_char"] {
+            for (ai, argument) in arguments.iter().enumerate() {
+                for (ri, ret) in returns.iter().enumerate() {
+                    for kind in leaf::KINDS.into_iter().chain(std::iter::once("literal")) {
+                        for (si, script) in scripts.iter().enumerate() {
+                            for profile in 0..4 {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    for enabled in [false, true] {
+                                        let make = || {
+                                            let child = if kind == "literal" {
+                                                leaf::literal(script[0].clone(), argument.clone())
+                                            } else {
+                                                leaf::expression(
+                                                    kind,
+                                                    0,
+                                                    &script[0],
+                                                    Some(argument),
+                                                    Some(std::sync::Arc::new(
+                                                        std::sync::RwLock::new(script[0].clone()),
+                                                    )),
+                                                )
+                                            };
+                                            call(name, ret.clone(), vec![child])
+                                        };
+                                        let (actual, reference) = (suite(make()), suite(make()));
+                                        let (ctx, old) = (
+                                            proof::Context::new(profile, script.clone()),
+                                            proof::Context::new(profile, script.clone()),
+                                        );
+                                        ctx.inner.enabled.set(enabled);
+                                        old.inner.enabled.set(enabled);
+                                        let (mut input, mut oldinput) =
+                                            (leaf::input(true), leaf::input(true));
+                                        input.set_sel(selection.clone());
+                                        oldinput.set_sel(selection.clone());
+                                        let (mut output, mut expected) =
+                                            (output_for(ret), output_for(ret));
+                                        output.append_null(0);
+                                        expected.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &ctx,
+                                                &mut input,
+                                                &mut output,
+                                                &[ty()],
+                                            )
+                                        });
+                                        let want = session_read_outcome(|| {
+                                            reference.run(&old, &mut oldinput, &mut expected)
+                                        });
+                                        let label=format!("{name}/{ai}/{ri}/{kind}/{si}/{profile}/{selection:?}/{enabled}");
+                                        let route = actual.batch_route_snapshot();
+                                        if got != want
+                                            || output.column(0) != expected.column(0)
+                                            || ctx.snapshot() != old.snapshot()
+                                            || (route.refusals, route.fallback) != (0, 0)
+                                        {
+                                            eprintln!("CHAR CAST difference {label} got={got:?} want={want:?} route={route:?} actualctx={} oldctx={}",ctx.snapshot(),old.snapshot());
+                                        }
+
+                                        assert_eq!(got, want, "outcome {label}");
+                                        assert_eq!(
+                                            output.column(0),
+                                            expected.column(0),
+                                            "output {label}"
+                                        );
+                                        assert_eq!(
+                                            ctx.snapshot(),
+                                            old.snapshot(),
+                                            "effects {label}"
+                                        );
+                                        assert_eq!(
+                                            input.sel(),
+                                            selection.as_deref(),
+                                            "selection {label}"
+                                        );
+                                        let route = actual.batch_route_snapshot();
+                                        assert_eq!(
+                                            (route.refusals, route.fallback),
+                                            (0, 0),
+                                            "source {label}: {route:?}"
+                                        );
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("CHAR CAST CONTEXT ACTUAL {count}");
+        assert_eq!(count, 1419840);
+    });
+}
+
+#[test]
+fn char_cast_context_row_child_is_atomic_across_driver_windows() {
+    use crate::tikv::{dynamic_leaf_tests as leaf, typed_dynamic_tests as proof};
+    let field = string_ty();
+    let child = call(
+        "abs",
+        ty(),
+        vec![leaf::expression(
+            "param",
+            0,
+            &Datum::Int(2),
+            Some(&ty()),
+            None,
+        )],
+    );
+    let root = call("cast_char", field.clone(), vec![child]);
+    let actual = suite(root.clone());
+    let inspector = PreparedBatch::compile_calculation_profile(
+        &actual,
+        0,
+        &[ty()],
+        true,
+        219,
+        limits(),
+        ExecutionLimits::default(),
+        1 << 24,
+        true,
+    )
+    .unwrap();
+    assert!(
+        !inspector.program.requires_whole_selection(),
+        "this cast must cross driver windows"
+    );
+    assert!(inspector.defer_batch_publication);
+    assert!(!inspector.source.context_row_only);
+    let mut count = 0;
+    for bad in [false, true] {
+        for enabled in [false, true] {
+            for selection in [
+                None,
+                Some((0..2057).map(|i| 2050 - i % 2051).collect()),
+                Some(vec![]),
+            ] {
+                let mut script = vec![Datum::Int(2); 2058];
+                if bad {
+                    script[1025] = Datum::MinNotNull;
+                }
+                let (ctx, old) = (
+                    proof::Context::new(0, script.clone()),
+                    proof::Context::new(0, script),
+                );
+                ctx.inner.enabled.set(enabled);
+                old.inner.enabled.set(enabled);
+                let make_input = || {
+                    let mut input = Chunk::new_with_capacity(&[ty()], 2051);
+                    for i in 0..2051 {
+                        input.append_int64(0, i);
+                    }
+                    input
+                };
+                let (mut input, mut oldinput) = (make_input(), make_input());
+                input.set_sel(selection.clone());
+                oldinput.set_sel(selection.clone());
+                let (mut output, mut expected) = (output_for(&field), output_for(&field));
+                output.append_null(0);
+                expected.append_null(0);
+                let reference = suite(root.clone());
+                let want =
+                    session_read_outcome(|| reference.run(&old, &mut oldinput, &mut expected));
+                let got = session_read_outcome(|| {
+                    actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[ty()])
+                });
+                let label = format!(
+                    "{bad}/{enabled}/{}",
+                    selection.as_ref().map_or(2051, Vec::len)
+                );
+                assert_eq!(got, want, "result {label}");
+                assert_eq!(output.column(0), expected.column(0), "output {label}");
+                assert_eq!(ctx.snapshot(), old.snapshot(), "effects {label}");
+                assert_eq!(input.sel(), oldinput.sel());
+                let route = actual.batch_route_snapshot();
+                assert_eq!(
+                    (route.refusals, route.fallback),
+                    (0, 0),
+                    "source {label}: {route:?}"
+                );
+                if bad && input.num_rows() != 0 {
+                    assert!(want.starts_with("Err("), "late original error {want}");
+                    assert_eq!(old.inner.calls.get(), 1026);
+                    assert_eq!(
+                        expected.column(0).rows(),
+                        if enabled { 1 } else { 1026 },
+                        "typed atomic and generic prefix"
+                    );
+                }
+                count += 1;
+            }
+        }
+    }
+    assert_eq!(count, 12);
 }

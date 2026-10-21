@@ -1035,3 +1035,496 @@ fn numeric_batch_value_boundary_preserves_domains_diagnostics_and_lazy_subjects(
         );
     }
 }
+
+mod staged_values {
+    use super::super::*;
+    use std::cell::{Cell, RefCell};
+    struct Session {
+        level: crate::ErrorLevel,
+        veto: bool,
+        events: RefCell<Vec<String>>,
+        calls: Cell<usize>,
+    }
+    impl Columns for Session {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("numeric operand already supplied")
+        }
+        fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+            self.events.borrow_mut().push("zone".into());
+            tidb_datatype::SessionTimeZone::utc()
+        }
+        fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+            self.events.borrow_mut().push("flags".into());
+            tidb_datatype::DEFAULT_STATEMENT_FLAGS
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            self.events
+                .borrow_mut()
+                .push(format!("level:{:?}", self.level));
+            self.level
+        }
+        fn handle_truncate(&self, message: &str) -> Result<(), EvalError> {
+            self.events.borrow_mut().push(format!("truncate:{message}"));
+            if self.veto {
+                Err(EvalError::Unsupported("staged numeric warning veto"))
+            } else {
+                Ok(())
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.events
+                .borrow_mut()
+                .push(format!("warning:{code}:{message}"));
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, EvalError> {
+            self.calls.set(self.calls.get() + 1);
+            self.events.borrow_mut().push(format!("param:{order}"));
+            if self.veto {
+                Err(EvalError::Unsupported("subject unavailable"))
+            } else {
+                Ok(Datum::new_string("runtime diagnostic"))
+            }
+        }
+    }
+    fn subject(ctx: &Session, kind: usize) -> Option<String> {
+        ctx.events.borrow_mut().push(format!("subject:{kind}"));
+        match kind {
+            0 => None,
+            1 => Some(String::new()),
+            2 => Some("source expression".into()),
+            3 => ctx
+                .param_value(0)
+                .ok()
+                .and_then(|v| v.sql_bytes().ok())
+                .map(|v| String::from_utf8_lossy(&v).into_owned()),
+            _ => unreachable!(),
+        }
+    }
+    fn outcome(ctx: &Session, body: impl FnOnce() -> Result<Datum, EvalError>) -> String {
+        let value = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+            Ok(Ok(v)) => format!("VALUE:{}", crate::tikv::dynamic_leaf_tests::frame(&v)),
+            Ok(Err(e)) => format!("ERROR:{e:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        };
+        format!("{value}|{:?}|{}", ctx.events.borrow(), ctx.calls.get())
+    }
+    fn corpus(independent: bool) -> (usize, u64) {
+        let mut fields = crate::tikv::eager_scalar_value_tests::types();
+        for code in [
+            tidb_datatype::FieldTypeCode::Bit,
+            tidb_datatype::FieldTypeCode::Enum,
+            tidb_datatype::FieldTypeCode::Set,
+        ] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                fields.push(FieldType::new(code).with_flags(flags));
+            }
+        }
+        let mut values = crate::tikv::session_read_tests::values();
+        values.extend([
+            Datum::Real(1e100),
+            Datum::Real(-1e100),
+            Datum::Real(-0.0),
+            Datum::Real(1.25),
+            Datum::Real(f64::NAN),
+        ]);
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for (fi, field) in fields.iter().enumerate() {
+            for (vi, value) in values.iter().enumerate() {
+                for target in [EvalType::Int, EvalType::Real, EvalType::Decimal] {
+                    for vectorized in [false, true] {
+                        for level in [
+                            crate::ErrorLevel::Error,
+                            crate::ErrorLevel::Warn,
+                            crate::ErrorLevel::Ignore,
+                        ] {
+                            for veto in [false, true] {
+                                for kind in 0..4 {
+                                    let old = Session {
+                                        level,
+                                        veto,
+                                        events: RefCell::new(vec![]),
+                                        calls: Cell::new(0),
+                                    };
+                                    let want = outcome(&old, || {
+                                        cast_numeric_argument_value(
+                                            field,
+                                            value.clone(),
+                                            target,
+                                            &old,
+                                            vectorized,
+                                            || subject(&old, kind),
+                                        )
+                                    });
+                                    let label = format!(
+                                        "{fi}|{vi}|{target:?}|{vectorized}|{level:?}|{veto}|{kind}"
+                                    );
+                                    if independent {
+                                        let actual = Session {
+                                            level,
+                                            veto,
+                                            events: RefCell::new(vec![]),
+                                            calls: Cell::new(0),
+                                        };
+                                        let got = outcome(&actual, || {
+                                            match numeric_argument_value::prepare(
+                                                field,
+                                                value.clone(),
+                                                target,
+                                                &actual,
+                                                vectorized,
+                                            )? {
+                                                numeric_argument_value::Step::Ready(v) => Ok(v),
+                                                numeric_argument_value::Step::Subject(pending) => {
+                                                    let subject = subject(&actual, kind);
+                                                    pending.finish(
+                                                        field,
+                                                        subject.as_deref(),
+                                                        &actual,
+                                                    )
+                                                }
+                                            }
+                                        });
+                                        assert_eq!(got, want, "shared staged conversion {label}");
+                                    }
+                                    for b in format!("{label}|{want}").bytes() {
+                                        hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!((count, hash), (58752, 0xEA48CF6E3E46CF89));
+        (count, hash)
+    }
+    fn isolated(name: &str) -> bool {
+        const KEY: &str = "TIDB_NUMERIC_STAGED_PROOF";
+        if std::env::var(KEY).as_deref() == Ok(name) {
+            return false;
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("scalar_function::numeric_argument_tests::staged_values::{name}"),
+                "--nocapture",
+            ])
+            .env(KEY, name)
+            .env("TZ", "UTC")
+            .output()
+            .unwrap();
+        eprint!("{}", String::from_utf8_lossy(&result.stderr));
+        eprintln!("{}", String::from_utf8_lossy(&result.stdout));
+        assert!(result.status.success());
+        true
+    }
+    #[test]
+    fn numeric_argument_original_staged_values() {
+        if isolated("numeric_argument_original_staged_values") {
+            return;
+        }
+        let (count, hash) = corpus(false);
+        eprintln!("NUMERIC ARGUMENT ORIGINAL STAGED {count} {hash:016X}");
+    }
+    #[test]
+    fn numeric_argument_shared_staged_values_match_frozen() {
+        if isolated("numeric_argument_shared_staged_values_match_frozen") {
+            return;
+        }
+        let (count, hash) = corpus(true);
+        eprintln!("NUMERIC ARGUMENT SHARED STAGED {count} {hash:016X}");
+    }
+    fn saved_facts_corpus(independent: bool) -> (usize, u64) {
+        use tidb_datatype::{BinaryLiteral, Decimal, FieldTypeCode};
+        let mut fields = crate::tikv::eager_scalar_value_tests::types()
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                fields.push(Some(FieldType::new(code).with_flags(flags)));
+            }
+        }
+        fields.push(None);
+        let saved = [
+            Datum::BinaryLiteral(BinaryLiteral::from(vec![255, 1])),
+            Datum::Bit(BinaryLiteral::from(vec![255, 1])),
+            Datum::Null,
+            Datum::Int(7),
+            Datum::Decimal(Decimal::from_literal("12.50")),
+        ];
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for (fi, field) in fields.iter().enumerate() {
+            for (si, saved) in saved.iter().enumerate() {
+                for (vi, value) in crate::tikv::session_read_tests::values()
+                    .into_iter()
+                    .enumerate()
+                {
+                    for name in ["plus", "minus", "mul", "div", "intdiv", "mod"] {
+                        for code in [
+                            FieldTypeCode::LongLong,
+                            FieldTypeCode::Double,
+                            FieldTypeCode::NewDecimal,
+                        ] {
+                            for float in [false, true] {
+                                for decimal in [None, Some(Decimal::from_literal("123.450"))] {
+                                    for profile in [0, 2] {
+                                        let make = || {
+                                            let mut c = crate::constant::Constant::new(
+                                                saved.clone(),
+                                                FieldType::new(FieldTypeCode::LongLong),
+                                            );
+                                            c.ret_type = field.clone();
+                                            c.param_marker =
+                                                Some(crate::constant::ParamMarker { order: 0 });
+                                            let expression = Expression::Constant(c);
+                                            ScalarFunction::new(
+                                                tidb_ast::CiString::new(name),
+                                                FieldType::new(code),
+                                                vec![
+                                                    expression,
+                                                    Expression::Constant(
+                                                        crate::constant::Constant::new(
+                                                            Datum::Int(1),
+                                                            FieldType::new(FieldTypeCode::LongLong),
+                                                        ),
+                                                    ),
+                                                ],
+                                            )
+                                        };
+                                        let function = make();
+                                        let expression = &function.args[0];
+                                        let ctx = crate::tikv::typed_dynamic_tests::Context::new(
+                                            profile,
+                                            vec![value.clone()],
+                                        );
+                                        let result = match std::panic::catch_unwind(
+                                            std::panic::AssertUnwindSafe(|| {
+                                                let sources = [
+                                                    EvalType::Int,
+                                                    EvalType::Real,
+                                                    EvalType::Decimal,
+                                                ]
+                                                .map(|t| numeric_argument_source(expression, t));
+                                                let binary = is_numeric_binary_literal(expression);
+                                                let text = numeric_argument_text(
+                                                    &function,
+                                                    expression,
+                                                    float,
+                                                    &ctx,
+                                                    decimal.as_ref(),
+                                                );
+                                                format!("{sources:?}|{binary}|{text:?}")
+                                            }),
+                                        ) {
+                                            Ok(v) => v,
+                                            Err(p) => format!(
+                                                "PANIC:{:?}",
+                                                p.downcast_ref::<String>()
+                                                    .map(String::as_str)
+                                                    .or_else(|| p.downcast_ref::<&str>().copied())
+                                            ),
+                                        };
+
+                                        if independent {
+                                            use crate::scalar_function::dynamic_diagnostic::{
+                                                ArgumentDiagnostic, ArgumentSourceFacts,
+                                                DiagnosticStep,
+                                            };
+                                            let candidate = make();
+                                            let expression = &candidate.args[0];
+                                            let actual =
+                                                crate::tikv::typed_dynamic_tests::Context::new(
+                                                    profile,
+                                                    vec![value.clone()],
+                                                );
+                                            let got = match std::panic::catch_unwind(
+                                                std::panic::AssertUnwindSafe(|| {
+                                                    let facts =
+                                                        ArgumentSourceFacts::capture(expression);
+                                                    let recipe = ArgumentDiagnostic::survey(
+                                                        &candidate, expression, float, 128, 65536,
+                                                    )
+                                                    .unwrap();
+                                                    assert!(recipe.bytes() <= 65536);
+                                                    let (plan, bindings) = recipe.freeze().unwrap();
+                                                    let mut state = plan.state();
+                                                    let mut step = plan
+                                                        .step(&mut state, decimal.as_ref())
+                                                        .unwrap();
+                                                    let text = loop {
+                                                        match step {
+                                                            DiagnosticStep::Done(text) => {
+                                                                break text
+                                                            }
+                                                            DiagnosticStep::NeedConstant(index) => {
+                                                                let Expression::Constant(c) =
+                                                                    bindings[index]
+                                                                else {
+                                                                    panic!("diagnostic demands actual Constant")
+                                                                };
+                                                                let value = c.eval_in(&actual).ok();
+                                                                step = plan
+                                                                    .resume(
+                                                                        &mut state,
+                                                                        index,
+                                                                        value.as_ref(),
+                                                                        decimal.as_ref(),
+                                                                    )
+                                                                    .unwrap();
+                                                            }
+                                                        }
+                                                    };
+                                                    let sources = [
+                                                        EvalType::Int,
+                                                        EvalType::Real,
+                                                        EvalType::Decimal,
+                                                    ]
+                                                    .map(|t| facts.source(t));
+                                                    let binary = facts.binary();
+                                                    format!("{sources:?}|{binary}|{text:?}")
+                                                }),
+                                            ) {
+                                                Ok(v) => v,
+                                                Err(p) => format!(
+                                                    "PANIC:{:?}",
+                                                    p.downcast_ref::<String>()
+                                                        .map(String::as_str)
+                                                        .or_else(|| p
+                                                            .downcast_ref::<&str>()
+                                                            .copied())
+                                                ),
+                                            };
+                                            assert_eq!(got,result,"argument diagnostic {fi}/{si}/{vi}/{name}/{code:?}/{float}/{decimal:?}/{profile}");
+                                            assert_eq!(actual.snapshot(),ctx.snapshot(),"argument diagnostic effects {fi}/{si}/{vi}/{name}/{code:?}/{float}/{decimal:?}/{profile}");
+                                        }
+                                        for b in format!("{fi}|{si}|{vi}|{name}|{code:?}|{float}|{decimal:?}|{profile}|{result}|{}",ctx.snapshot()).bytes() {hash=(hash^u64::from(b)).wrapping_mul(0x100000001b3);}
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!((count, hash), (246240, 0xD589F55424DB5FF5));
+        (count, hash)
+    }
+    #[test]
+    fn numeric_argument_original_saved_binary_facts_and_text() {
+        if isolated("numeric_argument_original_saved_binary_facts_and_text") {
+            return;
+        }
+        let (count, hash) = saved_facts_corpus(false);
+        eprintln!("NUMERIC ARGUMENT ORIGINAL SAVED FACTS {count} {hash:016X}");
+    }
+    #[test]
+    fn numeric_argument_independent_argument_diagnostics_before_retirement() {
+        if isolated("numeric_argument_independent_argument_diagnostics_before_retirement") {
+            return;
+        }
+        let (count, hash) = saved_facts_corpus(true);
+        eprintln!("NUMERIC ARGUMENT INDEPENDENT ARGUMENT DIAGNOSTICS {count} {hash:016X}");
+    }
+    fn diagnostic_text_outcome(body: impl FnOnce() -> Option<String>) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+            Ok(text) => format!("{text:?}"),
+            Err(p) => format!(
+                "PANIC:{:?}",
+                p.downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| p.downcast_ref::<&str>().copied())
+            ),
+        }
+    }
+    fn structure_corpus(independent: bool) -> (usize, u64) {
+        use crate::scalar_function::dynamic_diagnostic::{ArgumentDiagnostic, DiagnosticStep};
+        use crate::{
+            column::{Column, CorrelatedColumn},
+            constant::Constant,
+        };
+        use tidb_datatype::{BinaryLiteral, Decimal, FieldTypeCode};
+        let mut fields = crate::tikv::eager_scalar_value_tests::types()
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
+        for code in [FieldTypeCode::Bit, FieldTypeCode::Enum, FieldTypeCode::Set] {
+            for flags in [0, tidb_datatype::FieldTypeFlags::ENUM_SET_AS_INT] {
+                fields.push(Some(FieldType::new(code).with_flags(flags)));
+            }
+        }
+        fields.push(None);
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for (fi, field) in fields.iter().enumerate() {
+            for form in 0..6 {
+                for name in ["plus", "minus", "mul", "div", "intdiv", "mod"] {
+                    for code in [
+                        FieldTypeCode::LongLong,
+                        FieldTypeCode::Double,
+                        FieldTypeCode::NewDecimal,
+                    ] {
+                        for float in [false, true] {
+                            for (di,decimal) in [None,Some(Decimal::from_literal("123.450")),Some(Decimal::from_literal("123456789012345678901234567890123456789012345678901234567890123456789")),Some(Decimal::from_raw_parts(false,vec![b'1'],100000,100000))].into_iter().enumerate() {
+                                let make=|| {
+                                    let lit=||Expression::Constant(Constant::new(Datum::Int(7),FieldType::new(FieldTypeCode::LongLong)));
+                                    let plus=||Expression::ScalarFunction(ScalarFunction::new(tidb_ast::CiString::new("plus"),FieldType::new(FieldTypeCode::Double),vec![lit(),lit()]));
+                                    let mut expression=match form {
+                                        0=>Expression::Constant(Constant::new(Datum::BinaryLiteral(BinaryLiteral::from(vec![255,1])),FieldType::new(FieldTypeCode::LongLong))),
+                                        1=>{let mut c=Column::new(1,FieldType::new(FieldTypeCode::LongLong));c.orig_name="t.source".into();Expression::Column(c)},
+                                        2=>{let mut c=Column::new(1,FieldType::new(FieldTypeCode::LongLong));c.is_hidden=true;c.virtual_expr=Some(Box::new(plus()));Expression::Column(c)},
+                                        3=>plus(),
+                                        4=>Expression::ScalarFunction(ScalarFunction::new(tidb_ast::CiString::new("cast_json"),FieldType::new(FieldTypeCode::Json),vec![lit()])),
+                                        5=>{let mut c=Column::new(1,FieldType::new(FieldTypeCode::LongLong));c.orig_name="t.outer".into();Expression::CorrelatedColumn(CorrelatedColumn {column:c,data:None})},
+                                        _=>unreachable!(),
+                                    };
+                                    match &mut expression {Expression::Constant(c)=>c.ret_type=field.clone(),Expression::Column(c)=>c.ret_type=field.clone(),Expression::CorrelatedColumn(c)=>c.column.ret_type=field.clone(),Expression::ScalarFunction(f)=>f.ret_type=field.clone()};
+                                    ScalarFunction::new(tidb_ast::CiString::new(name),FieldType::new(code),vec![expression,lit()])
+                                };
+                                let function=make();
+                                let ctx=crate::tikv::typed_dynamic_tests::Context::new(0,vec![Datum::Int(99)]);
+                                let want=diagnostic_text_outcome(||numeric_argument_text(&function,&function.args[0],float,&ctx,decimal.as_ref()));
+                                if independent {
+                                    let candidate=make();let actual=crate::tikv::typed_dynamic_tests::Context::new(0,vec![Datum::Int(99)]);
+                                    let recipe=ArgumentDiagnostic::survey(&candidate,&candidate.args[0],float,128,65536).unwrap();
+                                    let (plan,bindings)=recipe.freeze().unwrap();assert!(bindings.is_empty());
+                                    let mut state=plan.state();
+                                    let got=diagnostic_text_outcome(|| {let DiagnosticStep::Done(text)=plan.step(&mut state,decimal.as_ref()).unwrap() else {panic!("static source facts cannot demand runtime SQL")};text});
+                                    assert_eq!(got,want,"structure {fi}/{form}/{name}/{code:?}/{float}/{di}");
+                                    assert_eq!(actual.snapshot(),ctx.snapshot());
+                                }
+                                for b in format!("{fi}|{form}|{name}|{code:?}|{float}|{di}|{want:?}|{}",ctx.snapshot()).bytes() {hash=(hash^u64::from(b)).wrapping_mul(0x100000001b3);}
+                                count+=1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!((count, hash), (15552, 0x1765DBC05E4A2D95));
+        (count, hash)
+    }
+    #[test]
+    fn numeric_argument_original_structure_and_decimal_refinement() {
+        if isolated("numeric_argument_original_structure_and_decimal_refinement") {
+            return;
+        }
+        let (count, hash) = structure_corpus(false);
+        eprintln!("NUMERIC ARGUMENT ORIGINAL STRUCTURE {count} {hash:016X}");
+    }
+    #[test]
+    fn numeric_argument_independent_structure_before_retirement() {
+        if isolated("numeric_argument_independent_structure_before_retirement") {
+            return;
+        }
+        let (count, hash) = structure_corpus(true);
+        eprintln!("NUMERIC ARGUMENT INDEPENDENT STRUCTURE {count} {hash:016X}");
+    }
+}

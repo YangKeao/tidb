@@ -3513,11 +3513,7 @@ pub(crate) fn normalize_numeric_row_value(
 // Go's hybrid cast signatures read EvalInt. Binary constants are special:
 // EvalReal/EvalDecimal reads their unsigned literal value directly.
 fn numeric_argument_source(expression: &Expression, target: EvalType) -> Option<EvalType> {
-    Some(native_numeric_batch_source(
-        expression.static_type()?,
-        is_numeric_binary_literal(expression),
-        target,
-    ))
+    dynamic_diagnostic::ArgumentSourceFacts::capture(expression).source(target)
 }
 
 /// Source-typed batch domain, independent of an expression or ready-argument
@@ -3574,6 +3570,20 @@ pub(crate) fn native_numeric_batch_cast(
             .or_else(|| subject.map(str::to_owned))
     })
 }
+/// Continue the original whole-source numeric cast before a diagnostic read.
+pub(crate) fn prepare_native_numeric_batch_cast(
+    field: &FieldType,
+    source: EvalType,
+    target: EvalType,
+    value: Datum,
+    ctx: &dyn Columns,
+) -> Result<NumericOperandStep, EvalError> {
+    if source == target {
+        Ok(NumericOperandStep::Ready(value))
+    } else {
+        numeric_argument_value::prepare(field, value, target, ctx, true)
+    }
+}
 fn finish_numeric_batch_cast(
     field: &FieldType,
     source: EvalType,
@@ -3590,7 +3600,7 @@ fn finish_numeric_batch_cast(
 }
 
 fn is_numeric_binary_literal(expression: &Expression) -> bool {
-    matches!(expression, Expression::Constant(c) if matches!(c.value, Datum::BinaryLiteral(_)))
+    dynamic_diagnostic::saved_binary_literal(expression)
 }
 
 fn numeric_argument_domain(source: EvalType, target: EvalType) -> bool {
@@ -3633,6 +3643,28 @@ impl ScalarFunction {
     }
 }
 
+/// Prepare DIV's already fetched promotion operand. Integer/Decimal values
+/// preserve their actual shape; only real values cross the original cast owner.
+pub(crate) fn prepare_native_integer_division_operand(
+    field: &FieldType,
+    value: Datum,
+    ctx: &dyn Columns,
+) -> Result<NumericOperandStep, EvalError> {
+    match value {
+        Datum::Decimal(value) => Ok(NumericOperandStep::Ready(Datum::Decimal(value))),
+        Datum::Int(value) => Ok(NumericOperandStep::Ready(Datum::Decimal(
+            tidb_datatype::Decimal::from_int(value),
+        ))),
+        Datum::UInt(value) => Ok(NumericOperandStep::Ready(Datum::Decimal(
+            tidb_datatype::Decimal::from_uint(value),
+        ))),
+        value @ (Datum::Real(_) | Datum::Float32(_)) => {
+            numeric_argument_value::prepare(field, value, EvalType::Decimal, ctx, false)
+        }
+        _ => Err(EvalError::Unsupported("DIV numeric argument domain")),
+    }
+}
+
 /// Same typed owner boundary after the driver has fetched the actual value.
 pub(crate) fn native_numeric_operand(
     field: &FieldType,
@@ -3644,32 +3676,14 @@ pub(crate) fn native_numeric_operand(
     subject: Option<&str>,
     subject_format_failure: Option<[u8; 8]>,
 ) -> Result<Datum, EvalError> {
-    let (source, target, cast) = match mode {
-        NativeArithmeticInputMode::Raw => return Ok(value),
-        NativeArithmeticInputMode::TypedInteger => (EvalType::Int, EvalType::Int, false),
-        NativeArithmeticInputMode::Numeric(target) => {
-            let source = native_numeric_batch_source(field, binary_literal, target);
-            (source, target, !binary_literal)
-        }
-    };
-    let value = if literal {
-        crate::constant::typed_constant_value(field, ctx, source, value)?
-    } else {
-        normalize_numeric_row_value(value, Some(field), source, ctx)?
-    };
-    let value = match (source, value) {
-        (EvalType::Int, Datum::UInt(value)) => Datum::Int(value as i64),
-        (EvalType::Real, Datum::Float32(value)) => Datum::Real(value),
-        (_, value) => value,
-    };
-    if cast {
-        cast_numeric_argument_value(field, value, target, ctx, false, || {
-            subject_format_failure
+    match prepare_native_numeric_operand(field, literal, false, binary_literal, value, mode, ctx)? {
+        NumericOperandStep::Ready(value) => Ok(value),
+        NumericOperandStep::Subject(pending) => {
+            let subject = subject_format_failure
                 .map(render_numeric_format_failure)
-                .or_else(|| subject.map(str::to_owned))
-        })
-    } else {
-        Ok(value)
+                .or_else(|| subject.map(str::to_owned));
+            pending.finish(field, subject.as_deref(), ctx)
+        }
     }
 }
 
@@ -3707,102 +3721,13 @@ pub(crate) fn cast_numeric_argument_value(
     vectorized: bool,
     subject: impl FnOnce() -> Option<String>,
 ) -> Result<Datum, EvalError> {
-    use tidb_query_expr::{
-        NativeNumericArgumentHead as Head, NativeNumericArgumentNormalization as Normalization,
-        NativeNumericArgumentRoute as Route,
-    };
-    let (normalization, route, target_code) = match tidb_query_expr::native_numeric_argument_head(
-        value.as_shared_numeric_input(),
-        field.eval_type(),
-        target,
-        field.is_unsigned(),
-        field.is_hybrid(),
-    )
-    .map_err(EvalError::Unsupported)?
-    {
-        Head::Preserve => return Ok(value),
-        Head::Cast {
-            normalization,
-            route,
-            target_code,
-        } => (normalization, route, target_code),
-    };
-    let value = match normalization {
-        Normalization::Keep => value,
-        Normalization::UInt(value) => Datum::UInt(value),
-        Normalization::Real(value) => Datum::Real(value),
-    };
-    let value = match route {
-        Route::String => {
-            let bytes = match &value {
-                Datum::String(value) => value.bytes(),
-                Datum::Bytes(value) => value.as_slice(),
-                _ => unreachable!("SDK string route requires actual string bytes"),
-            };
-            return cast_string_numeric_argument(field, bytes, target, ctx, vectorized);
+    match numeric_argument_value::prepare(field, value, target, ctx, vectorized)? {
+        numeric_argument_value::Step::Ready(value) => Ok(value),
+        numeric_argument_value::Step::Subject(pending) => {
+            let subject = subject();
+            pending.finish(field, subject.as_deref(), ctx)
         }
-        Route::JsonReal => {
-            let Datum::Json(json) = &value else {
-                unreachable!("SDK JSON real route requires an actual JSON datum");
-            };
-            return tidb_query_expr::native_numeric_argument_json_to_f64(
-                json.type_code(),
-                json.value(),
-                |message| ctx.handle_truncate(message),
-            )
-            .map(Datum::Real);
-        }
-        Route::JsonInt => {
-            let Datum::Json(json) = &value else {
-                unreachable!("SDK JSON integer route requires an actual JSON datum");
-            };
-            return tidb_query_expr::native_numeric_argument_json_to_i64(
-                json.type_code(),
-                json.value(),
-                |message| ctx.handle_truncate(message),
-            )
-            .map(Datum::Int);
-        }
-        Route::ContextDecimal => {
-            let warnings = crate::constant::ConversionWarnings(ctx);
-            let zone = ctx.time_zone();
-            let context = tidb_datatype::ConversionContext::new(
-                ctx.type_flags(),
-                tidb_datatype::ConversionLocation::from_time_zone(&zone),
-                &warnings,
-            );
-            let decimal = tidb_query_expr::native_numeric_argument_context_decimal_result(
-                value.to_decimal_with_context(&context),
-            )
-            .map_err(numeric_argument_result_error)?;
-            Datum::Decimal(decimal)
-        }
-        Route::RealDecimal => {
-            let Datum::Real(real) = &value else {
-                unreachable!("SDK real decimal route requires an actual normalized real datum");
-            };
-            use tidb_query_expr::NativeNumericArgumentLevel;
-            let state =
-                tidb_query_expr::native_numeric_argument_real_decimal_prepare(*real, || match ctx
-                    .truncate_level()
-                {
-                    crate::ErrorLevel::Error => NativeNumericArgumentLevel::Error,
-                    crate::ErrorLevel::Warn => NativeNumericArgumentLevel::Warn,
-                    crate::ErrorLevel::Ignore => NativeNumericArgumentLevel::Ignore,
-                })
-                .map_err(|kind| EvalError::Conversion(numeric_argument_conversion_error(kind)))?;
-            let subject = if state.requires_expression_subject() {
-                subject()
-            } else {
-                None
-            };
-            let decimal =
-                state.finish(subject.as_deref(), |message| ctx.handle_truncate(message))?;
-            Datum::Decimal(tidb_datatype::Decimal::from_shared_parse(decimal))
-        }
-        Route::Fit => value,
-    };
-    finish_numeric_argument(value, field, target_code, ctx)
+    }
 }
 
 fn numeric_argument_target_field(field: &FieldType, target_code: u8) -> (FieldType, bool) {
@@ -6250,3 +6175,68 @@ pub(crate) mod session_read;
 pub(crate) mod user_variable;
 
 pub(crate) mod early_string;
+
+#[cfg(test)]
+pub(crate) fn dynamic_math_diagnostic_for_test(
+    function: &ScalarFunction,
+    ctx: &dyn Columns,
+) -> Option<String> {
+    math_overflow_expression(function, ctx)
+}
+
+pub(crate) mod dynamic_diagnostic;
+
+#[path = "scalar_function/numeric_argument_value.rs"]
+mod numeric_argument_value;
+
+#[cfg(test)]
+pub(crate) fn original_typed_batch_values_for_test(
+    expression: &Expression,
+    ctx: &dyn Columns,
+    input: &Chunk,
+    target: EvalType,
+) -> Result<Vec<Datum>, EvalError> {
+    eval_batch_values(expression, ctx, input, target)
+}
+/// Produces the original value normalization, pausing only at a genuinely
+/// required numeric subject before its warning. Prepared sources already ran
+/// their requested typed owner; literal/computed sources retain their owner.
+pub(crate) fn prepare_native_numeric_operand(
+    field: &FieldType,
+    literal: bool,
+    prepared: bool,
+    binary_literal: bool,
+    value: Datum,
+    mode: NativeArithmeticInputMode,
+    ctx: &dyn Columns,
+) -> Result<NumericOperandStep, EvalError> {
+    let (source, target, cast) = match mode {
+        NativeArithmeticInputMode::Raw => return Ok(NumericOperandStep::Ready(value)),
+        NativeArithmeticInputMode::TypedInteger => (EvalType::Int, EvalType::Int, false),
+        NativeArithmeticInputMode::Numeric(target) => (
+            native_numeric_batch_source(field, binary_literal, target),
+            target,
+            !binary_literal,
+        ),
+    };
+    let value = if prepared {
+        value
+    } else if literal {
+        crate::constant::typed_constant_value(field, ctx, source, value)?
+    } else {
+        normalize_numeric_row_value(value, Some(field), source, ctx)?
+    };
+    let value = match (source, value) {
+        (EvalType::Int, Datum::UInt(v)) => Datum::Int(v as i64),
+        (EvalType::Real, Datum::Float32(v)) => Datum::Real(v),
+        (_, value) => value,
+    };
+    if cast {
+        numeric_argument_value::prepare(field, value, target, ctx, false)
+    } else {
+        Ok(NumericOperandStep::Ready(value))
+    }
+}
+pub(crate) use numeric_argument_value::{
+    Pending as NumericOperandPending, Step as NumericOperandStep,
+};

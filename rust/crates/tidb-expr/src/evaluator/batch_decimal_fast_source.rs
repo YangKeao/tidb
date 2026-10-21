@@ -429,7 +429,7 @@ pub(super) fn compile(
         };
         reserve(&mut nodes, 1)?;
         nodes.push(NodeRecord {
-            sql: node.field,
+            sql: Some(node.field),
             kind,
             view: NativeView::DecimalFast,
         });
@@ -500,7 +500,7 @@ pub(super) fn compile(
         needs_native_values: true,
         constant_root_shortcut: false,
         context_row_only: false,
-        root_type_probe: None,
+        context_policy: None,
         limits,
     });
     Ok(PreparedFast {

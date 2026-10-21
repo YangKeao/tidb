@@ -59,11 +59,15 @@ use tidb_query_expr::types::BATCH_MAX_SIZE;
 mod decimal_fast_source;
 #[path = "batch_hosts.rs"]
 mod hosts;
+#[path = "batch_numeric_source.rs"]
+mod numeric_source;
+use numeric_source::PendingNumeric;
 #[path = "batch_values.rs"]
 mod native_values;
 use hosts::{
-    NativeBatchHosts, NativeHostMetadata, NativeRawValueOperation, WindowArithmeticMetadata,
-    WindowArithmeticSource,
+    CompiledDiagnosticParent, CompiledNumericParent, NativeBatchHosts, NativeHostMetadata,
+    NativeRawValueOperation, NativeTypedContext, NativeTypedDescriptor, NativeValuePreparation,
+    NumericPlan, NumericPlanBody, WindowArithmeticMetadata, WindowArithmeticSource,
 };
 use native_values::{native_payload_bytes, NativeValueOrigin, NativeValueRole, NativeValueStore};
 use std::cell::RefCell;
@@ -219,25 +223,82 @@ enum NativeView {
     Typed,
     JsonBytes,
     ValueToken,
+    DiagnosticValue,
+    RowTyped(NativeEvalType),
+    DiagnosticTyped(NativeEvalType),
+    DiagnosticConstantRoot(crate::scalar_function::dynamic_diagnostic::LiteralPolicy),
     RootValue,
     BulkValue(NativeEvalType),
+    BulkPrepared(NativeEvalType),
     BulkRoot(NativeEvalType),
     DecimalFast,
 }
 impl NativeView {
     fn value_role(self) -> Option<NativeValueRole> {
         match self {
-            Self::ValueToken | Self::BulkValue(_) => Some(NativeValueRole::CharInput),
+            Self::ValueToken
+            | Self::DiagnosticValue
+            | Self::DiagnosticConstantRoot(_)
+            | Self::RowTyped(_)
+            | Self::DiagnosticTyped(_)
+            | Self::BulkValue(_)
+            | Self::BulkPrepared(_) => Some(NativeValueRole::CharInput),
             Self::RootValue | Self::BulkRoot(_) => Some(NativeValueRole::Output),
             Self::DecimalFast => Some(NativeValueRole::DecimalFast),
             Self::Typed | Self::JsonBytes => None,
         }
     }
+    fn diagnostic(self) -> bool {
+        matches!(
+            self,
+            Self::DiagnosticValue | Self::DiagnosticConstantRoot(_) | Self::DiagnosticTyped(_)
+        )
+    }
     fn bulk_target(self) -> Option<NativeEvalType> {
         match self {
-            Self::BulkValue(target) | Self::BulkRoot(target) => Some(target),
+            Self::BulkValue(target) | Self::BulkPrepared(target) | Self::BulkRoot(target) => {
+                Some(target)
+            }
             _ => None,
         }
+    }
+}
+
+fn row_typed_context_target(node: &Expression, view: NativeView) -> Option<NativeEvalType> {
+    let target = match view {
+        NativeView::RowTyped(target) | NativeView::DiagnosticTyped(target) => target,
+        NativeView::BulkValue(target)
+        | NativeView::BulkPrepared(target)
+        | NativeView::BulkRoot(target) => {
+            if matches!(view, NativeView::BulkPrepared(_))
+                && matches!(node, Expression::Column(_) | Expression::Constant(_))
+            {
+                return Some(target);
+            }
+            target
+        }
+        _ => return None,
+    };
+    (matches!(node, Expression::CorrelatedColumn(_))
+        || matches!(node, Expression::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some())).then_some(target)
+}
+fn typed_bulk_forward(node: &Expression, view: NativeView) -> bool {
+    view.bulk_target().is_some()
+        && matches!(node, Expression::Constant(c) if c.deferred_expr.is_some())
+}
+fn typed_cache_source(node: &Expression, view: NativeView) -> bool {
+    view.bulk_target().is_some()
+        && row_typed_context_target(node, view).is_some()
+        && !typed_bulk_forward(node, view)
+        && !matches!(node, Expression::Column(_))
+}
+fn context_child_view(view: NativeView) -> NativeView {
+    if let Some(target) = view.bulk_target() {
+        NativeView::BulkPrepared(target)
+    } else if view.diagnostic() {
+        NativeView::DiagnosticValue
+    } else {
+        NativeView::ValueToken
     }
 }
 
@@ -391,6 +452,10 @@ fn promoted_native_root_view(
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
+        || (function.func_name.lowercase() == "cast_char"
+            && !typed_source_tree_complete(root, NativeView::Typed, limits.tree.max_depth, &mut {
+                limits.tree.max_nodes
+            }))
         || native_bitwise_operation(function.func_name.lowercase()).is_some()
         || native_selection_operation(function).is_some()
         || native_comparison_operation(function.func_name.lowercase()).is_some()
@@ -508,7 +573,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 return NativeView::RootValue;
             };
             let Some(sql) = root.static_type() else {
-                return NativeView::Typed;
+                return NativeView::RootValue;
             };
             let ordinary = match (sql.eval_type(), value) {
                 (_, Datum::Null) => true,
@@ -563,11 +628,24 @@ fn context_template_declared(node: &Expression, depth: usize, remaining: &mut us
         _ => true,
     }
 }
+#[derive(Clone, Copy, Debug)]
+enum ContextTypeProbe {
+    Parameter(i64),
+    MissingConstantType,
+}
+impl ContextTypeProbe {
+    fn run(self, ctx: &dyn Columns) -> std::result::Result<(), EvalError> {
+        match self {
+            Self::Parameter(order) => crate::context_value::probe_parameter_type(order, ctx),
+            Self::MissingConstantType => Err(EvalError::Unsupported("constant has no result type")),
+        }
+    }
+}
 fn context_root_policy(
     root: &Expression,
     unordered: bool,
     limits: BatchSourceLimits,
-) -> Result<(bool, bool, Option<i64>)> {
+) -> Result<(bool, bool, Option<ContextTypeProbe>)> {
     let shortcut = unordered && matches!(root,Expression::Constant(c) if c.deferred_expr.is_none());
     if !contains_context_value(root, limits.tree.max_depth, &mut { limits.tree.max_nodes }) {
         return Ok((shortcut, false, None));
@@ -576,12 +654,17 @@ fn context_root_policy(
     profile_shape(root, limits)?;
     let mut probe = None;
     if unordered {
-        if !context_template_declared(root, limits.tree.max_depth, &mut { limits.tree.max_nodes }) {
+        if !matches!(
+            root,
+            Expression::Constant(_) | Expression::CorrelatedColumn(_)
+        ) && !context_template_declared(root, limits.tree.max_depth, &mut {
+            limits.tree.max_nodes
+        }) {
             return Err(BatchFailure::admission(
                 "contextual optional declarations need their explicit profile",
             ));
         }
-        if matches!(root, Expression::ScalarFunction(_))
+        if matches!(root, Expression::ScalarFunction(function) if native_unary_sign_operation(function.func_name.lowercase()).is_none() && !matches!(function.func_name.lowercase(), "abs" | "cast_decimal" | "cast_json" | "cast_char" | "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"))
             && crate::scalar_function::static_batch_target(root).is_some()
         {
             return Err(BatchFailure::admission(
@@ -621,7 +704,14 @@ fn context_root_policy(
                         "deferred typed root needs its original admission profile",
                     ));
                 }
-                probe = c.param_marker.map(|marker| marker.order);
+                probe = c
+                    .param_marker
+                    .map(|marker| ContextTypeProbe::Parameter(marker.order))
+                    .or_else(|| {
+                        c.ret_type
+                            .is_none()
+                            .then_some(ContextTypeProbe::MissingConstantType)
+                    });
             }
         }
     }
@@ -850,14 +940,74 @@ enum CallTarget {
 #[derive(Debug)]
 enum SourceKind {
     DecimalFastInput(decimal_fast_source::FastInput),
-    NativeConstant { value: Datum },
-    Constant { value: ScalarValue },
-    Column { index: usize },
-    Call { target: CallTarget, arity: usize },
-    ContextValue { arity: usize },
+    NativeConstant {
+        value: Datum,
+    },
+    Constant {
+        value: ScalarValue,
+    },
+    Column {
+        index: usize,
+    },
+    Call {
+        target: CallTarget,
+        arity: usize,
+    },
+    ContextValue {
+        arity: usize,
+    },
+    TypedContext {
+        arity: usize,
+        target: NativeEvalType,
+    },
+}
+fn column_source_failure(
+    node: &Expression,
+    view: NativeView,
+    columns: usize,
+) -> Option<&'static str> {
+    let Expression::Column(column) = node else {
+        return None;
+    };
+    if view.value_role().is_none() || view.bulk_target().is_some() {
+        return None;
+    }
+    let columns = if view.diagnostic() { 0 } else { columns };
+    match crate::column::column_read_index(column.ret_type.is_some(), column.index, columns) {
+        Err(EvalError::Unsupported(message)) => Some(message),
+        _ => None,
+    }
+}
+fn budget_context_source(budget: &mut Budget, sql: Option<&FieldType>) -> LocalResult<()> {
+    budget.array::<crate::context_value::ContextValue>(1)?;
+    budget.array::<OrdinaryCallSite>(2)?;
+    budget.array::<NativeHostMetadata>(1)?;
+    budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
+    budget.array::<Option<Datum>>(1)?;
+    if let Some(sql) = sql {
+        budget.field(sql, 1)?;
+    }
+    budget.field(&native_bytes_type(), 2)
 }
 impl SourceKind {
-    fn capture(node: &Expression, sql: &FieldType, view: NativeView) -> Result<Self> {
+    fn capture(
+        node: &Expression,
+        sql: Option<&FieldType>,
+        view: NativeView,
+        columns: usize,
+    ) -> Result<Self> {
+        if let Some(target) = row_typed_context_target(node, view) {
+            return Ok(Self::TypedContext {
+                target,
+                arity: usize::from(
+                    typed_bulk_forward(node, view)
+                        || matches!(node, Expression::Constant(c) if c.param_marker.is_none() && c.deferred_expr.is_some()),
+                ),
+            });
+        }
+        if column_source_failure(node, view, columns).is_some() {
+            return Ok(Self::ContextValue { arity: 0 });
+        }
         if matches!(node, Expression::CorrelatedColumn(_))
             || matches!(node, Expression::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some())
         {
@@ -872,13 +1022,20 @@ impl SourceKind {
                 ),
             });
         }
+        if let Expression::Constant(value) = node {
+            if view.value_role().is_some() {
+                return Ok(Self::NativeConstant {
+                    value: value
+                        .literal_value()
+                        .ok_or_else(|| BatchFailure::admission("nonliteral native source"))?
+                        .clone(),
+                });
+            }
+        }
+        let sql = sql.ok_or_else(|| {
+            BatchFailure::admission("SQL consumer requires its original declaration")
+        })?;
         Ok(match node {
-            Expression::Constant(value) if view.value_role().is_some() => Self::NativeConstant {
-                value: value
-                    .literal_value()
-                    .ok_or_else(|| BatchFailure::admission("nonliteral native source"))?
-                    .clone(),
-            },
             Expression::Constant(value) => Self::Constant {
                 value: source_literal(
                     value
@@ -904,9 +1061,17 @@ impl SourceKind {
 
 #[derive(Debug)]
 struct NodeRecord {
-    sql: FieldType,
+    sql: Option<FieldType>,
     kind: SourceKind,
     view: NativeView,
+}
+
+impl NodeRecord {
+    fn declared_sql(&self) -> &FieldType {
+        self.sql
+            .as_ref()
+            .expect("admitted SQL consumer requires its original declaration")
+    }
 }
 
 struct BatchSource {
@@ -932,8 +1097,32 @@ struct BatchSource {
     needs_native_values: bool,
     constant_root_shortcut: bool,
     context_row_only: bool,
-    root_type_probe: Option<i64>,
+    context_policy: Option<Box<ContextSourcePolicy>>,
     limits: BatchSourceLimits,
+}
+struct ContextSourcePolicy {
+    root_type_probe: Option<ContextTypeProbe>,
+    diagnostic_slots: Box<[usize]>,
+    diagnostic_parents: Box<[CompiledDiagnosticParent]>,
+    numeric_parents: Box<[CompiledNumericParent]>,
+    typed_cache_slots: usize,
+}
+struct PendingDiagnostic<'a> {
+    ordinal: usize,
+    recipe: Option<crate::scalar_function::dynamic_diagnostic::DiagnosticRecipe<'a>>,
+    main_arity: usize,
+    bindings: usize,
+}
+struct CheckedSource<'a> {
+    nodes: Vec<CheckedNode<'a>>,
+    diagnostics: Vec<PendingDiagnostic<'a>>,
+    numerics: Vec<PendingNumeric<'a>>,
+}
+impl<'a> std::ops::Deref for CheckedSource<'a> {
+    type Target = [CheckedNode<'a>];
+    fn deref(&self) -> &Self::Target {
+        &self.nodes
+    }
 }
 impl std::fmt::Debug for BatchSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -946,7 +1135,7 @@ impl std::fmt::Debug for BatchSource {
 
 struct CheckedNode<'a> {
     node: &'a Expression,
-    sql: &'a FieldType,
+    sql: Option<&'a FieldType>,
     view: NativeView,
     subtree_end: usize,
     folds_to_constant: bool,
@@ -954,6 +1143,13 @@ struct CheckedNode<'a> {
     numeric_render_bound: Option<usize>,
     numeric_format_failure: Option<[u8; 8]>,
 }
+impl<'a> CheckedNode<'a> {
+    fn declared_sql(&self) -> &'a FieldType {
+        self.sql
+            .expect("admitted SQL consumer requires its original declaration")
+    }
+}
+
 struct Budget {
     used: usize,
     max: usize,
@@ -1078,6 +1274,17 @@ fn source_literal(value: &Datum, sql: &FieldType, view: NativeView) -> Result<Sc
     strict_literal(value, sql)
 }
 fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
+    let selected = argument_view_inner(function, view, index);
+    if view.diagnostic() {
+        match selected {
+            NativeView::RowTyped(target) => NativeView::DiagnosticTyped(target),
+            _ => NativeView::DiagnosticValue,
+        }
+    } else {
+        selected
+    }
+}
+fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize) -> NativeView {
     if let Some(operation) = window_unary_operation(function, view) {
         return NativeView::BulkValue(
             if operation == SqlBatchHostOperation::CastJsonWindowNative {
@@ -1099,9 +1306,35 @@ fn argument_view(function: &ScalarFunction, view: NativeView, index: usize) -> N
         let argument = &function.args[index];
         return NativeView::BulkValue(crate::scalar_function::native_numeric_batch_source(
             argument.static_type().expect("typed arithmetic child"),
-            matches!(argument, Expression::Constant(value) if matches!(value.literal_value(), Some(Datum::BinaryLiteral(_)))),
+            crate::scalar_function::dynamic_diagnostic::saved_binary_literal(argument),
             domain,
         ));
+    }
+    if native_arithmetic_operation(function.func_name.lowercase()).is_some()
+        && function.args.len() == 2
+        && view.value_role().is_some()
+    {
+        use crate::scalar_function::NativeArithmeticInputMode as Mode;
+        return match function.native_arithmetic_mode() {
+            Mode::TypedInteger => NativeView::RowTyped(NativeEvalType::Int),
+            Mode::Numeric(target) => {
+                NativeView::RowTyped(crate::scalar_function::native_numeric_batch_source(
+                    function.args[index]
+                        .static_type()
+                        .expect("declared numeric source"),
+                    crate::scalar_function::dynamic_diagnostic::saved_binary_literal(
+                        &function.args[index],
+                    ),
+                    target,
+                ))
+            }
+            Mode::Raw => NativeView::ValueToken,
+        };
+    }
+    if function.func_name.lowercase() == "cast_json" && function.args.len() == 1 {
+        if let Some(field) = function.args[0].static_type() {
+            return NativeView::RowTyped(field.eval_type());
+        }
     }
     if matches!(
         function.func_name.lowercase(),
@@ -1219,6 +1452,16 @@ fn native_vector_from_tikv(value: TikvVectorFloat32) -> LocalResult<VectorFloat3
     Ok(value)
 }
 fn parts(node: &Expression, allow_pb: bool) -> Result<(&FieldType, &CollationInfo)> {
+    let (field, collation) = parts_optional(node, allow_pb)?;
+    Ok((
+        field.ok_or_else(|| BatchFailure::admission("missing batch declaration"))?,
+        collation,
+    ))
+}
+fn parts_optional(
+    node: &Expression,
+    allow_pb: bool,
+) -> Result<(Option<&FieldType>, &CollationInfo)> {
     let (field, collation, pb) = match node {
         Expression::Constant(value) => (
             value.ret_type.as_ref(),
@@ -1246,10 +1489,7 @@ fn parts(node: &Expression, allow_pb: bool) -> Result<(&FieldType, &CollationInf
             return Err(BatchFailure::admission("PB state inside batch source"));
         }
     }
-    Ok((
-        field.ok_or_else(|| BatchFailure::admission("missing batch declaration"))?,
-        collation,
-    ))
+    Ok((field, collation))
 }
 fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     let expected_arity = resolve_call_in_view(function, view)?.1;
@@ -2683,14 +2923,15 @@ fn preflight<'a>(
     row_schema: &[FieldType],
     limits: BatchSourceLimits,
 ) -> Result<Vec<CheckedNode<'a>>> {
-    preflight_view(root, row_schema, limits, None)
+    preflight_view(root, row_schema, limits, None, false).map(|checked| checked.nodes)
 }
 fn preflight_view<'a>(
     root: &'a Expression,
     row_schema: &[FieldType],
     limits: BatchSourceLimits,
     view: Option<NativeView>,
-) -> Result<Vec<CheckedNode<'a>>> {
+    root_probe: bool,
+) -> Result<CheckedSource<'a>> {
     if limits.tree.max_nodes == 0 || limits.tree.max_depth == 0 {
         return Err(resource("batch source node/depth policy is zero").into());
     }
@@ -2703,6 +2944,9 @@ fn preflight_view<'a>(
     }
     let mut pending = Vec::new();
     let mut checked = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut numerics = Vec::new();
+    let mut diagnostic_slots = 0usize;
     budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
     reserve(&mut pending, 1)?;
     pending.push((
@@ -2715,7 +2959,101 @@ fn preflight_view<'a>(
     while let Some((node, depth, view, allow_pb)) = pending.pop() {
         let allow_pb = allow_pb
             || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function));
-        let (sql, collation) = parts(node, allow_pb)?;
+        let (declaration, collation) = parts_optional(node, allow_pb)?;
+        if row_typed_context_target(node, view).is_some() {
+            budget.array::<crate::typed_context_value::TypedContextValue>(1)?;
+            budget.array::<NativeTypedDescriptor>(1)?;
+            if typed_cache_source(node, view) {
+                budget.array::<Option<Datum>>(1)?;
+                budget.array::<bool>(1)?;
+            }
+        }
+
+        let Some(sql) = declaration else {
+            if view.value_role().is_none()
+                || !matches!(
+                    node,
+                    Expression::Constant(_)
+                        | Expression::CorrelatedColumn(_)
+                        | Expression::Column(_)
+                )
+            {
+                return Err(BatchFailure::admission(
+                    "optional SQL consumer needs its explicit profile",
+                ));
+            }
+            budget.field(&native_bytes_type(), 3)?;
+            budget.array::<CheckedNode<'_>>(1)?;
+            budget.array::<NodeRecord>(1)?;
+            budget.array::<BuildNode>(1)?;
+            budget.array::<LocalExpr>(1)?;
+            let (charset, collate) = collation.charset_and_collation();
+            budget.add(charset.len())?;
+            budget.add(collate.len())?;
+            match node {
+                Expression::Constant(c) if c.literal_value().is_some() => {
+                    if row_typed_context_target(node, view).is_some() {
+                        budget_context_source(&mut budget, None)?;
+                    }
+                    budget.add(
+                        native_payload_bytes(c.literal_value().unwrap())?
+                            .checked_mul(3)
+                            .ok_or_else(|| resource("native literal source copy size overflow"))?,
+                    )?;
+                    budget.array::<usize>(1)?;
+                    budget.field(&native_bytes_type(), 2)?;
+                }
+                Expression::Constant(c) => {
+                    budget_context_source(&mut budget, None)?;
+                    if c.param_marker.is_none() || typed_bulk_forward(node, view) {
+                        if let Some(child) = c.deferred_expr.as_deref() {
+                            scheduled = scheduled
+                                .checked_add(1)
+                                .filter(|n| *n <= limits.tree.max_nodes)
+                                .ok_or_else(|| resource("deferred source node policy exceeded"))?;
+                            let child_depth = depth
+                                .checked_add(1)
+                                .filter(|d| *d <= limits.tree.max_depth)
+                                .ok_or_else(|| resource("deferred source depth policy exceeded"))?;
+                            budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
+                            budget.array::<tipb::FieldType>(1)?;
+                            reserve(&mut pending, 1)?;
+                            pending.push((child, child_depth, context_child_view(view), allow_pb));
+                        }
+                    }
+                }
+                Expression::CorrelatedColumn(_) => budget_context_source(&mut budget, None)?,
+                Expression::Column(_)
+                    if row_typed_context_target(node, view).is_some()
+                        || column_source_failure(node, view, row_schema.len()).is_some() =>
+                {
+                    budget_context_source(&mut budget, None)?
+                }
+                _ => {
+                    return Err(BatchFailure::admission(
+                        "optional leaf lacks its actual value/error producer",
+                    ))
+                }
+            }
+            if view.diagnostic()
+                && !matches!(node,Expression::Constant(c) if c.literal_value().is_some())
+            {
+                budget.array::<usize>(1)?;
+                diagnostic_slots += 1;
+            }
+            reserve(&mut checked, 1)?;
+            checked.push(CheckedNode {
+                node,
+                sql: None,
+                view,
+                subtree_end: 0,
+                folds_to_constant: matches!(node, Expression::Constant(_)),
+                math_render_bound: None,
+                numeric_render_bound: None,
+                numeric_format_failure: None,
+            });
+            continue;
+        };
         if view.value_role().is_none() {
             check_type(sql)?;
         } else if !matches!(
@@ -2768,13 +3106,8 @@ fn preflight_view<'a>(
                             "contextual constant has no generic value view",
                         ));
                     }
-                    budget.array::<crate::context_value::ContextValue>(1)?;
-                    budget.array::<NativeHostMetadata>(1)?;
-                    budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
-                    budget.array::<Option<Datum>>(1)?;
-                    budget.field(sql, 1)?;
-                    budget.field(&native_bytes_type(), 2)?;
-                    if value.param_marker.is_none() {
+                    budget_context_source(&mut budget, Some(sql))?;
+                    if value.param_marker.is_none() || typed_bulk_forward(node, view) {
                         if let Some(child) = value.deferred_expr.as_deref() {
                             scheduled = scheduled
                                 .checked_add(1)
@@ -2787,10 +3120,13 @@ fn preflight_view<'a>(
                             budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
                             budget.array::<tipb::FieldType>(1)?;
                             reserve(&mut pending, 1)?;
-                            pending.push((child, child_depth, NativeView::ValueToken, allow_pb));
+                            pending.push((child, child_depth, context_child_view(view), allow_pb));
                         }
                     }
                 } else {
+                    if row_typed_context_target(node, view).is_some() {
+                        budget_context_source(&mut budget, Some(sql))?;
+                    }
                     let literal = value.literal_value().expect("plain literal source");
                     if view.value_role().is_some() {
                         budget.add(native_payload_bytes(literal)?.checked_mul(3).ok_or_else(
@@ -2804,19 +3140,35 @@ fn preflight_view<'a>(
                 }
             }
             Expression::Column(column) => {
-                if column.virtual_expr.is_some() || column.correlated_col_unique_id != 0 {
-                    return Err(BatchFailure::admission("virtual/correlated batch column"));
+                if row_typed_context_target(node, view).is_some()
+                    || column_source_failure(node, view, row_schema.len()).is_some()
+                {
+                    budget_context_source(&mut budget, Some(sql))?;
+                } else {
+                    if column.virtual_expr.is_some() || column.correlated_col_unique_id != 0 {
+                        return Err(BatchFailure::admission("virtual/correlated batch column"));
+                    }
+                    let index = usize::try_from(column.index)
+                        .map_err(|_| BatchFailure::admission("negative batch column index"))?;
+                    if index >= row_schema.len() {
+                        return Err(BatchFailure::admission("batch column outside row schema"));
+                    }
+                    budget.add(column.orig_name.len())?;
+                    budget.array::<usize>(1)?;
+                    budget.field(sql, 1)?; // projected binding declaration copy
                 }
-                let index = usize::try_from(column.index)
-                    .map_err(|_| BatchFailure::admission("negative batch column index"))?;
-                if index >= row_schema.len() {
-                    return Err(BatchFailure::admission("batch column outside row schema"));
-                }
-                budget.add(column.orig_name.len())?;
-                budget.array::<usize>(1)?;
-                budget.field(sql, 1)?; // projected binding declaration copy
             }
             Expression::ScalarFunction(function) => {
+                if function
+                    .args
+                    .iter()
+                    .any(|argument| argument.static_type().is_none())
+                {
+                    return Err(BatchFailure::admission(
+                        "optional function argument needs its explicit profile",
+                    ));
+                }
+
                 let arity = function.args.len();
                 let policy_nodes = usize::from(native_batch_policy(function).is_some());
                 if policy_nodes != 0 {
@@ -2831,21 +3183,109 @@ fn preflight_view<'a>(
                     .ok_or_else(|| resource("batch source node policy exceeded"))?;
                 budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
 
-                if (native_arithmetic_operation(function.func_name.lowercase()).is_some()
-                    || native_unary_sign_operation(function.func_name.lowercase()).is_some()
-                    || matches!(
+                let contextual_numeric =
+                    (native_arithmetic_operation(function.func_name.lowercase()).is_some()
+                        || native_unary_sign_operation(function.func_name.lowercase()).is_some()
+                        || matches!(
+                            function.func_name.lowercase(),
+                            "abs" | "cot" | "exp" | "pow" | "power"
+                        ))
+                        && function.args.iter().any(|child| {
+                            contains_context_value(child, limits.tree.max_depth, &mut {
+                                limits.tree.max_nodes
+                            })
+                        });
+                if contextual_numeric
+                    && function.func_name.lowercase() != "exp"
+                    && !(view.value_role().is_some()
+                        && native_unary_sign_operation(function.func_name.lowercase()).is_some())
+                {
+                    if matches!(
                         function.func_name.lowercase(),
                         "abs" | "cot" | "exp" | "pow" | "power"
-                    ))
-                    && function.args.iter().any(|child| {
-                        contains_context_value(child, limits.tree.max_depth, &mut {
-                            limits.tree.max_nodes
-                        })
-                    })
-                {
-                    return Err(BatchFailure::admission(
-                        "dynamic numeric diagnostic re-demand is not yet closed",
-                    ));
+                    ) && matches!(
+                        resolve_call_in_view(function, view)?.0,
+                        CallTarget::Host(
+                            SqlBatchHostOperation::EagerValuesNative
+                                | SqlBatchHostOperation::AbsNative
+                                | SqlBatchHostOperation::AbsIntWindowNative
+                        )
+                    ) {
+                        let recipe=crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic::survey_math(function,limits.tree.max_nodes,limits.max_metadata_bytes)?;
+                        budget.add(recipe.bytes())?;
+                        budget.array::<PendingDiagnostic<'_>>(1)?;
+                        budget.array::<CompiledDiagnosticParent>(1)?;
+                        budget.array::<Option<
+                            crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic,
+                        >>(1)?;
+                        budget.array::<usize>(recipe.bindings().len())?;
+                        budget.array::<tipb::FieldType>(recipe.bindings().len())?;
+                        budget.array::<(&Expression, usize, NativeView, bool)>(
+                            recipe.bindings().len(),
+                        )?;
+                        budget.field(&native_bytes_type(), recipe.bindings().len())?;
+                        scheduled = scheduled
+                            .checked_add(recipe.bindings().len())
+                            .filter(|n| *n <= limits.tree.max_nodes)
+                            .ok_or_else(|| {
+                                resource("diagnostic mirror source node policy exceeded")
+                            })?;
+                        let child_depth = depth
+                            .checked_add(1)
+                            .filter(|n| *n <= limits.tree.max_depth)
+                            .ok_or_else(|| {
+                                resource("diagnostic mirror source depth policy exceeded")
+                            })?;
+                        reserve(&mut pending, recipe.bindings().len())?;
+                        for &child in recipe.bindings().iter().rev() {
+                            pending.push((
+                                child,
+                                child_depth,
+                                NativeView::DiagnosticConstantRoot(recipe.policy()),
+                                allow_pb,
+                            ));
+                        }
+                        reserve(&mut diagnostics, 1)?;
+                        diagnostics.push(PendingDiagnostic {
+                            ordinal: checked.len(),
+                            main_arity: arity,
+                            bindings: recipe.bindings().len(),
+                            recipe: Some(recipe),
+                        });
+                    } else if matches!(
+                        function.func_name.lowercase(),
+                        "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"
+                    ) && function.args.len() == 2
+                        && view.value_role().is_some()
+                    {
+                        let numeric = numeric_source::survey(
+                            function,
+                            view,
+                            checked.len(),
+                            limits,
+                            &mut budget,
+                        )?;
+                        scheduled = scheduled
+                            .checked_add(numeric.extras.len())
+                            .filter(|n| *n <= limits.tree.max_nodes)
+                            .ok_or_else(|| resource("numeric extra source node policy exceeded"))?;
+                        let child_depth = depth
+                            .checked_add(1)
+                            .filter(|n| *n <= limits.tree.max_depth)
+                            .ok_or_else(|| {
+                                resource("numeric extra source depth policy exceeded")
+                            })?;
+                        reserve(&mut pending, numeric.extras.len())?;
+                        for &(child, child_view) in numeric.extras.iter().rev() {
+                            pending.push((child, child_depth, child_view, allow_pb));
+                        }
+                        reserve(&mut numerics, 1)?;
+                        numerics.push(numeric);
+                    } else {
+                        return Err(BatchFailure::admission(
+                            "dynamic numeric diagnostic re-demand is not yet closed",
+                        ));
+                    }
                 }
                 check_batch_call(function, view)?;
                 budget.add(function.func_name.original().len())?;
@@ -3240,17 +3680,23 @@ fn preflight_view<'a>(
                         "correlated source requires its generic view",
                     ));
                 }
-                budget.array::<crate::context_value::ContextValue>(1)?;
-                budget.array::<NativeHostMetadata>(1)?;
-                budget.array::<(SqlBatchHostOperation, HostSignature)>(1)?;
-                budget.array::<Option<Datum>>(1)?;
-                budget.field(sql, 1)?;
+                budget_context_source(&mut budget, Some(sql))?;
             }
+        }
+        if view.diagnostic()
+            && (matches!(
+                node,
+                Expression::ScalarFunction(_) | Expression::CorrelatedColumn(_)
+            ) || matches!(node,Expression::Constant(c) if c.literal_value().is_none())
+                || column_source_failure(node, view, row_schema.len()).is_some())
+        {
+            budget.array::<usize>(1)?;
+            diagnostic_slots += 1;
         }
         reserve(&mut checked, 1)?;
         checked.push(CheckedNode {
             node,
-            sql,
+            sql: Some(sql),
             view,
             subtree_end: 0,
             folds_to_constant: false,
@@ -3266,10 +3712,12 @@ fn preflight_view<'a>(
         let mut math_children = Some(0usize);
         let mut numeric_children = Some(0usize);
         let mut numeric_child_failure = None;
-        let mut folds_to_constant =
-            matches!(checked[index].node, Expression::Constant(c) if c.literal_value().is_some());
+        let mut folds_to_constant = matches!(checked[index].node, Expression::Constant(_));
         if let Expression::Constant(c) = checked[index].node {
-            if c.param_marker.is_none() && c.deferred_expr.is_some() {
+            if (c.param_marker.is_none()
+                || typed_bulk_forward(checked[index].node, checked[index].view))
+                && c.deferred_expr.is_some()
+            {
                 end = checked
                     .get(end)
                     .ok_or_else(|| binding("deferred source child missing"))?
@@ -3321,6 +3769,22 @@ fn preflight_view<'a>(
                 end = checked
                     .get(end)
                     .ok_or_else(|| binding("source subtree is incomplete"))?
+                    .subtree_end;
+            }
+        }
+        if let Ok(position) = diagnostics.binary_search_by_key(&index, |p| p.ordinal) {
+            for _ in 0..diagnostics[position].bindings {
+                end = checked
+                    .get(end)
+                    .ok_or_else(|| binding("diagnostic mirror child absent"))?
+                    .subtree_end;
+            }
+        }
+        if let Ok(position) = numerics.binary_search_by_key(&index, |p| p.ordinal) {
+            for _ in &numerics[position].extras {
+                end = checked
+                    .get(end)
+                    .ok_or_else(|| binding("numeric extra child absent"))?
                     .subtree_end;
             }
         }
@@ -3438,6 +3902,16 @@ fn preflight_view<'a>(
             child = item.subtree_end;
         }
     }
+    if root_probe
+        || diagnostic_slots != 0
+        || !diagnostics.is_empty()
+        || !numerics.is_empty()
+        || checked
+            .iter()
+            .any(|item| typed_cache_source(item.node, item.view))
+    {
+        budget.array::<ContextSourcePolicy>(1)?;
+    }
     // Even a temporary representability conversion must wait for the complete
     // source/schema/payload byte gate, including literals later in the graph.
     for item in &checked {
@@ -3447,20 +3921,31 @@ fn preflight_view<'a>(
             }
             source_literal(
                 value.literal_value().expect("checked literal"),
-                item.sql,
+                item.declared_sql(),
                 item.view,
             )?;
         }
         if let Expression::Column(column) = item.node {
+            if row_typed_context_target(item.node, item.view).is_some()
+                || column_source_failure(item.node, item.view, row_schema.len()).is_some()
+            {
+                continue;
+            }
+
             let field = &row_schema[column.index as usize];
-            if field.collation() != item.sql.collation() || field != item.sql {
+            if field.collation() != item.declared_sql().collation() || field != item.declared_sql()
+            {
                 return Err(BatchFailure::admission(
                     "batch binding differs from complete row declaration",
                 ));
             }
         }
     }
-    Ok(checked)
+    Ok(CheckedSource {
+        nodes: checked,
+        diagnostics,
+        numerics,
+    })
 }
 
 #[cfg(test)]
@@ -3605,6 +4090,11 @@ fn arithmetic_host_metadata(
             return Err(binding("window arithmetic domain missing").into());
         };
         let sources = [0, 1].map(|index| match &sql.args[index] {
+            _ if row_typed_context_target(&sql.args[index], checked[nodes[index]].view)
+                .is_some() =>
+            {
+                WindowArithmeticSource::TypedReady
+            }
             Expression::Constant(_) => WindowArithmeticSource::Literal,
             Expression::Column(_) => WindowArithmeticSource::Column,
             Expression::ScalarFunction(child)
@@ -3615,11 +4105,22 @@ fn arithmetic_host_metadata(
             }
             _ => WindowArithmeticSource::Computed,
         });
-        Some(WindowArithmeticMetadata { domain,
-            integer: target == NativeEvalType::Int && domain == NativeEvalType::Int
-                && [0, 1].into_iter().all(|index| crate::scalar_function::native_numeric_batch_source(checked[nodes[index]].sql,
-                    matches!(&sql.args[index],Expression::Constant(value) if matches!(value.literal_value(),Some(Datum::BinaryLiteral(_)))), domain) == NativeEvalType::Int),
-            output_integer: target == NativeEvalType::Int, sources })
+        Some(WindowArithmeticMetadata {
+            domain,
+            integer: target == NativeEvalType::Int
+                && domain == NativeEvalType::Int
+                && [0, 1].into_iter().all(|index| {
+                    crate::scalar_function::native_numeric_batch_source(
+                        checked[nodes[index]].declared_sql(),
+                        crate::scalar_function::dynamic_diagnostic::saved_binary_literal(
+                            &sql.args[index],
+                        ),
+                        domain,
+                    ) == NativeEvalType::Int
+                }),
+            output_integer: target == NativeEvalType::Int,
+            sources,
+        })
     } else {
         None
     };
@@ -3650,8 +4151,8 @@ fn arithmetic_host_metadata(
         None
     };
     Ok(NativeHostMetadata::Arithmetic {
-                                    batch, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.sql),
-                                    argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].sql),snapshot_field_type(checked[right].sql)],
+                                    batch, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.declared_sql()),
+                                    argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].declared_sql()),snapshot_field_type(checked[right].declared_sql())],
                                     literal:[matches!(sql.args[0],Expression::Constant(_)),matches!(sql.args[1],Expression::Constant(_))],
                                     binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),
                                     mode:sql.native_arithmetic_mode(),generic_mode:sql.native_arithmetic_generic_mode(),subjects,
@@ -3689,14 +4190,67 @@ fn lower_view(
     limits: BatchSourceLimits,
     view: Option<NativeView>,
 ) -> Result<Arc<BatchSource>> {
+    lower_view_policy(
+        suite,
+        calculated_slot,
+        row_schema,
+        new_collation,
+        unit,
+        limits,
+        view,
+        false,
+    )
+}
+fn lower_view_policy(
+    suite: &EvaluatorSuite,
+    calculated_slot: usize,
+    row_schema: &[FieldType],
+    new_collation: bool,
+    unit: u64,
+    limits: BatchSourceLimits,
+    view: Option<NativeView>,
+    deferred_closed: bool,
+) -> Result<Arc<BatchSource>> {
     let root = suite
         .program
         .calculated
         .get(calculated_slot)
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
-    let (constant_root_shortcut, context_row_only, root_type_probe) =
-        context_root_policy(root, suite.program.vectorizable, limits)?;
-    let checked = preflight_view(root, row_schema, limits, view)?;
+    let (constant_root_shortcut, context_row_only, root_type_probe) = if deferred_closed {
+        (false, true, None)
+    } else {
+        context_root_policy(root, suite.program.vectorizable, limits)?
+    };
+    let mut checked = preflight_view(root, row_schema, limits, view, root_type_probe.is_some())?;
+    // The original non-integer CAST_CHAR batch collects generic row results
+    // before publishing. It has row operands but a typed atomic output boundary.
+    let row_cast_batch = matches!(root, Expression::ScalarFunction(function)
+        if function.func_name.lowercase() == "cast_char"
+            && crate::scalar_function::static_batch_target(root).is_some());
+    let context_row_only =
+        context_row_only && checked[0].view.bulk_target().is_none() && !row_cast_batch;
+    let mut typed_cache_slots = 0usize;
+    let mirrored = !checked.diagnostics.is_empty() || !checked.numerics.is_empty();
+    let mut diagnostic_slots = Vec::new();
+    let mut diagnostic_parents = Vec::new();
+    let mut compiled_plans = Vec::new();
+    reserve(&mut compiled_plans, checked.diagnostics.len())?;
+    for pending in &mut checked.diagnostics {
+        let (plan, _) = pending
+            .recipe
+            .take()
+            .expect("surveyed diagnostic plan")
+            .freeze()?;
+        compiled_plans.push(Some(plan));
+    }
+    let mut numeric_parents = Vec::new();
+    let mut numeric_plans = Vec::new();
+    reserve(&mut numeric_plans, checked.numerics.len())?;
+    for pending in &mut checked.numerics {
+        numeric_plans.push(Some(pending.freeze()?));
+    }
+    let mut next_numeric = 0usize;
+    let mut next_diagnostic = 0usize;
     let mut host_entries = Vec::new();
     let mut host_metadata = Vec::new();
     let mut host_probes = Vec::new();
@@ -3711,9 +4265,9 @@ fn lower_view(
         let field = if item.view != NativeView::Typed {
             projected(&native_bytes_type(), new_collation)?
         } else {
-            projected(item.sql, new_collation)?
+            projected(item.declared_sql(), new_collation)?
         };
-        let kind = SourceKind::capture(item.node, item.sql, item.view)?;
+        let kind = SourceKind::capture(item.node, item.sql, item.view, row_schema.len())?;
         let construction = match &kind {
             SourceKind::DecimalFastInput(_) => {
                 return Err(binding("fast source entered the ordinary source factory").into())
@@ -3727,14 +4281,136 @@ fn lower_view(
                 schema.push(field.clone());
                 BuildKind::Input(slot)
             }
+            SourceKind::TypedContext { arity, target } => {
+                reserve(&mut sites, 1)?;
+                sites.push(OrdinaryCallSite::sql_native_batch(
+                    ordinal,
+                    OrdinarySourceId::new(
+                        unit,
+                        if mirrored {
+                            item.node as *const Expression as usize as u64
+                        } else {
+                            u64::try_from(ordinal)
+                                .map_err(|_| resource("typed source ID overflow"))?
+                        },
+                    ),
+                ));
+                let slot = host_entries.len();
+                reserve(&mut host_entries, 1)?;
+                reserve(&mut host_metadata, 1)?;
+                reserve(&mut host_probes, 1)?;
+                let mut arguments = Vec::new();
+                reserve(&mut arguments, *arity)?;
+                for _ in 0..*arity {
+                    arguments.push(projected(&native_bytes_type(), new_collation)?);
+                }
+                host_metadata.push(NativeHostMetadata::TypedContext(NativeTypedContext {
+                    descriptor: if typed_bulk_forward(item.node, item.view) {
+                        let Expression::Constant(c) = item.node else {
+                            unreachable!()
+                        };
+                        match c.deferred_expr.as_deref().expect("real deferred child") {
+                            Expression::ScalarFunction(function)
+                                if *target == NativeEvalType::Int
+                                    && window_value_operation(
+                                        function,
+                                        checked[ordinal + 1].view,
+                                    )
+                                    .is_none() =>
+                            {
+                                let field =
+                                    snapshot_field_type(checked[ordinal + 1].declared_sql());
+                                Some(Box::new(if matches!(item.view, NativeView::BulkRoot(_)) {
+                                    NativeTypedDescriptor::NormalizeRoot {
+                                        field,
+                                        unsigned: item.sql.is_some_and(FieldType::is_unsigned),
+                                    }
+                                } else {
+                                    NativeTypedDescriptor::Normalize { field }
+                                }))
+                            }
+                            _ if *target == NativeEvalType::Int
+                                && matches!(item.view, NativeView::BulkRoot(_)) =>
+                            {
+                                Some(Box::new(NativeTypedDescriptor::RootForward {
+                                    unsigned: item.sql.is_some_and(FieldType::is_unsigned),
+                                }))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        Some(Box::new(match item.node {
+                            Expression::Constant(c) if c.literal_value().is_some() => {
+                                NativeTypedDescriptor::Literal {
+                                    value: c.literal_value().unwrap().clone(),
+                                    field: item.sql.map(snapshot_field_type),
+                                }
+                            }
+                            Expression::Column(column) => NativeTypedDescriptor::Column {
+                                index: column.index,
+                                field: item.sql.map(snapshot_field_type),
+                            },
+                            _ => NativeTypedDescriptor::Context(
+                                crate::typed_context_value::TypedContextValue::capture(item.node)
+                                    .ok_or_else(|| binding("typed context descriptor absent"))?,
+                            ),
+                        }))
+                    },
+                    target: *target,
+                    cache_slot: if typed_cache_source(item.node, item.view) {
+                        let slot = typed_cache_slots;
+                        typed_cache_slots = typed_cache_slots
+                            .checked_add(1)
+                            .ok_or_else(|| resource("typed cache count overflow"))?;
+                        Some(slot)
+                    } else {
+                        None
+                    },
+                    argument: (*arity == 1).then_some(ordinal + 1),
+                    output_node: ordinal,
+                    output_role: item
+                        .view
+                        .value_role()
+                        .ok_or_else(|| binding("typed source role absent"))?,
+                }));
+                host_entries.push((
+                    if typed_bulk_forward(item.node, item.view)
+                        && matches!(
+                            host_metadata.last(),
+                            Some(NativeHostMetadata::TypedContext(meta)) if meta.window_forward()
+                        )
+                    {
+                        SqlBatchHostOperation::EagerValuesWindowNative
+                    } else {
+                        SqlBatchHostOperation::EagerValuesNative
+                    },
+                    HostSignature {
+                        arg_types: arguments.into_boxed_slice(),
+                        return_type: field.clone(),
+                    },
+                ));
+                host_probes.push(None);
+                if item.view.diagnostic() {
+                    reserve(&mut diagnostic_slots, 1)?;
+                    diagnostic_slots.push(slot);
+                }
+                BuildKind::Host {
+                    slot,
+                    arity: *arity,
+                }
+            }
             SourceKind::ContextValue { arity } => {
                 reserve(&mut sites, 1)?;
                 sites.push(OrdinaryCallSite::sql_native_batch(
                     ordinal,
                     OrdinarySourceId::new(
                         unit,
-                        u64::try_from(ordinal)
-                            .map_err(|_| resource("context source ID overflow"))?,
+                        if mirrored {
+                            item.node as *const Expression as usize as u64
+                        } else {
+                            u64::try_from(ordinal)
+                                .map_err(|_| resource("context source ID overflow"))?
+                        },
                     ),
                 ));
                 let slot = host_entries.len();
@@ -3755,9 +4431,24 @@ fn lower_view(
                 ));
                 host_metadata.push(NativeHostMetadata::ContextValue {
                     descriptor: Box::new(
-                        crate::context_value::ContextValue::capture(item.node)
-                            .ok_or_else(|| binding("context descriptor absent"))?,
+                        if let Some(message) =
+                            column_source_failure(item.node, item.view, row_schema.len())
+                        {
+                            crate::context_value::ContextValue {
+                                read: crate::context_value::ContextRead::Failure(message),
+                                target: item.sql.map(snapshot_field_type),
+                                convert_deferred: false,
+                                root_broadcast: false,
+                            }
+                        } else {
+                            crate::context_value::ContextValue::capture(item.node)
+                                .ok_or_else(|| binding("context descriptor absent"))?
+                        },
                     ),
+                    diagnostic: match item.view {
+                        NativeView::DiagnosticConstantRoot(policy) => Some(policy),
+                        _ => None,
+                    },
                     argument: (*arity == 1).then_some(ordinal + 1),
                     output_node: ordinal,
                     output_role: item
@@ -3766,6 +4457,10 @@ fn lower_view(
                         .ok_or_else(|| binding("context source output role absent"))?,
                 });
                 host_probes.push(None);
+                if item.view.diagnostic() {
+                    reserve(&mut diagnostic_slots, 1)?;
+                    diagnostic_slots.push(slot);
+                }
                 BuildKind::Host {
                     slot,
                     arity: *arity,
@@ -3773,8 +4468,11 @@ fn lower_view(
             }
             SourceKind::Call { target, arity } => {
                 reserve(&mut sites, 1)?;
-                let node =
-                    u64::try_from(ordinal).map_err(|_| resource("batch source ID overflow"))?;
+                let node = if mirrored {
+                    item.node as *const Expression as usize as u64
+                } else {
+                    u64::try_from(ordinal).map_err(|_| resource("batch source ID overflow"))?
+                };
                 sites.push(OrdinaryCallSite::sql_native_batch(
                     ordinal,
                     OrdinarySourceId::new(unit, node),
@@ -3873,11 +4571,77 @@ fn lower_view(
                                 },
                             );
                         }
+                        let diagnostic = checked
+                            .diagnostics
+                            .get(next_diagnostic)
+                            .filter(|p| p.ordinal == ordinal);
+                        let numeric = checked
+                            .numerics
+                            .get(next_numeric)
+                            .filter(|p| p.ordinal == ordinal);
+                        let mirror_count = diagnostic.map_or(0, |p| p.bindings)
+                            + numeric.map_or(0, |p| p.extras.len());
+                        if mirror_count != 0 || diagnostic.is_some() {
+                            reserve(&mut arguments, mirror_count)?;
+                            for _ in 0..mirror_count {
+                                arguments.push(projected(&native_bytes_type(), new_collation)?);
+                            }
+                        }
                         let slot = host_entries.len();
                         reserve(&mut host_entries, 1)?;
                         reserve(&mut host_metadata, 1)?;
                         reserve(&mut host_probes, 1)?;
                         host_probes.push(source_prefix_probe(sql, operation).cloned());
+                        if item.view.diagnostic() {
+                            reserve(&mut diagnostic_slots, 1)?;
+                            diagnostic_slots.push(slot);
+                        }
+                        if let Some(pending) = numeric {
+                            let mut child = ordinal + 1;
+                            let mut producers = Vec::new();
+                            reserve(&mut producers, 2 + pending.extras.len())?;
+                            for _ in 0..2 + pending.extras.len() {
+                                producers.push(child);
+                                child = checked[child].subtree_end;
+                            }
+                            let preparation = pending.requests.map(|requests| {
+                                requests
+                                    .map(|i| numeric_source::preparation(&checked[producers[i]]))
+                            });
+                            reserve(&mut numeric_parents, 1)?;
+                            numeric_parents.push(CompiledNumericParent {
+                                slot,
+                                arguments: producers.into_boxed_slice(),
+                                requests: pending.requests,
+                                preparation,
+                                plans: numeric_plans[next_numeric]
+                                    .take()
+                                    .expect("compiled numeric plans"),
+                            });
+                            next_numeric += 1;
+                        }
+                        if let Some(pending) = diagnostic {
+                            let mut child = ordinal + 1;
+                            for _ in 0..pending.main_arity {
+                                child = checked[child].subtree_end;
+                            }
+                            let mut mirrors = Vec::new();
+                            reserve(&mut mirrors, pending.bindings)?;
+                            for _ in 0..pending.bindings {
+                                mirrors.push(child);
+                                child = checked[child].subtree_end;
+                            }
+                            reserve(&mut diagnostic_parents, 1)?;
+                            diagnostic_parents.push(CompiledDiagnosticParent {
+                                slot,
+                                main_arity: pending.main_arity,
+                                arguments: mirrors.into_boxed_slice(),
+                                plan: compiled_plans[next_diagnostic]
+                                    .take()
+                                    .expect("compiled diagnostic plan"),
+                            });
+                            next_diagnostic += 1;
+                        }
                         host_metadata.push(match operation {
                             SqlBatchHostOperation::TimestampDiffNative { stop_on_null, .. } => {
                                 let mut arguments = [0; 3];
@@ -3901,7 +4665,7 @@ fn lower_view(
                                         )
                                     }),
                                     stop_on_null,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                 }
@@ -3924,7 +4688,7 @@ fn lower_view(
                                         sql.args[2].static_type().expect("checked LIKE escape"),
                                     ),
                                     invocation: sql.batch_like_invocation(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -3949,7 +4713,7 @@ fn lower_view(
                                     arguments: arguments.into_boxed_slice(),
                                     operation,
                                     probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -3968,7 +4732,7 @@ fn lower_view(
                                             crate::scalar_function::math_diagnostic::MathDiagnostic::capture(sql,item.subtree_end-ordinal)
                                         } else {None}),
                                     probe:sql.identity_constant_probe().cloned(),
-                                    result_type:snapshot_field_type(item.sql),output_node:ordinal,
+                                    result_type:snapshot_field_type(item.declared_sql()),output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("eager output view absent"))?,
                                 }
                             }
@@ -3979,7 +4743,7 @@ fn lower_view(
                                         .ok_or_else(|| resource("compression child overflow"))?,
                                     operation,
                                     probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role().ok_or_else(|| {
                                         binding("compression output view missing")
@@ -3993,7 +4757,7 @@ fn lower_view(
                                         .ok_or_else(|| resource("byte unary child overflow"))?,
                                     operation,
                                     probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4021,7 +4785,7 @@ fn lower_view(
                                     arguments: arguments.into_boxed_slice(),
                                     operation,
                                     probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4046,7 +4810,7 @@ fn lower_view(
                                     arguments: arguments.into_boxed_slice(),
                                     name_const,
                                     probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4059,7 +4823,7 @@ fn lower_view(
                                     .checked_add(1)
                                     .ok_or_else(|| resource("GROUPING child overflow"))?,
                                 metadata: sql.shared_grouping_metadata(),
-                                result_type: snapshot_field_type(item.sql),
+                                result_type: snapshot_field_type(item.declared_sql()),
                                 output_node: ordinal,
                                 output_role: item
                                     .view
@@ -4082,7 +4846,7 @@ fn lower_view(
                                 NativeHostMetadata::Vector {
                                     arguments: arguments.into_boxed_slice(),
                                     operation: op,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4112,7 +4876,7 @@ fn lower_view(
                                     arguments: arguments.into_boxed_slice(),
                                     argument_types: types.into_boxed_slice(),
                                     operation: op,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4139,7 +4903,7 @@ fn lower_view(
                                         sql.args[0].static_type().expect("checked calendar source"),
                                     ),
                                     operation,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4155,7 +4919,7 @@ fn lower_view(
                                             .ok_or_else(|| resource("clock ordinal overflow"))?,
                                     ),
                                     operation,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4175,7 +4939,7 @@ fn lower_view(
                                         .ok_or_else(|| resource("TSO ordinal overflow"))?,
                                 ),
                                 operation: op,
-                                result_type: snapshot_field_type(item.sql),
+                                result_type: snapshot_field_type(item.declared_sql()),
                                 output_node: ordinal,
                                 output_role: item
                                     .view
@@ -4198,7 +4962,7 @@ fn lower_view(
                                 NativeHostMetadata::Epoch {
                                     arguments: arguments.into_boxed_slice(),
                                     from,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4231,7 +4995,7 @@ fn lower_view(
                                             .expect("checked EXTRACT value source"),
                                     ),
                                     unit: call.unit().map(Into::into),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                 }
@@ -4265,7 +5029,7 @@ fn lower_view(
                                     unit: unit.into(),
                                     sign,
                                     result_fsp,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                     output,
@@ -4290,7 +5054,7 @@ fn lower_view(
                                                 .expect("checked bounded argument"),
                                         )
                                     }),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                 }
@@ -4305,7 +5069,7 @@ fn lower_view(
                                     .subtree_end;
                                 NativeHostMetadata::StrToDate {
                                     arguments: [first, second],
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                     output,
@@ -4316,7 +5080,7 @@ fn lower_view(
                                     argument_node: ordinal.checked_add(1).ok_or_else(|| {
                                         resource("JSON checksum argument ordinal overflow")
                                     })?,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                 }
@@ -4330,7 +5094,7 @@ fn lower_view(
                                 let source = checked
                                     .get(child)
                                     .ok_or_else(|| binding("charset source absent"))?;
-                                let source_type = snapshot_field_type(source.sql);
+                                let source_type = snapshot_field_type(source.declared_sql());
                                 for _ in 0..*arity {
                                     let source = checked
                                         .get(child)
@@ -4346,7 +5110,7 @@ fn lower_view(
                                         &sql.args[0],
                                     )
                                         == crate::expr_collation::Coercibility::EXPLICIT,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                 })
@@ -4365,10 +5129,10 @@ fn lower_view(
                                         .ok_or_else(|| binding("extremum source absent"))?;
                                     arguments.push(child);
                                     decimals.push(
-                                        if source.sql.eval_type() == NativeEvalType::Int {
+                                        if source.declared_sql().eval_type() == NativeEvalType::Int {
                                             0
                                         } else {
-                                            source.sql.decimal()
+                                            source.declared_sql().decimal()
                                         },
                                     );
                                     child = source.subtree_end;
@@ -4384,7 +5148,7 @@ fn lower_view(
                                     }),
                                     collation: sql.derived_collation(),
                                     greatest: sql.func_name.lowercase() == "greatest",
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4404,7 +5168,7 @@ fn lower_view(
                                         .ok_or_else(|| binding("INTERVAL source node absent"))?;
                                     arguments.push(hosts::NativeIntervalArgument {
                                         node: child,
-                                        field: snapshot_field_type(source.sql),
+                                        field: snapshot_field_type(source.declared_sql()),
                                     });
                                     child = source.subtree_end;
                                 }
@@ -4417,7 +5181,7 @@ fn lower_view(
                                 NativeHostMetadata::Interval(hosts::NativeIntervalMetadata {
                                     arguments: arguments.into_boxed_slice(),
                                     search,
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4437,15 +5201,15 @@ fn lower_view(
                                         .ok_or_else(|| binding("IN source missing"))?;
                                     arguments.push(hosts::NativeInArgument {
                                         node: child,
-                                        field: snapshot_field_type(source.sql),
+                                        field: snapshot_field_type(source.declared_sql()),
                                         facts: crate::ops::OperandFacts {
-                                            eval_type: Some(source.sql.eval_type()),
-                                            unsigned: source.sql.is_unsigned(),
+                                            eval_type: Some(source.declared_sql().eval_type()),
+                                            unsigned: source.declared_sql().is_unsigned(),
                                             constant: source.folds_to_constant,
                                             duration_column: matches!(
                                                 source.node,
                                                 Expression::Column(_)
-                                            ) && source.sql.code()
+                                            ) && source.declared_sql().code()
                                                 == FieldTypeCode::Duration,
                                         },
                                     });
@@ -4478,7 +5242,7 @@ fn lower_view(
                                     },
                                     has_null,
                                     collation: sql.derived_collation(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -4515,7 +5279,7 @@ fn lower_view(
                                 }
                                 NativeHostMetadata::Selection {
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     argument_nodes: argument_nodes.into_boxed_slice(),
                                     output_node: ordinal,
                                     output_role: item.view.value_role().ok_or_else(|| {
@@ -4545,6 +5309,7 @@ fn lower_view(
                                     .ok_or_else(|| resource("unary child ordinal overflow"))?;
                                 let child = &checked[argument];
                                 let source = match &sql.args[0] {
+                                    _ if row_typed_context_target(&sql.args[0], child.view).is_some() => WindowArithmeticSource::TypedReady,
                                     Expression::Constant(_) => WindowArithmeticSource::Literal,
                                     Expression::Column(_) => WindowArithmeticSource::Column,
                                     Expression::ScalarFunction(function)
@@ -4576,8 +5341,8 @@ fn lower_view(
                                 }
                                 NativeHostMetadata::UnaryWindow {
                                     operation,
-                                    result_type: snapshot_field_type(item.sql),
-                                    source_type: snapshot_field_type(child.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    source_type: snapshot_field_type(child.declared_sql()),
                                     source,
                                     argument_node: argument,
                                     output_node: ordinal,
@@ -4609,9 +5374,9 @@ fn lower_view(
                                         NativeRawValueOperation::Bitwise {
                                             operation,
                                             unsigned: [
-                                                checked[left].sql.is_unsigned(),
+                                                checked[left].declared_sql().is_unsigned(),
                                                 right.is_some_and(|right| {
-                                                    checked[right].sql.is_unsigned()
+                                                    checked[right].declared_sql().is_unsigned()
                                                 }),
                                             ],
                                         }
@@ -4619,7 +5384,7 @@ fn lower_view(
                                     SqlBatchHostOperation::UnarySignNative(sign) => {
                                         NativeRawValueOperation::UnarySign {
                                             sign,
-                                            unsigned: checked[left].sql.is_unsigned(),
+                                            unsigned: checked[left].declared_sql().is_unsigned(),
                                             constant: checked[left].folds_to_constant,
                                         }
                                     }
@@ -4631,7 +5396,7 @@ fn lower_view(
                                 NativeHostMetadata::RawValues {
                                     operation,
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     left_node: left,
                                     right_node: right,
                                     output_node: ordinal,
@@ -4658,7 +5423,7 @@ fn lower_view(
                                 }
                                 NativeHostMetadata::Math {
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     argument_node: ordinal
                                         .checked_add(1)
                                         .ok_or_else(|| resource("math child ordinal overflow"))?,
@@ -4686,20 +5451,20 @@ fn lower_view(
                                             .get(index)
                                             .ok_or_else(|| binding("comparison source missing"))?;
                                         Ok(crate::ops::OperandFacts {
-                                            eval_type: Some(child.sql.eval_type()),
-                                            unsigned: child.sql.is_unsigned(),
+                                            eval_type: Some(child.declared_sql().eval_type()),
+                                            unsigned: child.declared_sql().is_unsigned(),
                                             constant: child.folds_to_constant,
                                             duration_column: matches!(
                                                 child.node,
                                                 Expression::Column(_)
-                                            ) && child.sql.code()
+                                            ) && child.declared_sql().code()
                                                 == FieldTypeCode::Duration,
                                         })
                                     };
                                 NativeHostMetadata::Comparison {
                                     operation,
                                     name: sql.func_name.lowercase().into(),
-                                    result_type: snapshot_field_type(item.sql),
+                                    result_type: snapshot_field_type(item.declared_sql()),
                                     argument_nodes: [left, right],
                                     operands: [facts(left)?, facts(right)?],
                                     collation: sql.derived_collation(),
@@ -4713,14 +5478,18 @@ fn lower_view(
                             SqlBatchHostOperation::CastNative => NativeHostMetadata::ValueCast {
                                 cast_type: crate::scalar_function::cast_type_of(
                                     native_cast_name(sql).expect("checked native cast"),
-                                    item.sql,
+                                    item.declared_sql(),
                                 )?,
                                 name: sql.func_name.lowercase().into(),
                                 source_type: snapshot_field_type(
                                     sql.args[0].static_type().expect("checked source"),
                                 ),
-                                input_is_literal: matches!(sql.args[0], Expression::Constant(_)),
-                                result_type: snapshot_field_type(item.sql),
+                                input: if row_typed_context_target(&sql.args[0], checked[ordinal + 1].view).is_some() {
+                                    NativeValuePreparation::TypedReady
+                                } else if matches!(sql.args[0], Expression::Constant(_)) {
+                                    NativeValuePreparation::Literal
+                                } else { NativeValuePreparation::Computed },
+                                result_type: snapshot_field_type(item.declared_sql()),
                                 argument_node: ordinal.checked_add(1).ok_or_else(|| {
                                     resource("native cast argument ordinal overflow")
                                 })?,
@@ -4770,7 +5539,23 @@ fn lower_view(
                             _ => NativeHostMetadata::Plain,
                         });
                         host_entries.push((
-                            operation,
+                            if numeric.is_some() {
+                                if operation.is_windowed() {
+                                    SqlBatchHostOperation::EagerValuesWindowNative
+                                } else {
+                                    SqlBatchHostOperation::EagerValuesNative
+                                }
+                            } else if diagnostic.is_some()
+                                && operation == SqlBatchHostOperation::AbsNative
+                            {
+                                SqlBatchHostOperation::EagerValuesNative
+                            } else if diagnostic.is_some()
+                                && operation == SqlBatchHostOperation::AbsIntWindowNative
+                            {
+                                SqlBatchHostOperation::EagerValuesWindowNative
+                            } else {
+                                operation
+                            },
                             HostSignature {
                                 arg_types: arguments.into_boxed_slice(),
                                 return_type: field.clone(),
@@ -4778,7 +5563,9 @@ fn lower_view(
                         ));
                         BuildKind::Host {
                             slot,
-                            arity: *arity,
+                            arity: arity
+                                .checked_add(mirror_count)
+                                .ok_or_else(|| resource("diagnostic graph arity overflow"))?,
                         }
                     }
                 }
@@ -4789,7 +5576,7 @@ fn lower_view(
             kind: construction,
         });
         nodes.push(NodeRecord {
-            sql: snapshot_field_type(item.sql),
+            sql: item.sql.map(snapshot_field_type),
             kind,
             view: item.view,
         });
@@ -4900,7 +5687,22 @@ fn lower_view(
         needs_native_values,
         constant_root_shortcut,
         context_row_only,
-        root_type_probe,
+        context_policy: if root_type_probe.is_some()
+            || !diagnostic_slots.is_empty()
+            || !diagnostic_parents.is_empty()
+            || !numeric_parents.is_empty()
+            || typed_cache_slots != 0
+        {
+            Some(Box::new(ContextSourcePolicy {
+                root_type_probe,
+                diagnostic_slots: diagnostic_slots.into_boxed_slice(),
+                diagnostic_parents: diagnostic_parents.into_boxed_slice(),
+                numeric_parents: numeric_parents.into_boxed_slice(),
+                typed_cache_slots,
+            }))
+        } else {
+            None
+        },
         limits,
     }))
 }
@@ -4910,6 +5712,76 @@ fn lower_view(
 struct RowProfile {
     source: Arc<BatchSource>,
     program: LocalBatchProgram,
+}
+#[derive(Clone, Copy)]
+enum DeferredRootProbe {
+    Parameter(i64),
+    Fixed(NativeEvalType),
+}
+struct DeferredRootProfiles {
+    probe: DeferredRootProbe,
+    typed: Vec<(NativeEvalType, RowProfile)>,
+    selected: Option<usize>,
+}
+impl DeferredRootProfiles {
+    fn possible(
+        root: &Expression,
+        limits: BatchSourceLimits,
+    ) -> Result<Option<(DeferredRootProbe, Vec<NativeEvalType>)>> {
+        let Expression::Constant(c) = root else {
+            return Ok(None);
+        };
+        profile_shape(root, limits)?;
+        let mut inner = root;
+        while let Expression::Constant(c) = inner {
+            let Some(child) = c.deferred_expr.as_deref() else {
+                return Ok(None);
+            };
+            inner = child;
+        }
+        if !matches!(inner, Expression::ScalarFunction(_)) {
+            return Ok(None);
+        }
+        let all = [
+            NativeEvalType::Int,
+            NativeEvalType::Real,
+            NativeEvalType::Decimal,
+            NativeEvalType::String,
+            NativeEvalType::Datetime,
+            NativeEvalType::Timestamp,
+            NativeEvalType::Duration,
+            NativeEvalType::Json,
+            NativeEvalType::VectorFloat32,
+        ];
+        let probe = match c.param_marker {
+            Some(marker) => DeferredRootProbe::Parameter(marker.order),
+            None => match &c.ret_type {
+                Some(field) => DeferredRootProbe::Fixed(field.eval_type()),
+                None => return Ok(None),
+            },
+        };
+        let supported = |target| {
+            !matches!(probe, DeferredRootProbe::Fixed(fixed) if fixed != target)
+                && crate::scalar_function::batch_supported(root, target)
+        };
+        if !all.iter().copied().any(supported) {
+            return Ok(None);
+        }
+        let mut budget = Budget {
+            used: 0,
+            max: limits.max_metadata_bytes,
+        };
+        budget.array::<DeferredRootProfiles>(1)?;
+        budget.array::<NativeEvalType>(all.len())?;
+        let mut targets = Vec::new();
+        reserve(&mut targets, all.len())?;
+        for target in all {
+            if supported(target) {
+                targets.push(target);
+            }
+        }
+        Ok((!targets.is_empty()).then_some((probe, targets)))
+    }
 }
 // Native eligible batches publish only after all rows have succeeded, even
 // when each control subtree itself has row demand. This is output staging,
@@ -4952,6 +5824,7 @@ impl PendingTypedOutput {
 }
 
 pub(crate) struct PreparedBatch {
+    deferred_profiles: Option<Box<DeferredRootProfiles>>,
     defer_batch_publication: bool,
     fast_profile: Option<decimal_fast_source::PreparedFast>,
     row_profile: Option<RowProfile>,
@@ -5028,7 +5901,12 @@ impl PreparedBatch {
             .get(calculated_slot)
             .ok_or_else(|| BatchFailure::admission("batch calculation slot missing"))?;
         let ordered = !suite.program.vectorizable;
-        let view = if ordered {
+        let deferred = if ordered {
+            None
+        } else {
+            DeferredRootProfiles::possible(root, source_limits)?
+        };
+        let view = if ordered || deferred.is_some() {
             Some(NativeView::RootValue)
         } else if promote {
             promoted_native_root_view(root, source_limits)?
@@ -5038,16 +5916,33 @@ impl PreparedBatch {
         let pair = !ordered
             && matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()));
         let fast = !ordered && promote && decimal_fast_source::possible(root);
-        let groups = 1 + usize::from(pair) + usize::from(fast);
+        let groups = 1
+            + usize::from(pair)
+            + usize::from(fast)
+            + deferred.as_ref().map_or(0, |(_, targets)| targets.len());
+        let profile_overhead = deferred.as_ref().map_or(Ok(0usize), |(_, targets)| {
+            size_of::<DeferredRootProfiles>()
+                .checked_add(array_bytes::<NativeEvalType>(targets.capacity())?)
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        array_bytes::<(NativeEvalType, RowProfile)>(targets.len()).ok()?,
+                    )
+                })
+                .ok_or_else(|| resource("deferred profile metadata extent overflow"))
+        })?;
+        let available_metadata = source_limits
+            .max_metadata_bytes
+            .checked_sub(profile_overhead)
+            .ok_or_else(|| resource("deferred profiles exceed metadata policy"))?;
         let limits = if groups > 1 {
             BatchSourceLimits {
-                max_metadata_bytes: source_limits.max_metadata_bytes / groups,
+                max_metadata_bytes: available_metadata / groups,
                 ..source_limits
             }
         } else {
             source_limits
         };
-        let source = lower_view(
+        let source = lower_view_policy(
             suite,
             calculated_slot,
             row_schema,
@@ -5055,6 +5950,7 @@ impl PreparedBatch {
             unit,
             limits,
             view,
+            deferred.is_some(),
         )?;
         let program = compile_batch(
             &source.expr,
@@ -5101,8 +5997,41 @@ impl PreparedBatch {
         } else {
             None
         };
+        let deferred_profiles = if let Some((probe, targets)) = deferred {
+            let mut typed = Vec::new();
+            reserve(&mut typed, targets.len())?;
+            for target in targets {
+                let source = lower_view_policy(
+                    suite,
+                    calculated_slot,
+                    row_schema,
+                    new_collation,
+                    unit,
+                    limits,
+                    Some(NativeView::BulkRoot(target)),
+                    true,
+                )?;
+                let program = compile_batch(
+                    &source.expr,
+                    &source.schema,
+                    LocalCompileContext {
+                        limits: limits.tree,
+                    },
+                    &source.facts,
+                )?;
+                typed.push((target, RowProfile { source, program }));
+            }
+            Some(Box::new(DeferredRootProfiles {
+                probe,
+                typed,
+                selected: None,
+            }))
+        } else {
+            None
+        };
         let window_size = program.max_batch_size();
         Ok(Self {
+            deferred_profiles,
             // Eligibility selects the native publication boundary, while the
             // compiled program independently selects operand demand. Both
             // typed carriers and native-value capabilities need the same native
@@ -5125,6 +6054,16 @@ impl PreparedBatch {
     }
 
     fn compiled_node_count(&self) -> LocalResult<usize> {
+        let deferred = self
+            .deferred_profiles
+            .as_ref()
+            .map_or(Ok(0usize), |profiles| {
+                profiles.typed.iter().try_fold(0usize, |count, (_, row)| {
+                    count
+                        .checked_add(row.source.facts.node_count())
+                        .ok_or_else(|| resource("deferred profile graph count overflow"))
+                })
+            })?;
         self.source
             .facts
             .node_count()
@@ -5140,6 +6079,7 @@ impl PreparedBatch {
                         .map_or(0, |fast| fast.source.facts.node_count()),
                 )
             })
+            .and_then(|count| count.checked_add(deferred))
             .ok_or_else(|| resource("profile graph count overflow"))
     }
     pub(crate) fn scratch_snapshot(&self) -> BatchScratchSnapshot {
@@ -5151,7 +6091,7 @@ impl PreparedBatch {
     }
     #[cfg(test)]
     pub(crate) fn declared_type_snapshot(&self) -> FieldType {
-        snapshot_field_type(&self.source.nodes[0].sql)
+        snapshot_field_type(self.source.nodes[0].declared_sql())
     }
 
     fn validate_invocation(
@@ -5161,6 +6101,17 @@ impl PreparedBatch {
         output: &Chunk,
         row_schema: &[FieldType],
     ) -> Result<()> {
+        if self.deferred_profiles.as_ref().is_some_and(|profiles| {
+            profiles.typed.iter().any(|(_, row)| {
+                !Arc::ptr_eq(&row.source.owner, &self.source.owner)
+                    || row.source.root_identity != self.source.root_identity
+                    || row.source.calculated_slot != self.source.calculated_slot
+                    || row.source.output_index != self.source.output_index
+                    || row.source.row_schema != self.source.row_schema
+            })
+        }) {
+            return Err(binding("deferred profiles do not share their sealed source").into());
+        }
         if self.row_profile.as_ref().is_some_and(|row| {
             !Arc::ptr_eq(&row.source.owner, &self.source.owner)
                 || row.source.root_identity != self.source.root_identity
@@ -5225,8 +6176,9 @@ impl PreparedBatch {
             }
         }
         if output.num_cols() != projection_output_count(&suite.program)?
-            || output.column(self.source.output_index).type_size()
-                != get_fixed_len(&self.source.nodes[0].sql)
+            || self.source.nodes[0].sql.as_ref().is_some_and(|field| {
+                output.column(self.source.output_index).type_size() != get_fixed_len(field)
+            })
             || output.sel().is_some()
             || output.is_incomplete_chunk()
         {
@@ -5402,13 +6354,14 @@ impl PreparedBatch {
         pending: &mut PendingTypedOutput,
     ) -> Result<()> {
         // Preserve shape/error priority before any copy or resource-based refusal.
-        let expected = batch_eval_type(self.source.nodes[0].sql.eval_type());
+        let expected = batch_eval_type(self.source.nodes[0].declared_sql().eval_type());
         if values.eval_type() != expected || values.len() != selection.len() {
             return Err(binding("batch result shape differs from computed boundary").into());
         }
         let carrier = Self::typed_carrier_bytes(&values)?;
         let count = values.len();
-        let width = usize::try_from(get_fixed_len(&self.source.nodes[0].sql)).unwrap_or(0);
+        let width =
+            usize::try_from(get_fixed_len(self.source.nodes[0].declared_sql())).unwrap_or(0);
         // Two encoded layouts plus two carrier payloads cover known conversion
         // scratch and the pending destination. Post-copy capacities are checked
         // separately; this is not a hard allocator-peak guarantee.
@@ -5446,7 +6399,7 @@ impl PreparedBatch {
         output: &mut Chunk,
         output_index: usize,
     ) -> Result<()> {
-        let expected = batch_eval_type(self.source.nodes[0].sql.eval_type());
+        let expected = batch_eval_type(self.source.nodes[0].declared_sql().eval_type());
         if values.eval_type() != expected || values.len() != selection.len() {
             return Err(binding("batch result shape differs from computed boundary").into());
         }
@@ -5636,10 +6589,15 @@ impl NativeDatumSource for NativeChunk<'_> {
                 SourceKind::NativeConstant { value } => {
                     // Exactly the public Expression.Eval result view. Borrow
                     // unchanged values until insert_clone's pre-copy gate.
-                    let integer = (!(ordinal == 0 && self.source.constant_root_shortcut))
-                        .then(|| crate::expression::enum_set_integer_view(value, Some(&node.sql)))
-                        .flatten()
-                        .map(Datum::UInt);
+                    let integer = (!(ordinal == 0 && self.source.constant_root_shortcut)
+                        && node.view.bulk_target().is_none()
+                        && !matches!(
+                            node.view,
+                            NativeView::RowTyped(_) | NativeView::DiagnosticTyped(_)
+                        ))
+                    .then(|| crate::expression::enum_set_integer_view(value, node.sql.as_ref()))
+                    .flatten()
+                    .map(Datum::UInt);
                     store.borrow_mut().insert_clone(
                         integer.as_ref().unwrap_or(value),
                         node.view.value_role().expect("checked native view"),
@@ -5659,9 +6617,9 @@ impl NativeDatumSource for NativeChunk<'_> {
                     let value = self
                         .input
                         .physical_row(row.input_row)
-                        .get_datum(*index, &node.sql);
+                        .get_datum(*index, node.declared_sql());
                     let value =
-                        crate::expression::apply_enum_set_integer_view(value, Some(&node.sql));
+                        crate::expression::apply_enum_set_integer_view(value, node.sql.as_ref());
                     store.borrow_mut().insert_clone(
                         &value,
                         node.view.value_role().expect("checked native view"),
@@ -5679,7 +6637,7 @@ impl NativeDatumSource for NativeChunk<'_> {
         let value = self
             .input
             .physical_row(row.input_row)
-            .get_datum(*index, &node.sql);
+            .get_datum(*index, node.declared_sql());
         if node.view == NativeView::JsonBytes {
             return match value {
                 Datum::Null => Ok(Datum::Null),
@@ -5781,7 +6739,7 @@ impl NativeDatumSource for NativeChunk<'_> {
             }
             return Ok(Some(VectorValue::Bytes(output)));
         }
-        match node.sql.eval_type() {
+        match node.declared_sql().eval_type() {
             NativeEvalType::Int => {
                 let cells = column.raw_cells();
                 let mut output = ChunkedVecSized::<Int>::with_capacity(physical_rows.len());
@@ -5868,7 +6826,7 @@ impl NativeDatumSource for NativeChunk<'_> {
                 Ok(Some(VectorValue::DateTime(output)))
             }
             NativeEvalType::Duration => {
-                let fsp = node.sql.decimal();
+                let fsp = node.declared_sql().decimal();
                 let mut output =
                     ChunkedVecSized::<TikvDuration>::with_capacity(physical_rows.len());
                 for &row in physical_rows {
@@ -6109,7 +7067,7 @@ impl BatchConsumer for Consumer<'_> {
                 invocation.candidate.expression(),
                 &source.owner.calculated[source.calculated_slot],
             )
-            || invocation.candidate.target() != source.nodes[0].sql.eval_type()
+            || invocation.candidate.target() != source.nodes[0].declared_sql().eval_type()
             || invocation.input.num_rows() != self.worker.selection.len()
         {
             return Err(BatchFailure::admission(
@@ -6188,6 +7146,31 @@ impl PreparedBatch {
             override_source,
         )
     }
+    fn select_deferred_profile(&mut self, ctx: &dyn Columns, enabled: bool) -> Result<bool> {
+        let Some(profiles) = &mut self.deferred_profiles else {
+            return Ok(enabled);
+        };
+        // Clear before the actual callback so unwind/error cannot reuse a stale choice.
+        profiles.selected = None;
+        if !enabled {
+            return Ok(false);
+        }
+        let target = match profiles.probe {
+            DeferredRootProbe::Fixed(target) => target,
+            DeferredRootProbe::Parameter(order) => {
+                tidb_query_expr::local::with_value_kernel_work_limit(
+                    self.max_materialization_retained_bytes,
+                    || crate::context_value::read_parameter_type(order, ctx),
+                )?
+                .eval_type()
+            }
+        };
+        profiles.selected = profiles
+            .typed
+            .iter()
+            .position(|(candidate, _)| *candidate == target);
+        Ok(profiles.selected.is_some())
+    }
     fn execute_profile(
         &mut self,
         native_ctx: &dyn Columns,
@@ -6197,8 +7180,16 @@ impl PreparedBatch {
         row_domain: bool,
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
+        let deferred_index = self
+            .deferred_profiles
+            .as_ref()
+            .and_then(|profiles| profiles.selected);
         let use_row = row_domain && self.row_profile.is_some();
-        let source = Arc::clone(if use_row {
+        let source = Arc::clone(if let Some(index) = deferred_index {
+            &self.deferred_profiles.as_ref().unwrap().typed[index]
+                .1
+                .source
+        } else if use_row {
             &self
                 .row_profile
                 .as_ref()
@@ -6208,7 +7199,12 @@ impl PreparedBatch {
             &self.source
         });
         let row_domain = row_domain || source.context_row_only;
-        let whole = if use_row {
+        let whole = if let Some(index) = deferred_index {
+            self.deferred_profiles.as_ref().unwrap().typed[index]
+                .1
+                .program
+                .requires_whole_selection()
+        } else if use_row {
             self.row_profile
                 .as_ref()
                 .unwrap()
@@ -6219,17 +7215,18 @@ impl PreparedBatch {
         };
         let whole = whole && !source.context_row_only;
         let window_size = if row_domain { 1 } else { self.window_size };
-        let defer = !row_domain && self.defer_batch_publication;
+        let defer =
+            !row_domain && (self.defer_batch_publication || (deferred_index.is_some() && !whole));
         let native_output = source.nodes[0].view.value_role() == Some(NativeValueRole::Output);
         let mut pending = (defer && native_output).then(PendingNativeOutput::default);
         let mut typed_pending = if defer && !native_output && !self.selection.is_empty() {
             self.accept_retained(
-                PendingTypedOutput::initial_bytes(&source.nodes[0].sql)?
+                PendingTypedOutput::initial_bytes(source.nodes[0].declared_sql())?
                     .checked_add(array_bytes::<usize>(self.selection.capacity())?)
                     .ok_or_else(|| resource("pending typed initialization size overflow"))?,
             )?;
             let pending = PendingTypedOutput {
-                chunk: Chunk::new_empty(std::slice::from_ref(&source.nodes[0].sql)),
+                chunk: Chunk::new_empty(std::slice::from_ref(source.nodes[0].declared_sql())),
             };
             self.accept_retained(
                 pending
@@ -6248,17 +7245,46 @@ impl PreparedBatch {
         } else {
             None
         };
-        let mut hosts = source.hosts.clone().map(|catalog| {
-            NativeBatchHosts::new(
-                catalog,
-                &source.host_metadata,
-                native_ctx,
-                self.max_materialization_retained_bytes,
-            )
-            .with_native_values(native_values.as_ref())
-            .with_constant_probes(&source.host_probes)
-            .with_constant_root_shortcut(source.constant_root_shortcut)
-        });
+        let mut hosts = source
+            .hosts
+            .clone()
+            .map(|catalog| {
+                NativeBatchHosts::new(
+                    catalog,
+                    &source.host_metadata,
+                    native_ctx,
+                    self.max_materialization_retained_bytes,
+                )
+                .with_native_values(native_values.as_ref())
+                .with_input(input)
+                .with_typed_cache_slots(
+                    source
+                        .context_policy
+                        .as_ref()
+                        .map_or(0, |p| p.typed_cache_slots),
+                )?
+                .with_constant_probes(&source.host_probes)
+                .with_constant_root_shortcut(source.constant_root_shortcut)
+                .with_diagnostic_parents(
+                    source
+                        .context_policy
+                        .as_ref()
+                        .map_or(&[], |p| p.diagnostic_parents.as_ref()),
+                )?
+                .with_numeric_parents(
+                    source
+                        .context_policy
+                        .as_ref()
+                        .map_or(&[], |p| p.numeric_parents.as_ref()),
+                )?
+                .with_diagnostic_slots(
+                    source
+                        .context_policy
+                        .as_ref()
+                        .map_or(&[], |p| p.diagnostic_slots.as_ref()),
+                )
+            })
+            .transpose()?;
         // Explicit whole programs receive the complete selection. Other
         // programs use bounded driver windows in the same canonical route;
         // eligible batch results are staged across those windows. No error
@@ -6293,7 +7319,11 @@ impl PreparedBatch {
                     .as_mut()
                     .map(|hosts| hosts as &mut dyn LocalHostServices),
             };
-            let program = if use_row {
+            let program = if let Some(index) = deferred_index {
+                &mut self.deferred_profiles.as_mut().unwrap().typed[index]
+                    .1
+                    .program
+            } else if use_row {
                 &mut self.row_profile.as_mut().unwrap().program
             } else {
                 &mut self.program
@@ -6583,9 +7613,18 @@ impl PreparedBatchSuite {
                 // The original getter belongs to this output and occurs only
                 // after its Decimal priority stage declined, even for empty input.
                 let vectorized = native_ctx.enable_vectorized_expression();
+                let selected_vectorized = worker.select_deferred_profile(native_ctx, vectorized)?;
                 if vectorized {
-                    if let Some(order) = worker.source.root_type_probe {
-                        crate::context_value::probe_parameter_type(order, native_ctx)?;
+                    if let Some(order) = worker
+                        .source
+                        .context_policy
+                        .as_ref()
+                        .and_then(|p| p.root_type_probe)
+                    {
+                        tidb_query_expr::local::with_value_kernel_work_limit(
+                            worker.max_materialization_retained_bytes,
+                            || order.run(native_ctx),
+                        )?;
                     }
                 }
                 worker.execute_profile(
@@ -6593,7 +7632,7 @@ impl PreparedBatchSuite {
                     ctx,
                     input,
                     output,
-                    !vectorized,
+                    !selected_vectorized,
                     #[cfg(test)]
                     None,
                 )?;

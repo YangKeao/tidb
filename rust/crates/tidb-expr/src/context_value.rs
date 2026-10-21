@@ -6,6 +6,7 @@ use tidb_datatype::FieldType;
 #[derive(Debug)]
 pub(crate) enum ContextRead {
     Parameter(i64),
+    Failure(&'static str),
     Deferred,
     Correlated(Option<Arc<RwLock<Datum>>>),
 }
@@ -20,15 +21,7 @@ impl ContextValue {
     pub(crate) fn capture(expression: &Expression) -> Option<Self> {
         match expression {
             Expression::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some() => {
-                Some(Self {
-                    read: match c.param_marker {
-                        Some(marker) => ContextRead::Parameter(marker.order),
-                        None => ContextRead::Deferred,
-                    },
-                    target: c.ret_type.clone(),
-                    convert_deferred: c.deferred_expr.is_some(),
-                    root_broadcast: c.deferred_expr.is_none(),
-                })
+                Some(Self::for_constant(c))
             }
             Expression::CorrelatedColumn(c) => Some(Self {
                 read: ContextRead::Correlated(c.data.as_ref().map(Arc::clone)),
@@ -37,6 +30,17 @@ impl ContextValue {
                 root_broadcast: false,
             }),
             _ => None,
+        }
+    }
+    pub(crate) fn for_constant(c: &crate::constant::Constant) -> Self {
+        Self {
+            read: match c.param_marker {
+                Some(marker) => ContextRead::Parameter(marker.order),
+                None => ContextRead::Deferred,
+            },
+            target: c.ret_type.clone(),
+            convert_deferred: c.deferred_expr.is_some(),
+            root_broadcast: c.deferred_expr.is_none(),
         }
     }
     pub(crate) fn demands_child(&self) -> bool {
@@ -50,6 +54,7 @@ impl ContextValue {
                 ctx.param_value(order)
             }
             ContextRead::Correlated(binding) => Ok(read_correlated(binding.as_ref())),
+            ContextRead::Failure(message) => Err(EvalError::Unsupported(message)),
             ContextRead::Deferred => {
                 unreachable!("deferred value is supplied by the shared driver")
             }
@@ -60,15 +65,22 @@ impl ContextValue {
         value: Datum,
         ctx: &dyn Columns,
     ) -> Result<Datum, (Datum, EvalError)> {
-        let value = if self.convert_deferred {
-            finish_deferred_value(value, self.target.as_ref(), ctx)?
-        } else {
-            value
-        };
+        let value = self.finish_raw(value, ctx)?;
         Ok(crate::expression::apply_enum_set_integer_view(
             value,
             self.target.as_ref(),
         ))
+    }
+    pub(crate) fn finish_raw(
+        &self,
+        value: Datum,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, (Datum, EvalError)> {
+        if self.convert_deferred {
+            finish_deferred_value(value, self.target.as_ref(), ctx)
+        } else {
+            Ok(value)
+        }
     }
 }
 pub(crate) fn read_correlated(binding: Option<&Arc<RwLock<Datum>>>) -> Datum {
@@ -152,9 +164,17 @@ pub(crate) fn finish_deferred_value(
 
 /// Original deferred-root admission reads a parameter for type before rows,
 /// even when its child is ultimately outside the typed native closure.
-pub(crate) fn probe_parameter_type(order: i64, ctx: &dyn Columns) -> Result<(), EvalError> {
+pub(crate) fn read_parameter_type(order: i64, ctx: &dyn Columns) -> Result<FieldType, EvalError> {
     let order =
         usize::try_from(order).map_err(|_| EvalError::Unsupported("unbound prepared parameter"))?;
-    let _ = tidb_datatype::infer_param_type_from_datum(&ctx.param_value(order)?);
-    Ok(())
+    let value = ctx.param_value(order)?;
+    // Type inference formats Decimal and Duration to obtain their display
+    // width. Charge that actual phase after the original parameter callback.
+    if matches!(&value, Datum::Decimal(_) | Datum::Duration(_)) {
+        crate::scalar_function::eager_values::charge_string_work(&value)?;
+    }
+    Ok(tidb_datatype::infer_param_type_from_datum(&value))
+}
+pub(crate) fn probe_parameter_type(order: i64, ctx: &dyn Columns) -> Result<(), EvalError> {
+    read_parameter_type(order, ctx).map(|_| ())
 }

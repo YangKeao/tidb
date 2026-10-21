@@ -274,13 +274,50 @@ pub(crate) enum PreparedIntegerDivision {
         unsigned: bool,
     },
 }
-pub(crate) fn prepare_integer_division(
+/// A value-only promotion can pause before converting its real operand. The
+/// continuation owns the unconsumed operand; no argument is requested twice.
+pub(crate) enum IntegerDivisionStep {
+    Ready(PreparedIntegerDivision),
+    Operand {
+        index: usize,
+        value: Datum,
+        continuation: IntegerDivisionContinuation,
+    },
+}
+pub(crate) enum IntegerDivisionContinuation {
+    Left { right: Datum, unsigned: bool },
+    Right { left: Decimal, unsigned: bool },
+}
+impl IntegerDivisionContinuation {
+    pub(crate) fn finish(self, value: Decimal) -> IntegerDivisionStep {
+        match self {
+            Self::Left { right, unsigned: _ } if right.is_null() => {
+                IntegerDivisionStep::Ready(PreparedIntegerDivision::Null)
+            }
+            Self::Left { right, unsigned } => IntegerDivisionStep::Operand {
+                index: 1,
+                value: right,
+                continuation: Self::Right {
+                    left: value,
+                    unsigned,
+                },
+            },
+            Self::Right { left, unsigned } => {
+                IntegerDivisionStep::Ready(PreparedIntegerDivision::Decimal {
+                    left,
+                    right: value,
+                    unsigned,
+                })
+            }
+        }
+    }
+}
+pub(crate) fn begin_integer_division(
     mut left: Datum,
     mut right: Datum,
     unsigned: [bool; 2],
     ctx: &dyn crate::Columns,
-    real_decimal: &mut impl FnMut(usize, Datum) -> Result<Decimal, EvalError>,
-) -> Result<PreparedIntegerDivision, EvalError> {
+) -> Result<IntegerDivisionStep, EvalError> {
     loop {
         if left.is_range_sentinel() || right.is_range_sentinel() {
             return Err(EvalError::Unsupported("range sentinel expression operand"));
@@ -317,36 +354,60 @@ pub(crate) fn prepare_integer_division(
             || matches!(right, Datum::Real(_) | Datum::Float32(_))
         {
             if left.is_null() {
-                return Ok(PreparedIntegerDivision::Null);
+                return Ok(IntegerDivisionStep::Ready(PreparedIntegerDivision::Null));
             }
-            let left = real_decimal(0, left)?;
-            if right.is_null() {
-                return Ok(PreparedIntegerDivision::Null);
-            }
-            let right = real_decimal(1, right)?;
-            return Ok(PreparedIntegerDivision::Decimal {
-                left,
-                right,
-                unsigned: unsigned_pair,
+            return Ok(IntegerDivisionStep::Operand {
+                index: 0,
+                value: left,
+                continuation: IntegerDivisionContinuation::Left {
+                    right,
+                    unsigned: unsigned_pair,
+                },
             });
         }
         if matches!(left, Datum::Decimal(_)) || matches!(right, Datum::Decimal(_)) {
             if left.is_null() || right.is_null() {
-                return Ok(PreparedIntegerDivision::Null);
+                return Ok(IntegerDivisionStep::Ready(PreparedIntegerDivision::Null));
             }
-            return Ok(PreparedIntegerDivision::Decimal {
-                left: to_decimal(left),
-                right: to_decimal(right),
-                unsigned: unsigned_pair,
-            });
+            return Ok(IntegerDivisionStep::Ready(
+                PreparedIntegerDivision::Decimal {
+                    left: to_decimal(left),
+                    right: to_decimal(right),
+                    unsigned: unsigned_pair,
+                },
+            ));
         }
         if left.is_null() || right.is_null() {
-            return Ok(PreparedIntegerDivision::Null);
+            return Ok(IntegerDivisionStep::Ready(PreparedIntegerDivision::Null));
         }
         return match (integer_of(&left)?, integer_of(&right)?) {
-            (Some(left), Some(right)) => Ok(PreparedIntegerDivision::Integer { left, right }),
+            (Some(left), Some(right)) => Ok(IntegerDivisionStep::Ready(
+                PreparedIntegerDivision::Integer { left, right },
+            )),
             _ => Err(EvalError::UnsupportedOperandPair(left.kind(), right.kind())),
         };
+    }
+}
+
+pub(crate) fn prepare_integer_division(
+    left: Datum,
+    right: Datum,
+    unsigned: [bool; 2],
+    ctx: &dyn crate::Columns,
+    real_decimal: &mut impl FnMut(usize, Datum) -> Result<Decimal, EvalError>,
+) -> Result<PreparedIntegerDivision, EvalError> {
+    let mut step = begin_integer_division(left, right, unsigned, ctx)?;
+    loop {
+        match step {
+            IntegerDivisionStep::Ready(value) => return Ok(value),
+            IntegerDivisionStep::Operand {
+                index,
+                value,
+                continuation,
+            } => {
+                step = continuation.finish(real_decimal(index, value)?);
+            }
+        }
     }
 }
 impl PreparedIntegerDivision {
@@ -607,5 +668,89 @@ mod tests {
             Ok(Datum::Int(0))
         );
         assert_eq!(*context.observations.borrow(), ["precision:0"]);
+    }
+    #[test]
+    fn integer_division_staged_promotion_matches_independent_original_before_retirement() {
+        let fixtures = super::super::arithmetic::tests::fixtures();
+        let mut count = 0usize;
+        let mut hash = 0xcbf29ce484222325u64;
+        for strict in [false, true] {
+            for unsigned in [[false, false], [false, true], [true, false], [true, true]] {
+                for left in &fixtures {
+                    for right in &fixtures {
+                        let old = Context::new(strict, [4, 31]);
+                        let ctx = Context::new(strict, [4, 31]);
+                        let convert = |index: usize, value: Datum, ctx: &Context| {
+                            ctx.observations
+                                .borrow_mut()
+                                .push(format!("convert:{index}"));
+                            super::super::decimal_div_operand_value(value, None, ctx, || {
+                                Some(format!("operand{index}"))
+                            })
+                        };
+                        let observe = |body: &mut dyn FnMut() -> Result<Datum, EvalError>,
+                                       ctx: &Context| {
+                            let result = match std::panic::catch_unwind(
+                                std::panic::AssertUnwindSafe(body),
+                            ) {
+                                Ok(result) => format!("{result:?}"),
+                                Err(p) => format!(
+                                    "PANIC:{:?}",
+                                    p.downcast_ref::<String>()
+                                        .map(String::as_str)
+                                        .or_else(|| p.downcast_ref::<&str>().copied())
+                                ),
+                            };
+                            format!("{result}|{:?}", ctx.observations.borrow())
+                        };
+                        let expected = observe(
+                            &mut || {
+                                prepare_integer_division(
+                                    left.clone(),
+                                    right.clone(),
+                                    unsigned,
+                                    &old,
+                                    &mut |index, value| convert(index, value, &old),
+                                )?
+                                .compute(64 << 20, &old)
+                            },
+                            &old,
+                        );
+                        let got = observe(
+                            &mut || {
+                                let mut step = begin_integer_division(
+                                    left.clone(),
+                                    right.clone(),
+                                    unsigned,
+                                    &ctx,
+                                )?;
+                                loop {
+                                    match step {
+                                        IntegerDivisionStep::Ready(prepared) => {
+                                            return prepared.compute(64 << 20, &ctx)
+                                        }
+                                        IntegerDivisionStep::Operand {
+                                            index,
+                                            value,
+                                            continuation,
+                                        } => {
+                                            step = continuation.finish(convert(index, value, &ctx)?)
+                                        }
+                                    }
+                                }
+                            },
+                            &ctx,
+                        );
+                        assert_eq!(got, expected, "{strict}/{unsigned:?}/{left:?}/{right:?}");
+                        for b in expected.bytes() {
+                            hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("INTDIV STAGED INDEPENDENT {count}/{hash:016X}");
+        assert_eq!((count, hash), (8192, 0x07C8B3B549864CA7));
     }
 }
