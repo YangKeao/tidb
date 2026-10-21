@@ -2968,3 +2968,329 @@ fn run_grouping_header_matrix(compare: bool) {
     }
     assert!(gaps.is_empty());
 }
+
+#[test]
+fn optional_wildcard_original_metadata_and_demands() {
+    if isolate_common_corpus("stateful_tests::optional_wildcard_original_metadata_and_demands") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_wildcard_matrix(false);
+}
+#[test]
+fn optional_wildcard_actual_metadata_and_demands() {
+    if isolate_common_corpus("stateful_tests::optional_wildcard_actual_metadata_and_demands") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_wildcard_matrix(true);
+}
+fn run_optional_wildcard_matrix(compare: bool) {
+    let cases = [
+        [
+            Datum::new_string("ab_C"),
+            Datum::new_string("a%_c"),
+            Datum::Int(92),
+        ],
+        [Datum::Null, Datum::Bytes(vec![255]), Datum::Int(92)],
+        [
+            Datum::new_string("test"),
+            Datum::Null,
+            Datum::Bytes(vec![255]),
+        ],
+        [
+            Datum::new_string("test"),
+            Datum::new_string("te%"),
+            Datum::Null,
+        ],
+        [
+            Datum::Bytes(vec![255, b'a']),
+            Datum::Bytes(vec![255, b'%']),
+            Datum::UInt(u64::MAX),
+        ],
+        [
+            Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+            Datum::new_string("%"),
+            Datum::new_string("999tail"),
+        ],
+        [
+            Datum::new_string("中国"),
+            Datum::new_string("中_"),
+            Datum::Decimal(tidb_datatype::Decimal::from_literal("9223372036854775808")),
+        ],
+        [
+            Datum::Real(f64::NAN),
+            Datum::new_string("%"),
+            Datum::Int(i64::MIN),
+        ],
+    ];
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for name in ["like", "ilike"] {
+        for shape in 0..5 {
+            for mask in 0..16 {
+                for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for (vi, values) in cases.iter().enumerate() {
+                        for profile in [0, 5] {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let bad = || {
+                                            call(
+                                                "__actual_unread_wildcard_argument__",
+                                                string_ty(),
+                                                vec![],
+                                            )
+                                        };
+                                        let deferred = |name, expr| {
+                                            let mut c = Constant::new(
+                                                Datum::new_string("unread stored"),
+                                                string_ty(),
+                                            );
+                                            c.deferred_expr = Some(Box::new(leaf::assignment(
+                                                name,
+                                                expr,
+                                                &string_ty(),
+                                            )));
+                                            Expression::Constant(c)
+                                        };
+                                        let p0 = parameter(0, string_ty());
+                                        let p1 = parameter(1, string_ty());
+                                        let escape = literal(values[2].clone(), string_ty());
+                                        let args = match shape {
+                                            1 => vec![
+                                                deferred("wildcard-text", p0),
+                                                deferred("wildcard-pattern", p1),
+                                                deferred("wildcard-escape", escape),
+                                            ],
+                                            2 => vec![p0, literal(Datum::Null, string_ty()), bad()],
+                                            3 => vec![
+                                                literal(Datum::Null, string_ty()),
+                                                bad(),
+                                                bad(),
+                                            ],
+                                            4 => vec![p0, p1, bad()],
+                                            _ => vec![p0, p1, escape],
+                                        };
+                                        let mut f = ScalarFunction::new(
+                                            CiString::new(name),
+                                            field.clone(),
+                                            args,
+                                        );
+                                        if mask & 1 != 0 {
+                                            f.ret_type = None;
+                                        }
+                                        for (i, arg) in f.args.iter_mut().enumerate() {
+                                            if mask & (2 << i) != 0 {
+                                                match arg {
+                                                    Expression::Constant(c) => c.ret_type = None,
+                                                    Expression::ScalarFunction(f) => {
+                                                        f.ret_type = None
+                                                    }
+                                                    _ => unreachable!(),
+                                                }
+                                            }
+                                        }
+                                        suite(Expression::ScalarFunction(f))
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let old = C::new(
+                                        profile,
+                                        enabled,
+                                        [values[0].clone(), values[1].clone()],
+                                    );
+                                    let new = C::new(
+                                        profile,
+                                        enabled,
+                                        [values[0].clone(), values[1].clone()],
+                                    );
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let mut c = chunk(
+                                                &[ty()],
+                                                &[
+                                                    vec![Datum::Int(0)],
+                                                    vec![Datum::Int(1)],
+                                                    vec![Datum::Int(2)],
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&field);
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let label = format!("optional-wildcard/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&field);
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || left.column(0) != right.column(0)
+                                                || old.snapshot() != new.snapshot()
+                                            {
+                                                eprintln!("OPTIONAL WILDCARD DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if (route.fallback != 0 || route.refusals != 0)
+                                                && gaps.len() < 20
+                                            {
+                                                gaps.push(format!("{label}: {route:?}"));
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (92160, 0xFFB7855F523B1F05));
+    eprintln!("OPTIONAL WILDCARD ORIGINAL {count}/{hash:016X}");
+    if !gaps.is_empty() {
+        eprintln!("OPTIONAL WILDCARD ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}
+
+#[test]
+fn optional_wildcard_full_actual_values_in_each_operand() {
+    if isolate_common_corpus("stateful_tests::optional_wildcard_full_actual_values_in_each_operand")
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in ["like", "ilike"] {
+        for position in 0..3 {
+            for mask in [1, 2, 8, 15] {
+                for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut values = [
+                        Datum::new_string("abcd"),
+                        Datum::new_string("a%"),
+                        Datum::Int(92),
+                    ];
+                    values[position] = value;
+                    for enabled in [false, true] {
+                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                            let make = || {
+                                let mut f = ScalarFunction::new(
+                                    CiString::new(name),
+                                    ty(),
+                                    vec![
+                                        parameter(0, string_ty()),
+                                        parameter(1, string_ty()),
+                                        literal(values[2].clone(), string_ty()),
+                                    ],
+                                );
+                                if mask & 1 != 0 {
+                                    f.ret_type = None;
+                                }
+                                for (i, arg) in f.args.iter_mut().enumerate() {
+                                    if mask & (2 << i) != 0 {
+                                        let Expression::Constant(c) = arg else {
+                                            unreachable!()
+                                        };
+                                        c.ret_type = None;
+                                    }
+                                }
+                                suite(Expression::ScalarFunction(f))
+                            };
+                            let original = make();
+                            let actual = make();
+                            let old = C::new(0, enabled, [values[0].clone(), values[1].clone()]);
+                            let new = C::new(0, enabled, [values[0].clone(), values[1].clone()]);
+                            for reuse in 0..2 {
+                                let input = || {
+                                    let mut c = chunk(
+                                        &[ty()],
+                                        &[
+                                            vec![Datum::Int(0)],
+                                            vec![Datum::Int(1)],
+                                            vec![Datum::Int(2)],
+                                        ],
+                                    );
+                                    c.set_sel(selection.clone());
+                                    c
+                                };
+                                let mut a = input();
+                                let mut b = input();
+                                let mut left = output_for(&ty());
+                                let mut right = output_for(&ty());
+                                left.append_null(0);
+                                right.append_null(0);
+                                let expected =
+                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                                });
+                                let label=format!("optional-wildcard-full/{name}/{position}/{mask}/{vi}/{enabled}/{selection:?}/{reuse}");
+                                if got != expected
+                                    || right.column(0) != left.column(0)
+                                    || new.snapshot() != old.snapshot()
+                                {
+                                    eprintln!("OPTIONAL WILDCARD FULL DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                }
+                                assert_eq!(got, expected, "{label}");
+                                assert_eq!(right.column(0), left.column(0), "{label}");
+                                assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                let route = actual.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.fallback, route.refusals),
+                                    (0, 0),
+                                    "{label} {route:?}"
+                                );
+                                for byte in format!(
+                                    "{label}|{expected}|{:?}|{}",
+                                    left.column(0),
+                                    old.snapshot()
+                                )
+                                .bytes()
+                                {
+                                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (42912, 0x65B1761CB7A9C6A1));
+    eprintln!("OPTIONAL WILDCARD FULL {count}/{hash:016X}");
+}

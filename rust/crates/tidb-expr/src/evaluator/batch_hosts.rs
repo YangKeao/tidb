@@ -246,9 +246,9 @@ pub(super) enum NativeHostMetadata {
     },
     Like {
         arguments: [usize; 3],
-        escape_type: FieldType,
+        escape_type: Option<FieldType>,
         invocation: tidb_query_expr::NativeLikeInvocation,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         output_node: usize,
         output_role: NativeValueRole,
     },
@@ -471,6 +471,7 @@ impl NativeHostMetadata {
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
             Self::CachedList(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
+            Self::Like { result_type, .. } => result_type.as_ref(),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
@@ -485,7 +486,6 @@ impl NativeHostMetadata {
             | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
             | Self::Identity { result_type, .. }
-            | Self::Like { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
@@ -1412,6 +1412,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::Comparison { .. }
                 | NativeHostMetadata::RawValues { .. }
                 | NativeHostMetadata::Grouping { .. }
+                | NativeHostMetadata::Like { .. }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {

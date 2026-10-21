@@ -540,6 +540,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_optional_selection_call(function)
                 || native_optional_operator_call(function)
                 || native_optional_grouping_call(function)
+                || native_optional_wildcard_call(function)
                 || native_no_argument_header_call(function) =>
         {
             NativeView::RootValue
@@ -1298,6 +1299,17 @@ fn budget_value_call_metadata(
         if let Some(result) = result {
             budget.field(result, 1)?;
         }
+        return Ok(());
+    }
+    if native_optional_wildcard_call(function) {
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
+        if let Some(escape) = function.args[2].static_type() {
+            budget.field(escape, 1)?;
+        }
+        budget.array::<tidb_query_expr::NativeLikeInvocation>(1)?;
+        budget.array::<[usize; 3]>(1)?;
         return Ok(());
     }
     if native_optional_grouping_call(function) {
@@ -2149,6 +2161,14 @@ fn native_optional_operator_call(function: &ScalarFunction) -> bool {
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
+// LIKE retains lazy raw operands and the actual optional escape cast fact.
+fn native_optional_wildcard_call(function: &ScalarFunction) -> bool {
+    native_like_call(function)
+        && function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|arg| arg.static_type().is_none()))
+}
 // GROUPING retains its raw-id continuation, including NULL before metadata.
 fn native_optional_grouping_call(function: &ScalarFunction) -> bool {
     native_grouping_call(function)
@@ -2164,6 +2184,7 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_optional_selection_call(function)
         || native_optional_operator_call(function)
         || native_optional_grouping_call(function)
+        || native_optional_wildcard_call(function)
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
@@ -2400,8 +2421,9 @@ fn resolve_specific_call_in_view(
     }
     if native_like_call(function) {
         if view.value_role().is_none()
-            || function.get_static_type().is_none()
-            || function.args.iter().any(|a| a.static_type().is_none())
+            || (!native_optional_wildcard_call(function)
+                && (function.get_static_type().is_none()
+                    || function.args.iter().any(|a| a.static_type().is_none())))
         {
             return Err(BatchFailure::admission(
                 "LIKE requires original native declarations",
@@ -3850,6 +3872,7 @@ fn preflight_view<'a>(
                         resolve_call_in_view(function, view)?.0,
                         CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
                     ) || native_optional_grouping_call(function)
+                        || native_optional_wildcard_call(function)
                     {
                         budget_value_call_metadata(&mut budget, function, Some(sql))?;
                     }
@@ -5145,11 +5168,9 @@ fn lower_view_policy(
                                 }
                                 NativeHostMetadata::Like {
                                     arguments,
-                                    escape_type: snapshot_field_type(
-                                        sql.args[2].static_type().expect("checked LIKE escape"),
-                                    ),
+                                    escape_type: sql.args[2].static_type().map(snapshot_field_type),
                                     invocation: sql.batch_like_invocation(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item
                                         .view

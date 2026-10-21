@@ -22540,403 +22540,421 @@ fn native_wildcard_capabilities_callbacks_resources_panic_and_reuse() {
             self.events.borrow_mut().push("warning");
         }
     }
-    for ilike in [false, true] {
-        for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
-            let field = projected(&native_bytes_type(), true).unwrap();
-            let args = vec![field.clone(); 3];
-            let ret = field.clone();
-            let catalog = HostCatalog::for_sql_batch(vec![(
-                SqlBatchHostOperation::LikeNative { ilike },
-                HostSignature {
-                    arg_types: args.clone().into_boxed_slice(),
-                    return_type: ret.clone(),
-                },
-            )])
-            .unwrap();
-            let slot = catalog.slot(0).unwrap();
-            let cache_like = tidb_query_expr::NativeContextCache::new();
-            let cache_ilike = tidb_query_expr::NativeContextCache::new();
-            let policy = tidb_datatype::Collation::Utf8Mb4Bin.native_policy();
-            let invocation = if ilike {
-                tidb_query_expr::NativeLikeInvocation::ilike(policy, Some((&cache_ilike, 0)))
-            } else {
-                tidb_query_expr::NativeLikeInvocation::like(policy, Some((&cache_like, 0)))
-            };
-            let metadata = [NativeHostMetadata::Like {
-                arguments: [3, 4, 5],
-                escape_type: string_ty(),
-                invocation,
-                result_type: ty(),
-                output_node: 2,
-                output_role: role,
-            }];
-            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
-            store.borrow_mut().begin_window().unwrap();
-            let row = InputRow {
-                occurrence: 0,
-                input_row: 0,
-            };
-            let insert = |v: &Datum, role, node, row| {
-                store
-                    .borrow_mut()
-                    .insert_clone(v, role, NativeValueOrigin { node, row })
-                    .unwrap()
-            };
-            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-            store.borrow_mut().begin_window().unwrap();
-            let foreign = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
-            foreign.borrow_mut().begin_window().unwrap();
-            let context = C {
-                store: &store,
-                events: RefCell::new(vec![]),
-                panic_zone: Cell::new(false),
-                panic_id: Cell::new(false),
-                id: Cell::new(7),
-            };
-            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
-                .with_native_values(Some(&store));
-            let mut ctx = EvalContext::default();
-            let begin = |p: &mut NativeBatchHosts<'_>, ctx: &mut EvalContext| {
-                let HostStart::Pending { task, .. } = p
-                    .start(
-                        ctx,
-                        HostInvocation {
-                            slot,
-                            row,
-                            arg_types: &args,
-                            return_type: &ret,
+    for result_type in [Some(ty()), None] {
+        for escape_type in [Some(string_ty()), None, Some(ty().with_unsigned(true))] {
+            for ilike in [false, true] {
+                for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+                    let field = projected(&native_bytes_type(), true).unwrap();
+                    let args = vec![field.clone(); 3];
+                    let ret = field.clone();
+                    let catalog = HostCatalog::for_sql_batch(vec![(
+                        SqlBatchHostOperation::LikeNative { ilike },
+                        HostSignature {
+                            arg_types: args.clone().into_boxed_slice(),
+                            return_type: ret.clone(),
                         },
-                    )
-                    .unwrap()
-                else {
-                    panic!()
-                };
-                task
-            };
-            let reply = |p: &mut NativeBatchHosts<'_>,
-                         ctx: &mut EvalContext,
-                         task: &HostTaskId,
-                         index,
-                         token: Option<Vec<u8>>| {
-                p.resume(
-                    ctx,
-                    task,
-                    HostArgReply {
-                        index,
-                        field_type: &field,
-                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-                    },
-                )
-            };
-            let defaults = vec![
-                Datum::new_string("abc"),
-                Datum::new_string("a%"),
-                Datum::Int(92),
-            ];
-            for index in 0..3 {
-                let mut corrupt = insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
-                corrupt[0] ^= 1;
-                let foreign_token = foreign
-                    .borrow_mut()
-                    .insert_clone(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        NativeValueOrigin {
-                            node: 3 + index,
-                            row,
-                        },
-                    )
+                    )])
                     .unwrap();
-                for bad in [
-                    None,
-                    Some(corrupt),
-                    Some(stale.clone()),
-                    Some(foreign_token),
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::Output,
-                        3 + index,
-                        row,
-                    )),
-                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        3 + index,
-                        InputRow {
-                            occurrence: 1,
-                            input_row: 0,
-                        },
-                    )),
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        3 + index,
-                        InputRow {
-                            occurrence: 0,
-                            input_row: 1,
-                        },
-                    )),
-                ] {
-                    context.events.borrow_mut().clear();
-                    let task = begin(&mut provider, &mut ctx);
-                    for prefix in 0..index {
-                        assert!(matches!(
-                            reply(
+                    let slot = catalog.slot(0).unwrap();
+                    let cache_like = tidb_query_expr::NativeContextCache::new();
+                    let cache_ilike = tidb_query_expr::NativeContextCache::new();
+                    let policy = tidb_datatype::Collation::Utf8Mb4Bin.native_policy();
+                    let invocation = if ilike {
+                        tidb_query_expr::NativeLikeInvocation::ilike(
+                            policy,
+                            Some((&cache_ilike, 0)),
+                        )
+                    } else {
+                        tidb_query_expr::NativeLikeInvocation::like(policy, Some((&cache_like, 0)))
+                    };
+                    let metadata = [NativeHostMetadata::Like {
+                        arguments: [3, 4, 5],
+                        escape_type: escape_type.clone(),
+                        invocation,
+                        result_type: result_type.clone(),
+                        output_node: 2,
+                        output_role: role,
+                    }];
+                    let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+                    store.borrow_mut().begin_window().unwrap();
+                    let row = InputRow {
+                        occurrence: 0,
+                        input_row: 0,
+                    };
+                    let insert = |v: &Datum, role, node, row| {
+                        store
+                            .borrow_mut()
+                            .insert_clone(v, role, NativeValueOrigin { node, row })
+                            .unwrap()
+                    };
+                    let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                    store.borrow_mut().begin_window().unwrap();
+                    let foreign = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                    foreign.borrow_mut().begin_window().unwrap();
+                    let context = C {
+                        store: &store,
+                        events: RefCell::new(vec![]),
+                        panic_zone: Cell::new(false),
+                        panic_id: Cell::new(false),
+                        id: Cell::new(7),
+                    };
+                    let mut provider =
+                        NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
+                            .with_native_values(Some(&store));
+                    let mut ctx = EvalContext::default();
+                    let begin = |p: &mut NativeBatchHosts<'_>, ctx: &mut EvalContext| {
+                        let HostStart::Pending { task, .. } = p
+                            .start(
+                                ctx,
+                                HostInvocation {
+                                    slot,
+                                    row,
+                                    arg_types: &args,
+                                    return_type: &ret,
+                                },
+                            )
+                            .unwrap()
+                        else {
+                            panic!()
+                        };
+                        task
+                    };
+                    let reply = |p: &mut NativeBatchHosts<'_>,
+                                 ctx: &mut EvalContext,
+                                 task: &HostTaskId,
+                                 index,
+                                 token: Option<Vec<u8>>| {
+                        p.resume(
+                            ctx,
+                            task,
+                            HostArgReply {
+                                index,
+                                field_type: &field,
+                                values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                            },
+                        )
+                    };
+                    let defaults = vec![
+                        Datum::new_string("abc"),
+                        Datum::new_string("a%"),
+                        Datum::Int(92),
+                    ];
+                    for index in 0..3 {
+                        let mut corrupt =
+                            insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                        corrupt[0] ^= 1;
+                        let foreign_token = foreign
+                            .borrow_mut()
+                            .insert_clone(
+                                &Datum::Null,
+                                NativeValueRole::CharInput,
+                                NativeValueOrigin {
+                                    node: 3 + index,
+                                    row,
+                                },
+                            )
+                            .unwrap();
+                        for bad in [
+                            None,
+                            Some(corrupt),
+                            Some(stale.clone()),
+                            Some(foreign_token),
+                            Some(insert(
+                                &Datum::Null,
+                                NativeValueRole::Output,
+                                3 + index,
+                                row,
+                            )),
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                            Some(insert(
+                                &Datum::Null,
+                                NativeValueRole::CharInput,
+                                3 + index,
+                                InputRow {
+                                    occurrence: 1,
+                                    input_row: 0,
+                                },
+                            )),
+                            Some(insert(
+                                &Datum::Null,
+                                NativeValueRole::CharInput,
+                                3 + index,
+                                InputRow {
+                                    occurrence: 0,
+                                    input_row: 1,
+                                },
+                            )),
+                        ] {
+                            context.events.borrow_mut().clear();
+                            let task = begin(&mut provider, &mut ctx);
+                            for prefix in 0..index {
+                                assert!(matches!(
+                                    reply(
+                                        &mut provider,
+                                        &mut ctx,
+                                        &task,
+                                        prefix,
+                                        Some(insert(
+                                            &defaults[prefix],
+                                            NativeValueRole::CharInput,
+                                            3 + prefix,
+                                            row
+                                        ))
+                                    ),
+                                    Ok(HostStep::NeedArg(_))
+                                ));
+                            }
+                            assert!(matches!(
+                                reply(&mut provider, &mut ctx, &task, index, bad),
+                                Err(LocalError::BindingContract(_))
+                            ));
+                            assert!(context.events.borrow().is_empty());
+                            assert!(provider.take_native_error().is_none());
+                            provider.cancel(&task);
+                            provider.cancel(&task);
+                        }
+                    }
+                    let huge = Datum::new_string("z".repeat(1 << 20));
+                    let mut cases = vec![
+                        defaults.clone(),
+                        vec![
+                            Datum::Null,
+                            Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                            Datum::Int(92),
+                        ],
+                        vec![Datum::MinNotNull, Datum::Null, Datum::Int(92)],
+                        vec![
+                            Datum::new_string("abc"),
+                            Datum::Null,
+                            Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                        ],
+                        vec![
+                            Datum::new_string("abc"),
+                            Datum::new_string("a%"),
+                            Datum::new_string("92xyz"),
+                        ],
+                        vec![
+                            Datum::new_string("abc"),
+                            Datum::new_string("a%"),
+                            Datum::Enum(
+                                tidb_datatype::MysqlEnum::new("x".repeat(1 << 20), 92),
+                                tidb_datatype::Collation::Utf8Mb4Bin,
+                            ),
+                        ],
+                        vec![
+                            Datum::new_string("abc"),
+                            Datum::new_string("a%"),
+                            Datum::Set(
+                                tidb_datatype::MysqlSet::new("x".repeat(1 << 20), 92),
+                                tidb_datatype::Collation::Utf8Mb4Bin,
+                            ),
+                        ],
+                        vec![
+                            Datum::new_string("abc"),
+                            Datum::new_string("a%"),
+                            Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
+                        ],
+                    ];
+                    let history_start = cases.len();
+                    for (text, pattern) in
+                        [("abc", "z%"), ("abc", "z%"), ("zxc", "a%"), ("abc", "a%")]
+                    {
+                        cases.push(vec![
+                            Datum::new_string(text),
+                            Datum::new_string(pattern),
+                            Datum::Int(92),
+                        ]);
+                    }
+                    let mut reference = crate::tikv::wildcard_value_tests::scalar(
+                        ilike,
+                        defaults.clone(),
+                        &string_ty(),
+                        tidb_datatype::Collation::Utf8Mb4Bin,
+                    );
+                    reference.ret_type = result_type.clone();
+                    for (case_index, values) in cases.into_iter().enumerate() {
+                        context.id.set(if case_index < history_start {
+                            7
+                        } else {
+                            [7, 8, 8, 7][case_index - history_start]
+                        });
+                        let task = begin(&mut provider, &mut ctx);
+                        context.events.borrow_mut().clear();
+                        let mut result = None;
+                        for (index, value) in values.iter().enumerate() {
+                            match reply(
                                 &mut provider,
                                 &mut ctx,
                                 &task,
-                                prefix,
-                                Some(insert(
-                                    &defaults[prefix],
-                                    NativeValueRole::CharInput,
-                                    3 + prefix,
-                                    row
-                                ))
-                            ),
-                            Ok(HostStep::NeedArg(_))
-                        ));
-                    }
-                    assert!(matches!(
-                        reply(&mut provider, &mut ctx, &task, index, bad),
-                        Err(LocalError::BindingContract(_))
-                    ));
-                    assert!(context.events.borrow().is_empty());
-                    assert!(provider.take_native_error().is_none());
-                    provider.cancel(&task);
-                    provider.cancel(&task);
-                }
-            }
-            let huge = Datum::new_string("z".repeat(1 << 20));
-            let mut cases = vec![
-                defaults.clone(),
-                vec![
-                    Datum::Null,
-                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
-                    Datum::Int(92),
-                ],
-                vec![Datum::MinNotNull, Datum::Null, Datum::Int(92)],
-                vec![
-                    Datum::new_string("abc"),
-                    Datum::Null,
-                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
-                ],
-                vec![
-                    Datum::new_string("abc"),
-                    Datum::new_string("a%"),
-                    Datum::new_string("92xyz"),
-                ],
-                vec![
-                    Datum::new_string("abc"),
-                    Datum::new_string("a%"),
-                    Datum::Enum(
-                        tidb_datatype::MysqlEnum::new("x".repeat(1 << 20), 92),
-                        tidb_datatype::Collation::Utf8Mb4Bin,
-                    ),
-                ],
-                vec![
-                    Datum::new_string("abc"),
-                    Datum::new_string("a%"),
-                    Datum::Set(
-                        tidb_datatype::MysqlSet::new("x".repeat(1 << 20), 92),
-                        tidb_datatype::Collation::Utf8Mb4Bin,
-                    ),
-                ],
-                vec![
-                    Datum::new_string("abc"),
-                    Datum::new_string("a%"),
-                    Datum::VectorFloat32(VectorFloat32::init(1 << 18)),
-                ],
-            ];
-            let history_start = cases.len();
-            for (text, pattern) in [("abc", "z%"), ("abc", "z%"), ("zxc", "a%"), ("abc", "a%")] {
-                cases.push(vec![
-                    Datum::new_string(text),
-                    Datum::new_string(pattern),
-                    Datum::Int(92),
-                ]);
-            }
-            let mut reference = crate::tikv::wildcard_value_tests::scalar(
-                ilike,
-                defaults.clone(),
-                &string_ty(),
-                tidb_datatype::Collation::Utf8Mb4Bin,
-            );
-            for (case_index, values) in cases.into_iter().enumerate() {
-                context.id.set(if case_index < history_start {
-                    7
-                } else {
-                    [7, 8, 8, 7][case_index - history_start]
-                });
-                let task = begin(&mut provider, &mut ctx);
-                context.events.borrow_mut().clear();
-                let mut result = None;
-                for (index, value) in values.iter().enumerate() {
-                    match reply(
-                        &mut provider,
-                        &mut ctx,
-                        &task,
-                        index,
-                        Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
-                    ) {
-                        Ok(HostStep::NeedArg(request)) => assert_eq!(request.index, index + 1),
-                        Ok(HostStep::NeedArgRow { .. }) => {
-                            panic!("row provider cannot demand a window row")
+                                index,
+                                Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
+                            ) {
+                                Ok(HostStep::NeedArg(request)) => {
+                                    assert_eq!(request.index, index + 1)
+                                }
+                                Ok(HostStep::NeedArgRow { .. }) => {
+                                    panic!("row provider cannot demand a window row")
+                                }
+                                Ok(HostStep::Ready(output)) => {
+                                    let ScalarValueRef::Bytes(Some(token)) =
+                                        output.get_scalar_ref(0)
+                                    else {
+                                        panic!()
+                                    };
+                                    result = Some(Ok(store
+                                        .borrow()
+                                        .get(token, role, NativeValueOrigin { node: 2, row })
+                                        .unwrap()
+                                        .clone()));
+                                    break;
+                                }
+                                Err(_) => {
+                                    result = Some(Err(provider
+                                        .take_native_error()
+                                        .expect("small or ignored SQL outcome")));
+                                    break;
+                                }
+                            }
                         }
-                        Ok(HostStep::Ready(output)) => {
-                            let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0)
-                            else {
-                                panic!()
-                            };
-                            result = Some(Ok(store
-                                .borrow()
-                                .get(token, role, NativeValueOrigin { node: 2, row })
-                                .unwrap()
-                                .clone()));
-                            break;
+                        let events = context.events.borrow().clone();
+                        context.events.borrow_mut().clear();
+                        reference.args = values
+                            .iter()
+                            .map(|v| literal(v.clone(), string_ty()))
+                            .collect();
+                        if let Expression::Constant(c) = &mut reference.args[2] {
+                            c.ret_type = escape_type.clone();
                         }
-                        Err(_) => {
-                            result = Some(Err(provider
-                                .take_native_error()
-                                .expect("small or ignored SQL outcome")));
-                            break;
-                        }
-                    }
-                }
-                let events = context.events.borrow().clone();
-                context.events.borrow_mut().clear();
-                reference.args = values
-                    .iter()
-                    .map(|v| literal(v.clone(), string_ty()))
-                    .collect();
-                let input = chunk(&[], &[vec![]]);
-                let expected = reference.eval(&context, input.get_row(0));
-                assert_eq!(format!("{:?}", result.unwrap()), format!("{expected:?}"));
-                assert_eq!(events, *context.events.borrow());
-                assert!(reply(
-                    &mut provider,
-                    &mut ctx,
-                    &task,
-                    0,
-                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
-                )
-                .is_err());
-                provider.cancel(&task);
-            }
-            // All unsupported escape shapes preserve their original error without
-            // copying the large payload, and all actual name views stay authentic.
-            for fail_index in [0, 1, 2] {
-                let task = begin(&mut provider, &mut ctx);
-                for prefix in 0..fail_index {
-                    assert!(matches!(
-                        reply(
+                        let input = chunk(&[], &[vec![]]);
+                        let expected = reference.eval(&context, input.get_row(0));
+                        assert_eq!(format!("{:?}", result.unwrap()), format!("{expected:?}"));
+                        assert_eq!(events, *context.events.borrow());
+                        assert!(reply(
                             &mut provider,
                             &mut ctx,
                             &task,
-                            prefix,
-                            Some(insert(
-                                &defaults[prefix],
-                                NativeValueRole::CharInput,
-                                3 + prefix,
-                                row
-                            ))
-                        ),
-                        Ok(HostStep::NeedArg(_))
-                    ));
-                }
-                assert!(reply(
-                    &mut provider,
-                    &mut ctx,
-                    &task,
-                    fail_index,
-                    Some(insert(
-                        &huge,
-                        NativeValueRole::CharInput,
-                        3 + fail_index,
-                        row
-                    ))
-                )
-                .is_err());
-                provider.take_native_error();
-                assert!(reply(
-                    &mut provider,
-                    &mut ctx,
-                    &task,
-                    fail_index,
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        3 + fail_index,
-                        row
-                    ))
-                )
-                .is_err());
-                provider.cancel(&task);
-            }
-            for zone in [true, false] {
-                let task = begin(&mut provider, &mut ctx);
-                for prefix in 0..2 {
-                    assert!(matches!(
-                        reply(
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        )
+                        .is_err());
+                        provider.cancel(&task);
+                    }
+                    // All unsupported escape shapes preserve their original error without
+                    // copying the large payload, and all actual name views stay authentic.
+                    for fail_index in [0, 1, 2] {
+                        let task = begin(&mut provider, &mut ctx);
+                        for prefix in 0..fail_index {
+                            assert!(matches!(
+                                reply(
+                                    &mut provider,
+                                    &mut ctx,
+                                    &task,
+                                    prefix,
+                                    Some(insert(
+                                        &defaults[prefix],
+                                        NativeValueRole::CharInput,
+                                        3 + prefix,
+                                        row
+                                    ))
+                                ),
+                                Ok(HostStep::NeedArg(_))
+                            ));
+                        }
+                        assert!(reply(
                             &mut provider,
                             &mut ctx,
                             &task,
-                            prefix,
+                            fail_index,
                             Some(insert(
-                                &defaults[prefix],
+                                &huge,
                                 NativeValueRole::CharInput,
-                                3 + prefix,
+                                3 + fail_index,
                                 row
                             ))
-                        ),
-                        Ok(HostStep::NeedArg(_))
-                    ));
+                        )
+                        .is_err());
+                        provider.take_native_error();
+                        assert!(reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            fail_index,
+                            Some(insert(
+                                &Datum::Null,
+                                NativeValueRole::CharInput,
+                                3 + fail_index,
+                                row
+                            ))
+                        )
+                        .is_err());
+                        provider.cancel(&task);
+                    }
+                    for zone in [true, false] {
+                        let task = begin(&mut provider, &mut ctx);
+                        for prefix in 0..2 {
+                            assert!(matches!(
+                                reply(
+                                    &mut provider,
+                                    &mut ctx,
+                                    &task,
+                                    prefix,
+                                    Some(insert(
+                                        &defaults[prefix],
+                                        NativeValueRole::CharInput,
+                                        3 + prefix,
+                                        row
+                                    ))
+                                ),
+                                Ok(HostStep::NeedArg(_))
+                            ));
+                        }
+                        context.panic_zone.set(zone);
+                        context.panic_id.set(!zone);
+                        let escape = if zone {
+                            Datum::new_string("92")
+                        } else {
+                            Datum::Int(92)
+                        };
+                        let token = insert(&escape, NativeValueRole::CharInput, 5, row);
+                        assert!(
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
+                                &mut provider,
+                                &mut ctx,
+                                &task,
+                                2,
+                                Some(token)
+                            )))
+                            .is_err()
+                        );
+                        assert!(reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            2,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 5, row))
+                        )
+                        .is_err());
+                        provider.cancel(&task);
+                    }
+                    let task = begin(&mut provider, &mut ctx);
+                    for (index, value) in defaults.iter().enumerate() {
+                        let step = reply(
+                            &mut provider,
+                            &mut ctx,
+                            &task,
+                            index,
+                            Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
+                        )
+                        .unwrap();
+                        assert!(if index < 2 {
+                            matches!(step, HostStep::NeedArg(_))
+                        } else {
+                            matches!(step, HostStep::Ready(_))
+                        });
+                    }
+                    provider.cancel(&task);
                 }
-                context.panic_zone.set(zone);
-                context.panic_id.set(!zone);
-                let escape = if zone {
-                    Datum::new_string("92")
-                } else {
-                    Datum::Int(92)
-                };
-                let token = insert(&escape, NativeValueRole::CharInput, 5, row);
-                assert!(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reply(
-                        &mut provider,
-                        &mut ctx,
-                        &task,
-                        2,
-                        Some(token)
-                    )))
-                    .is_err()
-                );
-                assert!(reply(
-                    &mut provider,
-                    &mut ctx,
-                    &task,
-                    2,
-                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 5, row))
-                )
-                .is_err());
-                provider.cancel(&task);
             }
-            let task = begin(&mut provider, &mut ctx);
-            for (index, value) in defaults.iter().enumerate() {
-                let step = reply(
-                    &mut provider,
-                    &mut ctx,
-                    &task,
-                    index,
-                    Some(insert(value, NativeValueRole::CharInput, 3 + index, row)),
-                )
-                .unwrap();
-                assert!(if index < 2 {
-                    matches!(step, HostStep::NeedArg(_))
-                } else {
-                    matches!(step, HostStep::Ready(_))
-                });
-            }
-            provider.cancel(&task);
         }
     }
 }
@@ -22948,39 +22966,50 @@ fn native_wildcard_resource_error_never_falls_back_and_same_source_null_recovers
         vec![Datum::new_string("a".repeat(1 << 20))],
         vec![Datum::Null],
     ];
-    for name in ["like", "ilike"] {
-        let actual = suite(call(
-            name,
-            ty(),
-            vec![
-                typed_column(0, &schema[0]),
-                literal(Datum::new_string("%aaab"), string_ty()),
-                int(92),
-            ],
-        ));
-        let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
-        ctx.inner.reject = true;
-        let mut input = chunk(&schema, &rows);
-        input.set_sel(Some(vec![0]));
-        let mut output = output_for(&ty());
-        assert!(matches!(
-            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
-            Err(crate::evaluator::EvaluatorError::Eval(
-                EvalError::ExpressionRuntimeFailure(_)
-            ))
-        ));
-        let route = actual.batch_route_snapshot();
-        assert_eq!((route.refusals, route.fallback), (0, 0));
-        ctx.inner.events.borrow_mut().clear();
-        input.set_sel(Some(vec![1]));
-        let mut output = output_for(&ty());
-        actual
-            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
-            .unwrap();
-        assert!(output.column(0).is_null(0));
-        let route = actual.batch_route_snapshot();
-        assert_eq!((route.refusals, route.fallback), (0, 0));
-        assert!(ctx.inner.events.borrow().is_empty());
+    for missing in [false, true] {
+        for name in ["like", "ilike"] {
+            let mut root = call(
+                name,
+                ty(),
+                vec![
+                    typed_column(0, &schema[0]),
+                    literal(Datum::new_string("%aaab"), string_ty()),
+                    int(92),
+                ],
+            );
+            if missing {
+                if let Expression::ScalarFunction(f) = &mut root {
+                    f.ret_type = None;
+                    if let Expression::Constant(c) = &mut f.args[2] {
+                        c.ret_type = None;
+                    }
+                }
+            }
+            let actual = suite(root);
+            let mut ctx = crate::tikv::wildcard_value_tests::context(1, 0, 0);
+            ctx.inner.reject = true;
+            let mut input = chunk(&schema, &rows);
+            input.set_sel(Some(vec![0]));
+            let mut output = output_for(&ty());
+            assert!(matches!(
+                actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+                Err(crate::evaluator::EvaluatorError::Eval(
+                    EvalError::ExpressionRuntimeFailure(_)
+                ))
+            ));
+            let route = actual.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0));
+            ctx.inner.events.borrow_mut().clear();
+            input.set_sel(Some(vec![1]));
+            let mut output = output_for(&ty());
+            actual
+                .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+                .unwrap();
+            assert!(output.column(0).is_null(0));
+            let route = actual.batch_route_snapshot();
+            assert_eq!((route.refusals, route.fallback), (0, 0));
+            assert!(ctx.inner.events.borrow().is_empty());
+        }
     }
 }
 

@@ -75,7 +75,8 @@ impl NativeBatchHosts<'_> {
                 ) {
                     // Original cast rejects these kinds before any callback.
                     // Do not clone a huge unsupported vector to return that error.
-                    let result = pending.advance(value, Some(escape_type), self.context, maximum);
+                    let result =
+                        pending.advance(value, escape_type.as_ref(), self.context, maximum);
                     return match result {
                         Err(e) => self.native_failure(e),
                         Ok(_) => Err(binding("unsupported LIKE escape unexpectedly accepted")),
@@ -98,7 +99,12 @@ impl NativeBatchHosts<'_> {
                 (value.clone(), copy)
             };
             // The copied actual input remains owned while the callbacks run.
-            pending.advance(&owned.0, Some(escape_type), self.context, maximum - owned.1)
+            pending.advance(
+                &owned.0,
+                escape_type.as_ref(),
+                self.context,
+                maximum - owned.1,
+            )
         };
         let result = match step {
             Err(e) => return self.native_failure(e),
@@ -142,14 +148,18 @@ impl NativeBatchHosts<'_> {
             .and_then(|n| base.checked_add(n))
             .ok_or_else(|| resource("LIKE result extent overflow"))?;
         self.check_bytes(held)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            "like",
-            result_type,
-            result,
-            self.max_retained_bytes - held,
-        ) {
-            Ok(v) => v,
-            Err(e) => return self.native_failure(e),
+        let result = if let Some(result_type) = result_type {
+            match crate::tikv::coerce_result_bounded(
+                "like",
+                result_type,
+                result,
+                self.max_retained_bytes - held,
+            ) {
+                Ok(v) => v,
+                Err(e) => return self.native_failure(e),
+            }
+        } else {
+            result
         };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
             .map(HostStep::Ready)
