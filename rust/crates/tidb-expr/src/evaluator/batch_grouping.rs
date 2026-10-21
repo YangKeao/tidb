@@ -74,14 +74,18 @@ impl NativeBatchHosts<'_> {
             .and_then(|n| base.checked_add(n))
             .ok_or_else(|| resource("GROUPING result extent overflow"))?;
         self.check_bytes(held)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            "grouping",
-            result_type,
-            result,
-            self.max_retained_bytes - held,
-        ) {
-            Ok(v) => v,
-            Err(e) => return self.native_failure(e),
+        let result = if let Some(result_type) = result_type {
+            match crate::tikv::coerce_result_bounded(
+                "grouping",
+                result_type,
+                result,
+                self.max_retained_bytes - held,
+            ) {
+                Ok(v) => v,
+                Err(e) => return self.native_failure(e),
+            }
+        } else {
+            result
         };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
             .map(HostStep::Ready)

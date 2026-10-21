@@ -2626,3 +2626,345 @@ fn metadata_property_nested_consumers_keep_original_domains_and_diagnostics() {
     eprintln!("PROPERTY NESTED {count}/{hash:016X}; retained numeric {retained_numeric}");
     assert_eq!((count, hash), (3456, 0x3C005CEFBC8C583D));
 }
+
+#[test]
+fn optional_grouping_original_values_and_metadata() {
+    if isolate_common_corpus("stateful_tests::optional_grouping_original_values_and_metadata") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_grouping_matrix(false, false);
+}
+#[test]
+fn optional_grouping_actual_values_and_metadata() {
+    if isolate_common_corpus("stateful_tests::optional_grouping_actual_values_and_metadata") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_grouping_matrix(true, false);
+}
+#[test]
+fn optional_grouping_full_actual_values() {
+    if isolate_common_corpus("stateful_tests::optional_grouping_full_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_grouping_matrix(true, true);
+}
+fn run_optional_grouping_matrix(compare: bool, full: bool) {
+    let metadata = std::iter::once(None)
+        .chain(
+            crate::tikv::metadata_value_tests::grouping_cases()
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| [1, 8, 13, 18, 21, 29].contains(i))
+                .map(|(_, m)| Some(m)),
+        )
+        .collect::<Vec<_>>();
+    let values = if full {
+        crate::tikv::byte_unary_value_tests::values()
+    } else {
+        vec![
+            Datum::Null,
+            Datum::Int(0),
+            Datum::UInt(u64::MAX),
+            Datum::Int(i64::MIN),
+            Datum::new_string("2tail"),
+            Datum::Bytes(vec![255]),
+            Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+            Datum::Real(f64::NAN),
+        ]
+    };
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for (mi, metadata) in metadata.iter().enumerate() {
+        for shape in 0..if full { 1 } else { 5 } {
+            for mask in if full { 1..4 } else { 0..8 } {
+                for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for (vi, value) in values.iter().enumerate() {
+                        for &profile in if full { &[0][..] } else { &[0, 5][..] } {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let p = parameter(0, string_ty());
+                                        let arg = match shape {
+                                            1 => {
+                                                let mut c = Constant::new(
+                                                    Datum::new_string("unread stored"),
+                                                    string_ty(),
+                                                );
+                                                c.deferred_expr = Some(Box::new(leaf::assignment(
+                                                    "group-id",
+                                                    p,
+                                                    &string_ty(),
+                                                )));
+                                                Expression::Constant(c)
+                                            }
+                                            2 => call(
+                                                "__actual_grouping_id_error__",
+                                                string_ty(),
+                                                vec![],
+                                            ),
+                                            3 => string_column(0),
+                                            4 => call(
+                                                "ifnull",
+                                                string_ty(),
+                                                vec![p, literal(Datum::Int(0), string_ty())],
+                                            ),
+                                            _ => p,
+                                        };
+                                        let mut f = ScalarFunction::new(
+                                            CiString::new("grouping"),
+                                            field.clone(),
+                                            vec![arg],
+                                        );
+                                        if let Some(m) = metadata {
+                                            f.set_grouping_metadata(
+                                                m.mode(),
+                                                m.grouping_marks().to_vec(),
+                                            )
+                                            .unwrap();
+                                        }
+                                        let mut root = Expression::ScalarFunction(f);
+                                        erase_optional_call_declarations(&mut root, mask);
+                                        suite(root)
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let old =
+                                        C::new(profile, enabled, [value.clone(), Datum::Int(1)]);
+                                    let new =
+                                        C::new(profile, enabled, [value.clone(), Datum::Int(1)]);
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let mut c = chunk(
+                                                &[string_ty()],
+                                                &[
+                                                    vec![Datum::new_string("0")],
+                                                    vec![Datum::new_string("1")],
+                                                    vec![Datum::new_string("2")],
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&field);
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let label=format!("optional-grouping/{mi}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&field);
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[string_ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || left.column(0) != right.column(0)
+                                                || old.snapshot() != new.snapshot()
+                                            {
+                                                eprintln!("OPTIONAL GROUPING DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if (route.fallback != 0 || route.refusals != 0)
+                                                && gaps.len() < 20
+                                            {
+                                                gaps.push(format!("{label}: {route:?}"));
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if full {
+        assert_eq!((count, hash), (112644, 0x398CB5D82320FEA4));
+        eprintln!("OPTIONAL GROUPING FULL {count}/{hash:016X}");
+    } else {
+        assert_eq!((count, hash), (161280, 0x3563DD9E5E3C3E43));
+        eprintln!("OPTIONAL GROUPING ORIGINAL {count}/{hash:016X}");
+    }
+    if !gaps.is_empty() {
+        eprintln!("OPTIONAL GROUPING ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}
+#[test]
+fn grouping_header_original_without_demand() {
+    if isolate_common_corpus("stateful_tests::grouping_header_original_without_demand") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_grouping_header_matrix(false);
+}
+#[test]
+fn grouping_header_actual_without_demand() {
+    if isolate_common_corpus("stateful_tests::grouping_header_actual_without_demand") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_grouping_header_matrix(true);
+}
+fn run_grouping_header_matrix(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for arity in [0, 2, 3, 4, 5, 6] {
+        for shape in 0..4 {
+            for mask in 0..8 {
+                for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for profile in [0, 4, 5] {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let make = || {
+                                    let args = (0..arity)
+                                        .map(|index| {
+                                            let p = parameter(index % 2, string_ty());
+                                            match shape {
+                                                1 => {
+                                                    let mut c = Constant::new(
+                                                        Datum::new_string("unread stored"),
+                                                        string_ty(),
+                                                    );
+                                                    c.deferred_expr =
+                                                        Some(Box::new(leaf::assignment(
+                                                            "unread-group-id",
+                                                            p,
+                                                            &string_ty(),
+                                                        )));
+                                                    Expression::Constant(c)
+                                                }
+                                                2 => string_column(0),
+                                                3 => literal(
+                                                    Datum::Decimal(
+                                                        tidb_datatype::Decimal::from_raw_parts(
+                                                            true,
+                                                            vec![0, 255, b'0'],
+                                                            u32::MAX,
+                                                            3,
+                                                        ),
+                                                    ),
+                                                    string_ty(),
+                                                ),
+                                                _ => p,
+                                            }
+                                        })
+                                        .collect();
+                                    let mut root = call("grouping", field.clone(), args);
+                                    erase_optional_call_declarations(&mut root, mask);
+                                    suite(root)
+                                };
+                                let original = make();
+                                let actual = make();
+                                let values = [Datum::Int(0), Datum::Int(1)];
+                                let old = C::new(profile, enabled, values.clone());
+                                let new = C::new(profile, enabled, values);
+                                for reuse in 0..2 {
+                                    let input = || {
+                                        let mut c = chunk(
+                                            &[string_ty()],
+                                            &[
+                                                vec![Datum::new_string("a")],
+                                                vec![Datum::new_string("b")],
+                                                vec![Datum::new_string("c")],
+                                            ],
+                                        );
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let mut a = input();
+                                    let mut left = output_for(&field);
+                                    left.append_null(0);
+                                    let expected = session_read_outcome(|| {
+                                        original.run(&old, &mut a, &mut left)
+                                    });
+                                    let label=format!("grouping-header/{arity}/{shape}/{mask}/{fi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                    if compare {
+                                        let mut b = input();
+                                        let mut right = output_for(&field);
+                                        right.append_null(0);
+                                        let got = session_read_outcome(|| {
+                                            actual.run_with_tikv_batch(
+                                                &new,
+                                                &mut b,
+                                                &mut right,
+                                                &[string_ty()],
+                                            )
+                                        });
+                                        if got != expected
+                                            || left.column(0) != right.column(0)
+                                            || old.snapshot() != new.snapshot()
+                                        {
+                                            eprintln!("GROUPING HEADER DIFFERENCE {label} old={expected:?} new={got:?} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                        }
+                                        assert_eq!(got, expected, "{label}");
+                                        assert_eq!(right.column(0), left.column(0), "{label}");
+                                        assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                        let route = actual.batch_route_snapshot();
+                                        if (route.fallback != 0 || route.refusals != 0)
+                                            && gaps.len() < 20
+                                        {
+                                            gaps.push(format!("{label}: {route:?}"));
+                                        }
+                                    }
+                                    assert_eq!(
+                                        (old.reads[0].get(), old.reads[1].get()),
+                                        (0, 0),
+                                        "{label}"
+                                    );
+                                    for byte in format!(
+                                        "{label}|{expected}|{:?}|{}",
+                                        left.column(0),
+                                        old.snapshot()
+                                    )
+                                    .bytes()
+                                    {
+                                        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (20736, 0x7020D56952346925));
+    eprintln!("GROUPING HEADER ORIGINAL {count}/{hash:016X}");
+    if !gaps.is_empty() {
+        eprintln!("GROUPING HEADER ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}

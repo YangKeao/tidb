@@ -5605,6 +5605,7 @@ mod tests {
             "isnotunknown",
             "case",
             "coalesce",
+            "grouping",
         ] {
             for mask in 0..8 {
                 let parameter = |order| {
@@ -5883,6 +5884,184 @@ mod tests {
                             }
                             assert_eq!(
                                 tidb_expr::Columns::get_uservar(&context, "property-unread"),
+                                None
+                            );
+                            if workers == 0 {
+                                let route = projection.evaluator_suite.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.prepared, route.fallback, route.refusals),
+                                    (1, 0, 0)
+                                );
+                            }
+                            projection.close().unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn grouping_calls_keep_real_id_metadata_and_variable_error_prefix() {
+        let integer = longlong();
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        let text =
+            |v: &str| Expression::Constant(Constant::new(Datum::new_string(v), string.clone()));
+        let number = |v| Expression::Constant(Constant::new(Datum::Int(v), integer.clone()));
+        let column = || {
+            let mut c = Column::new(1, integer.clone());
+            c.index = 0;
+            Expression::Column(c)
+        };
+        let call = |name: &str, args| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                integer.clone(),
+                args,
+            ))
+        };
+        for metadata_case in 0..4 {
+            for value in [
+                Datum::Null,
+                Datum::Int(0),
+                Datum::UInt(u64::MAX),
+                Datum::Bytes(vec![255]),
+            ] {
+                let name = "grouping";
+                for mask in 0..4 {
+                    let parameter = |order| {
+                        let mut c = Constant::new(Datum::Int(99), integer.clone());
+                        c.param_marker = Some(tidb_expr::constant::ParamMarker { order });
+                        Expression::Constant(c)
+                    };
+                    let mut deferred = Constant::new(Datum::Int(99), integer.clone());
+                    deferred.deferred_expr = Some(Box::new(call(
+                        "setvar",
+                        vec![text("group-id"), parameter(0)],
+                    )));
+                    let args = vec![call(
+                        "if",
+                        vec![column(), Expression::Constant(deferred), number(0)],
+                    )];
+                    let mut header =
+                        ScalarFunction::new(CiString::new(name), integer.clone(), args);
+                    if metadata_case != 0 {
+                        let mode = [
+                            tidb_expr::GroupingMode::BitAnd,
+                            tidb_expr::GroupingMode::NumericCmp,
+                            tidb_expr::GroupingMode::NumericSet,
+                        ][metadata_case - 1];
+                        let marks = if mode == tidb_expr::GroupingMode::NumericSet {
+                            std::collections::BTreeSet::new()
+                        } else {
+                            std::collections::BTreeSet::from([1])
+                        };
+                        header.set_grouping_metadata(mode, vec![marks; 65]).unwrap();
+                    }
+                    if mask & 1 != 0 {
+                        header.ret_type = None;
+                    }
+                    for (index, arg) in header.args.iter_mut().enumerate() {
+                        if mask & 4 != 0 || (mask & 2 != 0 && index == 0) {
+                            match arg {
+                                Expression::Constant(c) => c.ret_type = None,
+                                Expression::ScalarFunction(f) => f.ret_type = None,
+                                _ => (),
+                            }
+                        }
+                    }
+                    let roots = vec![
+                        call("setvar", vec![text("header-before"), column()]),
+                        call(
+                            "if",
+                            vec![column(), Expression::ScalarFunction(header), number(7)],
+                        ),
+                        call("setvar", vec![text("header-after"), column()]),
+                    ];
+                    let fields = vec![integer.clone(); 3];
+                    for enabled in [false, true] {
+                        let context = || {
+                            crate::StmtContext::for_query()
+                                .with_enable_vectorized_expression(enabled)
+                                .with_prepared_params(vec![value.clone()].into())
+                                .with_user_vars(std::sync::Arc::new(std::sync::Mutex::new(
+                                    std::collections::HashMap::new(),
+                                )))
+                        };
+                        let reference = context();
+                        let mut input =
+                            Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);
+                        for row in 0..3 {
+                            input.append_int64(0, row);
+                            input.append_int64(1, row * 2);
+                        }
+                        let mut expected = Chunk::new_with_capacity(&fields, 3);
+                        let result = EvaluatorSuite::new(roots.clone(), false).run(
+                            &reference,
+                            &mut input,
+                            &mut expected,
+                        );
+                        let warnings = reference.take_warnings();
+                        for workers in [0, 2] {
+                            let context = context();
+                            let (source, _) = NumberSource::new(3, 3);
+                            let schema = Schema::new(
+                                fields
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, f)| Column::new(i as i64 + 1, f.clone()))
+                                    .collect(),
+                            );
+                            let mut projection = ProjectionExec::new(
+                                ExecutorMeta::new(schema, 1, 3, 1024),
+                                roots.clone(),
+                                source,
+                                context.clone(),
+                            )
+                            .with_workers(workers);
+                            projection.open().unwrap();
+                            let mut output = projection.new_chunk();
+                            let actual = projection.next(&mut output);
+                            match &result {
+                                Ok(()) => {
+                                    actual.unwrap();
+                                    for i in 0..3 {
+                                        assert_eq!(
+                                            output.column(i),
+                                            expected.column(i),
+                                            "{name}/{mask}/{enabled}/{workers}/{i}"
+                                        );
+                                    }
+                                }
+                                Err(EvaluatorError::Eval(error)) => {
+                                    let Err(ExecError::Eval(actual)) = actual else {
+                                        panic!("lost original header error: {actual:?}")
+                                    };
+                                    assert_eq!(&actual, error, "{name}/{mask}/{enabled}/{workers}");
+                                    if workers == 0 {
+                                        for i in 0..3 {
+                                            assert_eq!(
+                                                output.column(i),
+                                                expected.column(i),
+                                                "serial prefix {name}/{mask}/{i}"
+                                            );
+                                        }
+                                    }
+                                }
+                                other => panic!("unexpected original result {other:?}"),
+                            }
+                            assert_eq!(context.take_warnings(), warnings);
+                            for variable in
+                                ["header-before", "header-after", "header-unread", "group-id"]
+                            {
+                                assert_eq!(
+                                    tidb_expr::Columns::get_uservar(&context, variable),
+                                    tidb_expr::Columns::get_uservar(&reference, variable),
+                                    "{name}/{mask}/{workers}/{variable}"
+                                );
+                            }
+                            assert_eq!(
+                                tidb_expr::Columns::get_uservar(&context, "header-unread"),
                                 None
                             );
                             if workers == 0 {

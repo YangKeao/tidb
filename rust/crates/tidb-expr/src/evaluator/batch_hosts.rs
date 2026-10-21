@@ -267,7 +267,7 @@ pub(super) enum NativeHostMetadata {
     Grouping {
         argument: usize,
         metadata: Option<std::sync::Arc<crate::grouping::GroupingMetadata>>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         output_node: usize,
         output_role: NativeValueRole,
     },
@@ -470,6 +470,7 @@ impl NativeHostMetadata {
             Self::Stateful(metadata) => metadata.result_type.as_ref(),
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
             Self::CachedList(metadata) => metadata.result_type.as_ref(),
+            Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
@@ -484,7 +485,6 @@ impl NativeHostMetadata {
             | Self::ByteUnary { result_type, .. }
             | Self::Misc { result_type, .. }
             | Self::Identity { result_type, .. }
-            | Self::Grouping { result_type, .. }
             | Self::Like { result_type, .. }
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
@@ -1411,6 +1411,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
                 | NativeHostMetadata::RawValues { .. }
+                | NativeHostMetadata::Grouping { .. }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {

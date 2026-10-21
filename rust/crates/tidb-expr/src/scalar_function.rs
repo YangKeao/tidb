@@ -2083,7 +2083,7 @@ impl ScalarFunction {
         // never reads planner metadata, but still reaches its genuine NULL worker.
         if name == "grouping" {
             let [argument] = self.args.as_slice() else {
-                return Err(EvalError::WrongParameterCount("grouping"));
+                return Err(header_value::grouping_arity_error());
             };
             let grouping_id = crate::arg_eval_type::eval_int(&argument.eval(ctx, row)?)?;
             let Some(grouping_id) = grouping_id else {

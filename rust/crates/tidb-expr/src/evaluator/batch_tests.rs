@@ -21806,210 +21806,217 @@ fn native_grouping_capabilities_resources_and_cancel_cleanup() {
         vec![std::collections::BTreeSet::new(); 4096],
     )
     .unwrap();
-    for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
-        let operations = vec![
-            None,
-            Some(all[1].clone()),
-            Some(all[11].clone()),
-            Some(all[21].clone()),
-            Some(oversized_meta.clone()),
-        ];
-        for metadata_case in operations {
-            let arity = 1;
-            let field = projected(&native_bytes_type(), true).unwrap();
-            let args = vec![field.clone(); arity];
-            let ret = field.clone();
-            let catalog = HostCatalog::for_sql_batch(vec![(
-                SqlBatchHostOperation::GroupingNative,
-                HostSignature {
-                    arg_types: args.clone().into_boxed_slice(),
-                    return_type: ret.clone(),
-                },
-            )])
-            .unwrap();
-            let slot = catalog.slot(0).unwrap();
-            let oversized = metadata_case
-                .as_ref()
-                .is_some_and(|m| m.grouping_marks().len() == 4096);
-            let metadata = [NativeHostMetadata::Grouping {
-                argument: 3,
-                metadata: metadata_case.clone().map(std::sync::Arc::new),
-                result_type: ty(),
-                output_node: 2,
-                output_role: role,
-            }];
-            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
-            store.borrow_mut().begin_window().unwrap();
-            let row = InputRow {
-                occurrence: 0,
-                input_row: 0,
-            };
-            let insert = |v: &Datum, role, node, row| {
-                store
-                    .borrow_mut()
-                    .insert_clone(v, role, NativeValueOrigin { node, row })
-                    .unwrap()
-            };
-            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-            store.borrow_mut().begin_window().unwrap();
-            let context = C {
-                store: &store,
-                events: RefCell::new(vec![]),
-                panic_zone: Cell::new(false),
-            };
-            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
-                .with_native_values(Some(&store));
-            let mut ctx = EvalContext::default();
-            let begin = |p: &mut NativeBatchHosts<'_>, ctx: &mut EvalContext| {
-                let HostStart::Pending { task, .. } = p
-                    .start(
+    for result_type in [Some(ty()), None] {
+        for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+            let operations = vec![
+                None,
+                Some(all[1].clone()),
+                Some(all[11].clone()),
+                Some(all[21].clone()),
+                Some(oversized_meta.clone()),
+            ];
+            for metadata_case in operations {
+                let arity = 1;
+                let field = projected(&native_bytes_type(), true).unwrap();
+                let args = vec![field.clone(); arity];
+                let ret = field.clone();
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    SqlBatchHostOperation::GroupingNative,
+                    HostSignature {
+                        arg_types: args.clone().into_boxed_slice(),
+                        return_type: ret.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let oversized = metadata_case
+                    .as_ref()
+                    .is_some_and(|m| m.grouping_marks().len() == 4096);
+                let metadata = [NativeHostMetadata::Grouping {
+                    argument: 3,
+                    metadata: metadata_case.clone().map(std::sync::Arc::new),
+                    result_type: result_type.clone(),
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let row = InputRow {
+                    occurrence: 0,
+                    input_row: 0,
+                };
+                let insert = |v: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(v, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                store.borrow_mut().begin_window().unwrap();
+                let context = C {
+                    store: &store,
+                    events: RefCell::new(vec![]),
+                    panic_zone: Cell::new(false),
+                };
+                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 128 << 10)
+                    .with_native_values(Some(&store));
+                let mut ctx = EvalContext::default();
+                let begin = |p: &mut NativeBatchHosts<'_>, ctx: &mut EvalContext| {
+                    let HostStart::Pending { task, .. } = p
+                        .start(
+                            ctx,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &ret,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    task
+                };
+                let reply = |p: &mut NativeBatchHosts<'_>,
+                             ctx: &mut EvalContext,
+                             task: &HostTaskId,
+                             index,
+                             token: Option<Vec<u8>>| {
+                    p.resume(
                         ctx,
-                        HostInvocation {
-                            slot,
-                            row,
-                            arg_types: &args,
-                            return_type: &ret,
+                        task,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
                         },
                     )
-                    .unwrap()
-                else {
-                    panic!()
                 };
-                task
-            };
-            let reply = |p: &mut NativeBatchHosts<'_>,
-                         ctx: &mut EvalContext,
-                         task: &HostTaskId,
-                         index,
-                         token: Option<Vec<u8>>| {
-                p.resume(
-                    ctx,
-                    task,
-                    HostArgReply {
-                        index,
-                        field_type: &field,
-                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-                    },
-                )
-            };
-            for index in 0..arity {
-                let mut corrupt = insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
-                corrupt[0] ^= 1;
-                for bad in [
-                    None,
-                    Some(corrupt),
-                    Some(stale.clone()),
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::Output,
-                        3 + index,
-                        row,
-                    )),
-                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        3 + index,
-                        InputRow {
-                            occurrence: 1,
-                            input_row: 0,
-                        },
-                    )),
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        3 + index,
-                        InputRow {
-                            occurrence: 0,
-                            input_row: 1,
-                        },
-                    )),
-                ] {
+                for index in 0..arity {
+                    let mut corrupt =
+                        insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row);
+                    corrupt[0] ^= 1;
+                    for bad in [
+                        None,
+                        Some(corrupt),
+                        Some(stale.clone()),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::Output,
+                            3 + index,
+                            row,
+                        )),
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            InputRow {
+                                occurrence: 1,
+                                input_row: 0,
+                            },
+                        )),
+                        Some(insert(
+                            &Datum::Null,
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            InputRow {
+                                occurrence: 0,
+                                input_row: 1,
+                            },
+                        )),
+                    ] {
+                        context.events.borrow_mut().clear();
+                        let task = begin(&mut provider, &mut ctx);
+                        for prefix in 0..index {
+                            let token =
+                                insert(&Datum::Null, NativeValueRole::CharInput, 3 + prefix, row);
+                            assert!(matches!(
+                                reply(&mut provider, &mut ctx, &task, prefix, Some(token)),
+                                Ok(HostStep::NeedArg(_))
+                            ));
+                        }
+                        assert!(matches!(
+                            reply(&mut provider, &mut ctx, &task, index, bad),
+                            Err(LocalError::BindingContract(_))
+                        ));
+                        assert!(context.events.borrow().is_empty());
+                        assert!(provider.take_native_error().is_none());
+                        provider.cancel(&task);
+                        provider.cancel(&task);
+                    }
+                }
+                let mut cases = crate::tikv::metadata_value_tests::ids()
+                    .into_iter()
+                    .map(|v| vec![v])
+                    .collect::<Vec<_>>();
+                cases.push(vec![Datum::Bytes(vec![255; 1 << 20])]);
+                cases.push(vec![Datum::VectorFloat32(VectorFloat32::init(1 << 18))]);
+                for values in cases {
                     context.events.borrow_mut().clear();
                     let task = begin(&mut provider, &mut ctx);
-                    for prefix in 0..index {
-                        let token =
-                            insert(&Datum::Null, NativeValueRole::CharInput, 3 + prefix, row);
-                        assert!(matches!(
-                            reply(&mut provider, &mut ctx, &task, prefix, Some(token)),
-                            Ok(HostStep::NeedArg(_))
-                        ));
+                    let mut outcome = None;
+                    for (index, value) in values.iter().enumerate() {
+                        let token = insert(value, NativeValueRole::CharInput, 3 + index, row);
+                        let step = reply(&mut provider, &mut ctx, &task, index, Some(token));
+                        if index + 1 < arity {
+                            assert!(matches!(step, Ok(HostStep::NeedArg(_))));
+                            assert!(context.events.borrow().is_empty());
+                        } else {
+                            outcome = Some(step);
+                        }
                     }
-                    assert!(matches!(
-                        reply(&mut provider, &mut ctx, &task, index, bad),
-                        Err(LocalError::BindingContract(_))
-                    ));
-                    assert!(context.events.borrow().is_empty());
+                    let actual = match outcome.unwrap() {
+                        Ok(HostStep::Ready(output)) => {
+                            let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0)
+                            else {
+                                panic!()
+                            };
+                            Ok(store
+                                .borrow()
+                                .get(token, role, NativeValueOrigin { node: 2, row })
+                                .unwrap()
+                                .clone())
+                        }
+                        Err(_) => Err(provider.take_native_error().expect(
+                            "these small or ignored values are SQL outcomes, not host capacity",
+                        )),
+                        Ok(HostStep::NeedArg(_) | HostStep::NeedArgRow { .. }) => panic!(),
+                    };
+                    let events = context.events.borrow().clone();
+                    context.events.borrow_mut().clear();
+                    let mut root = grouping_source_root(
+                        ty(),
+                        literal(values[0].clone(), ty()),
+                        metadata_case.as_ref(),
+                    );
+                    if let Expression::ScalarFunction(f) = &mut root {
+                        f.ret_type = result_type.clone();
+                    }
+                    let input = chunk(&[], &[vec![]]);
+                    let expected = root.eval(&context, input.get_row(0));
+                    if oversized && matches!(values[0], Datum::Int(_) | Datum::UInt(_)) {
+                        assert!(matches!(
+                            actual,
+                            Err(EvalError::ExpressionRuntimeFailure(_))
+                        ));
+                        assert_eq!(expected, Ok(Datum::UInt(u64::MAX)));
+                    } else {
+                        assert_eq!(
+                            format!("{actual:?}"),
+                            format!("{expected:?}"),
+                            "metadata={metadata_case:?} input={values:?}"
+                        );
+                    }
+                    assert_eq!(events, *context.events.borrow());
+                    let replay = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                    assert!(reply(&mut provider, &mut ctx, &task, 0, Some(replay)).is_err());
                     assert!(provider.take_native_error().is_none());
                     provider.cancel(&task);
-                    provider.cancel(&task);
+                    let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                    assert!(reply(&mut provider, &mut ctx, &task, 0, Some(token)).is_err());
                 }
-            }
-            let mut cases = crate::tikv::metadata_value_tests::ids()
-                .into_iter()
-                .map(|v| vec![v])
-                .collect::<Vec<_>>();
-            cases.push(vec![Datum::Bytes(vec![255; 1 << 20])]);
-            cases.push(vec![Datum::VectorFloat32(VectorFloat32::init(1 << 18))]);
-            for values in cases {
-                context.events.borrow_mut().clear();
-                let task = begin(&mut provider, &mut ctx);
-                let mut outcome = None;
-                for (index, value) in values.iter().enumerate() {
-                    let token = insert(value, NativeValueRole::CharInput, 3 + index, row);
-                    let step = reply(&mut provider, &mut ctx, &task, index, Some(token));
-                    if index + 1 < arity {
-                        assert!(matches!(step, Ok(HostStep::NeedArg(_))));
-                        assert!(context.events.borrow().is_empty());
-                    } else {
-                        outcome = Some(step);
-                    }
-                }
-                let actual = match outcome.unwrap() {
-                    Ok(HostStep::Ready(output)) => {
-                        let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
-                            panic!()
-                        };
-                        Ok(store
-                            .borrow()
-                            .get(token, role, NativeValueOrigin { node: 2, row })
-                            .unwrap()
-                            .clone())
-                    }
-                    Err(_) => Err(provider.take_native_error().expect(
-                        "these small or ignored values are SQL outcomes, not host capacity",
-                    )),
-                    Ok(HostStep::NeedArg(_) | HostStep::NeedArgRow { .. }) => panic!(),
-                };
-                let events = context.events.borrow().clone();
-                context.events.borrow_mut().clear();
-                let root = grouping_source_root(
-                    ty(),
-                    literal(values[0].clone(), ty()),
-                    metadata_case.as_ref(),
-                );
-                let input = chunk(&[], &[vec![]]);
-                let expected = root.eval(&context, input.get_row(0));
-                if oversized && matches!(values[0], Datum::Int(_) | Datum::UInt(_)) {
-                    assert!(matches!(
-                        actual,
-                        Err(EvalError::ExpressionRuntimeFailure(_))
-                    ));
-                    assert_eq!(expected, Ok(Datum::UInt(u64::MAX)));
-                } else {
-                    assert_eq!(
-                        format!("{actual:?}"),
-                        format!("{expected:?}"),
-                        "metadata={metadata_case:?} input={values:?}"
-                    );
-                }
-                assert_eq!(events, *context.events.borrow());
-                let replay = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-                assert!(reply(&mut provider, &mut ctx, &task, 0, Some(replay)).is_err());
-                assert!(provider.take_native_error().is_none());
-                provider.cancel(&task);
-                let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-                assert!(reply(&mut provider, &mut ctx, &task, 0, Some(token)).is_err());
             }
         }
     }
@@ -22017,70 +22024,82 @@ fn native_grouping_capabilities_resources_and_cancel_cleanup() {
 
 #[test]
 fn native_grouping_null_source_keeps_huge_marks_shared_and_unused() {
-    let mut function = ScalarFunction::new(
-        CiString::new("grouping"),
-        ty(),
-        vec![literal(Datum::Null, ty())],
-    );
-    function
-        .set_grouping_metadata(crate::GroupingMode::NumericSet, vec![(0..262144).collect()])
-        .unwrap();
-    let snapshot = function.shared_grouping_metadata().unwrap();
-    let cloned = function.clone();
-    assert!(std::sync::Arc::ptr_eq(
-        &snapshot,
-        &cloned.shared_grouping_metadata().unwrap()
-    ));
-    let actual = suite(Expression::ScalarFunction(cloned));
-    let mut input = chunk(&[], &[vec![]]);
-    let mut output = output_for(&ty());
-    let mut ctx = crate::tikv::calendar_value_tests::context(1, 0, 0);
-    ctx.reject = true;
-    actual
-        .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
-        .unwrap();
-    assert!(output.column(0).is_null(0));
-    let route = actual.batch_route_snapshot();
-    assert_eq!((route.refusals, route.fallback), (0, 0));
-    assert!(ctx.events.borrow().is_empty());
+    for missing in [false, true] {
+        let mut function = ScalarFunction::new(
+            CiString::new("grouping"),
+            ty(),
+            vec![literal(Datum::Null, ty())],
+        );
+        function
+            .set_grouping_metadata(crate::GroupingMode::NumericSet, vec![(0..262144).collect()])
+            .unwrap();
+        let snapshot = function.shared_grouping_metadata().unwrap();
+        let mut cloned = function.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot,
+            &cloned.shared_grouping_metadata().unwrap()
+        ));
+        if missing {
+            cloned.ret_type = None;
+            if let Expression::Constant(c) = &mut cloned.args[0] {
+                c.ret_type = None;
+            }
+        }
+        let actual = suite(Expression::ScalarFunction(cloned));
+        let mut input = chunk(&[], &[vec![]]);
+        let mut output = output_for(&ty());
+        let mut ctx = crate::tikv::calendar_value_tests::context(1, 0, 0);
+        ctx.reject = true;
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &[])
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        assert!(ctx.events.borrow().is_empty());
+    }
 }
 
 #[test]
 fn native_grouping_resource_failure_is_terminal_without_fallback_and_later_null_recovers() {
-    let schema = [ty()];
-    let rows = [vec![Datum::Int(1)], vec![Datum::Null]];
-    let metadata = crate::GroupingMetadata::new(
-        crate::GroupingMode::NumericSet,
-        vec![std::collections::BTreeSet::new(); 100000],
-    )
-    .unwrap();
-    let actual = suite(grouping_source_root(
-        ty(),
-        typed_column(0, &schema[0]),
-        Some(&metadata),
-    ));
-    let mut ctx = crate::tikv::calendar_value_tests::context(1, 0, 0);
-    ctx.reject = true;
-    let mut input = chunk(&schema, &rows);
-    input.set_sel(Some(vec![0]));
-    let mut output = output_for(&ty());
-    assert!(matches!(
-        actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
-        Err(crate::evaluator::EvaluatorError::Eval(
-            EvalError::ExpressionRuntimeFailure(_)
-        ))
-    ));
-    let route = actual.batch_route_snapshot();
-    assert_eq!((route.refusals, route.fallback), (0, 0));
-    input.set_sel(Some(vec![1]));
-    let mut output = output_for(&ty());
-    actual
-        .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+    for missing in [false, true] {
+        let schema = [ty()];
+        let rows = [vec![Datum::Int(1)], vec![Datum::Null]];
+        let metadata = crate::GroupingMetadata::new(
+            crate::GroupingMode::NumericSet,
+            vec![std::collections::BTreeSet::new(); 100000],
+        )
         .unwrap();
-    assert!(output.column(0).is_null(0));
-    let route = actual.batch_route_snapshot();
-    assert_eq!((route.refusals, route.fallback), (0, 0));
-    assert!(ctx.events.borrow().is_empty());
+        let mut root = grouping_source_root(ty(), typed_column(0, &schema[0]), Some(&metadata));
+        if missing {
+            if let Expression::ScalarFunction(f) = &mut root {
+                f.ret_type = None;
+            }
+        }
+        let actual = suite(root);
+        let mut ctx = crate::tikv::calendar_value_tests::context(1, 0, 0);
+        ctx.reject = true;
+        let mut input = chunk(&schema, &rows);
+        input.set_sel(Some(vec![0]));
+        let mut output = output_for(&ty());
+        assert!(matches!(
+            actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &schema),
+            Err(crate::evaluator::EvaluatorError::Eval(
+                EvalError::ExpressionRuntimeFailure(_)
+            ))
+        ));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        input.set_sel(Some(vec![1]));
+        let mut output = output_for(&ty());
+        actual
+            .run_with_tikv_batch(&ctx, &mut input, &mut output, &schema)
+            .unwrap();
+        assert!(output.column(0).is_null(0));
+        let route = actual.batch_route_snapshot();
+        assert_eq!((route.refusals, route.fallback), (0, 0));
+        assert!(ctx.events.borrow().is_empty());
+    }
 }
 
 #[test]
@@ -34291,6 +34310,7 @@ fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
     let field = projected(&native_bytes_type(), true).unwrap();
     for (kind, arity) in [
         (HeaderKind::TruthArity, 2),
+        (HeaderKind::GroupingArity, 2),
         (HeaderKind::EmptyCase, 0),
         (HeaderKind::EmptyCoalesce, 0),
     ] {
@@ -34339,11 +34359,17 @@ fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
                     if forged {
                         assert!(matches!(result, Err(LocalError::BindingContract(_))));
                         assert!(provider.take_native_error().is_none());
-                    } else if matches!(kind, HeaderKind::TruthArity) {
+                    } else if matches!(kind, HeaderKind::TruthArity | HeaderKind::GroupingArity) {
                         assert!(result.is_err());
                         assert_eq!(
                             provider.take_native_error(),
-                            Some(EvalError::WrongParameterCount("is true or false"))
+                            Some(EvalError::WrongParameterCount(
+                                if matches!(kind, HeaderKind::GroupingArity) {
+                                    "grouping"
+                                } else {
+                                    "is true or false"
+                                }
+                            ))
                         );
                     } else {
                         let HostStart::Ready(values) = result.unwrap() else {
@@ -34366,7 +34392,7 @@ fn no_argument_header_protocol_keeps_metadata_resource_and_reuse_terminal() {
                         assert!(provider.take_native_error().is_none());
                     }
                 }
-                if !forged && !matches!(kind, HeaderKind::TruthArity) {
+                if !forged && !matches!(kind, HeaderKind::TruthArity | HeaderKind::GroupingArity) {
                     let row = InputRow {
                         occurrence: 0,
                         input_row: 2,

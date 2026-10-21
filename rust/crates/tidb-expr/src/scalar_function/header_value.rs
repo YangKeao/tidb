@@ -9,6 +9,8 @@ use crate::{Columns, Datum, EvalError};
 pub(crate) enum HeaderKind {
     /// The truth predicate reports its original invalid parameter count.
     TruthArity,
+    /// GROUPING rejects invalid logical arity before reading any value.
+    GroupingArity,
     /// A searched CASE with no condition or ELSE is exhausted.
     EmptyCase,
     /// COALESCE with no argument is exhausted.
@@ -32,6 +34,7 @@ impl HeaderKind {
                     | "isunknown" | "isnotunknown",
                     arity,
                 ) if arity != 1 => Self::TruthArity,
+                ("grouping", arity) if arity != 1 => Self::GroupingArity,
                 ("case", 0) => Self::EmptyCase,
                 ("coalesce", 0) => Self::EmptyCoalesce,
                 _ => return None,
@@ -41,7 +44,7 @@ impl HeaderKind {
     /// Authenticate original logical arity separately from zero value operands.
     pub(crate) fn accepts_arity(self, arity: usize) -> bool {
         match self {
-            Self::TruthArity => arity != 1,
+            Self::TruthArity | Self::GroupingArity => arity != 1,
             Self::EmptyCase | Self::EmptyCoalesce => arity == 0,
             Self::Property(_) => arity == 1,
         }
@@ -58,6 +61,7 @@ impl HeaderKind {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::TruthArity => "istrue",
+            Self::GroupingArity => "grouping",
             Self::EmptyCase => "case",
             Self::EmptyCoalesce => "coalesce",
             Self::Property(kind) => kind.name(),
@@ -79,6 +83,7 @@ impl HeaderKind {
     ) -> Result<Datum, EvalError> {
         match self {
             Self::TruthArity => Err(truth_arity_error()),
+            Self::GroupingArity => Err(grouping_arity_error()),
             Self::EmptyCase => crate::tikv::eval_case_in(
                 context,
                 0,
@@ -99,4 +104,9 @@ impl HeaderKind {
 /// The existing scalar truth-predicate header error, shared without reading args.
 pub(crate) fn truth_arity_error() -> EvalError {
     EvalError::WrongParameterCount("is true or false")
+}
+
+/// The original GROUPING header error, independent of argument values.
+pub(crate) fn grouping_arity_error() -> EvalError {
+    EvalError::WrongParameterCount("grouping")
 }
