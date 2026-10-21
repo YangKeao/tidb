@@ -1364,3 +1364,228 @@ fn optional_phase_stateful_full_actual_values_keep_raw_returns_and_casts() {
     assert_eq!((observed.0, observed.1), (57216, 0xD17BF84FC6D34845));
     assert!(observed.2.is_empty(), "{:?}", observed.2);
 }
+
+#[test]
+fn remaining_optional_admission_inventory_keeps_original_behavior() {
+    if isolate_common_corpus(
+        "stateful_tests::remaining_optional_admission_inventory_keeps_original_behavior",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut routes = BTreeMap::<String, (usize, usize, BTreeSet<String>)>::new();
+    let mut mismatches = vec![];
+    let mut count = 0;
+    for name in crate::scalar_function::eager_policy_tests::names() {
+        for arity in crate::scalar_function::eager_policy_tests::arities(&name) {
+            for mask in [0u8, 1, 2, 3, 4, 7] {
+                for kind in ["literal", "param", "column"] {
+                    for enabled in [false, true] {
+                        let make = || {
+                            let args = (0..arity)
+                                .map(|_| match kind {
+                                    "literal" => literal(Datum::Null, string_ty()),
+                                    "param" => parameter(0, string_ty()),
+                                    _ => string_column(0),
+                                })
+                                .collect();
+                            let mut e = call(&name, string_ty(), args);
+                            erase_optional_call_declarations(&mut e, mask);
+                            suite(e)
+                        };
+                        let original = make();
+                        let actual = make();
+                        // Real mock session providers avoid sleeping/locking the
+                        // machine while preserving their original call records.
+                        let old = C::new(0, enabled, [Datum::Null, Datum::Null]);
+                        let new = C::new(0, enabled, [Datum::Null, Datum::Null]);
+                        let input = || chunk(&[string_ty()], &[vec![Datum::Null]]);
+                        let mut left = output_for(&string_ty());
+                        let mut right = output_for(&string_ty());
+                        let expected =
+                            session_read_outcome(|| original.run(&old, &mut input(), &mut left));
+                        let got = session_read_outcome(|| {
+                            actual.run_with_tikv_batch(
+                                &new,
+                                &mut input(),
+                                &mut right,
+                                &[string_ty()],
+                            )
+                        });
+                        let label = format!("{name}/{arity}/mask{mask}/{kind}/{enabled}");
+                        // Actual entropy contracts are covered independently by
+                        // optional_common_entropy; two OS draws differ in bytes.
+                        let entropy =
+                            arity == 0 && matches!(name.as_str(), "uuid" | "uuid_v4" | "uuid_v7");
+                        if got != expected
+                            || (!entropy && left.column(0) != right.column(0))
+                            || old.snapshot() != new.snapshot()
+                        {
+                            if mismatches.len() < 12 {
+                                mismatches.push(format!("{label}: old={expected} new={got}; oldeffects={} neweffects={}",old.snapshot(),new.snapshot()));
+                            }
+                        }
+                        let route = actual.batch_route_snapshot();
+                        let entry = routes.entry(name.clone()).or_default();
+                        entry.0 += 1;
+                        if route.fallback != 0 || route.refusals != 0 {
+                            entry.1 += 1;
+                            entry.2.insert(format!(
+                                "arity{arity}/mask{mask}/{kind}/{:?}",
+                                route.refusal
+                            ));
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    let refused: usize = routes.values().map(|v| v.1).sum();
+    eprintln!(
+        "REMAINING ADMISSION INVENTORY {count} cases / {refused} refused / {} names",
+        routes.values().filter(|v| v.1 > 0).count()
+    );
+    for (name, (total, refused, examples)) in routes {
+        if refused > 0 {
+            eprintln!(
+                "REMAINING {name} {refused}/{total} {:?}",
+                examples.iter().take(8).collect::<Vec<_>>()
+            );
+        }
+    }
+    if !mismatches.is_empty() {
+        eprintln!("REMAINING INVENTORY DIFFERENCES {mismatches:?}");
+    }
+    assert!(mismatches.is_empty());
+}
+
+#[test]
+fn common_full_declarations_wrong_numeric_arities_original() {
+    if isolate_common_corpus(
+        "stateful_tests::common_full_declarations_wrong_numeric_arities_original",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_common_invalid_numeric_arity_matrix(false);
+}
+#[test]
+fn common_full_declarations_wrong_numeric_arities_source() {
+    if isolate_common_corpus(
+        "stateful_tests::common_full_declarations_wrong_numeric_arities_source",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_common_invalid_numeric_arity_matrix(true);
+}
+fn run_common_invalid_numeric_arity_matrix(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for name in ["plus", "minus", "mul", "div", "mod", "intdiv"] {
+        for arity in [0, 1, 3, 4, 5, 6] {
+            for kind in ["literal", "param", "deferred"] {
+                for (vi, value) in [Datum::Null, Datum::Int(7), Datum::new_string("abc")]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for enabled in [false, true] {
+                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                            let make = || {
+                                let args = (0..arity)
+                                    .map(|_| match kind {
+                                        "literal" => literal(value.clone(), string_ty()),
+                                        "param" => parameter(0, string_ty()),
+                                        _ => {
+                                            let mut c = Constant::new(
+                                                Datum::new_string("stored"),
+                                                string_ty(),
+                                            );
+                                            c.deferred_expr = Some(Box::new(leaf::assignment(
+                                                "wrong-arity",
+                                                parameter(0, string_ty()),
+                                                &string_ty(),
+                                            )));
+                                            Expression::Constant(c)
+                                        }
+                                    })
+                                    .collect();
+                                suite(call(name, string_ty(), args))
+                            };
+                            let original = make();
+                            let actual = make();
+                            let old = C::new(0, enabled, [value.clone(), Datum::Null]);
+                            let new = C::new(0, enabled, [value.clone(), Datum::Null]);
+                            for reuse in 0..2 {
+                                let input = || {
+                                    let mut c = chunk(
+                                        &[ty()],
+                                        &[
+                                            vec![Datum::Int(1)],
+                                            vec![Datum::Int(2)],
+                                            vec![Datum::Int(3)],
+                                        ],
+                                    );
+                                    c.set_sel(selection.clone());
+                                    c
+                                };
+                                let mut a = input();
+                                let mut left = output_for(&string_ty());
+                                left.append_null(0);
+                                let expected =
+                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let label=format!("invalid-numeric/{name}/{arity}/{kind}/{vi}/{enabled}/{selection:?}/{reuse}");
+                                if compare {
+                                    let mut b = input();
+                                    let mut right = output_for(&string_ty());
+                                    right.append_null(0);
+                                    let got = session_read_outcome(|| {
+                                        actual.run_with_tikv_batch(
+                                            &new,
+                                            &mut b,
+                                            &mut right,
+                                            &[ty()],
+                                        )
+                                    });
+                                    if got != expected
+                                        || left.column(0) != right.column(0)
+                                        || old.snapshot() != new.snapshot()
+                                    {
+                                        eprintln!("INVALID NUMERIC DIFFERENCE {label} old={expected:?} new={got:?} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                    }
+                                    assert_eq!(got, expected, "{label}");
+                                    assert_eq!(right.column(0), left.column(0), "{label}");
+                                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                    let route = actual.batch_route_snapshot();
+                                    if (route.fallback != 0 || route.refusals != 0)
+                                        && gaps.len() < 20
+                                    {
+                                        gaps.push(format!("{label}: {route:?}"));
+                                    }
+                                }
+                                for byte in format!(
+                                    "{label}|{expected}|{:?}|{}",
+                                    left.column(0),
+                                    old.snapshot()
+                                )
+                                .bytes()
+                                {
+                                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                }
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("INVALID NUMERIC ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (3888, 0x18148BA3F9A21EC9));
+    if !gaps.is_empty() {
+        eprintln!("INVALID NUMERIC ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}

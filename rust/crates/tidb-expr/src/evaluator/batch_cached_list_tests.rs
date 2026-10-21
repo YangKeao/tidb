@@ -672,243 +672,289 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
             None
         }
     }
-    for cacheable in [false, true] {
-        let field = projected(&native_bytes_type(), true).unwrap();
-        let args = vec![field.clone(); 2];
-        let catalog = HostCatalog::for_sql_batch(vec![(
-            SqlBatchHostOperation::EagerValuesNative,
-            HostSignature {
-                arg_types: args.clone().into(),
-                return_type: field.clone(),
-            },
-        )])
-        .unwrap();
-        let slot = catalog.slot(0).unwrap();
-        let cache = NativeContextCache::new();
-        let metadata = [NativeHostMetadata::CachedList(Box::new(NativeCachedList {
-            arguments: [3, 4],
-            cacheable,
-            cache: cache.share_for_invocation(),
-            collation: tidb_datatype::Collation::Utf8Mb4Bin,
-            result_type: ty(),
-            output_node: 2,
-            output_role: NativeValueRole::Output,
-        }))];
-        let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
-        store.borrow_mut().begin_window().unwrap();
-        let row = InputRow {
-            occurrence: 2,
-            input_row: 7,
-        };
-        let insert = |value: &Datum, role, node, row| {
-            store
-                .borrow_mut()
-                .insert_clone(value, role, NativeValueOrigin { node, row })
-                .unwrap()
-        };
-        let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        store.borrow_mut().begin_window().unwrap();
-        let mut foreign = NativeValueStore::new(4096).unwrap();
-        foreign.begin_window().unwrap();
-        let foreign = foreign
-            .insert_clone(
-                &Datum::Null,
-                NativeValueRole::CharInput,
-                NativeValueOrigin { node: 3, row },
-            )
+    for optional in [false, true] {
+        for cacheable in [false, true] {
+            let field = projected(&native_bytes_type(), true).unwrap();
+            let args = vec![field.clone(); 2];
+            let catalog = HostCatalog::for_sql_batch(vec![(
+                SqlBatchHostOperation::EagerValuesNative,
+                HostSignature {
+                    arg_types: args.clone().into(),
+                    return_type: field.clone(),
+                },
+            )])
             .unwrap();
-        let ctx = C {
-            store: &store,
-            action: Cell::new(0),
-            calls: Cell::new(0),
-            id: Cell::new(9),
-            ready_calls: Cell::new(0),
-        };
-        let mut p =
-            NativeBatchHosts::new(catalog, &metadata, &ctx, 8192).with_native_values(Some(&store));
-        let mut eval = EvalContext::default();
-        let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
-            let HostStart::Pending { task, request } = p
-                .start(
+            let slot = catalog.slot(0).unwrap();
+            let cache = NativeContextCache::new();
+            let metadata = [NativeHostMetadata::CachedList(Box::new(NativeCachedList {
+                arguments: [3, 4],
+                cacheable,
+                cache: cache.share_for_invocation(),
+                collation: tidb_datatype::Collation::Utf8Mb4Bin,
+                result_type: (!optional).then(ty),
+                output_node: 2,
+                output_role: NativeValueRole::Output,
+            }))];
+            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 2,
+                input_row: 7,
+            };
+            let insert = |value: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(value, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            store.borrow_mut().begin_window().unwrap();
+            let mut foreign = NativeValueStore::new(4096).unwrap();
+            foreign.begin_window().unwrap();
+            let foreign = foreign
+                .insert_clone(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 3, row },
+                )
+                .unwrap();
+            let ctx = C {
+                store: &store,
+                action: Cell::new(0),
+                calls: Cell::new(0),
+                id: Cell::new(9),
+                ready_calls: Cell::new(0),
+            };
+            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8192)
+                .with_native_values(Some(&store));
+            let mut eval = EvalContext::default();
+            let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                let HostStart::Pending { task, request } = p
+                    .start(
+                        eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &args,
+                            return_type: &field,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let reply = |p: &mut NativeBatchHosts<'_>,
+                         eval: &mut EvalContext,
+                         task: &HostTaskId,
+                         index,
+                         token| {
+                p.resume(
                     eval,
-                    HostInvocation {
-                        slot,
-                        row,
-                        arg_types: &args,
-                        return_type: &field,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &field,
+                        values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
                     },
                 )
-                .unwrap()
+            };
+            let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            let mut corrupt = good.clone();
+            corrupt[0] ^= 1;
+            let mut short = good.clone();
+            short.pop();
+            let mut long = good;
+            long.push(0);
+            for bad in [
+                None,
+                Some(corrupt),
+                Some(short),
+                Some(long),
+                Some(stale),
+                Some(foreign),
+                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        occurrence: 3,
+                        ..row
+                    },
+                )),
+                Some(insert(
+                    &Datum::Null,
+                    NativeValueRole::CharInput,
+                    3,
+                    InputRow {
+                        input_row: 8,
+                        ..row
+                    },
+                )),
+            ] {
+                let task = begin(&mut p, &mut eval);
+                assert!(matches!(
+                    reply(&mut p, &mut eval, &task, 0, bad),
+                    Err(LocalError::BindingContract(_))
+                ));
+                assert_eq!(ctx.calls.get(), 0);
+                p.cancel(&task);
+                p.cancel(&task);
+            }
+            let task = begin(&mut p, &mut eval);
+            assert!(reply(
+                &mut p,
+                &mut eval,
+                &task,
+                1,
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+            )
+            .is_err());
+            p.cancel(&task);
+            assert_eq!(ctx.calls.get(), 0);
+            if cacheable {
+                for action in [1, 2] {
+                    ctx.action.set(action);
+                    let task = begin(&mut p, &mut eval);
+                    let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        reply(&mut p, &mut eval, &task, 0, Some(token.clone()))
+                    }));
+                    if action == 1 {
+                        assert!(got.is_err());
+                    } else {
+                        assert!(got.unwrap().is_err());
+                    }
+                    let before = ctx.calls.get();
+                    assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
+                    assert_eq!(ctx.calls.get(), before);
+                    p.cancel(&task);
+                    assert!(cache.get_cache(9).is_none());
+                }
+                ctx.action.set(0);
+            }
+            // NULL needle still requests construction. Cancellation must release
+            // the real initializer before another owner may acquire it.
+            let task = begin(&mut p, &mut eval);
+            let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            let HostStep::NeedArg(request) =
+                reply(&mut p, &mut eval, &task, 0, Some(needle.clone())).unwrap()
             else {
                 panic!()
             };
-            assert_eq!(request.index, 0);
-            task
-        };
-        let reply = |p: &mut NativeBatchHosts<'_>,
-                     eval: &mut EvalContext,
-                     task: &HostTaskId,
-                     index,
-                     token| {
-            p.resume(
-                eval,
-                task,
-                HostArgReply {
-                    index,
-                    field_type: &field,
-                    values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
-                },
-            )
-        };
-        let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        let mut corrupt = good.clone();
-        corrupt[0] ^= 1;
-        let mut short = good.clone();
-        short.pop();
-        let mut long = good;
-        long.push(0);
-        for bad in [
-            None,
-            Some(corrupt),
-            Some(short),
-            Some(long),
-            Some(stale),
-            Some(foreign),
-            Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
-            Some(insert(
-                &Datum::Null,
-                NativeValueRole::CharInput,
-                3,
-                InputRow {
-                    occurrence: 3,
-                    ..row
-                },
-            )),
-            Some(insert(
-                &Datum::Null,
-                NativeValueRole::CharInput,
-                3,
-                InputRow {
-                    input_row: 8,
-                    ..row
-                },
-            )),
-        ] {
-            let task = begin(&mut p, &mut eval);
+            assert_eq!(request.index, 1);
+            assert!(reply(&mut p, &mut eval, &task, 1, Some(needle)).is_err());
+            p.cancel(&task);
+            if cacheable {
+                let NativeCacheAccess::Initialize(lease) = cache.begin_initialization(9) else {
+                    panic!()
+                };
+                drop(lease);
+            }
+            let next = begin(&mut p, &mut eval);
+            p.cancel(&task); // stale cancel cannot kill next
+            let needle = insert(&Datum::new_string("b"), NativeValueRole::CharInput, 3, row);
             assert!(matches!(
-                reply(&mut p, &mut eval, &task, 0, bad),
-                Err(LocalError::BindingContract(_))
+                reply(&mut p, &mut eval, &next, 0, Some(needle.clone())).unwrap(),
+                HostStep::NeedArg(_)
             ));
-            assert_eq!(ctx.calls.get(), 0);
-            p.cancel(&task);
-            p.cancel(&task);
-        }
-        let task = begin(&mut p, &mut eval);
-        assert!(reply(
-            &mut p,
-            &mut eval,
-            &task,
-            1,
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
-        )
-        .is_err());
-        p.cancel(&task);
-        assert_eq!(ctx.calls.get(), 0);
-        if cacheable {
-            for action in [1, 2] {
+            let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &next, 1, Some(list.clone())).unwrap(),
+                HostStep::Ready(_)
+            ));
+            let before = ctx.calls.get();
+            assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
+            assert_eq!(ctx.calls.get(), before);
+            p.cancel(&next);
+            // A warm NULL cache bypasses both the list request and unused giant
+            // needle coercion under a small host work allowance.
+            if cacheable {
+                let next = begin(&mut p, &mut eval);
+                let token = insert(
+                    &Datum::Bytes(vec![b'x'; 1 << 20]),
+                    NativeValueRole::CharInput,
+                    3,
+                    row,
+                );
+                let HostStep::Ready(value) =
+                    reply(&mut p, &mut eval, &next, 0, Some(token)).unwrap()
+                else {
+                    panic!()
+                };
+                use tidb_query_datatype::codec::data_type::ScalarValueRef;
+                let ScalarValueRef::Bytes(Some(token)) = value.get_scalar_ref(0) else {
+                    panic!()
+                };
+                assert_eq!(
+                    store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin { node: 2, row }
+                        )
+                        .unwrap(),
+                    &Datum::Null
+                );
+                p.cancel(&next);
+            } else {
+                assert_eq!(ctx.calls.get(), 0);
+            }
+            // The prepared-value capability callback runs after a successful
+            // constructor has committed. Unwind or invalidation consumes this task
+            // while preserving that SQL cache item for a later fresh invocation.
+            for action in [3, 4] {
+                ctx.id.set(20 + u64::from(action));
                 ctx.action.set(action);
-                let task = begin(&mut p, &mut eval);
-                let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                let next = begin(&mut p, &mut eval);
+                let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+                assert!(matches!(
+                    reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
+                    HostStep::NeedArg(_)
+                ));
+                let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
                 let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    reply(&mut p, &mut eval, &task, 0, Some(token.clone()))
+                    reply(&mut p, &mut eval, &next, 1, Some(list.clone()))
                 }));
-                if action == 1 {
+                if action == 3 {
                     assert!(got.is_err());
                 } else {
                     assert!(got.unwrap().is_err());
                 }
-                let before = ctx.calls.get();
-                assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
-                assert_eq!(ctx.calls.get(), before);
-                p.cancel(&task);
-                assert!(cache.get_cache(9).is_none());
+                let before = (ctx.calls.get(), ctx.ready_calls.get());
+                assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
+                assert_eq!((ctx.calls.get(), ctx.ready_calls.get()), before);
+                p.cancel(&next);
+                if cacheable {
+                    assert!(cache.get_cache(ctx.id.get()).is_some());
+                }
             }
             ctx.action.set(0);
-        }
-        // NULL needle still requests construction. Cancellation must release
-        // the real initializer before another owner may acquire it.
-        let task = begin(&mut p, &mut eval);
-        let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        let HostStep::NeedArg(request) =
-            reply(&mut p, &mut eval, &task, 0, Some(needle.clone())).unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(request.index, 1);
-        assert!(reply(&mut p, &mut eval, &task, 1, Some(needle)).is_err());
-        p.cancel(&task);
-        if cacheable {
-            let NativeCacheAccess::Initialize(lease) = cache.begin_initialization(9) else {
-                panic!()
-            };
-            drop(lease);
-        }
-        let next = begin(&mut p, &mut eval);
-        p.cancel(&task); // stale cancel cannot kill next
-        let needle = insert(&Datum::new_string("b"), NativeValueRole::CharInput, 3, row);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &next, 0, Some(needle.clone())).unwrap(),
-            HostStep::NeedArg(_)
-        ));
-        let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &next, 1, Some(list.clone())).unwrap(),
-            HostStep::Ready(_)
-        ));
-        let before = ctx.calls.get();
-        assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
-        assert_eq!(ctx.calls.get(), before);
-        p.cancel(&next);
-        // A warm NULL cache bypasses both the list request and unused giant
-        // needle coercion under a small host work allowance.
-        if cacheable {
+            ctx.id.set(99);
             let next = begin(&mut p, &mut eval);
-            let token = insert(
+            let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            let list = insert(
                 &Datum::Bytes(vec![b'x'; 1 << 20]),
                 NativeValueRole::CharInput,
-                3,
+                4,
                 row,
             );
-            let HostStep::Ready(value) = reply(&mut p, &mut eval, &next, 0, Some(token)).unwrap()
-            else {
-                panic!()
-            };
-            use tidb_query_datatype::codec::data_type::ScalarValueRef;
-            let ScalarValueRef::Bytes(Some(token)) = value.get_scalar_ref(0) else {
-                panic!()
-            };
-            assert_eq!(
-                store
-                    .borrow()
-                    .get(
-                        token,
-                        NativeValueRole::Output,
-                        NativeValueOrigin { node: 2, row }
-                    )
-                    .unwrap(),
-                &Datum::Null
-            );
+            assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
             p.cancel(&next);
-        } else {
-            assert_eq!(ctx.calls.get(), 0);
-        }
-        // The prepared-value capability callback runs after a successful
-        // constructor has committed. Unwind or invalidation consumes this task
-        // while preserving that SQL cache item for a later fresh invocation.
-        for action in [3, 4] {
-            ctx.id.set(20 + u64::from(action));
-            ctx.action.set(action);
+            if cacheable {
+                assert!(cache.get_cache(99).is_none());
+                assert!(cache.get_cache(24).is_some());
+            }
+            // Reuse exactly this provider and cache after a resource refusal.
             let next = begin(&mut p, &mut eval);
             let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             assert!(matches!(
@@ -916,56 +962,13 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                 HostStep::NeedArg(_)
             ));
             let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-            let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                reply(&mut p, &mut eval, &next, 1, Some(list.clone()))
-            }));
-            if action == 3 {
-                assert!(got.is_err());
-            } else {
-                assert!(got.unwrap().is_err());
-            }
-            let before = (ctx.calls.get(), ctx.ready_calls.get());
-            assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
-            assert_eq!((ctx.calls.get(), ctx.ready_calls.get()), before);
+            assert!(matches!(
+                reply(&mut p, &mut eval, &next, 1, Some(list)).unwrap(),
+                HostStep::Ready(_)
+            ));
             p.cancel(&next);
-            if cacheable {
-                assert!(cache.get_cache(ctx.id.get()).is_some());
-            }
+            assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
         }
-        ctx.action.set(0);
-        ctx.id.set(99);
-        let next = begin(&mut p, &mut eval);
-        let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
-            HostStep::NeedArg(_)
-        ));
-        let list = insert(
-            &Datum::Bytes(vec![b'x'; 1 << 20]),
-            NativeValueRole::CharInput,
-            4,
-            row,
-        );
-        assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
-        p.cancel(&next);
-        if cacheable {
-            assert!(cache.get_cache(99).is_none());
-            assert!(cache.get_cache(24).is_some());
-        }
-        // Reuse exactly this provider and cache after a resource refusal.
-        let next = begin(&mut p, &mut eval);
-        let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
-            HostStep::NeedArg(_)
-        ));
-        let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-        assert!(matches!(
-            reply(&mut p, &mut eval, &next, 1, Some(list)).unwrap(),
-            HostStep::Ready(_)
-        ));
-        p.cancel(&next);
-        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
     }
 }
 
@@ -1273,4 +1276,141 @@ fn cached_list_return_declarations_match_original_conversion_and_output() {
             }
         }
     }
+}
+
+#[test]
+fn optional_cached_list_original_metadata_cache_and_empty_row_demands() {
+    if isolate_common_corpus(
+        "cached_list_tests::optional_cached_list_original_metadata_cache_and_empty_row_demands",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_cached_list_matrix(false);
+}
+#[test]
+fn optional_cached_list_actual_metadata_cache_and_empty_row_demands() {
+    if isolate_common_corpus(
+        "cached_list_tests::optional_cached_list_actual_metadata_cache_and_empty_row_demands",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_cached_list_matrix(true);
+}
+fn run_optional_cached_list_matrix(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for shape in 0..10 {
+        for mask in 0..8 {
+            for (ci, collation) in [
+                tidb_datatype::Collation::Binary,
+                tidb_datatype::Collation::Utf8Mb4Bin,
+                tidb_datatype::Collation::Utf8Mb4GeneralCi,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (ni, needle) in needles().into_iter().enumerate() {
+                    for (li, list) in lists().into_iter().enumerate() {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let make = || {
+                                    let mut e = expression(shape, collation);
+                                    erase_optional_call_declarations(&mut e, mask);
+                                    suite(e)
+                                };
+                                let owner = make();
+                                let actual = make();
+                                // Preserve one real SQL-cache owner across all
+                                // context/failure epochs, independently per path.
+                                for round in 0..9 {
+                                    let (id, fault) = epoch(round);
+                                    let old = ListContext::new(
+                                        id,
+                                        enabled,
+                                        fault,
+                                        needle.clone(),
+                                        list.clone(),
+                                    )
+                                    .fresh_ready();
+                                    let new = ListContext::new(
+                                        id,
+                                        enabled,
+                                        fault,
+                                        needle.clone(),
+                                        list.clone(),
+                                    )
+                                    .fresh_ready();
+                                    for reuse in 0..2 {
+                                        let mut a = input(selection.clone());
+                                        let mut left = output_for(&ty());
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            owner.run(&old, &mut a, &mut left)
+                                        });
+                                        let label=format!("optional-list/{shape}/{mask}/{ci}/{ni}/{li}/{enabled}/{selection:?}/{round}/{reuse}");
+                                        if compare {
+                                            let mut b = input(selection.clone());
+                                            let mut right = output_for(&ty());
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[string_ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || left.column(0) != right.column(0)
+                                                || old.snapshot() != new.snapshot()
+                                            {
+                                                eprintln!("OPTIONAL LIST DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "outcome {label}");
+                                            assert_eq!(
+                                                right.column(0),
+                                                left.column(0),
+                                                "column {label}"
+                                            );
+                                            assert_eq!(
+                                                new.snapshot(),
+                                                old.snapshot(),
+                                                "effects {label}"
+                                            );
+                                            let route = actual.batch_route_snapshot();
+                                            if (route.fallback != 0 || route.refusals != 0)
+                                                && gaps.len() < 20
+                                            {
+                                                gaps.push(format!("{label}: {route:?}"));
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}|{:?}",
+                                            left.column(0),
+                                            old.snapshot(),
+                                            a.sel()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("OPTIONAL LIST ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (777600, 0xE5A69B0AAD36F371));
+    if !gaps.is_empty() {
+        eprintln!("OPTIONAL LIST ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
 }

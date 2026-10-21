@@ -2060,8 +2060,6 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
         && function.args.len() == 2
         && function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && function.get_static_type().is_some()
-        && function.args.iter().all(|arg| arg.static_type().is_some())
 }
 // Closed value owners retain actual optional metadata and their own demand
 // policy, including the distinct stateful, schema and lazy AES continuations.
@@ -2071,7 +2069,8 @@ fn native_optional_value_call(function: &ScalarFunction) -> bool {
         && (crate::scalar_function::eager_values::supports(function)
             || native_stateful_call(function)
             || native_final_state_call(function)
-            || native_json_schema_call(function))
+            || native_json_schema_call(function)
+            || native_cached_list_call(function))
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
@@ -3514,7 +3513,7 @@ fn preflight_view<'a>(
                             })
                         });
                 if contextual_numeric
-                    && (!native_optional_value_call(function)
+                    && (!crate::scalar_function::eager_values::supports(function)
                         || matches!(
                             function.func_name.lowercase(),
                             "abs" | "cot" | "exp" | "pow" | "power"
@@ -5048,7 +5047,7 @@ fn lower_view_policy(
                                     cacheable: sql.args[1].const_level() >= crate::expression::ConstLevel::ONLY_IN_CONTEXT,
                                     cache: sql.shared_find_in_set_cache(),
                                     collation: sql.derived_collation(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item.view.value_role().ok_or_else(|| binding("cached list output role absent"))?,
                                 }))

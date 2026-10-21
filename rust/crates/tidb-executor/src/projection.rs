@@ -4930,6 +4930,7 @@ mod tests {
             "rand",
             "aes_encrypt",
             "json_schema_valid",
+            "find_in_set",
         ] {
             for mask in [0u8, 1, 2, 3] {
                 let field = if name == "rand" {
@@ -4949,6 +4950,7 @@ mod tests {
                         "sleep" => vec![number(0)],
                         "rand" => vec![number(5)],
                         "aes_encrypt" => vec![text("hello"), text("key"), text("ignored IV")],
+                        "find_in_set" => vec![parameter(2, string.clone()), text("1,123,3")],
                         _ => vec![text(r#"{"type":"integer"}"#), parameter(1, string.clone())],
                     };
                     ScalarFunction::new(CiString::new(name), field.clone(), args)
@@ -4970,7 +4972,14 @@ mod tests {
                 crate::StmtContext::for_query()
                     .with_enable_vectorized_expression(enabled)
                     .with_current_insert_values(vec![Datum::Int(9)])
-                    .with_prepared_params(vec![Datum::Int(7), Datum::new_string("7")].into())
+                    .with_prepared_params(
+                        vec![
+                            Datum::Int(7),
+                            Datum::new_string("7"),
+                            Datum::new_string("123"),
+                        ]
+                        .into(),
+                    )
             };
             let reference = context();
             let mut input = Chunk::new_with_capacity(&[integer.clone(), integer.clone()], 3);

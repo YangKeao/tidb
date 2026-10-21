@@ -457,7 +457,7 @@ impl NativeHostMetadata {
             Self::JsonSchema(metadata) => metadata.result_type.as_ref(),
             Self::Stateful(metadata) => metadata.result_type.as_ref(),
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
-            Self::CachedList(metadata) => Some(&metadata.result_type),
+            Self::CachedList(metadata) => metadata.result_type.as_ref(),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
@@ -1342,6 +1342,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::JsonSchema(_)
                 | NativeHostMetadata::Stateful(_)
                 | NativeHostMetadata::FinalState(_)
+                | NativeHostMetadata::CachedList(_)
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {

@@ -9,7 +9,7 @@ pub(in super::super) struct NativeCachedList {
     pub cacheable: bool,
     pub cache: NativeContextCache<FindInSetLookup>,
     pub collation: tidb_datatype::Collation,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
@@ -118,7 +118,7 @@ impl NativeBatchHosts<'_> {
                                     self.context,
                                 )
                                 .and_then(|value| {
-                                    coerce_cached_list_result(value, &meta.result_type)
+                                    coerce_cached_list_result(value, meta.result_type.as_ref())
                                 })
                             }),
                         ))
@@ -213,7 +213,9 @@ impl NativeBatchHosts<'_> {
                             meta.cacheable,
                             self.context,
                         )
-                        .and_then(|value| coerce_cached_list_result(value, &meta.result_type))
+                        .and_then(|value| {
+                            coerce_cached_list_result(value, meta.result_type.as_ref())
+                        })
                     }),
                 ))
             },
@@ -237,7 +239,7 @@ impl NativeBatchHosts<'_> {
 // enum/set view. Keep that original owner under the remaining finite allowance.
 fn coerce_cached_list_result(
     value: Datum,
-    field: &FieldType,
+    field: Option<&FieldType>,
 ) -> std::result::Result<Datum, EvalError> {
     let maximum = tidb_query_expr::local::value_kernel_work_remaining()
         .expect("cached list return runs inside its lexical work scope");
@@ -258,5 +260,8 @@ fn coerce_cached_list_result(
             None,
         ))
     })?;
-    crate::tikv::coerce_result_bounded("find_in_set", field, value, maximum)
+    match field {
+        Some(field) => crate::tikv::coerce_result_bounded("find_in_set", field, value, maximum),
+        None => Ok(value),
+    }
 }
