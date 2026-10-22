@@ -8314,4 +8314,169 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn protobuf_arithmetic_aliases_keep_actual_projection_bulk_and_scalar_results() {
+        use tidb_proto::tipb as wire;
+        let integer = longlong();
+        for name in ["plus", "minus", "mul", "mod", "div", "intdiv"] {
+            for codes in [[8, 8], [253, 8], [8, 5]] {
+                for result_code in [8, 246, 245] {
+                    for unsigned in [false, true] {
+                        let field = |code| wire::FieldType {
+                            tp: Some(code),
+                            flag: Some(if unsigned { 32 } else { 0 }),
+                            flen: Some(if code == 246 {
+                                65
+                            } else if code == 8 {
+                                20
+                            } else if code == 16 {
+                                8
+                            } else {
+                                128
+                            }),
+                            decimal: Some(if code == 246 {
+                                5
+                            } else if code == 8 {
+                                0
+                            } else {
+                                -1
+                            }),
+                            charset: Some("utf8mb4".into()),
+                            collate: Some(-46),
+                            ..Default::default()
+                        };
+                        let result_type = field(result_code);
+                        let target =
+                            tidb_expr::distsql_builtin::pb_type_to_field_type(&result_type);
+                        let pb = wire::Expr {
+                            tp: Some(wire::ExprType::ScalarFunc as i32),
+                            sig: Some(wire::ScalarFuncSig::RegexpLikeSig as i32),
+                            children: codes
+                                .into_iter()
+                                .map(|code| wire::Expr {
+                                    tp: Some(wire::ExprType::Bytes as i32),
+                                    val: Some(b"stored".to_vec()),
+                                    field_type: Some(field(code)),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                            field_type: Some(result_type),
+                            ..Default::default()
+                        };
+                        let mut root = tidb_expr::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                        let Expression::ScalarFunction(f) = &mut root else {
+                            unreachable!()
+                        };
+                        f.func_name = CiString::new(name);
+                        for (i, arg) in f.args.iter_mut().enumerate() {
+                            let Expression::Constant(c) = arg else {
+                                unreachable!()
+                            };
+                            c.param_marker =
+                                Some(tidb_expr::constant::ParamMarker { order: i as i64 });
+                        }
+                        for values in [
+                            vec![Datum::Int(4), Datum::Int(2)],
+                            vec![Datum::Int(-4), Datum::Int(0)],
+                            vec![Datum::Null, Datum::Int(2)],
+                            vec![Datum::new_string("4.5"), Datum::new_string("2")],
+                        ] {
+                            for enabled in [false, true] {
+                                for rows in [0usize, 3, 2051] {
+                                    let context = || {
+                                        crate::StmtContext::for_query()
+                                            .with_enable_vectorized_expression(enabled)
+                                            .with_prepared_params(values.clone().into())
+                                    };
+                                    let reference = context();
+                                    let original = EvaluatorSuite::new(vec![root.clone()], false);
+                                    let mut expected =
+                                        Chunk::new_with_capacity(&[target.clone()], rows.max(1));
+                                    let mut result = Ok(());
+                                    // Match the caller's actual source packet boundaries. Typed
+                                    // parameter preparation and its warnings are per input packet.
+                                    for offset in (0..rows).step_by(137) {
+                                        let count = (rows - offset).min(137);
+                                        let mut input = Chunk::new_with_capacity(
+                                            &[integer.clone(), integer.clone()],
+                                            count.max(1),
+                                        );
+                                        for i in offset..offset + count {
+                                            input.append_int64(0, i as i64);
+                                            input.append_int64(1, (i * 2) as i64);
+                                        }
+                                        let mut output = Chunk::new_with_capacity(
+                                            &[target.clone()],
+                                            count.max(1),
+                                        );
+                                        match original.run(&reference, &mut input, &mut output) {
+                                            Ok(()) => expected.append_range_from(
+                                                &output,
+                                                0,
+                                                output.num_rows(),
+                                            ),
+                                            Err(EvaluatorError::Eval(e)) => {
+                                                result = Err(format!("{e:?}"));
+                                                break;
+                                            }
+                                            Err(other) => panic!("unexpected reference {other:?}"),
+                                        }
+                                    }
+                                    let warnings = reference.take_warnings();
+                                    for workers in [0, 2] {
+                                        let context = context();
+                                        let (source, _) = NumberSource::new(rows as i64, 137);
+                                        let schema =
+                                            Schema::new(vec![Column::new(1, target.clone())]);
+                                        let mut projection = ProjectionExec::new(
+                                            ExecutorMeta::new(schema, 1, 137, 1024),
+                                            vec![root.clone()],
+                                            source,
+                                            context.clone(),
+                                        )
+                                        .with_workers(workers);
+                                        projection.open().unwrap();
+                                        let mut got = Chunk::new_with_capacity(
+                                            &[target.clone()],
+                                            rows.max(1),
+                                        );
+                                        let actual = loop {
+                                            let mut output = projection.new_chunk();
+                                            match projection.next(&mut output) {
+                                                Ok(()) => (),
+                                                Err(ExecError::Eval(e)) => {
+                                                    break Err(format!("{e:?}"))
+                                                }
+                                                Err(other) => {
+                                                    panic!("unexpected executor {other:?}")
+                                                }
+                                            };
+                                            if output.num_rows() == 0 {
+                                                break Ok(());
+                                            }
+                                            got.append_range_from(&output, 0, output.num_rows());
+                                        };
+                                        assert_eq!(actual,result,"{name}/{codes:?}/{result_code}/{unsigned}/{values:?}/{enabled}/{rows}/{workers}");
+                                        assert_eq!(got.column(0),expected.column(0),"column {name}/{codes:?}/{unsigned}/{values:?}/{enabled}/{rows}/{workers}");
+                                        assert_eq!(context.take_warnings(),warnings,"warnings {name}/{codes:?}/{unsigned}/{values:?}/{enabled}/{rows}/{workers}");
+                                        if workers == 0 && rows > 0 {
+                                            let route =
+                                                projection.evaluator_suite.batch_route_snapshot();
+                                            assert!(route.prepared > 0);
+                                            assert_eq!(
+                                                (route.refusals, route.fallback),
+                                                (0, 0),
+                                                "{route:?}"
+                                            );
+                                        }
+                                        projection.close().unwrap();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

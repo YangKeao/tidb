@@ -8,6 +8,7 @@ pub(in super::super) struct NumericWindowTask {
     index: usize,
     position: usize,
     computing: bool,
+    presenting: bool,
     values: [Vec<Datum>; 2],
     bytes: [usize; 2],
     pending: Option<Box<NumericTask>>,
@@ -101,6 +102,7 @@ impl NativeBatchHosts<'_> {
                 index: 0,
                 position: 0,
                 computing: false,
+                presenting: false,
                 values: [Vec::new(), Vec::new()],
                 bytes: [0; 2],
                 pending: None,
@@ -497,6 +499,11 @@ impl NativeBatchHosts<'_> {
                 continue;
             }
             if task.position == task.rows.len() {
+                if batch.output_integer && !batch.integer && !task.presenting {
+                    task.presenting = true;
+                    task.position = 0;
+                    continue;
+                }
                 return Ok(WindowTransition::Ready(VectorValue::Bytes(
                     task.output
                         .take()
@@ -504,6 +511,51 @@ impl NativeBatchHosts<'_> {
                 )));
             }
             let position = task.position;
+            if task.presenting {
+                let value = std::mem::replace(&mut task.values[0][position], Datum::Null);
+                let charge = native_payload_bytes(&value)?
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("numeric window presented payload overflow"))?;
+                task.bytes[0] = task.bytes[0]
+                    .checked_sub(charge)
+                    .ok_or_else(|| resource("numeric window presented ledger underflow"))?;
+                let bits = match crate::scalar_function::native_batch_integer_bits(value) {
+                    Ok(bits) => bits,
+                    Err(error) => return Ok(WindowTransition::Failure(error)),
+                };
+                let value = crate::scalar_function::native_batch_integer_value(
+                    bits,
+                    result_type.is_unsigned(),
+                );
+                if native_payload_bytes(&value)?
+                    .checked_mul(2)
+                    .is_none_or(|n| n > available)
+                {
+                    return Err(resource(
+                        "numeric window integer collection exceeds allowance",
+                    ));
+                }
+                let store = self
+                    .native_values
+                    .ok_or_else(|| binding("numeric window store absent"))?;
+                let token = store.borrow_mut().insert_clone(
+                    &value,
+                    *output_role,
+                    NativeValueOrigin {
+                        node: *output_node,
+                        row: InputRow {
+                            occurrence: start + position,
+                            input_row: task.rows[position],
+                        },
+                    },
+                )?;
+                task.output
+                    .as_mut()
+                    .ok_or_else(|| binding("numeric window output absent"))?
+                    .push_ref(Some(&token));
+                task.position += 1;
+                continue;
+            }
             let lhs = std::mem::replace(&mut task.values[0][position], Datum::Null);
             let rhs = std::mem::replace(&mut task.values[1][position], Datum::Null);
             let unsigned = arithmetic_unsigned(source_types);
@@ -608,6 +660,20 @@ impl NativeBatchHosts<'_> {
                     Err(error) => return Ok(WindowTransition::Failure(error)),
                 }
             };
+            if batch.output_integer && !batch.integer {
+                let charge = native_payload_bytes(&value)?
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("numeric window staged result payload overflow"))?;
+                if charge > available {
+                    return Err(resource("numeric window staged result exceeds allowance"));
+                }
+                task.bytes[0] = task.bytes[0]
+                    .checked_add(charge)
+                    .ok_or_else(|| resource("numeric window staged result ledger overflow"))?;
+                task.values[0][position] = value;
+                task.position += 1;
+                continue;
+            }
             let value = if batch.output_integer {
                 match crate::scalar_function::native_batch_integer_bits(value) {
                     Ok(bits) => crate::scalar_function::native_batch_integer_value(

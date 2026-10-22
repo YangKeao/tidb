@@ -312,9 +312,12 @@ impl NativeBatchHosts<'_> {
         let store = self
             .native_values
             .ok_or_else(|| binding("window result store missing"))?;
+        let staged_integer = batch.output_integer && !batch.integer;
+        let mut staged_bytes = 0usize;
         for position in 0..count {
             let current = base
-                .checked_add(diagnostic_bytes)
+                .checked_add(staged_bytes)
+                .and_then(|bytes| bytes.checked_add(diagnostic_bytes))
                 .and_then(|bytes| bytes.checked_add(128))
                 .and_then(|bytes| bytes.checked_add(output.retained_heap_bytes()?))
                 .ok_or_else(|| resource("window output bytes overflow"))?;
@@ -409,6 +412,23 @@ impl NativeBatchHosts<'_> {
                     Err(error) => return self.native_failure(error),
                 }
             };
+            // The generic integer consumer completes all arithmetic and
+            // result coercions before it collects integer carriers.
+            if staged_integer {
+                let charge = native_payload_bytes(&value)?
+                    .checked_mul(2)
+                    .ok_or_else(|| resource("window staged result payload overflow"))?;
+                self.check_bytes(
+                    current
+                        .checked_add(charge)
+                        .ok_or_else(|| resource("window staged result extent overflow"))?,
+                )?;
+                staged_bytes = staged_bytes
+                    .checked_add(charge)
+                    .ok_or_else(|| resource("window staged result ledger overflow"))?;
+                right[position] = value;
+                continue;
+            }
             let value = if batch.output_integer {
                 match crate::scalar_function::native_batch_integer_bits(value) {
                     Ok(bits) => crate::scalar_function::native_batch_integer_value(
@@ -438,6 +458,47 @@ impl NativeBatchHosts<'_> {
                 },
             )?;
             output.push_ref(Some(&token));
+        }
+        if staged_integer {
+            for (position, value) in right.iter_mut().enumerate() {
+                let current = base
+                    .checked_add(staged_bytes)
+                    .and_then(|bytes| bytes.checked_add(output.retained_heap_bytes()?))
+                    .ok_or_else(|| resource("window integer collection extent overflow"))?;
+                self.check_bytes(current)?;
+                let bits = match crate::scalar_function::native_batch_integer_bits(
+                    std::mem::replace(value, Datum::Null),
+                ) {
+                    Ok(bits) => bits,
+                    Err(error) => return self.native_failure(error),
+                };
+                let value = crate::scalar_function::native_batch_integer_value(
+                    bits,
+                    result_type.is_unsigned(),
+                );
+                self.check_bytes(
+                    current
+                        .checked_add(native_payload_bytes(&value)?.checked_mul(2).ok_or_else(
+                            || resource("window integer collection payload overflow"),
+                        )?)
+                        .ok_or_else(|| resource("window integer collection overlap overflow"))?,
+                )?;
+                let SqlDemand::WindowArithmetic { rows, .. } = &self.task(id)?.demand else {
+                    unreachable!()
+                };
+                let token = store.borrow_mut().insert_clone(
+                    &value,
+                    *output_role,
+                    NativeValueOrigin {
+                        node: *output_node,
+                        row: InputRow {
+                            occurrence: start + position,
+                            input_row: rows[position],
+                        },
+                    },
+                )?;
+                output.push_ref(Some(&token));
+            }
         }
         self.slots[id.slot].task = None;
         Ok(VectorValue::Bytes(output))

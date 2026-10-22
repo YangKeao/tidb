@@ -703,8 +703,8 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
         1 << 20
     )
     .is_err());
-    // The arithmetic root remains an explicit gap. The three unary roots now
-    // retain both their original bulk body and scalar PB dispatch.
+    // These four eligible roots retain their original bulk body alongside
+    // the selected scalar PB dispatch.
     for (name, arity, result) in [
         ("plus", 2, 8),
         ("abs", 1, 8),
@@ -750,7 +750,7 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
             let route = actual.batch_route_snapshot();
             assert_eq!(
                 (route.prepared, route.fallback, route.refusals),
-                if name == "plus" { (0, 1, 1) } else { (1, 0, 0) },
+                (1, 0, 0),
                 "{name}/{enabled}/{route:?}"
             );
         }
@@ -905,3 +905,6 @@ mod result_tests;
 
 #[path = "batch_pb_unary_tests.rs"]
 mod unary_tests;
+
+#[path = "batch_pb_arithmetic_tests.rs"]
+mod arithmetic_tests;

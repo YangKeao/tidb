@@ -1620,6 +1620,11 @@ fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize
             domain,
         ));
     }
+    // The selected PB scalar body has raw demands. Only the genuine bulk
+    // branches above may choose the old arithmetic operand preparation.
+    if pb_regexp_owner(function) {
+        return NativeView::ValueToken;
+    }
     if native_arithmetic_operation(function.func_name.lowercase()).is_some()
         && function.args.len() == 2
         && view.value_role().is_some()
@@ -2261,6 +2266,21 @@ fn pb_regexp_unary_batch(root: &Expression) -> Option<NativeEvalType> {
     let target = crate::scalar_function::static_batch_target(root)?;
     pb_regexp_unary_view(function, NativeView::BulkRoot(target)).then_some(target)
 }
+fn pb_regexp_arithmetic_view(function: &ScalarFunction, view: NativeView) -> bool {
+    pb_regexp_owner(function)
+        && function.args.len() == 2
+        && window_arithmetic_operation(function, view).is_some()
+}
+fn pb_regexp_arithmetic_batch(root: &Expression) -> Option<NativeEvalType> {
+    let Expression::ScalarFunction(function) = root else {
+        return None;
+    };
+    if !pb_regexp_owner(function) {
+        return None;
+    }
+    let target = crate::scalar_function::static_batch_target(root)?;
+    pb_regexp_arithmetic_view(function, NativeView::BulkRoot(target)).then_some(target)
+}
 fn pb_regexp_row_batch(root: &Expression) -> bool {
     matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function)
         && !function.has_values_offset() && !function.has_grouping_metadata()
@@ -2572,6 +2592,15 @@ fn resolve_call_in_view(
                 window_unary_operation(function, view).expect("actual unary bulk consumer"),
             ),
             1,
+        ));
+    }
+    if pb_regexp_arithmetic_view(function, view) {
+        return Ok((
+            CallTarget::Host(
+                window_arithmetic_operation(function, view)
+                    .expect("actual arithmetic bulk consumer"),
+            ),
+            2,
         ));
     }
     if view.value_role().is_some() && native_regexp_call(function) {
@@ -4146,6 +4175,9 @@ fn preflight_view<'a>(
                                 )
                             }));
                 if contextual_numeric
+                    && (!pb_regexp_owner(function)
+                        || pb_regexp_unary_view(function, view)
+                        || pb_regexp_arithmetic_view(function, view))
                     && (!crate::scalar_function::eager_values::supports(function)
                         || matches!(
                             function.func_name.lowercase(),
@@ -5161,7 +5193,10 @@ fn lower_view_policy(
         && matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
     {
         profile_shape(root, limits)?;
-        if pb_regexp_legacy_bulk(root) && pb_regexp_unary_batch(root).is_none() {
+        if pb_regexp_legacy_bulk(root)
+            && pb_regexp_unary_batch(root).is_none()
+            && pb_regexp_arithmetic_batch(root).is_none()
+        {
             return Err(BatchFailure::admission(
                 "PB regexp legacy bulk display profile remains outside this closure",
             ));
@@ -6953,6 +6988,15 @@ impl PreparedBatch {
         };
         let view = if ordered || deferred.is_some() {
             Some(NativeView::RootValue)
+        } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+            && {
+                profile_shape(root, source_limits)?;
+                pb_regexp_arithmetic_batch(root).is_some()
+            }
+        {
+            Some(NativeView::BulkRoot(
+                pb_regexp_arithmetic_batch(root).expect("actual arithmetic batch candidate"),
+            ))
         } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
             && {
                 profile_shape(root, source_limits)?;
