@@ -103,6 +103,77 @@ impl PbEagerValues {
     }
 }
 
+/// Actual selected PB Boolean implementation, with no expression children.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PbBooleanValues {
+    builtin: PbBuiltin,
+}
+impl PbBooleanValues {
+    pub(crate) fn signature(self) -> ScalarFuncSig {
+        self.builtin.signature
+    }
+    pub(crate) fn observes_null_only(self) -> bool {
+        matches!(self.builtin.kernel, Kernel::IsNull)
+    }
+    pub(crate) fn data_arity(self, logical: usize) -> usize {
+        logical.min(if self.logical_function().is_some() {
+            2
+        } else {
+            1
+        })
+    }
+    pub(crate) fn logical_function(self) -> Option<crate::LogicalFunction> {
+        match self.builtin.kernel {
+            Kernel::Logic(BinaryOp::LogicAnd) => Some(crate::LogicalFunction::And),
+            Kernel::Logic(BinaryOp::LogicOr) => Some(crate::LogicalFunction::Or),
+            _ => None,
+        }
+    }
+    pub(crate) fn nullness(self, is_null: bool) -> Option<bool> {
+        debug_assert!(self.observes_null_only());
+        if is_null {
+            None
+        } else {
+            Some(false)
+        }
+    }
+    pub(crate) fn truth(self, value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalError> {
+        if self.observes_null_only() {
+            Ok(self.nullness(value.is_null()))
+        } else {
+            logic_truthy(value, ctx)
+        }
+    }
+    pub(crate) fn needs_right(self, left: Option<bool>) -> bool {
+        self.logical_function()
+            .is_some_and(|function| super::logical_needs_right(function, left))
+    }
+    pub(crate) fn unary_value(
+        self,
+        ready: Option<bool>,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        let function = match self.builtin.kernel {
+            Kernel::IsNull => crate::BooleanFunction::IsNull,
+            Kernel::Truth { negate: true } => crate::BooleanFunction::UnaryNot,
+            Kernel::Truth { negate: false } => crate::BooleanFunction::IsTrueWithNull,
+            _ => unreachable!("actual unary Boolean owner"),
+        };
+        crate::eval_boolean_ready_in(function, ready, ctx)
+    }
+    pub(crate) fn logical_value(
+        self,
+        arguments: crate::LogicalArgs,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        crate::eval_logical_ready_in(
+            self.logical_function().expect("actual logical owner"),
+            arguments,
+            ctx,
+        )
+    }
+}
+
 /// Actual selected binary implementation, without expression children.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PbBinaryValues {
@@ -213,6 +284,13 @@ impl PbBinaryValues {
 }
 
 impl PbBuiltin {
+    pub(crate) fn boolean_values(self) -> Option<PbBooleanValues> {
+        matches!(
+            self.kernel,
+            Kernel::IsNull | Kernel::Truth { .. } | Kernel::Logic(..)
+        )
+        .then_some(PbBooleanValues { builtin: self })
+    }
     pub(crate) fn binary_values(self) -> Option<PbBinaryValues> {
         matches!(self.kernel, Kernel::Binary(..) | Kernel::IntegerMod { .. })
             .then_some(PbBinaryValues { builtin: self })
@@ -438,41 +516,20 @@ impl PbBuiltin {
                         .eval(scoped_ctx, row)
                 },
             ),
-            Kernel::IsNull => {
-                let ready = if argument(0)?.is_null() {
-                    None
-                } else {
-                    Some(false)
-                };
-                crate::eval_boolean_ready_in(crate::BooleanFunction::IsNull, ready, ctx)
+            Kernel::IsNull | Kernel::Truth { .. } => {
+                let builtin = self.boolean_values().expect("actual unary Boolean owner");
+                let ready = builtin.truth(&argument(0)?, ctx)?;
+                builtin.unary_value(ready, ctx)
             }
-            Kernel::Truth { negate } => {
-                let ready = logic_truthy(&argument(0)?, ctx)?;
-                let function = if negate {
-                    crate::BooleanFunction::UnaryNot
-                } else {
-                    crate::BooleanFunction::IsTrueWithNull
-                };
-                crate::eval_boolean_ready_in(function, ready, ctx)
-            }
-            Kernel::Logic(op) => {
-                let left = logic_truthy(&argument(0)?, ctx)?;
-                let function = match op {
-                    BinaryOp::LogicAnd => crate::LogicalFunction::And,
-                    BinaryOp::LogicOr => crate::LogicalFunction::Or,
-                    _ => unreachable!("protobuf logic admits only AND/OR"),
-                };
-                if (op == BinaryOp::LogicAnd && left == Some(false))
-                    || (op == BinaryOp::LogicOr && left == Some(true))
-                {
-                    return crate::eval_logical_ready_in(
-                        function,
-                        crate::LogicalArgs::UndemandedRight { left },
-                        ctx,
-                    );
+            Kernel::Logic(_) => {
+                let builtin = self.boolean_values().expect("actual logical owner");
+                let left = builtin.truth(&argument(0)?, ctx)?;
+                if !builtin.needs_right(left) {
+                    return builtin
+                        .logical_value(crate::LogicalArgs::UndemandedRight { left }, ctx);
                 }
-                let right = logic_truthy(&argument(1)?, ctx)?;
-                crate::eval_logical_ready_in(function, crate::LogicalArgs::Both(left, right), ctx)
+                let right = builtin.truth(&argument(1)?, ctx)?;
+                builtin.logical_value(crate::LogicalArgs::Both(left, right), ctx)
             }
             Kernel::IntegerMod { .. } => {
                 let builtin = self.binary_values().expect("actual integer MOD owner");

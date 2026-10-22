@@ -534,7 +534,8 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
-            if function.pb_binary_values().is_some()
+            if function.pb_boolean_values().is_some()
+                || function.pb_binary_values().is_some()
                 || native_pb_eager_values(function)
                 || native_regexp_source_value(function, limits)
                 || native_json_schema_call(function)
@@ -1310,6 +1311,15 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
+    if function.pb_boolean_values().is_some() {
+        budget.array::<hosts::NativePbBoolean>(1)?;
+        budget.array::<usize>(source_data_arity(function))?;
+        if let Some(field) = result {
+            budget.field(field, 1)?;
+        }
+        budget.add(function.func_name.lowercase().len())?;
+        return Ok(());
+    }
     if function.pb_binary_values().is_some() && !native_no_argument_header_call(function) {
         budget.array::<hosts::NativePbBinary>(1)?;
         budget.array::<usize>(source_data_arity(function))?;
@@ -1850,7 +1860,7 @@ fn parts_optional(
 }
 fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     let expected_arity = resolve_call_in_view(function, view)?.1;
-    if source_data_arity(function) != expected_arity
+    if source_data_arity_in_view(function, view) != expected_arity
         || (function.pb_signature().is_some()
             && !pb_timestamp_diff(function)
             && !pb_value_owner(function))
@@ -2300,6 +2310,7 @@ fn native_pb_eager_values(function: &ScalarFunction) -> bool {
 }
 fn pb_value_owner(function: &ScalarFunction) -> bool {
     pb_regexp_owner(function)
+        || function.pb_boolean_values().is_some()
         || function.pb_binary_values().is_some()
         || function.pb_json_signature().is_some()
         || function
@@ -2309,7 +2320,7 @@ fn pb_value_owner(function: &ScalarFunction) -> bool {
 // Some legacy enabled batch bodies bypass ScalarFunction::eval. Keep those
 // root profiles outside this scalar-signature closure until separately proven.
 fn pb_value_legacy_bulk(root: &Expression) -> bool {
-    matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function)
+    matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function) && function.pb_boolean_values().is_none()
         && (matches!(function.func_name.lowercase(),"abs"|"cast_json"|"cast_decimal") || native_arithmetic_operation(function.func_name.lowercase()).is_some())
         && crate::scalar_function::static_batch_target(root).is_some()
         && (!native_no_argument_header_call(function) || pb_value_unary_batch(root).is_some()))
@@ -2393,7 +2404,20 @@ fn native_regexp_row_batch(root: &Expression) -> bool {
 fn native_weight_string_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::weight_value::supports(function)
 }
+fn source_data_arity_in_view(function: &ScalarFunction, view: NativeView) -> usize {
+    if pb_value_unary_view(function, view) {
+        1
+    } else if pb_value_arithmetic_view(function, view) {
+        2
+    } else {
+        source_data_arity(function)
+    }
+}
 fn source_data_arity(function: &ScalarFunction) -> usize {
+    if let Some(kernel) = function.pb_boolean_values() {
+        return kernel.data_arity(function.args.len());
+    }
+
     if function
         .pb_binary_values()
         .is_some_and(|kernel| kernel.domain().is_none())
@@ -2565,7 +2589,8 @@ fn native_missing_arithmetic_sources(function: &ScalarFunction) -> bool {
         && function.args.iter().any(|arg| arg.static_type().is_none())
 }
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
-    function.pb_binary_values().is_some()
+    function.pb_boolean_values().is_some()
+        || function.pb_binary_values().is_some()
         || native_pb_eager_values(function)
         || native_optional_value_call(function)
         || native_optional_selection_call(function)
@@ -2579,7 +2604,8 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    function.pb_binary_values().is_some()
+    function.pb_boolean_values().is_some()
+        || function.pb_binary_values().is_some()
         || native_pb_eager_values(function)
         || native_concat_value_call(function)
         || native_no_argument_header_call(function)
@@ -2684,7 +2710,8 @@ fn resolve_call_in_view(
         ));
     }
     if view.value_role().is_some()
-        && (function.pb_binary_values().is_some()
+        && (function.pb_boolean_values().is_some()
+            || function.pb_binary_values().is_some()
             || native_pb_eager_values(function)
             || native_regexp_call(function))
     {
@@ -3959,7 +3986,7 @@ fn preflight_view<'a>(
                     if native_optional_declarations_call(function) =>
                 {
                     check_batch_call(function, view)?;
-                    let arity = source_data_arity(function);
+                    let arity = source_data_arity_in_view(function, view);
                     if native_weight_string_call(function) {
                         profile_shape(node, limits)?;
                     }
@@ -3983,16 +4010,21 @@ fn preflight_view<'a>(
                             |_| resource("optional source prefix probe copy overflow"),
                         )?)?;
                     }
-                    if matches!(
-                        function.func_name.lowercase(),
-                        "abs" | "cot" | "pow" | "power"
-                    ) && function.args.iter().any(|child| {
-                        contains_context_value(child, limits.tree.max_depth, &mut {
-                            limits.tree.max_nodes
-                        }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
-                            limits.tree.max_nodes
+                    if (!pb_value_owner(function)
+                        || pb_value_unary_view(function, view)
+                        || pb_value_arithmetic_view(function, view))
+                        && matches!(
+                            function.func_name.lowercase(),
+                            "abs" | "cot" | "pow" | "power"
+                        )
+                        && function.args.iter().any(|child| {
+                            contains_context_value(child, limits.tree.max_depth, &mut {
+                                limits.tree.max_nodes
+                            }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
+                                limits.tree.max_nodes
+                            })
                         })
-                    }) {
+                    {
                         survey_common_math_diagnostic(
                             function,
                             checked.len(),
@@ -4235,7 +4267,7 @@ fn preflight_view<'a>(
                     ));
                 }
 
-                let arity = source_data_arity(function);
+                let arity = source_data_arity_in_view(function, view);
                 if native_weight_string_call(function) {
                     profile_shape(node, limits)?;
                 }
@@ -4779,7 +4811,7 @@ fn preflight_view<'a>(
             for _ in 0..if header {
                 0
             } else {
-                source_data_arity(function)
+                source_data_arity_in_view(function, checked[index].view)
             } {
                 math_children = match (
                     math_children,
@@ -4913,7 +4945,7 @@ fn preflight_view<'a>(
         };
         if item.view.value_role().is_none()
             || native_arithmetic_operation(function.func_name.lowercase()).is_none()
-            || (function.pb_binary_values().is_some()
+            || ((function.pb_binary_values().is_some() || function.pb_boolean_values().is_some())
                 && !pb_value_arithmetic_view(function, item.view))
         {
             continue;
@@ -5835,6 +5867,18 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if sql.pb_boolean_values().is_some() => {
+                                let kernel=sql.pb_boolean_values().expect("actual Boolean owner");
+                                debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
+                                let mut arguments=Vec::new();let data=source_data_arity(sql);reserve(&mut arguments,data)?;let mut child=ordinal+1;
+                                for _ in 0..data{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB Boolean child absent"))?.subtree_end;}
+                                NativeHostMetadata::PbBoolean(Box::new(hosts::NativePbBoolean {
+                                    kernel,arguments:arguments.into_boxed_slice(),logical_arity:sql.args.len(),
+                                    name:sql.func_name.lowercase().into(),result_type:item.sql.map(snapshot_field_type),
+                                    integer_batch_result:item.view==NativeView::BulkRoot(NativeEvalType::Int),
+                                    output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("PB Boolean output view absent"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if sql.pb_binary_values().is_some() && !native_no_argument_header_call(sql) => {
                                 let kernel=sql.pb_binary_values().expect("actual selected binary owner");
@@ -8784,6 +8828,7 @@ impl PreparedBatchSuite {
                                     | NativeHostMetadata::RegexpValues(_)
                                     | NativeHostMetadata::PbEagerValues(_)
                                     | NativeHostMetadata::PbBinary(_)
+                                    | NativeHostMetadata::PbBoolean(_)
                             ) || matches!(
                         meta,
                         NativeHostMetadata::HeaderOutcome {

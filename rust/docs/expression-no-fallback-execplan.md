@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N47 original Boolean contracts: baseline df469f81 archived before observers. Captured and independently reran9,751,200 observations, reproduced actual admission/fallback with the same seven hashes, and pinned all seven assertions before production. Pure extraction preserves all seven. Source18/18 and all9,751,200 strict observations pass. Whole frontend2196/exact inherited3/95ignored/all655batch/346warnings; Projection50, Expand6+unchanged64/B42, inventory83088/0/0, freshlint, dual8fmt and reviewed ownership/SHA audits pass. Callback/capability/fixed-cap/stale-origin/large-presence/ignored-unsupported-suffix checks pass. Original operator and ordinary truth/logical controllers stay unchanged.
+
 - [x] N46 actual binary integration: all11,113,152/six original assertions and16 source/protocol checks pass, no strict exceptions. Whole frontend2178/exact inherited3/95ignored/all637batch/346warnings; Projection49, Expand6+unchanged64/B42, inventory83088/0/0, freshlint, dual13fmt and exact ownership/SHA audit pass. The same64KiB policy has independent original raw-return controls. Continue remaining PB/metadata/public callers/fallback/service/performance; overall task stays open.
 
 - [x] N46 original binary contracts: archived13 baseline files at37c97648 before new observers; captured and independently reran all11,113,152 observations, reproduced admission/fallback RED with identical six hashes, and pinned all six cohorts before production edits. Pure extraction passed all six original hashes. Five actual source cohorts and the new raw/typed callback and overflow protocol tests pass. Phase validation exposed masked malformed-arity headers, now corrected. Direct consumers and fixed64KiB recovery pass; every non-NULL finite refusal is independently reproduced by the existing return guard over the original raw PB body. The six strict cohorts retain zero exemptions. Projection and global gates remain. Six declared cohorts cover early arity versus late missing/ignored operands, typed conversion/NULL gates, full149, real columns/nested producers, real BinaryLiteral constructors/independent unsigned flags and all ten actual source families.
@@ -201,6 +203,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N47: an actual absent-return Boolean owner displayed as ABS exposed the optional-declaration branch attaching an unrelated math diagnostic plan by name. Its fixed differential witness now gates preparation by actual owner/consumer. Boolean PB bodies have no general arity header. IsNull/Truth read only argument0, and LogicalAnd/Or read argument1 only when original left truth requires it. IsNull checks the raw NULL carrier without truth conversion; absent declarations must remain absent rather than receiving a guessed type.
 
 N46: KernelBinary requires exact arity2 before evaluating any child, then applies the selected typed numeric operand view and cast before its NULL gate and RHS. IntegerMod has no such header: it casts raw arg0 then arg1 even after left NULL, ignores suffix children, and bakes signedness into the selected signature. Actual input-domain selection and actual display-name diagnostic rendering are separate facts. First integration checks exposed two independent header masks: generic PB metadata before headers, and the legacy display-name refusal on a valid malformed-arity header. Both have original differential witnesses. The fixed64KiB check obtains the original raw PB body through a test-only accessor and independently applies the existing return guard. The original PlusInt raw body can return Decimal6 before final Int conversion; checking only final ScalarFunction::eval misses that boundary. The actual guard refuses at64KiB, NULL recovery stays exact, and this separate policy evidence never contributes to the strict equivalence corpus.
 
@@ -528,6 +532,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+N47: derive an actual selected Boolean-owner fact and reuse the existing truth/logical continuation only after pinning independent original behavior. Keep logical arity separate from the real consumed prefix, and capture any legacy bulk profile from its actual selector. Raw optional declarations are observed inside a real, declared JSON coalesce consumer rather than assigning a type to the untyped child.
+
 N46: reuse the existing numeric continuation and diagnostic plans with actual selected-domain and argument-owner facts. Keep the original operator algorithms unchanged. The separate integer MOD controller preserves baked signedness, missing-argument timing and ignored suffixes; neither controller invokes expression evaluators. Captured binary facts exclude IntDiv, whose existing controller owns its declaration and diagnostic subject.
 
 - Decision: investigate the complete38-signature binary PB owner with the existing numeric argument/diagnostic continuations and pure operator kernels; do not route it through a raw-only eager value descriptor or a name-substituted arithmetic parent.
@@ -853,6 +859,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N47 Boolean checkpoint is verified: selected-owner facts and raw capability continuations preserve all seven before-production original assertions, including genuine optional constant/parameter/deferred metadata. The same driver and unchanged ordinary controllers serve the new family. All final gates retain their inherited baselines. Continue the remaining selected PB lazy/cast owners, malformed metadata, actual public callers, fallback removal, service and performance; overall task remains open.
 
 N46 binary checkpoint is verified: all six pinned original observations and actual source paths agree; the existing numeric controller serves the actual typed binary owner, and baked MOD retains its original raw prefix. All final gates preserve their inherited baselines. Mixed Projection checks exact serial order and the actual parallel shared-warning contract. Remaining optional/malformed PB metadata, lazy/cast owners, public callers, fallback removal and whole service/performance gates still prevent an overall completion claim. Continue through actual source/Projection/global gates, then remaining PB/public/fallback/service/performance work.
 

@@ -37,7 +37,9 @@ pub(crate) use pb_json_values::PbJsonValues;
 #[cfg(test)]
 mod json_preparation_tests;
 
-pub(crate) use pb_builtin::{interpret_integer_result, PbBinaryValues, PbBuiltin, PbEagerValues};
+pub(crate) use pb_builtin::{
+    interpret_integer_result, PbBinaryValues, PbBooleanValues, PbBuiltin, PbEagerValues,
+};
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
@@ -1082,6 +1084,10 @@ impl ScalarFunction {
         self.pb_builtin
             .expect("actual selected PB owner")
             .eval(self, ctx, row)
+    }
+
+    pub(crate) fn pb_boolean_values(&self) -> Option<PbBooleanValues> {
+        self.pb_builtin.and_then(PbBuiltin::boolean_values)
     }
 
     pub(crate) fn pb_binary_values(&self) -> Option<PbBinaryValues> {

@@ -1166,3 +1166,6 @@ mod json_tests;
 
 #[path = "batch_pb_binary_tests.rs"]
 mod binary_tests;
+
+#[path = "batch_pb_boolean_tests.rs"]
+mod boolean_tests;
