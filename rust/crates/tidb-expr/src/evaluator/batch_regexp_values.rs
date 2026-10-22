@@ -6,6 +6,8 @@ pub(in super::super) struct NativeRegexpValues {
     pub arguments: Box<[usize]>,
     pub source_types: Box<[Option<FieldType>]>,
     pub operator: bool,
+    pub protobuf_result: bool,
+    pub integer_batch_result: bool,
     pub invocation: tidb_query_expr::NativeRegexpInvocation,
     pub collation: tidb_datatype::Collation,
     pub result_type: Option<FieldType>,
@@ -253,6 +255,11 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
+        let value = if meta.protobuf_result {
+            crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref())
+        } else {
+            value
+        };
         let held = base
             .checked_add(
                 native_payload_bytes(&value)?
@@ -274,6 +281,41 @@ impl NativeBatchHosts<'_> {
         ) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
+        };
+        let value = if meta.integer_batch_result {
+            let result = tidb_query_expr::local::with_value_kernel_work_limit(
+                self.max_retained_bytes - held,
+                || {
+                    crate::scalar_function::eager_values::audit_work_result(
+                        (|| -> std::result::Result<Datum, EvalError> {
+                            let value = crate::expression::apply_enum_set_integer_view(
+                                value,
+                                meta.result_type.as_ref(),
+                            );
+                            let value = crate::scalar_function::normalize_numeric_row_value(
+                                value,
+                                meta.result_type.as_ref(),
+                                NativeEvalType::Int,
+                                self.context,
+                            )?;
+                            let bits = crate::scalar_function::native_batch_integer_bits(value)?;
+                            Ok(crate::scalar_function::native_batch_integer_value(
+                                bits,
+                                meta.result_type
+                                    .as_ref()
+                                    .is_some_and(FieldType::is_unsigned),
+                            ))
+                        })(),
+                    )
+                },
+            );
+            check_tokens()?;
+            match result {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            }
+        } else {
+            value
         };
         check_tokens()?;
         self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)

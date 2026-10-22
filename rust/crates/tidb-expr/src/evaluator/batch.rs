@@ -2251,6 +2251,14 @@ fn pb_regexp_row_batch(root: &Expression) -> bool {
         && !function.has_values_offset() && !function.has_grouping_metadata()
         && crate::scalar_function::static_batch_target(root).is_some())
 }
+// The original generic integer batch presents each scalar row as EvalInt
+// after its own result conversion. Keep this consumer policy separate from PB.
+fn pb_regexp_integer_batch(root: &Expression) -> bool {
+    pb_regexp_row_batch(root)
+        && root
+            .static_type()
+            .is_some_and(|field| field.eval_type() == NativeEvalType::Int)
+}
 fn native_regexp_call(function: &ScalarFunction) -> bool {
     (pb_regexp_owner(function)
         && crate::scalar_function::regexp_value::accepts_arity(function.args.len()))
@@ -5668,7 +5676,7 @@ fn lower_view_policy(
                                 for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("regexp child absent"))?.subtree_end;}
                                 NativeHostMetadata::RegexpValues(Box::new(hosts::NativeRegexpValues{
                                     arguments:arguments.into_boxed_slice(),source_types:sql.args.iter().map(|arg|arg.static_type().map(snapshot_field_type)).collect(),
-                                    operator:!pb_regexp_owner(sql) && sql.func_name.lowercase()=="regexp",invocation:sql.batch_regexp_like_invocation(),collation:sql.derived_collation(),
+                                    operator:!pb_regexp_owner(sql) && sql.func_name.lowercase()=="regexp",protobuf_result:pb_regexp_owner(sql),integer_batch_result:pb_regexp_owner(sql) && item.view==NativeView::BulkRoot(NativeEvalType::Int),invocation:sql.batch_regexp_like_invocation(),collation:sql.derived_collation(),
                                     result_type:item.sql.map(snapshot_field_type),output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("regexp output view absent"))?,
                                 }))
                             }
@@ -6919,13 +6927,22 @@ impl PreparedBatch {
         };
         let view = if ordered || deferred.is_some() {
             Some(NativeView::RootValue)
+        } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+            && {
+                profile_shape(root, source_limits)?;
+                pb_regexp_integer_batch(root)
+            }
+        {
+            Some(NativeView::BulkRoot(NativeEvalType::Int))
         } else if promote {
             promoted_native_root_view(root, source_limits)?
         } else {
             None
         };
         let pair = !ordered
-            && matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()));
+            && (matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()))
+                || (view == Some(NativeView::BulkRoot(NativeEvalType::Int))
+                    && pb_regexp_integer_batch(root)));
         let fast = !ordered && promote && decimal_fast_source::possible(root);
         let groups = 1
             + usize::from(pair)

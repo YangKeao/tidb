@@ -2743,7 +2743,15 @@ impl NativeBatchHosts<'_> {
                 } else if let Some(NativeHostMetadata::RegexpValues(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
-                    if self.native_values.is_none()
+                    if (meta.operator && meta.protobuf_result)
+                        || (meta.integer_batch_result
+                            && (!meta.protobuf_result
+                                || meta.output_role != NativeValueRole::Output
+                                || !meta
+                                    .result_type
+                                    .as_ref()
+                                    .is_some_and(|field| field.eval_type() == NativeEvalType::Int)))
+                        || self.native_values.is_none()
                         || meta.arguments.len() != invocation.arg_types.len()
                         || meta.source_types.len() != meta.arguments.len()
                         || if meta.operator {

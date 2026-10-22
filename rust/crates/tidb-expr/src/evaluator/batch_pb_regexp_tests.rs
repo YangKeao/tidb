@@ -899,3 +899,6 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
         );
     }
 }
+
+#[path = "batch_pb_result_tests.rs"]
+mod result_tests;

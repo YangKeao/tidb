@@ -35,7 +35,7 @@ mod pb_builtin;
 #[cfg(test)]
 mod json_preparation_tests;
 
-pub(crate) use pb_builtin::PbBuiltin;
+pub(crate) use pb_builtin::{interpret_integer_result, PbBuiltin};
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
@@ -1574,17 +1574,7 @@ impl ScalarFunction {
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         if let Some(builtin) = self.pb_builtin {
             let value = builtin.eval(self, ctx, row)?;
-            // Go ScalarFunction.Eval interprets an evalInt carrier through
-            // the wire result type, independently of the argument flags.
-            let value = match (value, self.get_static_type()) {
-                (Datum::UInt(value), Some(field)) if !field.is_unsigned() => {
-                    Datum::Int(value as i64)
-                }
-                (Datum::Int(value), Some(field)) if field.is_unsigned() => {
-                    Datum::UInt(value as u64)
-                }
-                (value, _) => value,
-            };
+            let value = interpret_integer_result(value, self.get_static_type());
             return self.coerce_to_ret_type(value);
         }
         if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {

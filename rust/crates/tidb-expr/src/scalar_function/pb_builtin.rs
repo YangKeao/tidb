@@ -26,6 +26,16 @@ use tidb_chunk::row::Row;
 use tidb_datatype::{Datum, EvalType, FieldType, UNSPECIFIED_LENGTH};
 use tidb_proto::tipb::ScalarFuncSig;
 
+/// Present PB integer carriers through the actual return declaration before
+/// result conversion. Signedness remains observable in binary JSON even 0/1.
+pub(crate) fn interpret_integer_result(value: Datum, result_type: Option<&FieldType>) -> Datum {
+    match (value, result_type) {
+        (Datum::UInt(value), Some(field)) if !field.is_unsigned() => Datum::Int(value as i64),
+        (Datum::Int(value), Some(field)) if field.is_unsigned() => Datum::UInt(value as u64),
+        (value, _) => value,
+    }
+}
+
 type ValuesKernel = fn(&[Datum], &dyn Columns) -> Result<Datum, EvalError>;
 
 #[derive(Clone, Copy, Debug)]
