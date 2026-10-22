@@ -157,6 +157,9 @@ impl NativeRawValueOperation {
 mod eager_values_source;
 #[path = "batch_prefix_values.rs"]
 mod prefix_values_source;
+#[path = "batch_weight_string.rs"]
+mod weight_string_source;
+pub(super) use weight_string_source::NativeWeightString;
 
 #[path = "batch_typed_context.rs"]
 mod typed_context_source;
@@ -178,6 +181,7 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    WeightString(Box<NativeWeightString>),
     HeaderOutcome {
         kind: crate::scalar_function::header_value::HeaderKind,
         logical_arity: usize,
@@ -499,6 +503,7 @@ impl NativeHostMetadata {
             Self::Stateful(metadata) => metadata.result_type.as_ref(),
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
             Self::CachedList(metadata) => metadata.result_type.as_ref(),
+            Self::WeightString(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
@@ -542,6 +547,7 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    WeightString(weight_string_source::WeightTask),
     PrefixValues {
         phase: crate::scalar_function::prefix_value::PrefixPhase,
     },
@@ -710,6 +716,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::WeightString(task) => Ok(task.next_argument()),
             SqlDemand::PrefixValues { phase } => Ok((*phase
                 != crate::scalar_function::prefix_value::PrefixPhase::Consumed)
                 .then_some(0)),
@@ -781,6 +788,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::WeightString(_) => Err(binding("weight owns its actual value phases")),
             SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
             SqlDemand::PrefixValues { .. } => Err(binding("prefix outcome cannot buffer a reply")),
             SqlDemand::ConcatValues { .. } => Err(binding("raw CONCAT owns its actual prefix")),
@@ -1140,10 +1148,10 @@ impl<'a> NativeBatchHosts<'a> {
                 self.slots.len() - 1
             }
         };
-        let first_argument = if matches!(demand, SqlDemand::UserVariableWrite { .. }) {
-            1
-        } else {
-            0
+        let first_argument = match &demand {
+            SqlDemand::UserVariableWrite { .. } => 1,
+            SqlDemand::WeightString(task) => task.next_argument().unwrap_or(0),
+            _ => 0,
         };
         let task = NativeTask {
             slot: host_slot,
@@ -1452,6 +1460,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::Stateful(_)
                 | NativeHostMetadata::FinalState(_)
                 | NativeHostMetadata::CachedList(_)
+                | NativeHostMetadata::WeightString(_)
                 | NativeHostMetadata::Selection { .. }
                 | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
@@ -2705,6 +2714,31 @@ impl NativeBatchHosts<'_> {
                         return Err(binding("header outcome declaration differs"));
                     }
                     SqlDemand::HeaderOutcome
+                } else if let Some(NativeHostMetadata::WeightString(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.logical_arity == 0
+                        || meta.arguments.len() != invocation.arg_types.len()
+                        || meta.arguments.len()
+                            != crate::scalar_function::weight_value::data_arity(
+                                meta.logical_arity,
+                                meta.source_type.as_ref(),
+                            )
+                        || !matches!(
+                            meta.output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                    {
+                        return Err(binding("weight declaration differs"));
+                    }
+                    SqlDemand::WeightString(if meta.logical_arity == 3 {
+                        weight_string_source::WeightTask::Kind
+                    } else if meta.arguments.is_empty() {
+                        weight_string_source::WeightTask::Numeric
+                    } else {
+                        weight_string_source::WeightTask::Value(None)
+                    })
                 } else if let Some(NativeHostMetadata::JsonSchema(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
@@ -3602,6 +3636,10 @@ impl NativeBatchHosts<'_> {
             }
         };
         let immediate = matches!(demand, SqlDemand::HeaderOutcome)
+            || matches!(
+                demand,
+                SqlDemand::WeightString(weight_string_source::WeightTask::Numeric)
+            )
             || matches!(&demand,SqlDemand::FinalState(task) if task.immediate)
             || matches!(demand, SqlDemand::JsonSchema(_))
                 && matches!(self.metadata.get(invocation.slot.index()),Some(NativeHostMetadata::JsonSchema(meta)) if meta.arguments.len()!=2)
@@ -3651,6 +3689,11 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::HeaderOutcome
             ) {
                 guard.provider.finish_header_outcome(&guard.task)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::WeightString(_)
+            ) {
+                guard.provider.resume_weight_string(&guard.task, None)
             } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::JsonSchema(_)
@@ -3785,6 +3828,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("user variable operand cannot be wire NULL"));
             };
             return self.finish_user_variable(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::WeightString(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("weight reply is not a value capability"));
+            };
+            return self.resume_weight_string(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PrefixValues { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

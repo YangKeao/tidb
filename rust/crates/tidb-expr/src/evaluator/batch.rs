@@ -546,6 +546,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_optional_arithmetic_call(function)
                 || native_optional_ordered_comparison_call(function)
                 || native_optional_date_arithmetic_call(function)
+                || native_weight_string_call(function)
                 || crate::scalar_function::prefix_value::PrefixKind::for_function(function)
                     .is_some()
                 || native_no_argument_header_call(function) =>
@@ -920,7 +921,7 @@ fn native_value_tree_complete(node: &Expression, depth: usize, remaining: &mut u
             if !native_value_call(function) {
                 return false;
             }
-            for child in &function.args {
+            for child in function.args.iter().take(source_data_arity(function)) {
                 // Stop the sibling iterator too: returning true from the
                 // recursive leaf alone would still scan an oversized arity.
                 if depth == 1 || *remaining == 0 {
@@ -1303,6 +1304,18 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
+    if native_weight_string_call(function) {
+        budget.array::<hosts::NativeWeightString>(1)?;
+        budget.array::<usize>(source_data_arity(function))?;
+        if let Some(field) = function.args[0].static_type() {
+            budget.field(field, 1)?;
+        }
+        if let Some(field) = result {
+            budget.field(field, 1)?;
+        }
+        return Ok(());
+    }
+
     if native_no_argument_header_call(function) {
         if let Some(result) = result {
             budget.field(result, 1)?;
@@ -1771,7 +1784,7 @@ fn parts_optional(
 }
 fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     let expected_arity = resolve_call_in_view(function, view)?.1;
-    if function.args.len() != expected_arity
+    if source_data_arity(function) != expected_arity
         || (function.pb_signature().is_some() && !pb_timestamp_diff(function))
         || (function.pb_origin().is_some() && !pb_timestamp_diff(function))
         || (function.has_values_offset() && !native_stateful_call(function))
@@ -2199,10 +2212,24 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 }
 // Closed value owners retain actual optional metadata and their own demand
 // policy, including the distinct stateful, schema and lazy AES continuations.
+fn native_weight_string_call(function: &ScalarFunction) -> bool {
+    crate::scalar_function::weight_value::supports(function)
+}
+fn source_data_arity(function: &ScalarFunction) -> usize {
+    if native_weight_string_call(function) {
+        crate::scalar_function::weight_value::data_arity(
+            function.args.len(),
+            function.args[0].static_type(),
+        )
+    } else {
+        function.args.len()
+    }
+}
 fn native_optional_value_call(function: &ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && function.pb_origin().is_none()
         && (crate::scalar_function::eager_values::supports(function)
+            || native_weight_string_call(function)
             || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some()
             || native_stateful_call(function)
             || native_final_state_call(function)
@@ -2341,6 +2368,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_stateful_call(function)
         || native_cached_list_call(function)
         || crate::scalar_function::eager_values::supports(function)
+        || native_weight_string_call(function)
         || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some()
         || matches!(
             function.func_name.lowercase(),
@@ -2389,7 +2417,7 @@ fn source_prefix_probe<'a>(
     function: &'a ScalarFunction,
     operation: SqlBatchHostOperation,
 ) -> Option<&'a Datum> {
-    if native_final_state_call(function) {
+    if native_final_state_call(function) || native_weight_string_call(function) {
         return function.identity_constant_probe();
     }
     if host_has_embedded_probe(operation)
@@ -2405,6 +2433,12 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if view.value_role().is_some() && native_weight_string_call(function) {
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            source_data_arity(function),
+        ));
+    }
     if view.value_role().is_some() && native_no_argument_header_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
@@ -2413,6 +2447,7 @@ fn resolve_call_in_view(
     }
     if view.value_role().is_some()
         && (native_optional_value_call(function)
+            || native_weight_string_call(function)
             || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some())
     {
         return Ok((
@@ -3625,7 +3660,10 @@ fn preflight_view<'a>(
                     if native_optional_declarations_call(function) =>
                 {
                     check_batch_call(function, view)?;
-                    let arity = function.args.len();
+                    let arity = source_data_arity(function);
+                    if native_weight_string_call(function) {
+                        profile_shape(node, limits)?;
+                    }
                     budget.add(function.func_name.original().len())?;
                     budget.add(function.func_name.lowercase().len())?;
                     budget.array::<OrdinaryCallSite>(2)?;
@@ -3710,7 +3748,7 @@ fn preflight_view<'a>(
                         .ok_or_else(|| resource("optional scalar depth policy exceeded"))?;
                     budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
                     reserve(&mut pending, arity)?;
-                    for (index, child) in function.args.iter().enumerate().rev() {
+                    for (index, child) in function.args.iter().take(arity).enumerate().rev() {
                         pending.push((
                             child,
                             child_depth,
@@ -3898,7 +3936,10 @@ fn preflight_view<'a>(
                     ));
                 }
 
-                let arity = function.args.len();
+                let arity = source_data_arity(function);
+                if native_weight_string_call(function) {
+                    profile_shape(node, limits)?;
+                }
                 let policy_nodes = usize::from(native_batch_policy(function).is_some());
                 if policy_nodes != 0 {
                     budget.array::<NodeRecord>(1)?;
@@ -4350,7 +4391,7 @@ fn preflight_view<'a>(
                     .filter(|depth| *depth <= limits.tree.max_depth)
                     .ok_or_else(|| resource("batch source depth policy exceeded"))?;
                 reserve(&mut pending, arity)?;
-                for (index, child) in function.args.iter().enumerate().rev() {
+                for (index, child) in function.args.iter().take(arity).enumerate().rev() {
                     pending.push((
                         child,
                         child_depth,
@@ -4424,7 +4465,11 @@ fn preflight_view<'a>(
                     numeric_children = None;
                 }
             }
-            for _ in 0..if header { 0 } else { function.args.len() } {
+            for _ in 0..if header {
+                0
+            } else {
+                source_data_arity(function)
+            } {
                 math_children = match (
                     math_children,
                     checked
@@ -5462,6 +5507,18 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if native_weight_string_call(sql) => {
+                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
+                                let mut child=ordinal+1;
+                                for _ in 0..*arity {arguments.push(child);child=checked.get(child).ok_or_else(||binding("weight child absent"))?.subtree_end;}
+                                NativeHostMetadata::WeightString(Box::new(hosts::NativeWeightString {
+                                    arguments:arguments.into_boxed_slice(),logical_arity:sql.args.len(),
+                                    source_type:sql.args[0].static_type().map(snapshot_field_type),
+                                    explicit_collation:crate::collation_derive::coercibility_of(&sql.args[0])==crate::expr_collation::Coercibility::EXPLICIT,
+                                    result_type:item.sql.map(snapshot_field_type),output_node:ordinal,
+                                    output_role:item.view.value_role().ok_or_else(||binding("weight output view absent"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_no_argument_header_call(sql) => {
                                 NativeHostMetadata::HeaderOutcome {
@@ -8196,6 +8253,7 @@ pub(crate) struct PreparedBatchSuite {
     schema: Box<[FieldType]>,
     source_limits: BatchSourceLimits,
     output_count: usize,
+    bind_ready_cache: bool,
 }
 
 impl PreparedBatchSuite {
@@ -8280,6 +8338,13 @@ impl PreparedBatchSuite {
         schema.extend(row_schema.iter().map(snapshot_field_type));
         Ok(Self {
             owner: Arc::clone(&suite.program),
+            bind_ready_cache: workers.iter().any(|worker| {
+                worker
+                    .source
+                    .host_metadata
+                    .iter()
+                    .any(|meta| matches!(meta, NativeHostMetadata::WeightString(_)))
+            }),
             workers,
             schema: schema.into_boxed_slice(),
             source_limits: limits,
@@ -8310,6 +8375,28 @@ impl PreparedBatchSuite {
     }
 
     pub(crate) fn run<C: Columns>(
+        &mut self,
+        suite: &EvaluatorSuite,
+        native_ctx: &C,
+        ctx: &mut EvalContext,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        row_schema: &[FieldType],
+    ) -> Result<()> {
+        if !Arc::ptr_eq(&suite.program, &self.owner) {
+            return Err(binding("projection worker belongs to another program").into());
+        }
+        if self.bind_ready_cache {
+            // These original packet value owners retain the suite's once-only
+            // binding before flags/children, including its unwind poison guard.
+            suite.ready_value_cache.with_columns(native_ctx, |bound| {
+                self.run_bound(suite, bound, ctx, input, output, row_schema)
+            })
+        } else {
+            self.run_bound(suite, native_ctx, ctx, input, output, row_schema)
+        }
+    }
+    fn run_bound<C: Columns>(
         &mut self,
         suite: &EvaluatorSuite,
         native_ctx: &C,

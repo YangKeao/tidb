@@ -2828,14 +2828,11 @@ impl ScalarFunction {
                         3 => {
                             let kind = self.args[1].eval(ctx, row)?;
                             let length = self.args[2].eval(ctx, row)?;
-                            let binary = kind.sql_string().is_ok_and(|k| k == "BINARY");
-                            Some((binary, crate::cast::to_i64_signed(&length)))
+                            Some(weight_value::padding(&kind, &length)?)
                         }
                         _ => None,
                     };
-                    let arg_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                        tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
-                    });
+                    let arg_type = weight_value::source_type(self.args[0].static_type());
                     // Go starts numeric inputs on the NULL signature, then
                     // lets AS BINARY replace it with the binary-padding
                     // signature. AS CHAR deliberately does not replace it.
@@ -2846,22 +2843,14 @@ impl ScalarFunction {
                         );
                     }
                     let value = self.args[0].eval(ctx, row)?;
-                    let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;
                     let explicit_collation =
                         crate::collation_derive::coercibility_of(&self.args[0])
                             == crate::expr_collation::Coercibility::EXPLICIT;
-                    let string_type = crate::cast::cast_arg_as_string_type(
+                    return weight_value::evaluate(
+                        value,
                         &arg_type,
                         explicit_collation,
-                        ctx.connection_charset_info(),
-                    );
-                    let arg_collation =
-                        tidb_datatype::Collation::from_name(string_type.collation_name())
-                            .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION);
-                    return crate::string_packet::weight_string(
-                        &value,
                         padding,
-                        arg_collation,
                         ctx,
                     );
                 }
@@ -6157,6 +6146,7 @@ pub(crate) fn eager_value_phases_for_test() -> usize {
 
 pub(crate) mod eager_values;
 pub(crate) mod prefix_value;
+pub(crate) mod weight_value;
 
 #[cfg(test)]
 pub(crate) mod eager_policy_tests;

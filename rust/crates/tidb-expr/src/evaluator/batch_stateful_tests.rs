@@ -8083,3 +8083,796 @@ fn optional_reserved_prefix_date_typed_claims_require_genuine_fields() {
     }
     assert_eq!(context.snapshot(), "0:0|[]");
 }
+
+// Capture padding-before-value, numeric NULL signatures, and original context
+// timing before admitting WEIGHT_STRING into the existing native frame.
+struct WeightContext {
+    base: WholeConcatContext,
+}
+impl WeightContext {
+    fn new(enabled: bool, values: [Datum; 3], limit: u64, profile: usize) -> Self {
+        Self {
+            base: WholeConcatContext::new(enabled, values, limit, profile),
+        }
+    }
+    fn event(&self, s: String) {
+        self.base.events.borrow_mut().push(s);
+    }
+    fn snapshot(&self) -> String {
+        format!(
+            "{}|workers:{}",
+            self.base.snapshot(),
+            self.base.ready.prepared_worker_count()
+        )
+    }
+}
+impl Columns for WeightContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        self.event("ready".into());
+        Some(&self.base.ready)
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        if self.base.profile == 5 && order == 2 {
+            self.event("length-panic".into());
+            panic!("original weight length callback")
+        }
+        if self.base.profile == 8 && order == 0 && self.base.reads[0].get() == 2 {
+            self.event("value-error".into());
+            return Err(EvalError::Unsupported("original weight value callback"));
+        }
+        self.base.param_value(order)
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.base.enable_vectorized_expression()
+    }
+    fn max_allowed_packet(&self) -> u64 {
+        self.base.max_allowed_packet()
+    }
+    fn handle_allowed_packet_overflowed(&self, name: &str) -> std::result::Result<(), EvalError> {
+        self.base.handle_allowed_packet_overflowed(name)
+    }
+    fn connection_charset_info(&self) -> (&str, &str) {
+        self.event("connection".into());
+        if self.base.profile == 9 {
+            panic!("original weight connection callback")
+        };
+        if self.base.profile == 10 {
+            ("utf8mb4", "utf8mb4_general_ci")
+        } else {
+            ("utf8mb4", "utf8mb4_bin")
+        }
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.event("flags".into());
+        tidb_datatype::DEFAULT_STATEMENT_FLAGS.with_ignore_truncate_err(true)
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.event("truncate-level".into());
+        crate::ErrorLevel::Warn
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.event("zone".into());
+        SessionTimeZone::utc()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.event(format!("warning:{code}:{message}"));
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.event(format!("set:{name}:{}", leaf::frame(&value)));
+    }
+}
+#[test]
+fn weight_source_original_phases() {
+    if isolate_common_corpus("stateful_tests::weight_source_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_weight_source(false, false);
+}
+#[test]
+fn weight_source_actual_phases() {
+    if isolate_common_corpus("stateful_tests::weight_source_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_weight_source(true, false);
+}
+#[test]
+fn weight_source_original_full() {
+    if isolate_common_corpus("stateful_tests::weight_source_original_full") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_weight_source(false, true);
+}
+#[test]
+fn weight_source_actual_full() {
+    if isolate_common_corpus("stateful_tests::weight_source_actual_full") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_weight_source(true, true);
+}
+fn run_weight_source(compare: bool, full: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = if full {
+            vec![
+                ty(),
+                ty().with_unsigned(true),
+                string_ty(),
+                FieldType::new(FieldTypeCode::Double),
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(65)
+                    .with_decimal(5),
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+                FieldType::new(FieldTypeCode::Json),
+            ]
+        } else {
+            vec![ty(), string_ty(), FieldType::new(FieldTypeCode::Double)]
+        };
+        let samples = if full {
+            crate::tikv::byte_unary_value_tests::values()
+                .into_iter()
+                .enumerate()
+                .flat_map(|(vi, v)| {
+                    (0..3).map(move |pos| {
+                        let mut a = [
+                            Datum::new_string("aÉ"),
+                            Datum::new_string("BINARY"),
+                            Datum::Int(2),
+                        ];
+                        a[pos] = v.clone();
+                        (vi * 3 + pos, a)
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![
+                (0, [Datum::Null, Datum::new_string("CHAR"), Datum::Int(2)]),
+                (
+                    1,
+                    [
+                        Datum::new_string("aÉ"),
+                        Datum::new_string("BINARY"),
+                        Datum::Int(8),
+                    ],
+                ),
+                (
+                    2,
+                    [
+                        Datum::Bytes(vec![255, b'A']),
+                        Datum::new_string("unknown"),
+                        Datum::Int(-1),
+                    ],
+                ),
+                (
+                    3,
+                    [Datum::Int(4), Datum::MinNotNull, Datum::new_string("bad")],
+                ),
+            ]
+        };
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        for (fi, field) in fields.iter().enumerate() {
+            for arity in if full { vec![3] } else { vec![1, 2, 3, 4, 6] } {
+                for mask in [0, 1, 2, 4, 7] {
+                    for shape in if full { vec![0] } else { vec![0, 1, 2, 3, 4] } {
+                        for (vi, values) in &samples {
+                            for profile in if full {
+                                vec![0]
+                            } else {
+                                vec![0, 1, 3, 4, 5, 8, 9, 10]
+                            } {
+                                for enabled in [false, true] {
+                                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                        let result = native_bytes_type();
+                                        let make = || {
+                                            let mut args = (0..arity)
+                                                .map(|i| {
+                                                    if i < 3 {
+                                                        parameter(
+                                                            i,
+                                                            if i == 0 {
+                                                                field.clone()
+                                                            } else if i == 1 {
+                                                                string_ty()
+                                                            } else {
+                                                                ty()
+                                                            },
+                                                        )
+                                                    } else {
+                                                        call(
+                                                            "__unused_weight_error__",
+                                                            string_ty(),
+                                                            vec![],
+                                                        )
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>();
+                                            match shape {
+                                                1 => {
+                                                    for (i, arg) in
+                                                        args.iter_mut().take(3).enumerate()
+                                                    {
+                                                        let mut c = Constant::new(
+                                                            values[i].clone(),
+                                                            arg.static_type().unwrap().clone(),
+                                                        );
+                                                        c.deferred_expr =
+                                                            Some(Box::new(leaf::assignment(
+                                                                &format!("weight{i}"),
+                                                                arg.clone(),
+                                                                &string_ty(),
+                                                            )));
+                                                        *arg = Expression::Constant(c);
+                                                    }
+                                                }
+                                                2 => {
+                                                    let mut c = Column::new(100, field.clone());
+                                                    c.index = 99;
+                                                    args[0] = Expression::Column(c);
+                                                }
+                                                3 => args[0] = string_column(0),
+                                                4 => {
+                                                    for (i, arg) in
+                                                        args.iter_mut().take(3).enumerate()
+                                                    {
+                                                        *arg = literal(
+                                                            values[i].clone(),
+                                                            arg.static_type().unwrap().clone(),
+                                                        );
+                                                    }
+                                                }
+                                                _ => (),
+                                            }
+                                            let mut e = call("weight_string", result.clone(), args);
+                                            erase_optional_call_declarations(&mut e, mask);
+                                            suite(e)
+                                        };
+                                        let old =
+                                            WeightContext::new(enabled, values.clone(), 4, profile);
+                                        let new =
+                                            WeightContext::new(enabled, values.clone(), 4, profile);
+                                        let original = make();
+                                        let actual = make();
+                                        for reuse in 0..2 {
+                                            let input = || {
+                                                let mut c = chunk(
+                                                    &[string_ty()],
+                                                    &[
+                                                        vec![Datum::new_string("a")],
+                                                        vec![Datum::new_string("É")],
+                                                        vec![Datum::Null],
+                                                    ],
+                                                );
+                                                c.set_sel(selection.clone());
+                                                c
+                                            };
+                                            let mut a = input();
+                                            let mut left = output_for(&result);
+                                            left.append_null(0);
+                                            let expected = session_read_outcome(|| {
+                                                original.run(&old, &mut a, &mut left)
+                                            });
+                                            let label=format!("weight/{full}/{fi}/{arity}/{mask}/{shape}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                            if compare {
+                                                let mut b = input();
+                                                let mut right = output_for(&result);
+                                                right.append_null(0);
+                                                let got = session_read_outcome(|| {
+                                                    actual.run_with_tikv_batch(
+                                                        &new,
+                                                        &mut b,
+                                                        &mut right,
+                                                        &[string_ty()],
+                                                    )
+                                                });
+                                                if got != expected
+                                                    || left.column(0) != right.column(0)
+                                                    || old.snapshot() != new.snapshot()
+                                                {
+                                                    eprintln!("WEIGHT DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldevents={} newevents={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                }
+                                                assert_eq!(got, expected, "{label}");
+                                                assert_eq!(
+                                                    right.column(0),
+                                                    left.column(0),
+                                                    "{label}"
+                                                );
+                                                assert_eq!(
+                                                    new.snapshot(),
+                                                    old.snapshot(),
+                                                    "{label}"
+                                                );
+                                                let route = actual.batch_route_snapshot();
+                                                if (route.fallback != 0 || route.refusals != 0)
+                                                    && gaps.len() < 20
+                                                {
+                                                    gaps.push(format!("{label}: {route:?}"));
+                                                }
+                                            }
+                                            for byte in format!(
+                                                "{label}|{expected}|{:?}|{}",
+                                                left.column(0),
+                                                old.snapshot()
+                                            )
+                                            .bytes()
+                                            {
+                                                hash = (hash ^ u64::from(byte))
+                                                    .wrapping_mul(0x100000001b3);
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("WEIGHT ORIGINAL full={full} {count}/{hash:016X}");
+        assert_eq!(
+            (count, hash),
+            if full {
+                (214560, 0xAA5EFD1A5E872C25)
+            } else {
+                (144000, 0xA5235AE1014C7EBB)
+            }
+        );
+        if !gaps.is_empty() {
+            eprintln!("WEIGHT SOURCE RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+
+#[test]
+fn weight_source_host_auth_callbacks_and_recovery() {
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    struct Context<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        ready: crate::ReadyValueCache,
+        mode: Cell<usize>,
+        connections: Cell<usize>,
+        packets: Cell<usize>,
+    }
+    impl Columns for Context<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no expression callback")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            drop(self.store.borrow_mut());
+            Some(&self.ready)
+        }
+        fn connection_charset_info(&self) -> (&str, &str) {
+            drop(self.store.borrow_mut());
+            self.connections.set(self.connections.get() + 1);
+            if self.mode.get() == 1 {
+                self.store.borrow_mut().begin_window().unwrap();
+            }
+            if self.mode.get() == 2 {
+                panic!("weight connection panic")
+            }
+            ("utf8mb4", "utf8mb4_bin")
+        }
+        fn max_allowed_packet(&self) -> u64 {
+            drop(self.store.borrow_mut());
+            self.packets.set(self.packets.get() + 1);
+            if self.mode.get() == 3 {
+                self.store.borrow_mut().begin_window().unwrap();
+            }
+            if self.mode.get() == 4 {
+                panic!("weight packet panic")
+            }
+            1024
+        }
+    }
+    let mut root = call(
+        "weight_string",
+        native_bytes_type(),
+        vec![
+            parameter(0, string_ty()),
+            parameter(1, string_ty()),
+            parameter(2, ty()),
+        ],
+    );
+    erase_optional_call_declarations(&mut root, 7);
+    let owner = suite(root);
+    let compiled = PreparedBatch::compile_calculation_profile(
+        &owner,
+        0,
+        &[],
+        true,
+        919,
+        limits(),
+        ExecutionLimits::default(),
+        1 << 20,
+        true,
+    )
+    .unwrap();
+    let source = &compiled.source;
+    let NativeHostMetadata::WeightString(meta) = &source.host_metadata[0] else {
+        panic!("weight owner")
+    };
+    assert_eq!((meta.logical_arity, meta.arguments.len()), (3, 3));
+    let row = InputRow {
+        occurrence: 7,
+        input_row: 0,
+    };
+    let catalog = source.hosts.as_ref().unwrap().clone();
+    let slot = catalog.slot(0).unwrap();
+    let sig = catalog.signature(slot).unwrap();
+    for mode in 0..5 {
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        store.borrow_mut().begin_window().unwrap();
+        let context = Context {
+            store: &store,
+            ready: crate::ReadyValueCache::new(),
+            mode: Cell::new(0),
+            connections: Cell::new(0),
+            packets: Cell::new(0),
+        };
+        let insert = |value: &Datum, role, node, row| {
+            store
+                .borrow_mut()
+                .insert_clone(value, role, NativeValueOrigin { node, row })
+                .unwrap()
+        };
+        let mut hosts =
+            NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context, 8192)
+                .with_native_values(Some(&store))
+                .with_constant_probes(&source.host_probes);
+        let mut eval = EvalContext::default();
+        let start = |hosts: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+            let HostStart::Pending { task, request } = hosts
+                .start(
+                    eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &sig.arg_types,
+                        return_type: &sig.return_type,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("weight pending")
+            };
+            assert_eq!(request.index, 1);
+            task
+        };
+        let feed = |hosts: &mut NativeBatchHosts<'_>,
+                    eval: &mut EvalContext,
+                    task: &tidb_query_expr::local::HostTaskId,
+                    index,
+                    token: Option<Vec<u8>>| {
+            let value = VectorValue::from_scalar(&ScalarValue::Bytes(token), 1);
+            hosts.resume(
+                eval,
+                task,
+                HostArgReply {
+                    index,
+                    field_type: &sig.arg_types[index],
+                    values: &value,
+                },
+            )
+        };
+        if mode == 0 {
+            for stage in [1, 2, 0] {
+                for bad in 0..5 {
+                    let node = meta.arguments[stage];
+                    let stale = insert(&Datum::Int(1), NativeValueRole::CharInput, node, row);
+                    store.borrow_mut().begin_window().unwrap();
+                    let task = start(&mut hosts, &mut eval);
+                    for index in [1, 2].into_iter().take(if stage == 1 {
+                        0
+                    } else if stage == 2 {
+                        1
+                    } else {
+                        2
+                    }) {
+                        let value = if index == 1 {
+                            Datum::new_string("BINARY")
+                        } else {
+                            Datum::Int(2)
+                        };
+                        let token = insert(
+                            &value,
+                            NativeValueRole::CharInput,
+                            meta.arguments[index],
+                            row,
+                        );
+                        assert!(matches!(
+                            feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap(),
+                            HostStep::NeedArg(_)
+                        ));
+                    }
+                    let token = match bad {
+                        0 => Some(stale),
+                        1 => Some(insert(&Datum::Int(1), NativeValueRole::Output, node, row)),
+                        2 => Some(insert(
+                            &Datum::Int(1),
+                            NativeValueRole::CharInput,
+                            node + 999,
+                            row,
+                        )),
+                        3 => Some(insert(
+                            &Datum::Int(1),
+                            NativeValueRole::CharInput,
+                            node,
+                            InputRow {
+                                occurrence: 8,
+                                input_row: 0,
+                            },
+                        )),
+                        _ => None,
+                    };
+                    assert!(matches!(
+                        feed(&mut hosts, &mut eval, &task, stage, token),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    hosts.cancel(&task);
+                    assert_eq!(context.connections.get(), 0);
+                    assert_eq!(context.packets.get(), 0);
+                }
+            }
+            // A large padding kind is retained only as a handle until length arrives.
+            let task = start(&mut hosts, &mut eval);
+            let kind = insert(
+                &Datum::Bytes(vec![b'X'; 16384]),
+                NativeValueRole::CharInput,
+                meta.arguments[1],
+                row,
+            );
+            assert!(matches!(
+                feed(&mut hosts, &mut eval, &task, 1, Some(kind)).unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            let length = insert(
+                &Datum::Int(2),
+                NativeValueRole::CharInput,
+                meta.arguments[2],
+                row,
+            );
+            assert!(matches!(
+                feed(&mut hosts, &mut eval, &task, 2, Some(length)),
+                Err(LocalError::ResourceLimit(_))
+            ));
+            hosts.cancel(&task);
+        }
+        context.mode.set(mode);
+        let task = start(&mut hosts, &mut eval);
+        for (index, value) in [(1, Datum::new_string("BINARY")), (2, Datum::Int(8))] {
+            let token = insert(
+                &value,
+                NativeValueRole::CharInput,
+                meta.arguments[index],
+                row,
+            );
+            assert!(matches!(
+                feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap(),
+                HostStep::NeedArg(_)
+            ));
+        }
+        let token = insert(
+            &Datum::new_string("a"),
+            NativeValueRole::CharInput,
+            meta.arguments[0],
+            row,
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            feed(&mut hosts, &mut eval, &task, 0, Some(token.clone()))
+        }));
+        match mode {
+            1 | 3 => assert!(matches!(result, Ok(Err(LocalError::BindingContract(_))))),
+            2 | 4 => assert!(result.is_err()),
+            _ => assert!(matches!(result, Ok(Ok(HostStep::Ready(_))))),
+        }
+        hosts.cancel(&task);
+        assert!(feed(&mut hosts, &mut eval, &task, 0, Some(token)).is_err());
+        assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+    }
+}
+
+#[test]
+fn weight_source_resources_long_reuse_and_skipped_bindings() {
+    if isolate_common_corpus(
+        "stateful_tests::weight_source_resources_long_reuse_and_skipped_bindings",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    for arity in [1, 3, 6] {
+        let make = |mask| {
+            let mut root = call(
+                "weight_string",
+                native_bytes_type(),
+                (0..arity)
+                    .map(|i| {
+                        if i < 3 {
+                            parameter(
+                                i,
+                                if i == 0 {
+                                    string_ty()
+                                } else if i == 1 {
+                                    string_ty()
+                                } else {
+                                    ty()
+                                },
+                            )
+                        } else {
+                            call("__unused_weight_error__", string_ty(), vec![])
+                        }
+                    })
+                    .collect(),
+            );
+            erase_optional_call_declarations(&mut root, mask);
+            suite(root)
+        };
+        let owner = make(7);
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &[ty()],
+            true,
+            919,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+        .unwrap();
+        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+        let mut ctx = WeightContext::new(
+            true,
+            [
+                Datum::new_string("X".repeat(32768)),
+                Datum::new_string("BINARY"),
+                Datum::Int(2),
+            ],
+            1024,
+            0,
+        );
+        let input = || {
+            chunk(
+                &[ty()],
+                &[
+                    vec![Datum::Int(0)],
+                    vec![Datum::Int(1)],
+                    vec![Datum::Int(2)],
+                ],
+            )
+        };
+        let mut first = input();
+        let mut output = output_for(&native_bytes_type());
+        output.append_null(0);
+        let error = prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut first,
+                &mut output,
+                &[ty()],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.local_error(),
+            Some(LocalError::ResourceLimit(_))
+        ));
+        assert_eq!(output.num_rows(), 1);
+        ctx.base.values[0] = Datum::Null;
+        ctx.base.enabled.set(false);
+        ctx.base.events.borrow_mut().clear();
+        for n in &ctx.base.reads {
+            n.set(0);
+        }
+        ctx.base.packet_reads.set(0);
+        let old = WeightContext::new(false, ctx.base.values.clone(), 1024, 0);
+        let mut a = input();
+        let mut left = output_for(&native_bytes_type());
+        left.append_null(0);
+        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let mut b = input();
+        let mut right = output_for(&native_bytes_type());
+        right.append_null(0);
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut b,
+                    &mut right,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(right.column(0), left.column(0));
+        assert_eq!(ctx.snapshot(), old.snapshot());
+        assert_eq!(
+            prepared.workers[0].max_materialization_retained_bytes,
+            16 * 1024
+        );
+        for mask in [0, 1, 2, 4, 7] {
+            for rows in [0usize, 3, 2051] {
+                let original = make(mask);
+                let actual = make(mask);
+                let mut old = WeightContext::new(
+                    true,
+                    [
+                        Datum::new_string("É"),
+                        Datum::new_string("BINARY"),
+                        Datum::Int(8),
+                    ],
+                    4,
+                    8,
+                );
+                let mut new = WeightContext::new(true, old.base.values.clone(), 4, 8);
+                for (round, enabled) in [true, false, true, false].into_iter().enumerate() {
+                    old.base.enabled.set(enabled);
+                    new.base.enabled.set(enabled);
+                    old.base.profile = if round == 0 { 8 } else { 0 };
+                    new.base.profile = old.base.profile;
+                    let input = || {
+                        let mut c = input();
+                        c.set_sel(Some((0..rows).map(|i| [2, 0, 2][i % 3]).collect()));
+                        c
+                    };
+                    let mut a = input();
+                    let mut left = output_for(&native_bytes_type());
+                    left.append_null(0);
+                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let mut b = input();
+                    let mut right = output_for(&native_bytes_type());
+                    right.append_null(0);
+                    let got = session_read_outcome(|| {
+                        actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                    });
+                    assert_eq!(got, expected, "{arity}/{mask}/{rows}/{round}");
+                    assert_eq!(right.column(0), left.column(0));
+                    assert_eq!(new.snapshot(), old.snapshot());
+                    let route = actual.batch_route_snapshot();
+                    assert_eq!((route.fallback, route.refusals), (0, 0));
+                }
+            }
+        }
+    }
+    // Truly unused source subtrees need no value ABI or row binding. They retain
+    // their real shape and logical arity; no replacement expression is created.
+    for arity in [1, 2, 4, 6] {
+        let mut c = Column::new(1, ty());
+        c.index = 99;
+        let mut args = vec![Expression::Column(c)];
+        for _ in 1..arity {
+            let mut c = Column::new(2, ty());
+            c.index = 99;
+            args.push(Expression::Column(c));
+        }
+        let owner = suite(call("weight_string", native_bytes_type(), args));
+        let old = WeightContext::new(true, [Datum::Null, Datum::Null, Datum::Null], 4, 0);
+        let new = WeightContext::new(true, [Datum::Null, Datum::Null, Datum::Null], 4, 0);
+        let input = || chunk(&[ty()], &[vec![Datum::Int(0)]]);
+        let mut a = input();
+        let mut left = output_for(&native_bytes_type());
+        owner.run(&old, &mut a, &mut left).unwrap();
+        let mut b = input();
+        let mut right = output_for(&native_bytes_type());
+        owner
+            .run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+            .unwrap();
+        assert_eq!(right.column(0), left.column(0));
+        assert_eq!(new.snapshot(), old.snapshot());
+        let route = owner.batch_route_snapshot();
+        assert_eq!((route.fallback, route.refusals), (0, 0));
+    }
+}

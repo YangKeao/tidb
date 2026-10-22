@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-22 N37) Positive-arity WEIGHT_STRING now preserves actual0/1/3 data demands separately from logical arity in the existing SDK frame. Independent358560 original observations/2hashes captured/rerun/AdmissionRED/pinned before production pass strictly; direct auth/callback/panic, same-cap recovery and180 long/reuse cases pass. Original suite once-only cache binding is selected from compiled metadata, original scheduling body unchanged. Projection40, front2093/exact3/95/all552/346warnings, Expand6/hash, lint, dual7fmt and source ownership pass. SDKunchanged; receipt evidence/no-fallback-n37.md. Bounded inventory128/7; continue whole-string parameter and regexp contracts and global work. No push.
+
+
 - [x] (2026-10-22 N36 validated) All3669080 strict original observations retain seven independently captured/rerun/pinned hashes without fallback or exceptions. Original UNION/non-JSON CAST value helpers are shared; a consuming Fresh unary phase uses the existing eager SDK frame, and existing DateArithmetic carries genuine optional fields with typed completeness guards. No new driver/value algorithm/Ready worker/SQL field is introduced. Common supports/prefers and original argument policy remain byte-equivalent, preserving old1713/657792/A94C463994D2D98D after correcting an initial eligibility-layer mistake.17 new checks,300 long flag/reuse cases, five same-cap recoveries and callback/typed-contract checks pass. Frontend2087/exact inherited3/95ignored/all546batch/346warnings,Projection39,Expand6,lint,dual10fmt and ownership reconstruction pass; SDKad73b11 unchanged clean. Inventory83088/344refusals/8names. See evidence/no-fallback-n36.md; continue remaining contracts and global entry/fallback/service/performance work.
 
 
@@ -175,6 +178,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N37: original Suite.run binds Ready once before flags and carries an unwind guard across the entire invocation. The prepared route's lazy fallback binding queried the native getter per weight row, changing events/cache lifecycle. Actual WEIGHT_STRING metadata now selects that existing once-only binding; the old suite scheduling body remains exact. Initial source tests also exposed the fixed host first request0 and logical/data arity conflation; all were fixed in source while original digests stayed fixed.
 
 N36 found two existing unsigned-UNION discrepancies: passing actual source metadata to an ordinary CAST worker changed its intrinsic absent-source warning and sentinel behavior. Sharing the original UNION value dispatcher preserves both. A new protocol registered in common supports also expanded an old dynamically chosen witness; eligibility is now separate and the entire original selector/digest remains unchanged. Actual Projection additionally requires a valid caller storage layout when an erased return declaration preserves a passthrough kind; raw-range copying avoids test-side decoding changes.
 
@@ -482,6 +487,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+Decision2026-10-22/N37: keep genuine optional WEIGHT_STRING fields, explicit collation, original logical arity and data arity0/1/3 in a dedicated descriptor using EagerValuesNative. Share the original value boundaries and packet helpers, rather than add an SDK driver or infer declarations. Preserve cache binding from the original suite only for compiled owners requiring this original contract. Rationale: independent demand/cache witnesses exposed otherwise invisible ordering and poison-state differences.
+
 - Decision: keep prefix protocol eligibility separate from original common-body classification, share only original pure UNION/CAST value boundaries, and demand the original unary operand afresh after fallthrough. Carry real optional date fields through the existing temporal host rather than creating a new date error owner. Rationale: original recordings distinguish repeated reads, intrinsic source absence, optional return behavior and date operand order. Date/Author: 2026-10-22 ExpressionReuseEngineer.
 
 
@@ -779,6 +786,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N37 closed locally with all358560 strict original/current pairs and both unchanged hashes, no fallback/resource exemptions, actual Projection and final gates. The bounded inventory fell344/8 to128/7, leaving regexp and20 declared-string whole-parameter scenarios. This is not overall completion or a performance claim; continue public entries, generic fallback removal and final service/performance validation.
 
 N36 reduces the bounded refusal inventory from512/13 to344/8 and preserves the independent original source/common witnesses. Actual prefix execution retains both first and fresh fallback demands with finite authenticated ownership; optional dates preserve their old computations. The new raw witness and valid Projection caller layouts distinguish value identity from column reinterpretation. Full gate evidence is in evidence/no-fallback-n36.md; overall public-entry migration and performance validation remain incomplete.
 
@@ -4728,3 +4737,11 @@ Revision2026-10-22: expanded N36 before implementation to seven real UNION alias
 
 
 Revision2026-10-22: closed N36 after preserving original common eligibility and its657792 witness, correcting the new Projection fixture's raw column handling, and passing all final gates. All original expected data/digests and SDK source remain unchanged; remaining eight-name fixture gaps and global entry/fallback/service/performance work continue.
+
+
+## N37: WEIGHT_STRING source phases
+
+Continue from59be8c39 with SDKad73b11 unchanged. The original scalar source evaluates padding children1 and2 only for logical arity3, converts them after both reads, then selects the numeric NULL signature from the actual source field unless AS BINARY overrides it. Every other positive logical arity ignores children after0; numeric inputs can skip all values. The original absent field default is intrinsic to this value owner and must remain there, with compiled fields genuinely optional. Preserve constant-name probe before these branches, source explicit collation and connection charset timing, original packet callbacks and ReadyValueCache preparation poison semantics. Reuse the existing direct packet value kernels and SDK frame without adding expression drivers. New WeightContext records all parameter reads, warnings, connection/packet/cache calls and prepared worker counts. Capture original/actual weight_source_ tests with the existing cargo-tidb command before source edits, then require no fallback and exact hashes. Finish direct protocol/reuse/finite resource checks and real Projection, complete frontend/exact inherited3, lint/dual rustfmt and ownership review before local DCO.
+
+
+Revision2026-10-22: closed N37 after restoring first padding demand, genuine logical/data arity validation and original once-only suite cache binding; all original witnesses remained fixed and final gates passed. Continue the overall task without a checkpoint stop.
