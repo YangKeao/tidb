@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N44 validated: all10,006,848 original observations were captured/rerun/pinned before production and pass strictly (7672320/F82657AC72E2284D,2317248/529CC9B973792E9D,17280/F4427E1341D6858D). Shared original non-JSON eager PB NULL/value bodies, actual signature/precision/return facts and legacy consumer profiles retain original demand and presentation. Nine source checks include direct consumers, capability/callback epoch+panic/cancel, fixed16/64KiB policy checks and220 stale-origin guards; actual stale optional declarations are rejected before the optional arm. Full frontend2150/exact inherited3/95/all609batch/346warnings, mixed Projection47, Expand6+64/B42FB8BE316E6C79, inventory83088/0/0, fresh lint and dual10fmt/original ownership reconstruction pass. Finite return-formatter refusals are explicit separate policy evidence, not strict-equivalence counts. Save the signed local checkpoint, then continue JSON and global work.
+
 - [x] N43: all5149728 original arithmetic/PB observations were independently captured/rerun/pinned before production and pass strictly:4752000/3227AB25DBF1A2CB,386208/F179850F4FA9F719,11520/AA6B736726DD9D61. Actual selected-signature raw demand/diagnostic ownership and genuine legacy window pairs preserve both consumers. Existing owned vectors stage complete generic arithmetic/coercion before original integer presentation. Eight source checks, direct/native-candidate controls, late precision panic/recovery and fixed64KiB recovery pass. Full frontend2141/exact inherited3/95/all600batch/346warnings, Projection46/Expand6+64/B42FB8BE316E6C79/fixed inventory83088/0/0/lint/dual6fmt/final ownership audit pass; local signed checkpoint, then continuous global work.
 
 - [x] N42 final gates: all49416 original unary observations were independently captured/rerun/pinned before production and pass strictly (17100/E360D79CBFDEF4DA,30396/2B62F258D6BD863E,1920/FFE2C6F976CF6CD5). Genuine unary BulkRoot/RootValue profiles reuse existing kernels, retain PB provenance and scalar header, and scope the original ABS cache check with truthful protobuf_owner metadata. Eight source checks pass, including callback generation/panic cleanup, direct consumer and fixed16KiB recovery; old ABS1860480 passes again. Selection growth is transactionally budgeted before replacing the healthy buffer. Prior semantic observers remain fixed; final frontend2133/exact inherited3/95/all592batch/346warnings, Projection45/Expand6+64/B42FB8BE316E6C79, fixed inventory83088/0/0, fresh lint, dual8format and final ownership audit pass; signed local checkpoint, then arithmetic aliases and continuous global work.
@@ -192,6 +194,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N44: selected eager PB signatures demand raw children until any NULL before converting an earlier value or inspecting final arity. Their shared NULL policy may itself call an existing closed value kernel. The old char_length/lower/upper/substring batch specialization collects raw scalar expression results before generic integer presentation, even with BIT/ENUM declarations; preserve that actual predicate rather than infer the consumer solely from the result type. A display alias coalesce also owns temporal FSP stamping at the original return boundary.
 
 N43: an admitted PB arithmetic display alias generated a numeric argument/diagnostic ABI before fetching its scalar signature operands, causing InputContract even for an empty ordered input. The broad return corpus also found identical BIT integer-domain errors with different callback counts: the original computed/coerced the whole batch before collecting integer carriers. Both original observations remained fixed.
 
@@ -513,6 +517,10 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: N44 covers the complete 37-signature non-JSON eager PB owner using actual selected implementation and precision facts, raw capability prefix, original NULL/body helpers, genuine existing bulk/scalar profiles, actual display name only for original return conversion, and once-only suite cache binding. JSON remains a separate coherent owner requiring its actual argument types, constant paths and live cache handles.
+  Rationale: the existing value helpers already enter closed SDK kernels; no synthetic ScalarFunction, name-selected algorithm, new expression driver, or replacement value algorithm is needed.
+  Date/Author: 2026-10-22 / ExpressionReuseEngineer.
+
 N43 final decision: selected PB scalar demand and diagnostic ownership precede arithmetic display-name policies; a genuine original bulk candidate selects its existing window operation and paired scalar profile. Stage generic integer results in existing owned vectors before unchanged bits/value presentation, with bounded ledgers and resumable presentation state. Keep eligibility, provenance, computation/coercion algorithms, SDK, budgets and old semantic observers fixed.
 
 N42 decision: prove the unary subset separately before arithmetic alias retirement. Reuse the existing BulkRoot/RootValue pairs and window workers only for actual original eligible unary domains, retain all original signature/provenance checks and fixed prior observers.
@@ -824,6 +832,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N44 in progress: all original/source strict observations pass without fallback or exemptions, including wrong arity, ignored suffixes, actual callback panics, optional caches, unsigned carriers and long selection reuse. All nine source checks, actual mixed Projection and broad gates now pass; see evidence/no-fallback-n44.md. This is source-owner progress; public recursive entries, remaining PB owners, generic fallback retirement, service tests and final performance comparison still remain.
 
 N43 passes all5149728 strict fixed observations, eight source checks and final gates: frontend2141/exact inherited3/95/all600batch/346warnings, Projection46, Expand6+64/B42FB8BE316E6C79, fixed inventory83088/0/0, fresh lint, dual6format and ownership reconstruction. Receipt evidence/no-fallback-n43.md. Actual candidate absence remains a scalar PB case and the direct mandatory consumer retains Admission. Public scalar/AST, other PB domains, filter/join, Unistore, generic fallback removal and final service/performance work remain open.
 
@@ -4842,3 +4852,12 @@ Original selected PB scalar dispatch and original eligible batch arithmetic have
 N43 decision: retain actual selected-signature scalar argument views before name-based arithmetic scalar preparation; select actual arity2 legacy bulk arithmetic with its original static candidate and existing window operation, paired with the real scalar view. The previous plus routing guard can retire only through strict original comparisons; its value/column/effect observations remain fixed. All fixed observations and final gates now pass; no whole-task completion is claimed.
 
 N43 final validation records 5149728 strict original observations and unchanged computation/coercion kernels, with two corrected consumer-stage boundaries. All current gates pass with the inherited failure baseline. The final performance conclusion still requires the completed global caller migration and service validation; verification timings do not establish it.
+
+## N44: close the original non-JSON eager PB owner
+
+
+The immutable PbEagerValues facts in crates/tidb-expr/src/scalar_function/pb_builtin.rs hold the actual selected PbBuiltin and actual result precision. The old scalar facade and new crates/tidb-expr/src/evaluator/batch_pb_eager_values.rs call the same original NULL and value bodies. The new host retains authenticated raw child capabilities, stops at the first real NULL, clones only demanded body inputs under its existing work allowance, releases every storage borrow before context callbacks, then authenticates all capabilities again. It uses the existing EagerValuesNative frame. Original display spelling is retained only for the original return-family suffix; actual PB signature owns computation.
+
+Generalized pb_value profile predicates in batch.rs retain original legacy unary/arithmetic batch bodies when a genuine consumer selects them; native regexp dispatch remains restricted to the actual regexp signature. The exact original native_scalar_row_batch predicate is shared with EligibleBatch. The generic integer presenter is extracted unchanged from the regexp controller into batch_hosts.rs and shared by both owners. Existing native eligibility, SDK kernels, old test observers and fixed byte caps remain unchanged.
+
+Run from the TiDB repository: RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib pb_eager_ -- --nocapture. Expect all nine wrappers/checks to pass, the three original counts/hashes above to remain fixed, and no source refusals or fallback. Run the full expression library, projection::tests for tidb-executor, current Expand and fixed admission inventory, make lint, both recorded formatters and ownership reconstruction before signing. Inspect exact inherited failures rather than changing their expectations. JSON and other PB owners plus global caller/fallback/service/performance work follow continuously.

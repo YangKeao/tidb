@@ -283,31 +283,11 @@ impl NativeBatchHosts<'_> {
             Err(error) => return self.native_failure(error),
         };
         let value = if meta.integer_batch_result {
-            let result = tidb_query_expr::local::with_value_kernel_work_limit(
+            let result = present_integer_batch_value(
+                value,
+                meta.result_type.as_ref(),
+                self.context,
                 self.max_retained_bytes - held,
-                || {
-                    crate::scalar_function::eager_values::audit_work_result(
-                        (|| -> std::result::Result<Datum, EvalError> {
-                            let value = crate::expression::apply_enum_set_integer_view(
-                                value,
-                                meta.result_type.as_ref(),
-                            );
-                            let value = crate::scalar_function::normalize_numeric_row_value(
-                                value,
-                                meta.result_type.as_ref(),
-                                NativeEvalType::Int,
-                                self.context,
-                            )?;
-                            let bits = crate::scalar_function::native_batch_integer_bits(value)?;
-                            Ok(crate::scalar_function::native_batch_integer_value(
-                                bits,
-                                meta.result_type
-                                    .as_ref()
-                                    .is_some_and(FieldType::is_unsigned),
-                            ))
-                        })(),
-                    )
-                },
             );
             check_tokens()?;
             match result {

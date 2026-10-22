@@ -72,7 +72,48 @@ pub(crate) struct PbBuiltin {
     kernel: Kernel,
 }
 
+/// Actual selected PB value implementation and its original result precision.
+/// No expression tree, display-name dispatch or evaluation callback is retained.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PbEagerValues {
+    builtin: PbBuiltin,
+    result_decimal: Option<i64>,
+}
+impl PbEagerValues {
+    pub(crate) fn signature(self) -> ScalarFuncSig {
+        self.builtin.signature()
+    }
+    pub(crate) fn null_result(
+        self,
+        observed: &Datum,
+        arity: usize,
+        null_index: usize,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        self.builtin
+            .eager_null_value(observed, arity, null_index, ctx)
+    }
+    pub(crate) fn eval_values(
+        self,
+        values: &mut [Datum],
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        self.builtin
+            .eager_value_result(self.result_decimal, values, ctx)
+    }
+}
+
 impl PbBuiltin {
+    pub(crate) fn eager_values(self, result_decimal: Option<i64>) -> Option<PbEagerValues> {
+        matches!(
+            self.kernel,
+            Kernel::Values(_) | Kernel::String { .. } | Kernel::Round | Kernel::FromUnixTime
+        )
+        .then_some(PbEagerValues {
+            builtin: self,
+            result_decimal,
+        })
+    }
     pub(crate) fn signature(self) -> ScalarFuncSig {
         self.signature
     }
@@ -435,256 +476,11 @@ impl PbBuiltin {
                 for arg in args {
                     let value = arg.eval(ctx, row)?;
                     if value.is_null() && !matches!(kernel, Kernel::Json) {
-                        if let Kernel::String {
-                            operation: StringOp::Length,
-                            binary,
-                        } = kernel
-                        {
-                            // Preserve the existing child-demand order, but let
-                            // the migrated nullable signature actually enter C4.
-                            return eval_pb_char_length(&value, binary, ctx);
-                        }
-                        if matches!(
-                            self.signature,
-                            ScalarFuncSig::UnixTimestampInt | ScalarFuncSig::UnixTimestampDec
-                        ) {
-                            // Preserve the observed NULL boundary, including an
-                            // uncoerced prefix and unread extra children.
-                            return crate::time_fn::session_tz::unix_timestamp(
-                                std::slice::from_ref(&value),
-                                ctx,
-                            );
-                        }
-                        if matches!(
-                            self.signature,
-                            ScalarFuncSig::FromUnixTime1Arg | ScalarFuncSig::FromUnixTime2Arg
-                        ) {
-                            // Only the observed NULL is prepared. Prefix values
-                            // remain uncoerced and suffix children remain unread.
-                            return crate::time_fn::session_tz::from_unixtime(
-                                std::slice::from_ref(&value),
-                                ctx,
-                            );
-                        }
-                        if self.signature == ScalarFuncSig::MicroSecond {
-                            // Preserve the observed NULL boundary even for an
-                            // otherwise invalid arity or an uncoerced prefix.
-                            return crate::time_fn::microsecond_in(
-                                std::slice::from_ref(&value),
-                                ctx,
-                            );
-                        }
-                        if self.signature == ScalarFuncSig::Date {
-                            // Only the observed NULL is handed off: do not coerce
-                            // the prefix, demand suffixes, or inspect their arity.
-                            return crate::time_fn::date(std::slice::from_ref(&value), ctx);
-                        }
-                        if self.signature == ScalarFuncSig::Month {
-                            // Only the observed NULL enters MONTH's typed core;
-                            // earlier values stay uncoerced and later children unread.
-                            return crate::time_fn::month_in(std::slice::from_ref(&value), ctx);
-                        }
-                        if self.signature == ScalarFuncSig::DateDiff {
-                            // Only this observed NULL is demanded; the prefix stays
-                            // uncoerced and even extra suffix children stay unread.
-                            return crate::tikv::evaluate_args_in(
-                                crate::tikv::EvaluatedBytesOp::DateDiffNullNative,
-                                ctx,
-                                || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
-                                crate::tikv::EvaluatedBytesResult::into_int_datum,
-                            );
-                        }
-                        if self.signature == ScalarFuncSig::WeekWithoutMode {
-                            // Preserve the PB NULL prefix without coercing earlier
-                            // values, evaluating suffixes, or reading the default mode.
-                            return crate::tikv::evaluate_args_in(
-                                crate::tikv::EvaluatedBytesOp::WeekNullNative,
-                                ctx,
-                                || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
-                                crate::tikv::EvaluatedBytesResult::into_int_datum,
-                            );
-                        }
-                        if self.signature == ScalarFuncSig::DateFormatSig {
-                            // Only this observed NULL is demanded, without coercing
-                            // the prefix, reading suffixes, or checking non-NULL arity.
-                            return crate::eval_date_format_null_in(ctx);
-                        }
-                        // HMS likewise demands only the observed NULL, even
-                        // when earlier values or later children are present.
-                        match self.signature {
-                            ScalarFuncSig::Hour => {
-                                return crate::time_fn::calendar::hour_in(
-                                    std::slice::from_ref(&value),
-                                    ctx,
-                                );
-                            }
-                            ScalarFuncSig::Minute => {
-                                return crate::time_fn::calendar::minute_in(
-                                    std::slice::from_ref(&value),
-                                    ctx,
-                                );
-                            }
-                            ScalarFuncSig::Second => {
-                                return crate::time_fn::calendar::second_in(
-                                    std::slice::from_ref(&value),
-                                    ctx,
-                                );
-                            }
-                            _ => {}
-                        }
-                        match kernel {
-                            kernel
-                                if matches!(kernel, Kernel::Round)
-                                    || matches!(
-                                        self.signature,
-                                        ScalarFuncSig::Conv
-                                            | ScalarFuncSig::Atan1Arg
-                                            | ScalarFuncSig::Atan2Args
-                                            | ScalarFuncSig::Cos
-                                            | ScalarFuncSig::Cot
-                                            | ScalarFuncSig::Sin
-                                    ) =>
-                            {
-                                // The observed SQL NULL is the only demand
-                                // witness. Earlier values remain uncoerced and
-                                // later children, including extra ones, stay
-                                // unevaluated exactly as at the old boundary.
-                                return crate::tikv::evaluate_args_in(
-                                    crate::tikv::EvaluatedBytesOp::MathNullWitnessNative,
-                                    ctx,
-                                    || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
-                                    crate::tikv::EvaluatedBytesResult::into_int_datum,
-                                );
-                            }
-                            Kernel::String {
-                                operation: StringOp::Upper,
-                                binary,
-                            } => {
-                                return crate::string_fn::case_convert_signature_in(
-                                    std::slice::from_ref(&value),
-                                    true,
-                                    binary,
-                                    ctx,
-                                );
-                            }
-                            Kernel::String {
-                                operation: StringOp::Lower,
-                                binary,
-                            } => {
-                                return crate::string_fn::case_convert_signature_in(
-                                    std::slice::from_ref(&value),
-                                    false,
-                                    binary,
-                                    ctx,
-                                );
-                            }
-                            Kernel::String {
-                                operation: StringOp::Substring,
-                                binary,
-                            } if matches!(args.len(), 2 | 3) => {
-                                use crate::tikv::{ReadyBytesArg, ReadyIntArg};
-                                // Earlier children were evaluated, not coerced.
-                                // Only this NULL is known at the ready boundary.
-                                let null_index = values.len();
-                                let bytes = if null_index == 0 {
-                                    ReadyBytesArg::Value(None)
-                                } else {
-                                    ReadyBytesArg::Undemanded
-                                };
-                                let pos = if null_index == 1 {
-                                    ReadyIntArg::Value(None)
-                                } else {
-                                    ReadyIntArg::Undemanded
-                                };
-                                // Actual arity, not the wire signature, has
-                                // always selected the two-/three-argument form.
-                                let len = (args.len() == 3).then(|| {
-                                    if null_index == 2 {
-                                        ReadyIntArg::Value(None)
-                                    } else {
-                                        ReadyIntArg::Undemanded
-                                    }
-                                });
-                                return crate::string_fn::substring_ready_in(
-                                    bytes, pos, len, binary, ctx,
-                                );
-                            }
-                            _ => {}
-                        }
-                        // Keep this exact NULL child-demand boundary, but do
-                        // not bypass the nullable migrated math call.
-                        match self.signature {
-                            ScalarFuncSig::TimestampDiff => {
-                                return crate::tikv::eval_timestamp_diff_null_in(ctx);
-                            }
-                            ScalarFuncSig::Asin => {
-                                return crate::math_fn::asin(std::slice::from_ref(&value), ctx)
-                            }
-                            ScalarFuncSig::Acos => {
-                                return crate::math_fn::acos(std::slice::from_ref(&value), ctx)
-                            }
-                            ScalarFuncSig::Pow if args.len() == 2 => {
-                                use crate::tikv::ReadyIeee754Arg::{Undemanded, Value};
-                                // A right NULL suppresses numeric coercion of
-                                // the already-evaluated left child as well.
-                                let (left, right) = if values.is_empty() {
-                                    (Value(None), Undemanded)
-                                } else {
-                                    (Undemanded, Value(None))
-                                };
-                                return crate::math_fn::pow_ready_in(left, right, ctx);
-                            }
-                            _ => {}
-                        }
-                        return Ok(Datum::Null);
+                        return self.eager_null_value(&value, args.len(), values.len(), ctx);
                     }
                     values.push(value);
                 }
                 match kernel {
-                    Kernel::Values(eval) => eval(&values, ctx),
-                    Kernel::Round => crate::math_fn::round_or_truncate_with_result_decimal(
-                        &values,
-                        true,
-                        function.ret_type.as_ref().map(FieldType::decimal),
-                        ctx,
-                    ),
-                    Kernel::String { operation, binary } => {
-                        let Some(value) = values.first_mut() else {
-                            return Err(EvalError::Unsupported("protobuf string builtin arity"));
-                        };
-                        if !value.is_null() {
-                            let bytes = crate::arg_eval_type::eval_string(value)?
-                                .ok_or(EvalError::Unsupported("protobuf string argument"))?;
-                            *value = if binary {
-                                Datum::Bytes(bytes)
-                            } else {
-                                Datum::new_string(bytes)
-                            };
-                        }
-                        match operation {
-                            StringOp::Length => eval_pb_char_length(&values[0], binary, ctx),
-                            StringOp::Upper => crate::string_fn::case_convert_signature_in(
-                                &values, true, binary, ctx,
-                            ),
-                            StringOp::Lower => crate::string_fn::case_convert_signature_in(
-                                &values, false, binary, ctx,
-                            ),
-                            StringOp::Substring => crate::string_fn::substring(&values, ctx),
-                        }
-                    }
-                    Kernel::FromUnixTime => {
-                        let result = crate::time_fn::session_tz::from_unixtime(&values, ctx)?;
-                        if self.signature == ScalarFuncSig::FromUnixTime1Arg {
-                            crate::cast::parse_computed_time(
-                                &result,
-                                ctx,
-                                tidb_datatype::TimeType::DateTime,
-                                function.get_static_type().map(FieldType::decimal),
-                            )
-                        } else {
-                            Ok(result)
-                        }
-                    }
                     Kernel::Json => {
                         let types = args
                             .iter()
@@ -705,9 +501,255 @@ impl PbBuiltin {
                             cache_paths.then_some(&function.json_modify_path_cache),
                         )
                     }
-                    _ => unreachable!("lazy kernels were handled before evaluating arguments"),
+                    _ => self
+                        .eager_values(function.get_static_type().map(FieldType::decimal))
+                        .expect("non-JSON eager PB owner")
+                        .eval_values(&mut values, ctx),
                 }
             }
+        }
+    }
+    fn eager_null_value(
+        self,
+        observed: &Datum,
+        arity: usize,
+        null_index: usize,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        debug_assert!(observed.is_null() && null_index < arity);
+        let value = observed.clone();
+        let kernel = self.kernel;
+        if let Kernel::String {
+            operation: StringOp::Length,
+            binary,
+        } = kernel
+        {
+            // Preserve the existing child-demand order, but let
+            // the migrated nullable signature actually enter C4.
+            return eval_pb_char_length(&value, binary, ctx);
+        }
+        if matches!(
+            self.signature,
+            ScalarFuncSig::UnixTimestampInt | ScalarFuncSig::UnixTimestampDec
+        ) {
+            // Preserve the observed NULL boundary, including an
+            // uncoerced prefix and unread extra children.
+            return crate::time_fn::session_tz::unix_timestamp(std::slice::from_ref(&value), ctx);
+        }
+        if matches!(
+            self.signature,
+            ScalarFuncSig::FromUnixTime1Arg | ScalarFuncSig::FromUnixTime2Arg
+        ) {
+            // Only the observed NULL is prepared. Prefix values
+            // remain uncoerced and suffix children remain unread.
+            return crate::time_fn::session_tz::from_unixtime(std::slice::from_ref(&value), ctx);
+        }
+        if self.signature == ScalarFuncSig::MicroSecond {
+            // Preserve the observed NULL boundary even for an
+            // otherwise invalid arity or an uncoerced prefix.
+            return crate::time_fn::microsecond_in(std::slice::from_ref(&value), ctx);
+        }
+        if self.signature == ScalarFuncSig::Date {
+            // Only the observed NULL is handed off: do not coerce
+            // the prefix, demand suffixes, or inspect their arity.
+            return crate::time_fn::date(std::slice::from_ref(&value), ctx);
+        }
+        if self.signature == ScalarFuncSig::Month {
+            // Only the observed NULL enters MONTH's typed core;
+            // earlier values stay uncoerced and later children unread.
+            return crate::time_fn::month_in(std::slice::from_ref(&value), ctx);
+        }
+        if self.signature == ScalarFuncSig::DateDiff {
+            // Only this observed NULL is demanded; the prefix stays
+            // uncoerced and even extra suffix children stay unread.
+            return crate::tikv::evaluate_args_in(
+                crate::tikv::EvaluatedBytesOp::DateDiffNullNative,
+                ctx,
+                || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+                crate::tikv::EvaluatedBytesResult::into_int_datum,
+            );
+        }
+        if self.signature == ScalarFuncSig::WeekWithoutMode {
+            // Preserve the PB NULL prefix without coercing earlier
+            // values, evaluating suffixes, or reading the default mode.
+            return crate::tikv::evaluate_args_in(
+                crate::tikv::EvaluatedBytesOp::WeekNullNative,
+                ctx,
+                || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+                crate::tikv::EvaluatedBytesResult::into_int_datum,
+            );
+        }
+        if self.signature == ScalarFuncSig::DateFormatSig {
+            // Only this observed NULL is demanded, without coercing
+            // the prefix, reading suffixes, or checking non-NULL arity.
+            return crate::eval_date_format_null_in(ctx);
+        }
+        // HMS likewise demands only the observed NULL, even
+        // when earlier values or later children are present.
+        match self.signature {
+            ScalarFuncSig::Hour => {
+                return crate::time_fn::calendar::hour_in(std::slice::from_ref(&value), ctx);
+            }
+            ScalarFuncSig::Minute => {
+                return crate::time_fn::calendar::minute_in(std::slice::from_ref(&value), ctx);
+            }
+            ScalarFuncSig::Second => {
+                return crate::time_fn::calendar::second_in(std::slice::from_ref(&value), ctx);
+            }
+            _ => {}
+        }
+        match kernel {
+            kernel
+                if matches!(kernel, Kernel::Round)
+                    || matches!(
+                        self.signature,
+                        ScalarFuncSig::Conv
+                            | ScalarFuncSig::Atan1Arg
+                            | ScalarFuncSig::Atan2Args
+                            | ScalarFuncSig::Cos
+                            | ScalarFuncSig::Cot
+                            | ScalarFuncSig::Sin
+                    ) =>
+            {
+                // The observed SQL NULL is the only demand
+                // witness. Earlier values remain uncoerced and
+                // later children, including extra ones, stay
+                // unevaluated exactly as at the old boundary.
+                return crate::tikv::evaluate_args_in(
+                    crate::tikv::EvaluatedBytesOp::MathNullWitnessNative,
+                    ctx,
+                    || Ok(crate::tikv::EvaluatedArgs::NullWitness(None)),
+                    crate::tikv::EvaluatedBytesResult::into_int_datum,
+                );
+            }
+            Kernel::String {
+                operation: StringOp::Upper,
+                binary,
+            } => {
+                return crate::string_fn::case_convert_signature_in(
+                    std::slice::from_ref(&value),
+                    true,
+                    binary,
+                    ctx,
+                );
+            }
+            Kernel::String {
+                operation: StringOp::Lower,
+                binary,
+            } => {
+                return crate::string_fn::case_convert_signature_in(
+                    std::slice::from_ref(&value),
+                    false,
+                    binary,
+                    ctx,
+                );
+            }
+            Kernel::String {
+                operation: StringOp::Substring,
+                binary,
+            } if matches!(arity, 2 | 3) => {
+                use crate::tikv::{ReadyBytesArg, ReadyIntArg};
+                // Earlier children were evaluated, not coerced.
+                // Only this NULL is known at the ready boundary.
+                let null_index = null_index;
+                let bytes = if null_index == 0 {
+                    ReadyBytesArg::Value(None)
+                } else {
+                    ReadyBytesArg::Undemanded
+                };
+                let pos = if null_index == 1 {
+                    ReadyIntArg::Value(None)
+                } else {
+                    ReadyIntArg::Undemanded
+                };
+                // Actual arity, not the wire signature, has
+                // always selected the two-/three-argument form.
+                let len = (arity == 3).then(|| {
+                    if null_index == 2 {
+                        ReadyIntArg::Value(None)
+                    } else {
+                        ReadyIntArg::Undemanded
+                    }
+                });
+                return crate::string_fn::substring_ready_in(bytes, pos, len, binary, ctx);
+            }
+            _ => {}
+        }
+        // Keep this exact NULL child-demand boundary, but do
+        // not bypass the nullable migrated math call.
+        match self.signature {
+            ScalarFuncSig::TimestampDiff => {
+                return crate::tikv::eval_timestamp_diff_null_in(ctx);
+            }
+            ScalarFuncSig::Asin => return crate::math_fn::asin(std::slice::from_ref(&value), ctx),
+            ScalarFuncSig::Acos => return crate::math_fn::acos(std::slice::from_ref(&value), ctx),
+            ScalarFuncSig::Pow if arity == 2 => {
+                use crate::tikv::ReadyIeee754Arg::{Undemanded, Value};
+                // A right NULL suppresses numeric coercion of
+                // the already-evaluated left child as well.
+                let (left, right) = if null_index == 0 {
+                    (Value(None), Undemanded)
+                } else {
+                    (Undemanded, Value(None))
+                };
+                return crate::math_fn::pow_ready_in(left, right, ctx);
+            }
+            _ => {}
+        }
+        return Ok(Datum::Null);
+    }
+    fn eager_value_result(
+        self,
+        result_decimal: Option<i64>,
+        values: &mut [Datum],
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        match self.kernel {
+            Kernel::Values(eval) => eval(&values, ctx),
+            Kernel::Round => crate::math_fn::round_or_truncate_with_result_decimal(
+                &values,
+                true,
+                result_decimal,
+                ctx,
+            ),
+            Kernel::String { operation, binary } => {
+                let Some(value) = values.first_mut() else {
+                    return Err(EvalError::Unsupported("protobuf string builtin arity"));
+                };
+                if !value.is_null() {
+                    let bytes = crate::arg_eval_type::eval_string(value)?
+                        .ok_or(EvalError::Unsupported("protobuf string argument"))?;
+                    *value = if binary {
+                        Datum::Bytes(bytes)
+                    } else {
+                        Datum::new_string(bytes)
+                    };
+                }
+                match operation {
+                    StringOp::Length => eval_pb_char_length(&values[0], binary, ctx),
+                    StringOp::Upper => {
+                        crate::string_fn::case_convert_signature_in(&values, true, binary, ctx)
+                    }
+                    StringOp::Lower => {
+                        crate::string_fn::case_convert_signature_in(&values, false, binary, ctx)
+                    }
+                    StringOp::Substring => crate::string_fn::substring(&values, ctx),
+                }
+            }
+            Kernel::FromUnixTime => {
+                let result = crate::time_fn::session_tz::from_unixtime(&values, ctx)?;
+                if self.signature == ScalarFuncSig::FromUnixTime1Arg {
+                    crate::cast::parse_computed_time(
+                        &result,
+                        ctx,
+                        tidb_datatype::TimeType::DateTime,
+                        result_decimal,
+                    )
+                } else {
+                    Ok(result)
+                }
+            }
+            _ => unreachable!("non-eager PB owner has no value body"),
         }
     }
 }

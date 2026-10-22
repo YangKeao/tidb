@@ -686,7 +686,7 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
         .expect("stale provenance must be refused");
         assert_eq!(failure.refusal(), BatchRefusal::Admission, "bad={bad}");
     }
-    // A different genuine selected signature is still outside this closure.
+    // The newly closed eager PB owner keeps its actual selected signature.
     let mut other = pb_call(
         vec![atom(&Datum::new_string("a"), Some(field(253, -46)))],
         Some(field(253, -46)),
@@ -702,7 +702,7 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
         ExecutionLimits::default(),
         1 << 20
     )
-    .is_err());
+    .is_ok());
     // These four eligible roots retain their original bulk body alongside
     // the selected scalar PB dispatch.
     for (name, arity, result) in [
@@ -908,3 +908,6 @@ mod unary_tests;
 
 #[path = "batch_pb_arithmetic_tests.rs"]
 mod arithmetic_tests;
+
+#[path = "batch_pb_eager_tests.rs"]
+mod eager_tests;

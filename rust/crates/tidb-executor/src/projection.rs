@@ -8479,4 +8479,231 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn protobuf_eager_values_keep_mixed_projection_results_and_warnings() {
+        use tidb_proto::tipb::{self as wire, ScalarFuncSig as Sig};
+        let cases = [
+            (Sig::CharLength, vec![Datum::new_string("aBß")]),
+            (Sig::CharLengthUtf8, vec![Datum::new_string("aBß")]),
+            (Sig::Upper, vec![Datum::new_string("aBß")]),
+            (Sig::UpperUtf8, vec![Datum::new_string("aBß")]),
+            (Sig::Lower, vec![Datum::new_string("aBß")]),
+            (Sig::LowerUtf8, vec![Datum::new_string("aBß")]),
+            (
+                Sig::Substring2Args,
+                vec![Datum::new_string("abcd"), Datum::Int(2)],
+            ),
+            (
+                Sig::Substring2ArgsUtf8,
+                vec![Datum::new_string("abcd"), Datum::Int(2)],
+            ),
+            (
+                Sig::Substring3Args,
+                vec![Datum::new_string("abcd"), Datum::Int(2), Datum::Int(2)],
+            ),
+            (
+                Sig::Substring3ArgsUtf8,
+                vec![Datum::new_string("abcd"), Datum::Int(2), Datum::Int(2)],
+            ),
+            (Sig::Acos, vec![Datum::new_string("0.5")]),
+            (Sig::Asin, vec![Datum::new_string("0.5")]),
+            (Sig::Atan1Arg, vec![Datum::new_string("0.5")]),
+            (Sig::Atan2Args, vec![Datum::Int(1), Datum::Int(2)]),
+            (Sig::Cos, vec![Datum::new_string("0.5")]),
+            (Sig::Cot, vec![Datum::new_string("0.5")]),
+            (Sig::Sin, vec![Datum::new_string("0.5")]),
+            (Sig::Pow, vec![Datum::Int(2), Datum::Int(3)]),
+            (Sig::Pi, vec![]),
+            (
+                Sig::Conv,
+                vec![Datum::new_string("101"), Datum::Int(2), Datum::Int(10)],
+            ),
+            (
+                Sig::RoundInt,
+                vec![Datum::new_string("1.25"), Datum::Int(1)],
+            ),
+            (
+                Sig::RoundReal,
+                vec![Datum::new_string("1.25"), Datum::Int(1)],
+            ),
+            (
+                Sig::RoundDec,
+                vec![Datum::new_string("1.25"), Datum::Int(1)],
+            ),
+            (
+                Sig::Date,
+                vec![Datum::new_string("2026-10-21 12:34:56.123")],
+            ),
+            (
+                Sig::DateDiff,
+                vec![
+                    Datum::new_string("2026-10-21"),
+                    Datum::new_string("2026-10-20"),
+                ],
+            ),
+            (
+                Sig::DateFormatSig,
+                vec![
+                    Datum::new_string("2026-10-21 12:34:56.123"),
+                    Datum::new_string("%Y-%m"),
+                ],
+            ),
+            (Sig::Hour, vec![Datum::new_string("12:34:56.123456")]),
+            (Sig::Minute, vec![Datum::new_string("12:34:56.123456")]),
+            (Sig::Second, vec![Datum::new_string("12:34:56.123456")]),
+            (Sig::MicroSecond, vec![Datum::new_string("12:34:56.123456")]),
+            (Sig::Month, vec![Datum::new_string("2026-10-21")]),
+            (Sig::WeekWithoutMode, vec![Datum::new_string("2026-10-21")]),
+            (
+                Sig::TimestampDiff,
+                vec![
+                    Datum::new_string("DAY"),
+                    Datum::new_string("2026-10-20"),
+                    Datum::new_string("2026-10-21"),
+                ],
+            ),
+            (
+                Sig::UnixTimestampInt,
+                vec![Datum::new_string("2026-10-21 12:34:56.123")],
+            ),
+            (
+                Sig::UnixTimestampDec,
+                vec![Datum::new_string("2026-10-21 12:34:56.123")],
+            ),
+            (Sig::FromUnixTime1Arg, vec![Datum::Int(0)]),
+            (
+                Sig::FromUnixTime2Arg,
+                vec![Datum::Int(0), Datum::new_string("%Y-%m")],
+            ),
+        ];
+        for (sig, values) in cases {
+            for result_code in [8, 253, 245] {
+                let field = |code| wire::FieldType {
+                    tp: Some(code),
+                    flag: Some(0),
+                    flen: Some(if code == 8 { 20 } else { 128 }),
+                    decimal: Some(if code == 8 { 0 } else { -1 }),
+                    charset: Some("utf8mb4".into()),
+                    collate: Some(-46),
+                    ..Default::default()
+                };
+                let result_type = field(result_code);
+                let target = tidb_expr::distsql_builtin::pb_type_to_field_type(&result_type);
+                let pb = wire::Expr {
+                    tp: Some(wire::ExprType::ScalarFunc as i32),
+                    sig: Some(sig as i32),
+                    children: values
+                        .iter()
+                        .map(|_| wire::Expr {
+                            tp: Some(wire::ExprType::Bytes as i32),
+                            val: Some(b"stored".to_vec()),
+                            field_type: Some(field(253)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    field_type: Some(result_type),
+                    ..Default::default()
+                };
+                let mut root = tidb_expr::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                let Expression::ScalarFunction(f) = &mut root else {
+                    panic!()
+                };
+                for (i, arg) in f.args.iter_mut().enumerate() {
+                    let Expression::Constant(c) = arg else {
+                        panic!()
+                    };
+                    c.param_marker = Some(tidb_expr::constant::ParamMarker { order: i as i64 });
+                }
+                let types = vec![target.clone(), longlong()];
+                let expressions = vec![root.clone(), {
+                    let mut column = Column::new(90, longlong());
+                    column.index = 0;
+                    Expression::Column(column)
+                }];
+                for enabled in [false, true] {
+                    for rows in [0usize, 3, 2051] {
+                        let context = || {
+                            crate::StmtContext::for_query()
+                                .with_enable_vectorized_expression(enabled)
+                                .with_prepared_params(values.clone().into())
+                        };
+                        let reference = context();
+                        let original = EvaluatorSuite::new(expressions.clone(), false);
+                        let mut expected = Chunk::new_with_capacity(&types, rows.max(1));
+                        let mut result = Ok(());
+                        for offset in (0..rows).step_by(137) {
+                            let count = (rows - offset).min(137);
+                            let mut input =
+                                Chunk::new_with_capacity(&[longlong(), longlong()], count.max(1));
+                            for i in offset..offset + count {
+                                input.append_int64(0, i as i64);
+                                input.append_int64(1, (i * 2) as i64);
+                            }
+                            let mut output = Chunk::new_with_capacity(&types, count.max(1));
+                            match original.run(&reference, &mut input, &mut output) {
+                                Ok(()) => expected.append_range_from(&output, 0, output.num_rows()),
+                                Err(EvaluatorError::Eval(e)) => {
+                                    result = Err(format!("{e:?}"));
+                                    break;
+                                }
+                                Err(other) => panic!("reference {other:?}"),
+                            };
+                        }
+                        let warnings = reference.take_warnings();
+                        for workers in [0, 2] {
+                            let context = context();
+                            let (source, _) = NumberSource::new(rows as i64, 137);
+                            let schema = Schema::new(vec![
+                                Column::new(1, target.clone()),
+                                Column::new(2, longlong()),
+                            ]);
+                            let mut projection = ProjectionExec::new(
+                                ExecutorMeta::new(schema, 1, 137, 1024),
+                                expressions.clone(),
+                                source,
+                                context.clone(),
+                            )
+                            .with_workers(workers);
+                            projection.open().unwrap();
+                            let mut got = Chunk::new_with_capacity(&types, rows.max(1));
+                            let actual = loop {
+                                let mut output = projection.new_chunk();
+                                match projection.next(&mut output) {
+                                    Ok(()) => (),
+                                    Err(ExecError::Eval(e)) => break Err(format!("{e:?}")),
+                                    Err(other) => panic!("executor {other:?}"),
+                                };
+                                if output.num_rows() == 0 {
+                                    break Ok(());
+                                }
+                                got.append_range_from(&output, 0, output.num_rows());
+                            };
+                            assert_eq!(
+                                actual, result,
+                                "{sig:?}/{result_code}/{enabled}/{rows}/{workers}"
+                            );
+                            for i in 0..2 {
+                                assert_eq!(
+                                    got.column(i),
+                                    expected.column(i),
+                                    "{sig:?}/{result_code}/{enabled}/{rows}/{workers}/{i}"
+                                );
+                            }
+                            assert_eq!(context.take_warnings(), warnings);
+                            if workers == 0 && rows > 0 {
+                                let route = projection.evaluator_suite.batch_route_snapshot();
+                                assert!(route.prepared > 0);
+                                assert_eq!(
+                                    (route.refusals, route.fallback),
+                                    (0, 0),
+                                    "{sig:?}/{route:?}"
+                                );
+                            }
+                            projection.close().unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

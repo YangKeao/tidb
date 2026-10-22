@@ -13852,13 +13852,13 @@ fn native_timestamp_diff_actual_decoded_pb_null_unsigned_and_stale_origin() {
     };
     c.ret_type = Some(ty()); // Snapshot and effective declaration no longer agree.
     assert!(preflight(&root, &[], limits()).is_err());
-    // The former closure still refuses every unrelated PB signature.
+    // The complete eager PB owner now admits this actual selected MONTH signature.
     let other = Expression::ScalarFunction(ScalarFunction::from_pb(
         crate::scalar_function::PbBuiltin::new(db_pb::ScalarFuncSig::Month).unwrap(),
         ty(),
         vec![int(1)],
     ));
-    assert!(preflight(&other, &[], limits()).is_err());
+    assert!(preflight(&other, &[], limits()).is_ok());
 }
 
 #[test]

@@ -163,6 +163,9 @@ pub(super) use weight_string_source::NativeWeightString;
 #[path = "batch_regexp_values.rs"]
 mod regexp_values_source;
 pub(super) use regexp_values_source::NativeRegexpValues;
+#[path = "batch_pb_eager_values.rs"]
+mod pb_eager_values_source;
+pub(super) use pb_eager_values_source::NativePbEagerValues;
 
 #[path = "batch_typed_context.rs"]
 mod typed_context_source;
@@ -184,6 +187,7 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    PbEagerValues(Box<NativePbEagerValues>),
     RegexpValues(Box<NativeRegexpValues>),
     WeightString(Box<NativeWeightString>),
     HeaderOutcome {
@@ -496,6 +500,33 @@ fn coerce_optional_value_result(
     }
 }
 
+// The original generic integer batch consumer, independent of PB signature.
+fn present_integer_batch_value(
+    value: Datum,
+    result_type: Option<&FieldType>,
+    context: &dyn Columns,
+    maximum: usize,
+) -> std::result::Result<Datum, EvalError> {
+    tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+        crate::scalar_function::eager_values::audit_work_result(
+            (|| -> std::result::Result<Datum, EvalError> {
+                let value = crate::expression::apply_enum_set_integer_view(value, result_type);
+                let value = crate::scalar_function::normalize_numeric_row_value(
+                    value,
+                    result_type,
+                    NativeEvalType::Int,
+                    context,
+                )?;
+                let bits = crate::scalar_function::native_batch_integer_bits(value)?;
+                Ok(crate::scalar_function::native_batch_integer_value(
+                    bits,
+                    result_type.is_some_and(FieldType::is_unsigned),
+                ))
+            })(),
+        )
+    })
+}
+
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
@@ -510,6 +541,7 @@ impl NativeHostMetadata {
             Self::CachedList(metadata) => metadata.result_type.as_ref(),
             Self::WeightString(metadata) => metadata.result_type.as_ref(),
             Self::RegexpValues(metadata) => metadata.result_type.as_ref(),
+            Self::PbEagerValues(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
@@ -553,6 +585,9 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    PbEagerValues {
+        tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
+    },
     RegexpValues(Box<regexp_values_source::RegexpTask>),
     WeightString(weight_string_source::WeightTask),
     PrefixValues {
@@ -725,6 +760,7 @@ impl NativeTask {
         match &self.demand {
             SqlDemand::WeightString(task) => Ok(task.next_argument()),
             SqlDemand::RegexpValues(task) => Ok(task.next_argument()),
+            SqlDemand::PbEagerValues { tokens } => Ok(Some(tokens.len())),
             SqlDemand::PrefixValues { phase } => Ok((*phase
                 != crate::scalar_function::prefix_value::PrefixPhase::Consumed)
                 .then_some(0)),
@@ -797,6 +833,7 @@ impl NativeTask {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::RegexpValues(_) => Err(binding("regexp values own their actual phases")),
+            SqlDemand::PbEagerValues { .. } => Err(binding("PB eager values own their raw prefix")),
             SqlDemand::WeightString(_) => Err(binding("weight owns its actual value phases")),
             SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
             SqlDemand::PrefixValues { .. } => Err(binding("prefix outcome cannot buffer a reply")),
@@ -943,7 +980,8 @@ impl NativeTask {
                 .checked_add(pending.as_ref().map_or(0, |p| p.retained_bytes()))
                 .ok_or_else(|| resource("LIKE retained prefix overflow"));
         }
-        if let SqlDemand::EagerValues { tokens, .. }
+        if let SqlDemand::PbEagerValues { tokens }
+        | SqlDemand::EagerValues { tokens, .. }
         | SqlDemand::In { tokens, .. }
         | SqlDemand::Extremum { tokens, .. } = &self.demand
         {
@@ -1476,6 +1514,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::CachedList(_)
                 | NativeHostMetadata::WeightString(_)
                 | NativeHostMetadata::RegexpValues(_)
+                | NativeHostMetadata::PbEagerValues(_)
                 | NativeHostMetadata::Selection { .. }
                 | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
@@ -2741,6 +2780,25 @@ impl NativeBatchHosts<'_> {
                         return Err(binding("header outcome declaration differs"));
                     }
                     SqlDemand::HeaderOutcome
+                } else if let Some(NativeHostMetadata::PbEagerValues(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.arguments.len() != invocation.arg_types.len()
+                        || !matches!(
+                            meta.output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                        || (meta.integer_batch_result
+                            && (meta.output_role != NativeValueRole::Output
+                                || !meta
+                                    .result_type
+                                    .as_ref()
+                                    .is_some_and(|field| field.eval_type() == NativeEvalType::Int)))
+                    {
+                        return Err(binding("PB eager declaration differs"));
+                    }
+                    SqlDemand::PbEagerValues { tokens: Vec::new() }
                 } else if let Some(NativeHostMetadata::RegexpValues(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
@@ -3698,6 +3756,7 @@ impl NativeBatchHosts<'_> {
             }
         };
         let immediate = matches!(demand, SqlDemand::HeaderOutcome)
+            || matches!(demand, SqlDemand::PbEagerValues { .. }) && invocation.arg_types.is_empty()
             || matches!(
                 demand,
                 SqlDemand::WeightString(weight_string_source::WeightTask::Numeric)
@@ -3751,6 +3810,11 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::HeaderOutcome
             ) {
                 guard.provider.finish_header_outcome(&guard.task)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::PbEagerValues { .. }
+            ) {
+                guard.provider.resume_pb_eager_values(&guard.task, None)
             } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::WeightString(_)
@@ -3890,6 +3954,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("user variable operand cannot be wire NULL"));
             };
             return self.finish_user_variable(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::PbEagerValues { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("PB eager reply is not a capability"));
+            };
+            return self.resume_pb_eager_values(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::RegexpValues(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

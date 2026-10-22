@@ -534,7 +534,8 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
-            if native_regexp_source_value(function, limits)
+            if function.pb_eager_values().is_some()
+                || native_regexp_source_value(function, limits)
                 || native_json_schema_call(function)
                 || native_final_state_call(function)
                 || native_stateful_call(function)
@@ -741,7 +742,7 @@ fn context_root_policy(
             && !matches!(root, Expression::ScalarFunction(function) if native_concat_row_batch(function))
             && !native_string_row_batch(root)
             && !native_regexp_row_batch(root)
-            && !pb_regexp_row_batch(root)
+            && !pb_value_row_batch(root)
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -1308,6 +1309,15 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
+    if function.pb_eager_values().is_some() {
+        budget.array::<hosts::NativePbEagerValues>(1)?;
+        budget.array::<usize>(arity)?;
+        budget.add(function.func_name.lowercase().len())?;
+        if let Some(field) = result {
+            budget.field(field, 1)?;
+        }
+        return Ok(());
+    }
     if native_regexp_call(function) {
         budget.array::<hosts::NativeRegexpValues>(1)?;
         budget.array::<usize>(arity)?;
@@ -1622,7 +1632,7 @@ fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize
     }
     // The selected PB scalar body has raw demands. Only the genuine bulk
     // branches above may choose the old arithmetic operand preparation.
-    if pb_regexp_owner(function) {
+    if pb_value_owner(function) {
         return NativeView::ValueToken;
     }
     if native_arithmetic_operation(function.func_name.lowercase()).is_some()
@@ -1811,10 +1821,10 @@ fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     if source_data_arity(function) != expected_arity
         || (function.pb_signature().is_some()
             && !pb_timestamp_diff(function)
-            && !pb_regexp_owner(function))
+            && !pb_value_owner(function))
         || (function.pb_origin().is_some()
             && !pb_timestamp_diff(function)
-            && !pb_regexp_owner(function))
+            && !pb_value_owner(function))
         || (function.has_values_offset() && !native_stateful_call(function))
         || (function.has_grouping_metadata() && !native_grouping_call(function))
     {
@@ -2244,52 +2254,59 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 fn pb_regexp_owner(function: &ScalarFunction) -> bool {
     function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig)
 }
+fn pb_value_owner(function: &ScalarFunction) -> bool {
+    pb_regexp_owner(function)
+        || function
+            .pb_eager_values()
+            .is_some_and(|owner| Some(owner.signature()) == function.pb_signature())
+}
 // Some legacy enabled batch bodies bypass ScalarFunction::eval. Keep those
 // root profiles outside this scalar-signature closure until separately proven.
-fn pb_regexp_legacy_bulk(root: &Expression) -> bool {
-    matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function)
+fn pb_value_legacy_bulk(root: &Expression) -> bool {
+    matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function)
         && (matches!(function.func_name.lowercase(),"abs"|"cast_json"|"cast_decimal") || native_arithmetic_operation(function.func_name.lowercase()).is_some())
         && crate::scalar_function::static_batch_target(root).is_some())
 }
 // A real bulk consumer can select the old unary batch body even though the
 // same PB expression has a scalar arity header. Retain both actual profiles.
-fn pb_regexp_unary_view(function: &ScalarFunction, view: NativeView) -> bool {
-    pb_regexp_owner(function) && window_unary_operation(function, view).is_some()
+fn pb_value_unary_view(function: &ScalarFunction, view: NativeView) -> bool {
+    pb_value_owner(function) && window_unary_operation(function, view).is_some()
 }
-fn pb_regexp_unary_batch(root: &Expression) -> Option<NativeEvalType> {
+fn pb_value_unary_batch(root: &Expression) -> Option<NativeEvalType> {
     let Expression::ScalarFunction(function) = root else {
         return None;
     };
-    if !pb_regexp_owner(function) {
+    if !pb_value_owner(function) {
         return None;
     }
     let target = crate::scalar_function::static_batch_target(root)?;
-    pb_regexp_unary_view(function, NativeView::BulkRoot(target)).then_some(target)
+    pb_value_unary_view(function, NativeView::BulkRoot(target)).then_some(target)
 }
-fn pb_regexp_arithmetic_view(function: &ScalarFunction, view: NativeView) -> bool {
-    pb_regexp_owner(function)
+fn pb_value_arithmetic_view(function: &ScalarFunction, view: NativeView) -> bool {
+    pb_value_owner(function)
         && function.args.len() == 2
         && window_arithmetic_operation(function, view).is_some()
 }
-fn pb_regexp_arithmetic_batch(root: &Expression) -> Option<NativeEvalType> {
+fn pb_value_arithmetic_batch(root: &Expression) -> Option<NativeEvalType> {
     let Expression::ScalarFunction(function) = root else {
         return None;
     };
-    if !pb_regexp_owner(function) {
+    if !pb_value_owner(function) {
         return None;
     }
     let target = crate::scalar_function::static_batch_target(root)?;
-    pb_regexp_arithmetic_view(function, NativeView::BulkRoot(target)).then_some(target)
+    pb_value_arithmetic_view(function, NativeView::BulkRoot(target)).then_some(target)
 }
-fn pb_regexp_row_batch(root: &Expression) -> bool {
-    matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function)
+fn pb_value_row_batch(root: &Expression) -> bool {
+    matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function)
         && !function.has_values_offset() && !function.has_grouping_metadata()
         && crate::scalar_function::static_batch_target(root).is_some())
 }
 // The original generic integer batch presents each scalar row as EvalInt
 // after its own result conversion. Keep this consumer policy separate from PB.
-fn pb_regexp_integer_batch(root: &Expression) -> bool {
-    pb_regexp_row_batch(root)
+fn pb_value_integer_batch(root: &Expression) -> bool {
+    pb_value_row_batch(root)
+        && !crate::scalar_function::native_scalar_row_batch(root)
         && root
             .static_type()
             .is_some_and(|field| field.eval_type() == NativeEvalType::Int)
@@ -2495,7 +2512,8 @@ fn native_missing_arithmetic_sources(function: &ScalarFunction) -> bool {
         && function.args.iter().any(|arg| arg.static_type().is_none())
 }
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
-    native_optional_value_call(function)
+    function.pb_eager_values().is_some()
+        || native_optional_value_call(function)
         || native_optional_selection_call(function)
         || native_optional_operator_call(function)
         || native_optional_grouping_call(function)
@@ -2507,7 +2525,8 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_concat_value_call(function)
+    function.pb_eager_values().is_some()
+        || native_concat_value_call(function)
         || native_no_argument_header_call(function)
         || native_json_schema_call(function)
         || native_final_state_call(function)
@@ -2564,7 +2583,7 @@ fn source_prefix_probe<'a>(
     function: &'a ScalarFunction,
     operation: SqlBatchHostOperation,
 ) -> Option<&'a Datum> {
-    if pb_regexp_owner(function) {
+    if pb_value_owner(function) {
         return None;
     }
     if native_final_state_call(function)
@@ -2586,7 +2605,7 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
-    if pb_regexp_unary_view(function, view) {
+    if pb_value_unary_view(function, view) {
         return Ok((
             CallTarget::Host(
                 window_unary_operation(function, view).expect("actual unary bulk consumer"),
@@ -2594,7 +2613,7 @@ fn resolve_call_in_view(
             1,
         ));
     }
-    if pb_regexp_arithmetic_view(function, view) {
+    if pb_value_arithmetic_view(function, view) {
         return Ok((
             CallTarget::Host(
                 window_arithmetic_operation(function, view)
@@ -2603,7 +2622,9 @@ fn resolve_call_in_view(
             2,
         ));
     }
-    if view.value_role().is_some() && native_regexp_call(function) {
+    if view.value_role().is_some()
+        && (function.pb_eager_values().is_some() || native_regexp_call(function))
+    {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
             function.args.len(),
@@ -3737,23 +3758,40 @@ fn preflight_view<'a>(
         root,
         1usize,
         view.unwrap_or_else(|| root_source_view(root, limits.tree)),
-        matches!(root, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_regexp_owner(function)),
+        matches!(root, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_value_owner(function)),
     ));
     let mut scheduled = 1usize;
     while let Some((node, depth, view, allow_pb)) = pending.pop() {
         let allow_pb = allow_pb
-            || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_regexp_owner(function));
+            || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_value_owner(function));
         let (declaration, collation) = parts_optional(node, allow_pb)?;
+        // Authenticate the original declaration before the optional-type arm.
+        // A removed declaration is stale metadata, not a new untyped source.
+        if allow_pb {
+            let origin = match node {
+                Expression::Constant(value) => value.pb_origin(),
+                Expression::Column(value) => value.pb_origin(),
+                Expression::ScalarFunction(value) => value.pb_origin(),
+                _ => None,
+            };
+            if let Some(origin) = origin {
+                if !declaration.is_some_and(|field| origin.matches_effective_type(field)) {
+                    return Err(BatchFailure::admission(
+                        "PB effective declaration differs from its original snapshot",
+                    ));
+                }
+            }
+        }
         if let Expression::ScalarFunction(function) = node {
-            if pb_regexp_owner(function) {
+            if pb_value_owner(function) {
                 if let Some(origin) = function.pb_origin() {
                     if origin.expr_type != Some(tidb_proto::tipb::ExprType::ScalarFunc as i32)
                         || origin.signature
-                            != Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig as i32)
+                            != function.pb_signature().map(|signature| signature as i32)
                         || origin.child_count != function.args.len()
                     {
                         return Err(BatchFailure::admission(
-                            "PB regexp selected implementation differs from its origin",
+                            "PB selected implementation differs from its origin",
                         ));
                     }
                 }
@@ -3765,7 +3803,7 @@ fn preflight_view<'a>(
         if let Expression::ScalarFunction(function) = node {
             if let Some(kind) =
                 crate::scalar_function::header_value::HeaderKind::for_function(function)
-                    .filter(|_| !pb_regexp_unary_view(function, view))
+                    .filter(|_| !pb_value_unary_view(function, view))
             {
                 if view.value_role().is_none() {
                     return Err(BatchFailure::admission(
@@ -3777,7 +3815,7 @@ fn preflight_view<'a>(
                 if let Some(field) = declaration {
                     budget.field(field, 2)?;
                 }
-                if pb_regexp_owner(function) {
+                if pb_value_owner(function) {
                     if let Some(origin) = function.pb_origin() {
                         if let Some(original) = origin.effective_type_ref() {
                             budget.field(original, 1)?;
@@ -4175,9 +4213,9 @@ fn preflight_view<'a>(
                                 )
                             }));
                 if contextual_numeric
-                    && (!pb_regexp_owner(function)
-                        || pb_regexp_unary_view(function, view)
-                        || pb_regexp_arithmetic_view(function, view))
+                    && (!pb_value_owner(function)
+                        || pb_value_unary_view(function, view)
+                        || pb_value_arithmetic_view(function, view))
                     && (!crate::scalar_function::eager_values::supports(function)
                         || matches!(
                             function.func_name.lowercase(),
@@ -4665,7 +4703,7 @@ fn preflight_view<'a>(
                 function.args.len(),
             );
             let header = native_no_argument_header_call(function)
-                && !pb_regexp_unary_view(function, checked[index].view);
+                && !pb_value_unary_view(function, checked[index].view);
             if header {
                 folds_to_constant = crate::constant_fold::folds_to_constant(checked[index].node);
                 if !function.args.is_empty() {
@@ -5190,15 +5228,15 @@ fn lower_view_policy(
         .get(calculated_slot)
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
     if suite.program.vectorizable
-        && matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+        && matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
     {
         profile_shape(root, limits)?;
-        if pb_regexp_legacy_bulk(root)
-            && pb_regexp_unary_batch(root).is_none()
-            && pb_regexp_arithmetic_batch(root).is_none()
+        if pb_value_legacy_bulk(root)
+            && pb_value_unary_batch(root).is_none()
+            && pb_value_arithmetic_batch(root).is_none()
         {
             return Err(BatchFailure::admission(
-                "PB regexp legacy bulk display profile remains outside this closure",
+                "PB legacy bulk display profile remains outside this closure",
             ));
         }
     }
@@ -5215,7 +5253,7 @@ fn lower_view_policy(
             && crate::scalar_function::static_batch_target(root).is_some())
             || native_concat_row_batch(function)
             || native_string_row_batch(root)
-            || native_regexp_row_batch(root) || pb_regexp_row_batch(root));
+            || native_regexp_row_batch(root) || pb_value_row_batch(root));
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
@@ -5730,6 +5768,16 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if sql.pb_eager_values().is_some() => {
+                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
+                                for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB eager child absent"))?.subtree_end;}
+                                NativeHostMetadata::PbEagerValues(Box::new(hosts::NativePbEagerValues {
+                                    arguments:arguments.into_boxed_slice(), kernel:sql.pb_eager_values().expect("actual selected PB owner"),
+                                    name:sql.func_name.lowercase().into(), result_type:item.sql.map(snapshot_field_type),
+                                    integer_batch_result:item.view==NativeView::BulkRoot(NativeEvalType::Int),
+                                    output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("PB eager output view absent"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_regexp_call(sql) => {
                                 let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
@@ -6421,7 +6469,7 @@ fn lower_view_policy(
                                 }
                                 NativeHostMetadata::UnaryWindow {
                                     operation,
-                                    protobuf_owner: pb_regexp_owner(sql),
+                                    protobuf_owner: pb_value_owner(sql),
                                     result_type: snapshot_field_type(item.declared_sql()),
                                     source_type: snapshot_field_type(child.declared_sql()),
                                     source,
@@ -6988,28 +7036,28 @@ impl PreparedBatch {
         };
         let view = if ordered || deferred.is_some() {
             Some(NativeView::RootValue)
-        } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+        } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
             && {
                 profile_shape(root, source_limits)?;
-                pb_regexp_arithmetic_batch(root).is_some()
+                pb_value_arithmetic_batch(root).is_some()
             }
         {
             Some(NativeView::BulkRoot(
-                pb_regexp_arithmetic_batch(root).expect("actual arithmetic batch candidate"),
+                pb_value_arithmetic_batch(root).expect("actual arithmetic batch candidate"),
             ))
-        } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+        } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
             && {
                 profile_shape(root, source_limits)?;
-                pb_regexp_unary_batch(root).is_some()
+                pb_value_unary_batch(root).is_some()
             }
         {
             Some(NativeView::BulkRoot(
-                pb_regexp_unary_batch(root).expect("actual unary batch candidate"),
+                pb_value_unary_batch(root).expect("actual unary batch candidate"),
             ))
-        } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+        } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
             && {
                 profile_shape(root, source_limits)?;
-                pb_regexp_integer_batch(root)
+                pb_value_integer_batch(root)
             }
         {
             Some(NativeView::BulkRoot(NativeEvalType::Int))
@@ -7021,7 +7069,7 @@ impl PreparedBatch {
         let pair = !ordered
             && (matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()))
                 || (view == Some(NativeView::BulkRoot(NativeEvalType::Int))
-                    && pb_regexp_integer_batch(root)));
+                    && pb_value_integer_batch(root)));
         let fast = !ordered && promote && decimal_fast_source::possible(root);
         let groups = 1
             + usize::from(pair)
@@ -8651,6 +8699,7 @@ impl PreparedBatchSuite {
                                 NativeHostMetadata::WeightString(_)
                                     | NativeHostMetadata::Regexp(_)
                                     | NativeHostMetadata::RegexpValues(_)
+                                    | NativeHostMetadata::PbEagerValues(_)
                             ) || matches!(
                         meta,
                         NativeHostMetadata::HeaderOutcome {

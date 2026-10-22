@@ -35,7 +35,7 @@ mod pb_builtin;
 #[cfg(test)]
 mod json_preparation_tests;
 
-pub(crate) use pb_builtin::{interpret_integer_result, PbBuiltin};
+pub(crate) use pb_builtin::{interpret_integer_result, PbBuiltin, PbEagerValues};
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
@@ -1061,6 +1061,12 @@ impl ScalarFunction {
     #[must_use]
     pub fn pb_signature(&self) -> Option<tidb_proto::tipb::ScalarFuncSig> {
         self.pb_builtin.map(PbBuiltin::signature)
+    }
+
+    pub(crate) fn pb_eager_values(&self) -> Option<PbEagerValues> {
+        self.pb_builtin.and_then(|builtin| {
+            builtin.eager_values(self.get_static_type().map(FieldType::decimal))
+        })
     }
 
     /// Builds Go's `NewValuesFunc(ctx, offset, retTp)` node. The offset is
@@ -4369,17 +4375,22 @@ impl EligibleBatch<'_> {
         if input.num_rows() == 0 {
             return Ok(Vec::new());
         }
-        if matches!(self.expression, Expression::ScalarFunction(function)
-            if matches!(function.func_name.lowercase(),
-                "char_length" | "character_length" | "lower" | "upper"
-                    | "substr" | "substring" | "mid"))
-        {
+        if native_scalar_row_batch(self.expression) {
             return (0..input.num_rows())
                 .map(|row| self.expression.eval(ctx, input.get_row(row)))
                 .collect();
         }
         eval_batch_values(self.expression, ctx, input, self.target)
     }
+}
+
+/// Original row-collection specialization before generic typed batching.
+/// The selected expression value keeps its own result presentation.
+pub(crate) fn native_scalar_row_batch(expression: &Expression) -> bool {
+    matches!(expression, Expression::ScalarFunction(function)
+        if matches!(function.func_name.lowercase(),
+            "char_length" | "character_length" | "lower" | "upper"
+                | "substr" | "substring" | "mid"))
 }
 
 /// The native candidate's pure static-function arm. Storage support alone
