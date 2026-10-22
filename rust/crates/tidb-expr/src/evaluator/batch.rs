@@ -534,7 +534,8 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
-            if native_json_schema_call(function)
+            if native_regexp_source_value(function, limits)
+                || native_json_schema_call(function)
                 || native_final_state_call(function)
                 || native_stateful_call(function)
                 || native_cached_list_call(function)
@@ -739,6 +740,7 @@ fn context_root_policy(
             && crate::scalar_function::static_batch_target(root).is_some()
             && !matches!(root, Expression::ScalarFunction(function) if native_concat_row_batch(function))
             && !native_string_row_batch(root)
+            && !native_regexp_row_batch(root)
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -1305,6 +1307,21 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
+    if native_regexp_call(function) {
+        budget.array::<hosts::NativeRegexpValues>(1)?;
+        budget.array::<usize>(arity)?;
+        budget.array::<Option<FieldType>>(arity)?;
+        for arg in &function.args {
+            if let Some(field) = arg.static_type() {
+                budget.field(field, 1)?;
+            }
+        }
+        if let Some(field) = result {
+            budget.field(field, 1)?;
+        }
+        return Ok(());
+    }
+
     if native_weight_string_call(function) {
         budget.array::<hosts::NativeWeightString>(1)?;
         budget.array::<usize>(source_data_arity(function))?;
@@ -2213,6 +2230,36 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 }
 // Closed value owners retain actual optional metadata and their own demand
 // policy, including the distinct stateful, schema and lazy AES continuations.
+fn native_regexp_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && matches!(
+            (function.func_name.lowercase(), function.args.len()),
+            ("regexp", 2) | ("regexp_like", 2 | 3)
+        )
+}
+fn native_regexp_source_value(function: &ScalarFunction, limits: CompileLimits) -> bool {
+    native_regexp_call(function)
+        && (function.func_name.lowercase() == "regexp"
+            || !matches!(
+                resolve_call(function),
+                Ok((
+                    CallTarget::Host(SqlBatchHostOperation::RegexpLike { .. }),
+                    _
+                ))
+            )
+            || function.args.iter().any(|arg| {
+                contains_context_value(arg, limits.max_depth, &mut { limits.max_nodes })
+                    || matches!(arg,Expression::Constant(c) if c.literal_value().is_some_and(|value| !matches!(value,Datum::Null|Datum::String(_)|Datum::Bytes(_))))
+            }))
+}
+// The original registered REGEXP_LIKE integer batch collects scalar row
+// results. Its input values are still demanded by the original lazy phases.
+fn native_regexp_row_batch(root: &Expression) -> bool {
+    matches!(root,Expression::ScalarFunction(function) if native_regexp_call(function)
+        && function.func_name.lowercase()=="regexp_like" && !function.has_values_offset() && !function.has_grouping_metadata()
+        && crate::scalar_function::static_batch_target(root)==Some(NativeEvalType::Int))
+}
 fn native_weight_string_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::weight_value::supports(function)
 }
@@ -2231,6 +2278,7 @@ fn native_optional_value_call(function: &ScalarFunction) -> bool {
         && function.pb_origin().is_none()
         && (crate::scalar_function::eager_values::supports(function)
             || native_weight_string_call(function)
+            || native_regexp_call(function)
             || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some()
             || native_stateful_call(function)
             || native_final_state_call(function)
@@ -2401,6 +2449,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_cached_list_call(function)
         || crate::scalar_function::eager_values::supports(function)
         || native_weight_string_call(function)
+        || native_regexp_call(function)
         || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some()
         || matches!(
             function.func_name.lowercase(),
@@ -2449,7 +2498,10 @@ fn source_prefix_probe<'a>(
     function: &'a ScalarFunction,
     operation: SqlBatchHostOperation,
 ) -> Option<&'a Datum> {
-    if native_final_state_call(function) || native_weight_string_call(function) {
+    if native_final_state_call(function)
+        || native_weight_string_call(function)
+        || native_regexp_call(function)
+    {
         return function.identity_constant_probe();
     }
     if host_has_embedded_probe(operation)
@@ -2465,6 +2517,12 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if view.value_role().is_some() && native_regexp_call(function) {
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            function.args.len(),
+        ));
+    }
     if view.value_role().is_some() && native_weight_string_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
@@ -5025,7 +5083,8 @@ fn lower_view_policy(
         if (function.func_name.lowercase() == "cast_char"
             && crate::scalar_function::static_batch_target(root).is_some())
             || native_concat_row_batch(function)
-            || native_string_row_batch(root));
+            || native_string_row_batch(root)
+            || native_regexp_row_batch(root));
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
@@ -5540,6 +5599,15 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if native_regexp_call(sql) => {
+                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
+                                for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("regexp child absent"))?.subtree_end;}
+                                NativeHostMetadata::RegexpValues(Box::new(hosts::NativeRegexpValues{
+                                    arguments:arguments.into_boxed_slice(),source_types:sql.args.iter().map(|arg|arg.static_type().map(snapshot_field_type)).collect(),
+                                    operator:sql.func_name.lowercase()=="regexp",invocation:sql.batch_regexp_like_invocation(),collation:sql.derived_collation(),
+                                    result_type:item.sql.map(snapshot_field_type),output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("regexp output view absent"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_weight_string_call(sql) => {
                                 let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
@@ -7297,9 +7365,22 @@ impl PreparedBatch {
         let mut output = output.column_mut(output_index);
         match &values {
             VectorValue::Int(ints) => {
-                output.append_fixed_cells((0..values.len()).map(|index| {
-                    ChunkRef::get_option_ref(ints, index).map(|value| value.to_ne_bytes())
-                }));
+                // The original REGEXP_LIKE integer batch publishes scalar
+                // cells, including the Column scratch state used on reuse.
+                if native_regexp_row_batch(
+                    &self.source.owner.calculated[self.source.calculated_slot],
+                ) {
+                    for index in 0..values.len() {
+                        match ChunkRef::get_option_ref(ints, index) {
+                            Some(value) => output.append_int64(*value),
+                            None => output.append_null(),
+                        }
+                    }
+                } else {
+                    output.append_fixed_cells((0..values.len()).map(|index| {
+                        ChunkRef::get_option_ref(ints, index).map(|value| value.to_ne_bytes())
+                    }));
+                }
             }
             VectorValue::Real(reals) => {
                 output.append_fixed_cells((0..values.len()).map(|index| {
@@ -8255,7 +8336,26 @@ impl PreparedBatch {
             {
                 return Err(binding("pending typed output layout/length changed").into());
             }
-            output.append_column_range_from(self.source.output_index, &pending.chunk, 0, 0, rows);
+            if native_regexp_row_batch(&self.source.owner.calculated[self.source.calculated_slot]) {
+                for row in 0..rows {
+                    if pending.chunk.column(0).is_null(row) {
+                        output.append_null(self.source.output_index);
+                    } else {
+                        output.append_int64(
+                            self.source.output_index,
+                            pending.chunk.column(0).get_int64(row),
+                        );
+                    }
+                }
+            } else {
+                output.append_column_range_from(
+                    self.source.output_index,
+                    &pending.chunk,
+                    0,
+                    0,
+                    rows,
+                );
+            }
         }
         if let Some(pending) = pending {
             for value in &pending.values {
@@ -8372,11 +8472,14 @@ impl PreparedBatchSuite {
         Ok(Self {
             owner: Arc::clone(&suite.program),
             bind_ready_cache: workers.iter().any(|worker| {
-                worker
-                    .source
-                    .host_metadata
-                    .iter()
-                    .any(|meta| matches!(meta, NativeHostMetadata::WeightString(_)))
+                worker.source.host_metadata.iter().any(|meta| {
+                    matches!(
+                        meta,
+                        NativeHostMetadata::WeightString(_)
+                            | NativeHostMetadata::Regexp(_)
+                            | NativeHostMetadata::RegexpValues(_)
+                    )
+                })
             }) || suite.program.calculated.iter().any(native_string_row_batch),
             workers,
             schema: schema.into_boxed_slice(),

@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-22 N39 validated) All2,251,200 original regexp observations were captured/rerun/pinned before production and pass strictly without fallback or exemptions:1105920/443B33688A2FD934,1144320/19332738CD338935,960/EFE51D028E234646. Actual optional fields and raw-versus-cast phases use EagerValuesNative, real invocation cache handles and shared original pure conversions/recipe selection. Old typed metadata stays intact; original cache capture/scope timing and scalar integer batch publication are preserved. Eight source checks plus four matching existing checks, all-stage auth/cancel/heldraw/context epoch+panic and three same-cap recoveries pass. Frontend2108/exact inherited3/95ignored/all567batch/346warnings;Projection42/Expand6+old64hash/lint/dual9fmt/ownership reconstruction pass;SDKad73b11 remains clean unchanged. Fixed inventory83088/0refusals/0names is bounded, not global completion. See evidence/no-fallback-n39.md; continue genuine protocol/public entries, fallback removal, service and performance work.
+
+
 - [x] (2026-10-22 N38) Five declared-string parameter batch families now reuse original row demands, atomic publication and once-only suite cache binding. Independent287304 original observations/3hashes captured/rerun/SourceRED/pinned before production pass strictly, including2400 long/reuse/flag/panic cases and5same-cap recoveries. Production changes only metadata eligibility/publication/binding in batch.rs. Front2100/exact3/95/all559/346, Projection41, Expand6/hash, lint, dual3fmt and ownership pass. SDKunchanged; receipt evidence/no-fallback-n38.md. Bounded inventory108/2names; continue regexp and global entry/fallback/service/performance work. No push.
 
 
@@ -181,6 +184,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N39: The existing typed regexp path omitted the original Suite Ready cache getter, and its bulk integer publication left a different reusable Column scratch buffer than the original scalar integer batch. The fixed original observer caught both differences. A declared string literal can also contain an actual integer or sentinel; typed lowering refused these values despite the original regexp conversion accepting or rejecting them at demand. The source now selects its generic value protocol from the actual literal carrier where needed, preserving genuine optional declarations and all original observation hashes.
 
 N38: equal results, output prefixes and parameter events concealed a late LOWER panic cache difference: old prepared-worker count0 versus new1. The independently fixed long witness records worker state and exposes the missing suite-wide unwind guard. Selecting the existing once-only suite binding for these genuine string templates restores the complete original state without changing value hosts, cache code or expected observations.
 
@@ -492,6 +497,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+N39 decision (2026-10-22, ExpressionReuseEngineer): Preserve the already typed Regexp metadata variant and actual cache handles, including the existing cache-seeding test. Add a separate RegexpValues descriptor to EagerValuesNative for operators, contextual values and non-typed literal contracts. Operator demand retains the first raw capability until the second NULL gate; named calls convert and check each demanded argument before requesting the next. Capture the original cache before preparation, but admit its poison/reentry scope only after preparation and the original late context callback. Share the original pure recipe selector and closed Ready value kernel; do not add a nested expression frame or SDK operation.
+
 Decision2026-10-22/N38: admit only the actual flat declared-string parameter templates of ANY_VALUE/LOWER/UPPER/IFNULL/COALESCE using their original static batch eligibility. Extend existing row-value atomic publication and existing suite cache-binding facts; retain original per-row lazy/eager demands, kernels and guards elsewhere. Rationale: original collection is per row, not typed-once, and the long witness requires the original invocation unwind policy.
 
 Decision2026-10-22/N37: keep genuine optional WEIGHT_STRING fields, explicit collation, original logical arity and data arity0/1/3 in a dedicated descriptor using EagerValuesNative. Share the original value boundaries and packet helpers, rather than add an SDK driver or infer declarations. Preserve cache binding from the original suite only for compiled owners requiring this original contract. Rationale: independent demand/cache witnesses exposed otherwise invisible ordering and poison-state differences.
@@ -793,6 +800,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N39 closes all 2,251,200 fixed regexp observations without fallback or resource exemptions, and all final gates pass with the inherited failures/warnings unchanged. The bounded optional-call inventory now has no refusals. This establishes closure of that fixture only. Genuine PB-source contracts, public scalar/AST, filter/join, Unistore, generic Admission removal and full service/performance validation remain open and continue under the same task.
 
 N38 closed with all287304 strict original/current pairs and3fixed hashes, five same-cap recoveries, real Projection and final gates. The bounded inventory fell128/7 to108/2, leaving REGEXP/REGEXP_LIKE in this fixture. Global entry migration, generic fallback retirement and final service/performance work remain open; no overall completion or performance improvement is claimed.
 
@@ -4762,3 +4771,10 @@ Continue from8a62bea7 and SDKad73b11. The remaining20 fixed-inventory refusals f
 
 
 Revision2026-10-22: closed N38 with original row collection and cache unwind state preserved, all independent records fixed and final gates passed. Continue regexp and global work immediately.
+
+
+## N39: genuine regexp source phases
+
+Continue fromde1ed54f and SDKad73b11. REGEXP2 evaluates both raw operands with NULL gates before stringifying either. REGEXP_LIKE2/3 casts/stringifies each demanded argument before deciding whether to read the next one. Both run after the original constant-name probe, select the actual Ready cache before children, and read context_id only after all non-NULL strings and collation flags have been prepared. The existing facade guards preparation against panic, checks scope status only after preparation, and uses the original shared pattern/replacement cache owners. Capture all original observations before sharing these pure value boundaries. Do not replace live reads or absent fields, infer SQL metadata, add an expression callback, fake NULL suffix or another executor. Already admitted typed Regexp metadata is an explicit existing contract: old tests seed its real invocation cache; preserve those tests and their handle identity. Extend only missing value-source contracts and required original lifecycle facts under the same SDK driver. The new context records ready getter order, context IDs and changing patterns/NULL/failures; long reuse observes warm results/errors and poison outcomes rather than counting implementation workers. Run original/actual regexp_source_ tests with the standard cargo-tidb command, pin hashes after capture/rerun/RED, then require exact native output/effects/no fallback and full final gates before local DCO.
+
+N39 implementation update: shared original regexp conversions and recipe selection now serve the existing value driver. The original typed cache metadata remains intact; its preparation lifecycle and scalar integer publication follow the fixed original observer. All raw fixtures, counts, digests and resource caps remain unchanged.

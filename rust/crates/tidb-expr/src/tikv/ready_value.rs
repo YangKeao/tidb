@@ -2494,6 +2494,37 @@ pub fn eval_regexp_legacy_ready_in(
 
 /// Select only a function's fixed recipe or its actual NULL witness. The worker
 /// validates every non-NULL argument role; no suffix values are manufactured.
+fn regexp_operation(function: RegexpFunction, ready: &EvaluatedArgs) -> EvaluatedBytesOp {
+    if function != RegexpFunction::LegacyMissing
+        && matches!(ready, EvaluatedArgs::NullWitness(None))
+    {
+        match function {
+            RegexpFunction::Substr | RegexpFunction::Replace => {
+                EvaluatedBytesOp::RegexpNullBytesNative
+            }
+            _ => EvaluatedBytesOp::RegexpNullIntNative,
+        }
+    } else {
+        match function {
+            RegexpFunction::Like => EvaluatedBytesOp::RegexpLikeNative,
+            RegexpFunction::Substr => EvaluatedBytesOp::RegexpSubstrNative,
+            RegexpFunction::Instr => EvaluatedBytesOp::RegexpInstrNative,
+            RegexpFunction::Replace => EvaluatedBytesOp::RegexpReplaceNative,
+            RegexpFunction::LegacyCi => EvaluatedBytesOp::RegexpLikeLegacyCiNative,
+            RegexpFunction::LegacyBin => EvaluatedBytesOp::RegexpLikeLegacyBinNative,
+            RegexpFunction::LegacyMissing => EvaluatedBytesOp::RegexpMissingLegacyNative,
+        }
+    }
+}
+/// Prepared regexp values reuse the original operation, receipt and result router.
+pub(crate) fn evaluate_closed_regexp_args(
+    cache: Option<&ReadyValueCache>,
+    ready: EvaluatedArgs,
+) -> Result<Datum, EvalError> {
+    evaluate_closed_args(cache, regexp_operation(RegexpFunction::Like, &ready), ready)?
+        .into_boolean_datum()
+}
+
 pub(crate) fn evaluate_regexp_in(
     function: RegexpFunction,
     ctx: &dyn Columns,
@@ -2503,26 +2534,7 @@ pub(crate) fn evaluate_regexp_in(
         ctx,
         || {
             let ready = coerce()?;
-            let operation = if function != RegexpFunction::LegacyMissing
-                && matches!(&ready, EvaluatedArgs::NullWitness(None))
-            {
-                match function {
-                    RegexpFunction::Substr | RegexpFunction::Replace => {
-                        EvaluatedBytesOp::RegexpNullBytesNative
-                    }
-                    _ => EvaluatedBytesOp::RegexpNullIntNative,
-                }
-            } else {
-                match function {
-                    RegexpFunction::Like => EvaluatedBytesOp::RegexpLikeNative,
-                    RegexpFunction::Substr => EvaluatedBytesOp::RegexpSubstrNative,
-                    RegexpFunction::Instr => EvaluatedBytesOp::RegexpInstrNative,
-                    RegexpFunction::Replace => EvaluatedBytesOp::RegexpReplaceNative,
-                    RegexpFunction::LegacyCi => EvaluatedBytesOp::RegexpLikeLegacyCiNative,
-                    RegexpFunction::LegacyBin => EvaluatedBytesOp::RegexpLikeLegacyBinNative,
-                    RegexpFunction::LegacyMissing => EvaluatedBytesOp::RegexpMissingLegacyNative,
-                }
-            };
+            let operation = regexp_operation(function, &ready);
             Ok((operation, ready))
         },
         |computed| match function {

@@ -1998,17 +1998,12 @@ impl ScalarFunction {
         if !matches!(self.args.len(), 2 | 3) {
             return Err(EvalError::WrongParameterCount("regexp_like"));
         }
-        let string_arg = |index: usize| -> Result<Option<String>, EvalError> {
-            let value = self.args[index].eval(ctx, row)?;
-            let value =
-                crate::cast::cast_arg_as_string(&value, self.args[index].static_type(), ctx)?;
-            if value.is_null() {
-                return Ok(None);
-            }
-            value
-                .sql_string()
-                .map(Some)
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"))
+        let string_arg = |index: usize| {
+            regexp_value::named_string(
+                self.args[index].eval(ctx, row)?,
+                self.args[index].static_type(),
+                ctx,
+            )
         };
         crate::tikv::evaluate_regexp_in(crate::tikv::RegexpFunction::Like, ctx, || {
             let Some(text) = string_arg(0)? else {
@@ -2413,12 +2408,7 @@ impl ScalarFunction {
                 if pattern.is_null() {
                     return Ok(crate::tikv::EvaluatedArgs::NullWitness(None));
                 }
-                let text = value
-                    .sql_string()
-                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-                let pattern = pattern
-                    .sql_string()
-                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
+                let (text, pattern) = regexp_value::operator_strings(&value, &pattern)?;
                 let match_type =
                     crate::regexp::regexp_match_type_with_collation("", self.derived_collation());
                 let invocation = tidb_query_expr::NativeRegexpInvocation::new(
@@ -6146,6 +6136,7 @@ pub(crate) fn eager_value_phases_for_test() -> usize {
 
 pub(crate) mod eager_values;
 pub(crate) mod prefix_value;
+pub(crate) mod regexp_value;
 pub(crate) mod weight_value;
 
 #[cfg(test)]

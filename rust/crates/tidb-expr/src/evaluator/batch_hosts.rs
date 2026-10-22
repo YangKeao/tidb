@@ -160,6 +160,9 @@ mod prefix_values_source;
 #[path = "batch_weight_string.rs"]
 mod weight_string_source;
 pub(super) use weight_string_source::NativeWeightString;
+#[path = "batch_regexp_values.rs"]
+mod regexp_values_source;
+pub(super) use regexp_values_source::NativeRegexpValues;
 
 #[path = "batch_typed_context.rs"]
 mod typed_context_source;
@@ -181,6 +184,7 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    RegexpValues(Box<NativeRegexpValues>),
     WeightString(Box<NativeWeightString>),
     HeaderOutcome {
         kind: crate::scalar_function::header_value::HeaderKind,
@@ -504,6 +508,7 @@ impl NativeHostMetadata {
             Self::FinalState(metadata) => metadata.result_type.as_ref(),
             Self::CachedList(metadata) => metadata.result_type.as_ref(),
             Self::WeightString(metadata) => metadata.result_type.as_ref(),
+            Self::RegexpValues(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
@@ -547,6 +552,7 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    RegexpValues(Box<regexp_values_source::RegexpTask>),
     WeightString(weight_string_source::WeightTask),
     PrefixValues {
         phase: crate::scalar_function::prefix_value::PrefixPhase,
@@ -717,6 +723,7 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::WeightString(task) => Ok(task.next_argument()),
+            SqlDemand::RegexpValues(task) => Ok(task.next_argument()),
             SqlDemand::PrefixValues { phase } => Ok((*phase
                 != crate::scalar_function::prefix_value::PrefixPhase::Consumed)
                 .then_some(0)),
@@ -788,6 +795,7 @@ impl NativeTask {
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
+            SqlDemand::RegexpValues(_) => Err(binding("regexp values own their actual phases")),
             SqlDemand::WeightString(_) => Err(binding("weight owns its actual value phases")),
             SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
             SqlDemand::PrefixValues { .. } => Err(binding("prefix outcome cannot buffer a reply")),
@@ -891,6 +899,11 @@ impl NativeTask {
             return bytes
                 .checked_add(task.retained_bytes()?)
                 .ok_or_else(|| resource("stateful retained extent overflow"));
+        }
+        if let SqlDemand::RegexpValues(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("regexp task retained extent overflow"));
         }
         if let SqlDemand::CachedList(task) = &self.demand {
             return bytes
@@ -1245,7 +1258,7 @@ impl<'a> NativeBatchHosts<'a> {
                     "regexp task is not terminal".into(),
                 ));
             }
-            return self.finish_regexp(&task, *case_insensitive);
+            return self.finish_regexp(&task, *case_insensitive, id);
         }
         let SqlDemand::Concat { kind, demand } = &task.demand else {
             unreachable!()
@@ -1461,6 +1474,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::FinalState(_)
                 | NativeHostMetadata::CachedList(_)
                 | NativeHostMetadata::WeightString(_)
+                | NativeHostMetadata::RegexpValues(_)
                 | NativeHostMetadata::Selection { .. }
                 | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
@@ -2580,13 +2594,23 @@ impl<'a> NativeBatchHosts<'a> {
             "native SQL context operation failed".into(),
         ))
     }
+    fn check_regexp_scope(&mut self, id: &HostTaskId) -> LocalResult<()> {
+        if let Some(guard) = &self.slots[id.slot].ready_preparation {
+            if let Err(error) = guard.cache().original_scope_status() {
+                return self.native_failure(error);
+            }
+        }
+        Ok(())
+    }
     fn finish_regexp(
         &mut self,
         task: &NativeTask,
         case_insensitive: bool,
+        id: &HostTaskId,
     ) -> LocalResult<VectorValue> {
         let other = self.retained_bytes()?;
         let result = if task.values.iter().any(Option::is_none) {
+            self.check_regexp_scope(id)?;
             None
         } else {
             if task.values.len() != task.arity {
@@ -2630,8 +2654,10 @@ impl<'a> NativeBatchHosts<'a> {
                     LocalError::HostContract("regexp slot has no native cache handles".into())
                 })?;
             // Context lookup and compilation occur only after all non-NULL arguments.
+            let context_id = self.context.context_id();
+            self.check_regexp_scope(id)?;
             let prepared = invocation
-                .with_context_id(self.context.context_id())
+                .with_context_id(context_id)
                 .prepare_like(pattern, flags);
             self.check_bytes(
                 prefix_bytes
@@ -2714,6 +2740,29 @@ impl NativeBatchHosts<'_> {
                         return Err(binding("header outcome declaration differs"));
                     }
                     SqlDemand::HeaderOutcome
+                } else if let Some(NativeHostMetadata::RegexpValues(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.arguments.len() != invocation.arg_types.len()
+                        || meta.source_types.len() != meta.arguments.len()
+                        || if meta.operator {
+                            meta.arguments.len() != 2
+                        } else {
+                            !matches!(meta.arguments.len(), 2 | 3)
+                        }
+                        || !matches!(
+                            meta.output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                    {
+                        return Err(binding("regexp value declaration differs"));
+                    }
+                    ready_preparation = self
+                        .context
+                        .ready_value_cache()
+                        .map(|cache| cache.preparation_unwind_guard());
+                    SqlDemand::RegexpValues(Box::new(regexp_values_source::RegexpTask::First))
                 } else if let Some(NativeHostMetadata::WeightString(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
@@ -3629,6 +3678,10 @@ impl NativeBatchHosts<'_> {
                         "regexp slot has no native cache handles".into(),
                     ));
                 }
+                ready_preparation = self
+                    .context
+                    .ready_value_cache()
+                    .map(|cache| cache.preparation_unwind_guard());
                 SqlDemand::RegexpLike {
                     case_insensitive,
                     next: Some(0),
@@ -3828,6 +3881,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("user variable operand cannot be wire NULL"));
             };
             return self.finish_user_variable(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::RegexpValues(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("regexp value reply is not a capability"));
+            };
+            return self.resume_regexp_values(id, token);
         }
         if matches!(task.demand, SqlDemand::WeightString(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

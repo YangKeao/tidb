@@ -9389,3 +9389,945 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
         );
     }
 }
+
+// Observe original SQL/cache demand rather than the number of implementation
+// workers: the already admitted typed regexp frame has a direct native kernel.
+struct RegexpSourceContext {
+    base: WholeConcatContext,
+    profile: usize,
+    id: Cell<u64>,
+    context_reads: Cell<usize>,
+}
+impl RegexpSourceContext {
+    fn new(enabled: bool, values: [Datum; 3], profile: usize) -> Self {
+        Self {
+            base: WholeConcatContext::new(enabled, values, u64::MAX, 0),
+            profile,
+            id: Cell::new(17),
+            context_reads: Cell::new(0),
+        }
+    }
+    fn event(&self, s: String) {
+        self.base.events.borrow_mut().push(s);
+    }
+    fn snapshot(&self) -> String {
+        format!(
+            "{}|id:{}:{}",
+            self.base.snapshot(),
+            self.id.get(),
+            self.context_reads.get()
+        )
+    }
+}
+impl Columns for RegexpSourceContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        self.event("ready".into());
+        if self.profile == 7 {
+            None
+        } else {
+            Some(&self.base.ready)
+        }
+    }
+    fn context_id(&self) -> u64 {
+        let n = self.context_reads.get();
+        self.context_reads.set(n + 1);
+        let id = if self.profile == 2 {
+            17 + ((n / 2) % 2) as u64
+        } else {
+            self.id.get()
+        };
+        self.event(format!("context:{n}:{id}"));
+        if self.profile == 6 && n == 1 {
+            panic!("original regexp context callback")
+        };
+        id
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.base.enable_vectorized_expression()
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        let value = self.base.param_value(order)?;
+        let n = self.base.reads[order].get();
+        if self.profile == 3 && order == 0 && n == 3 {
+            panic!("original regexp value callback")
+        }
+        if self.profile == 4 && order == 1 && n == 2 {
+            return Err(EvalError::Unsupported("original regexp pattern callback"));
+        }
+        if self.profile == 5 && order == 0 && n == 1026 {
+            panic!("original regexp late value callback")
+        }
+        if self.profile == 1 && order == 1 && n > 1 {
+            return Ok(Datum::new_string(if n % 2 == 0 { "[" } else { "^a" }));
+        }
+        if self.profile == 8 && order == 0 && n == 1 {
+            return Ok(Datum::Null);
+        }
+        Ok(value)
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.event(format!("warning:{code}:{message}"));
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.event("flags".into());
+        tidb_datatype::DEFAULT_STATEMENT_FLAGS.with_ignore_truncate_err(true)
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.event("truncate-level".into());
+        crate::ErrorLevel::Warn
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.event("zone".into());
+        SessionTimeZone::utc()
+    }
+    fn connection_charset_info(&self) -> (&str, &str) {
+        self.event("connection".into());
+        ("utf8mb4", "utf8mb4_bin")
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.event(format!("set:{name}:{}", leaf::frame(&value)));
+    }
+}
+fn regexp_erase_fields(root: &mut Expression, mask: usize) {
+    let Expression::ScalarFunction(f) = root else {
+        unreachable!()
+    };
+    if mask & 1 != 0 {
+        f.ret_type = None;
+    }
+    for (i, arg) in f.args.iter_mut().enumerate() {
+        if mask & (2 << i) == 0 {
+            continue;
+        }
+        match arg {
+            Expression::Constant(c) => c.ret_type = None,
+            Expression::Column(c) => c.ret_type = None,
+            Expression::ScalarFunction(f) => f.ret_type = None,
+            Expression::CorrelatedColumn(c) => c.column.ret_type = None,
+        }
+    }
+}
+#[test]
+fn regexp_source_original_phases() {
+    if isolate_common_corpus("stateful_tests::regexp_source_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_regexp_source_matrix(false, false);
+}
+#[test]
+fn regexp_source_actual_phases() {
+    if isolate_common_corpus("stateful_tests::regexp_source_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_regexp_source_matrix(true, false);
+}
+#[test]
+fn regexp_source_original_full() {
+    if isolate_common_corpus("stateful_tests::regexp_source_original_full") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_regexp_source_matrix(false, true);
+}
+#[test]
+fn regexp_source_actual_full() {
+    if isolate_common_corpus("stateful_tests::regexp_source_actual_full") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_regexp_source_matrix(true, true);
+}
+fn run_regexp_source_matrix(compare: bool, full: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = if full {
+            vec![
+                ty(),
+                ty().with_unsigned(true),
+                string_ty(),
+                FieldType::new(FieldTypeCode::Double),
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(65)
+                    .with_decimal(5),
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+                FieldType::new(FieldTypeCode::Json),
+            ]
+        } else {
+            vec![ty(), string_ty(), FieldType::new(FieldTypeCode::Double)]
+        };
+        let results = if full {
+            vec![ty()]
+        } else {
+            vec![
+                ty(),
+                string_ty().with_collation(tidb_datatype::Collation::Utf8Mb4GeneralCi),
+                FieldType::new(FieldTypeCode::Json),
+            ]
+        };
+        let samples = if full {
+            crate::tikv::byte_unary_value_tests::values()
+                .into_iter()
+                .enumerate()
+                .flat_map(|(vi, value)| {
+                    (0..3).map(move |position| {
+                        let mut values = [
+                            Datum::new_string("abc"),
+                            Datum::new_string("^a"),
+                            Datum::new_string(""),
+                        ];
+                        values[position] = value.clone();
+                        (vi * 3 + position, position, values)
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![
+                (
+                    0,
+                    0,
+                    [
+                        Datum::Null,
+                        Datum::Bytes(vec![255]),
+                        Datum::Bytes(vec![255]),
+                    ],
+                ),
+                (
+                    1,
+                    0,
+                    [
+                        Datum::Bytes(vec![255]),
+                        Datum::Null,
+                        Datum::Bytes(vec![255]),
+                    ],
+                ),
+                (
+                    2,
+                    0,
+                    [
+                        Datum::new_string("abc"),
+                        Datum::new_string("^a"),
+                        Datum::new_string(""),
+                    ],
+                ),
+                (
+                    3,
+                    0,
+                    [
+                        Datum::new_string("a\nb"),
+                        Datum::new_string("^b"),
+                        Datum::new_string("m"),
+                    ],
+                ),
+                (
+                    4,
+                    0,
+                    [
+                        Datum::new_string("abc"),
+                        Datum::new_string("("),
+                        Datum::new_string("i"),
+                    ],
+                ),
+                (
+                    5,
+                    0,
+                    [
+                        Datum::Int(123),
+                        Datum::new_string("1"),
+                        Datum::new_string("c"),
+                    ],
+                ),
+                (
+                    6,
+                    0,
+                    [
+                        Datum::new_string("ABC"),
+                        Datum::new_string("a"),
+                        Datum::new_string("z"),
+                    ],
+                ),
+                (7, 0, [Datum::MinNotNull, Datum::Null, Datum::MinNotNull]),
+            ]
+        };
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        for (name, arity) in [("regexp", 2usize), ("regexp_like", 2), ("regexp_like", 3)] {
+            for (fi, field) in fields.iter().enumerate() {
+                for (ri, result) in results.iter().enumerate() {
+                    for mask in 0..(1usize << (arity + 1)) {
+                        for shape in 0..if full { 1 } else { 5 } {
+                            for (vi, position, values) in &samples {
+                                if full && *position >= arity {
+                                    continue;
+                                }
+                                for profile in if full {
+                                    vec![0]
+                                } else {
+                                    vec![0, 1, 2, 3, 4, 6, 7, 8]
+                                } {
+                                    for enabled in [false, true] {
+                                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                            let make = || {
+                                                let mut args = (0..arity)
+                                                    .map(|i| parameter(i, field.clone()))
+                                                    .collect::<Vec<_>>();
+                                                match shape {
+                                                    1 => {
+                                                        for (i, arg) in args.iter_mut().enumerate()
+                                                        {
+                                                            let mut c = Constant::new(
+                                                                values[i].clone(),
+                                                                field.clone(),
+                                                            );
+                                                            c.deferred_expr =
+                                                                Some(Box::new(leaf::assignment(
+                                                                    &format!("regexp{i}"),
+                                                                    arg.clone(),
+                                                                    &string_ty(),
+                                                                )));
+                                                            *arg = Expression::Constant(c);
+                                                        }
+                                                    }
+                                                    2 => {
+                                                        args[1] = call(
+                                                            "__regexp_late_source_error__",
+                                                            string_ty(),
+                                                            vec![],
+                                                        )
+                                                    }
+                                                    3 => args[1] = string_column(0),
+                                                    4 => {
+                                                        for (i, arg) in args.iter_mut().enumerate()
+                                                        {
+                                                            *arg = literal(
+                                                                values[i].clone(),
+                                                                field.clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                    _ => (),
+                                                }
+                                                let mut root = call(name, result.clone(), args);
+                                                regexp_erase_fields(&mut root, mask);
+                                                suite(root)
+                                            };
+                                            let original = make();
+                                            let actual = make();
+                                            let old = RegexpSourceContext::new(
+                                                enabled,
+                                                values.clone(),
+                                                profile,
+                                            );
+                                            let new = RegexpSourceContext::new(
+                                                enabled,
+                                                values.clone(),
+                                                profile,
+                                            );
+                                            for reuse in 0..2 {
+                                                let input = || {
+                                                    let mut c = chunk(
+                                                        &[string_ty()],
+                                                        &[
+                                                            vec![Datum::new_string("^a")],
+                                                            vec![Datum::new_string("(")],
+                                                            vec![Datum::Null],
+                                                        ],
+                                                    );
+                                                    c.set_sel(selection.clone());
+                                                    c
+                                                };
+                                                let mut a = input();
+                                                let mut left = output_for(result);
+                                                left.append_null(0);
+                                                let expected = session_read_outcome(|| {
+                                                    original.run(&old, &mut a, &mut left)
+                                                });
+                                                let label=format!("regexp-source/{full}/{name}/{arity}/{fi}/{ri}/{mask}/{shape}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                                if compare {
+                                                    let mut b = input();
+                                                    let mut right = output_for(result);
+                                                    right.append_null(0);
+                                                    let got = session_read_outcome(|| {
+                                                        actual.run_with_tikv_batch(
+                                                            &new,
+                                                            &mut b,
+                                                            &mut right,
+                                                            &[string_ty()],
+                                                        )
+                                                    });
+                                                    if got != expected
+                                                        || left.column(0) != right.column(0)
+                                                        || old.snapshot() != new.snapshot()
+                                                    {
+                                                        eprintln!("REGEXP SOURCE DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldevents={} newevents={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                    }
+                                                    assert_eq!(got, expected, "{label}");
+                                                    assert_eq!(
+                                                        right.column(0),
+                                                        left.column(0),
+                                                        "{label}"
+                                                    );
+                                                    assert_eq!(
+                                                        new.snapshot(),
+                                                        old.snapshot(),
+                                                        "{label}"
+                                                    );
+                                                    let route = actual.batch_route_snapshot();
+                                                    if (route.fallback != 0 || route.refusals != 0)
+                                                        && gaps.len() < 20
+                                                    {
+                                                        gaps.push(format!("{label}: {route:?}"));
+                                                    }
+                                                }
+                                                for byte in format!(
+                                                    "{label}|{expected}|{:?}|{}",
+                                                    left.column(0),
+                                                    old.snapshot()
+                                                )
+                                                .bytes()
+                                                {
+                                                    hash = (hash ^ u64::from(byte))
+                                                        .wrapping_mul(0x100000001b3);
+                                                }
+                                                count += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("REGEXP SOURCE ORIGINAL full={full} {count}/{hash:016X}");
+        assert_eq!(
+            (count, hash),
+            if full {
+                (1144320, 0x19332738CD338935)
+            } else {
+                (1105920, 0x443B33688A2FD934)
+            }
+        );
+        if !gaps.is_empty() {
+            eprintln!("REGEXP SOURCE RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+#[test]
+fn regexp_source_original_long() {
+    if isolate_common_corpus("stateful_tests::regexp_source_original_long") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_regexp_source_long(false);
+}
+#[test]
+fn regexp_source_actual_long() {
+    if isolate_common_corpus("stateful_tests::regexp_source_actual_long") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_regexp_source_long(true);
+}
+fn run_regexp_source_long(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for (name, arity) in [("regexp", 2usize), ("regexp_like", 2), ("regexp_like", 3)] {
+        let make = || {
+            suite(call(
+                name,
+                ty(),
+                (0..arity).map(|i| parameter(i, string_ty())).collect(),
+            ))
+        };
+        let original = make();
+        let actual = make();
+        for profile in 0..8 {
+            for rows in [0usize, 1, 3, 1026, 2051] {
+                for first in [false, true] {
+                    let values = [
+                        Datum::new_string("abc"),
+                        Datum::new_string("^a"),
+                        Datum::new_string(""),
+                    ];
+                    let mut old = RegexpSourceContext::new(first, values.clone(), profile);
+                    let mut new = RegexpSourceContext::new(first, values, profile);
+                    for round in 0..4 {
+                        let enabled = if round % 2 == 0 { first } else { !first };
+                        old.base.enabled.set(enabled);
+                        new.base.enabled.set(enabled);
+                        old.id.set(if round == 2 { 18 } else { 17 });
+                        new.id.set(old.id.get());
+                        old.base.values[1] = Datum::new_string(if round == 1 { "[" } else { "^a" });
+                        new.base.values[1] = old.base.values[1].clone();
+                        let input = || {
+                            let mut c = chunk(
+                                &[ty()],
+                                &[
+                                    vec![Datum::Int(0)],
+                                    vec![Datum::Int(1)],
+                                    vec![Datum::Int(2)],
+                                ],
+                            );
+                            c.set_sel(Some((0..rows).map(|i| [2, 0, 2, 1][i % 4]).collect()));
+                            c
+                        };
+                        let mut a = input();
+                        let mut left = output_for(&ty());
+                        left.append_null(0);
+                        let expected =
+                            session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                        let label=format!("regexp-source-long/{name}/{arity}/{profile}/{rows}/{first}/{round}/{enabled}");
+                        if compare {
+                            let mut b = input();
+                            let mut right = output_for(&ty());
+                            right.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                            });
+                            if got != expected
+                                || left.column(0) != right.column(0)
+                                || old.snapshot() != new.snapshot()
+                            {
+                                eprintln!("REGEXP SOURCE LONG DIFFERENCE {label} old={expected:?} new={got:?} oldrows={} newrows={} oldevents={} newevents={}",left.num_rows(),right.num_rows(),old.snapshot(),new.snapshot());
+                            }
+                            assert_eq!(got, expected, "{label}");
+                            assert_eq!(right.column(0), left.column(0), "{label}");
+                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.fallback, route.refusals),
+                                (0, 0),
+                                "{label}: {route:?}"
+                            );
+                        }
+                        for byte in
+                            format!("{label}|{expected}|{:?}|{}", left.column(0), old.snapshot())
+                                .bytes()
+                        {
+                            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("REGEXP SOURCE LONG ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (960, 0xEFE51D028E234646));
+}
+
+#[test]
+fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    struct Context<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        ready: crate::ReadyValueCache,
+        mode: Cell<usize>,
+        calls: Cell<usize>,
+    }
+    impl Columns for Context<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no expression callback")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            drop(self.store.borrow_mut());
+            Some(&self.ready)
+        }
+        fn context_id(&self) -> u64 {
+            drop(self.store.borrow_mut());
+            self.calls.set(self.calls.get() + 1);
+            if self.mode.get() == 1 {
+                self.store.borrow_mut().begin_window().unwrap();
+            }
+            if self.mode.get() == 2 {
+                panic!("regexp context panic")
+            }
+            17
+        }
+    }
+    for (name, arity) in [("regexp", 2), ("regexp_like", 2), ("regexp_like", 3)] {
+        let mut root = call(
+            name,
+            ty(),
+            (0..arity).map(|i| parameter(i, string_ty())).collect(),
+        );
+        regexp_erase_fields(&mut root, (1 << (arity + 1)) - 1);
+        let owner = suite(root);
+        let compiled = PreparedBatch::compile_calculation_profile(
+            &owner,
+            0,
+            &[],
+            true,
+            939,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+            true,
+        )
+        .unwrap();
+        let source = &compiled.source;
+        let NativeHostMetadata::RegexpValues(meta) = &source.host_metadata[0] else {
+            panic!("regexp owner")
+        };
+        assert_eq!(meta.arguments.len(), arity);
+        let row = InputRow {
+            occurrence: 7,
+            input_row: 0,
+        };
+        let catalog = source.hosts.as_ref().unwrap().clone();
+        let slot = catalog.slot(0).unwrap();
+        let sig = catalog.signature(slot).unwrap();
+        for mode in 0..3 {
+            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let context = Context {
+                store: &store,
+                ready: crate::ReadyValueCache::new(),
+                mode: Cell::new(0),
+                calls: Cell::new(0),
+            };
+            let insert = |value: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(value, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let mut hosts =
+                NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context, 8192)
+                    .with_native_values(Some(&store))
+                    .with_constant_probes(&source.host_probes);
+            let mut eval = EvalContext::default();
+            let start = |hosts: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
+                let HostStart::Pending { task, request } = hosts
+                    .start(
+                        eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &sig.arg_types,
+                            return_type: &sig.return_type,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!("regexp pending")
+                };
+                assert_eq!(request.index, 0);
+                task
+            };
+            let feed = |hosts: &mut NativeBatchHosts<'_>,
+                        eval: &mut EvalContext,
+                        task: &tidb_query_expr::local::HostTaskId,
+                        index,
+                        token: Option<Vec<u8>>| {
+                let value = VectorValue::from_scalar(&ScalarValue::Bytes(token), 1);
+                hosts.resume(
+                    eval,
+                    task,
+                    HostArgReply {
+                        index,
+                        field_type: &sig.arg_types[index],
+                        values: &value,
+                    },
+                )
+            };
+            let ordinary = |index| {
+                Datum::new_string(match index {
+                    0 => "abc",
+                    1 => "^a",
+                    _ => "",
+                })
+            };
+            if mode == 0 {
+                for stage in 0..arity {
+                    for bad in 0..6 {
+                        let node = meta.arguments[stage];
+                        let stale = insert(&ordinary(stage), NativeValueRole::CharInput, node, row);
+                        store.borrow_mut().begin_window().unwrap();
+                        let task = start(&mut hosts, &mut eval);
+                        for index in 0..stage {
+                            let token = insert(
+                                &ordinary(index),
+                                NativeValueRole::CharInput,
+                                meta.arguments[index],
+                                row,
+                            );
+                            let step =
+                                feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap();
+                            assert!(
+                                matches!(step,HostStep::NeedArg(request) if request.index==index+1)
+                            );
+                        }
+                        let token = match bad {
+                            0 => Some(stale),
+                            1 => Some(insert(&ordinary(stage), NativeValueRole::Output, node, row)),
+                            2 => Some(insert(
+                                &ordinary(stage),
+                                NativeValueRole::CharInput,
+                                node + 999,
+                                row,
+                            )),
+                            3 => Some(insert(
+                                &ordinary(stage),
+                                NativeValueRole::CharInput,
+                                node,
+                                InputRow {
+                                    occurrence: 8,
+                                    input_row: 0,
+                                },
+                            )),
+                            4 => None,
+                            _ => Some(insert(
+                                &ordinary(stage),
+                                NativeValueRole::CharInput,
+                                node,
+                                row,
+                            )),
+                        };
+                        let index = if bad == 5 { (stage + 1) % arity } else { stage };
+                        let denied = feed(&mut hosts, &mut eval, &task, index, token);
+                        if bad == 5 {
+                            assert!(
+                                matches!(denied, Err(LocalError::HostContract(_))),
+                                "{name}/{stage}/{bad}"
+                            );
+                        } else {
+                            assert!(
+                                matches!(denied, Err(LocalError::BindingContract(_))),
+                                "{name}/{stage}/{bad}"
+                            );
+                        }
+                        hosts.cancel(&task);
+                        assert_eq!(context.calls.get(), 0);
+                    }
+                }
+                if name == "regexp" {
+                    // No formatting or clone of the first raw value before the
+                    // second raw NULL gate, even under the same small host cap.
+                    let task = start(&mut hosts, &mut eval);
+                    let first = insert(
+                        &Datum::Bytes(vec![b'x'; 32768]),
+                        NativeValueRole::CharInput,
+                        meta.arguments[0],
+                        row,
+                    );
+                    assert!(matches!(
+                        feed(&mut hosts, &mut eval, &task, 0, Some(first)).unwrap(),
+                        HostStep::NeedArg(_)
+                    ));
+                    let null = insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        meta.arguments[1],
+                        row,
+                    );
+                    assert!(matches!(
+                        feed(&mut hosts, &mut eval, &task, 1, Some(null)).unwrap(),
+                        HostStep::Ready(_)
+                    ));
+                    // The retained first capability must be reauthenticated.
+                    let task = start(&mut hosts, &mut eval);
+                    let first = insert(
+                        &ordinary(0),
+                        NativeValueRole::CharInput,
+                        meta.arguments[0],
+                        row,
+                    );
+                    feed(&mut hosts, &mut eval, &task, 0, Some(first)).unwrap();
+                    store.borrow_mut().begin_window().unwrap();
+                    let null = insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        meta.arguments[1],
+                        row,
+                    );
+                    assert!(matches!(
+                        feed(&mut hosts, &mut eval, &task, 1, Some(null)),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    hosts.cancel(&task);
+                }
+                // Cancellation at every suspension is terminal and reusable.
+                for stage in 0..arity {
+                    let task = start(&mut hosts, &mut eval);
+                    for index in 0..stage {
+                        let token = insert(
+                            &ordinary(index),
+                            NativeValueRole::CharInput,
+                            meta.arguments[index],
+                            row,
+                        );
+                        feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap();
+                    }
+                    hosts.cancel(&task);
+                    let token = insert(
+                        &ordinary(stage),
+                        NativeValueRole::CharInput,
+                        meta.arguments[stage],
+                        row,
+                    );
+                    assert!(feed(&mut hosts, &mut eval, &task, stage, Some(token)).is_err());
+                }
+            }
+            context.mode.set(mode);
+            let task = start(&mut hosts, &mut eval);
+            for index in 0..arity - 1 {
+                let token = insert(
+                    &ordinary(index),
+                    NativeValueRole::CharInput,
+                    meta.arguments[index],
+                    row,
+                );
+                feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap();
+            }
+            let index = arity - 1;
+            let token = insert(
+                &ordinary(index),
+                NativeValueRole::CharInput,
+                meta.arguments[index],
+                row,
+            );
+            // The broker cancels its task while unwinding. Reproduce that
+            // ownership contract when calling the host directly here.
+            struct Cancel<'a, 'b> {
+                hosts: &'a mut NativeBatchHosts<'b>,
+                task: &'a tidb_query_expr::local::HostTaskId,
+            }
+            impl Drop for Cancel<'_, '_> {
+                fn drop(&mut self) {
+                    self.hosts.cancel(self.task);
+                }
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let guard = Cancel {
+                    hosts: &mut hosts,
+                    task: &task,
+                };
+                feed(guard.hosts, &mut eval, &task, index, Some(token.clone()))
+            }));
+            match mode {
+                1 => assert!(matches!(result, Ok(Err(LocalError::BindingContract(_))))),
+                2 => assert!(result.is_err()),
+                _ => assert!(matches!(result, Ok(Ok(HostStep::Ready(_))))),
+            }
+            hosts.cancel(&task);
+            assert!(feed(&mut hosts, &mut eval, &task, index, Some(token)).is_err());
+            assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+            if mode == 2 {
+                assert!(context.ready.original_scope_status().is_err());
+            } else {
+                assert!(context.ready.original_scope_status().is_ok());
+            }
+        }
+    }
+}
+
+#[test]
+fn regexp_source_same_cap_resource_then_null_recovery() {
+    if isolate_common_corpus("stateful_tests::regexp_source_same_cap_resource_then_null_recovery") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    for (name, arity) in [("regexp", 2), ("regexp_like", 2), ("regexp_like", 3)] {
+        let mut root = call(
+            name,
+            ty(),
+            (0..arity).map(|i| parameter(i, string_ty())).collect(),
+        );
+        regexp_erase_fields(&mut root, (1 << (arity + 1)) - 1);
+        let owner = suite(root);
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &[string_ty()],
+            true,
+            939,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+        .unwrap();
+        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+        let mut ctx = RegexpSourceContext::new(
+            true,
+            [
+                Datum::new_string("x".repeat(32768)),
+                Datum::new_string("x"),
+                Datum::new_string(""),
+            ],
+            0,
+        );
+        let input = || {
+            chunk(
+                &[string_ty()],
+                &[
+                    vec![Datum::new_string("a")],
+                    vec![Datum::new_string("b")],
+                    vec![Datum::new_string("c")],
+                ],
+            )
+        };
+        let mut first = input();
+        let mut output = output_for(&ty());
+        output.append_null(0);
+        let error = prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut first,
+                &mut output,
+                &[string_ty()],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.local_error(),
+            Some(LocalError::ResourceLimit(_))
+        ));
+        assert_eq!(output.num_rows(), 1);
+        ctx.base.values[0] = Datum::Null;
+        ctx.base.enabled.set(false);
+        ctx.base.events.borrow_mut().clear();
+        for n in &ctx.base.reads {
+            n.set(0);
+        }
+        ctx.context_reads.set(0);
+        let old = RegexpSourceContext::new(false, ctx.base.values.clone(), 0);
+        let mut a = input();
+        let mut left = output_for(&ty());
+        left.append_null(0);
+        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let mut b = input();
+        let mut right = output_for(&ty());
+        right.append_null(0);
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut b,
+                    &mut right,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(right.column(0), left.column(0));
+        assert_eq!(ctx.snapshot(), old.snapshot());
+        assert_eq!(
+            prepared.workers[0].max_materialization_retained_bytes,
+            16 * 1024
+        );
+    }
+}
