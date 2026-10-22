@@ -738,6 +738,7 @@ fn context_root_policy(
         if matches!(root, Expression::ScalarFunction(function) if native_unary_sign_operation(function.func_name.lowercase()).is_none() && !matches!(function.func_name.lowercase(), "abs" | "cast_decimal" | "cast_json" | "cast_char" | "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"))
             && crate::scalar_function::static_batch_target(root).is_some()
             && !matches!(root, Expression::ScalarFunction(function) if native_concat_row_batch(function))
+            && !native_string_row_batch(root)
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -2287,6 +2288,37 @@ fn native_concat_row_batch(function: &ScalarFunction) -> bool {
             .is_some_and(|field| field.eval_type() == NativeEvalType::String)
         && batch_call_signature(function)
             .is_some_and(|signature| signature.output_type() == TikvEvalType::Bytes)
+        && function
+            .args
+            .iter()
+            .any(|arg| matches!(arg,Expression::Constant(c) if c.param_marker.is_some()))
+        && function.args.iter().all(|arg| {
+            arg.static_type()
+                .is_some_and(|field| field.eval_type() == NativeEvalType::String)
+                && match arg {
+                    Expression::Constant(c) => c.deferred_expr.is_none(),
+                    Expression::Column(c) => {
+                        c.virtual_expr.is_none() && c.correlated_col_unique_id == 0
+                    }
+                    _ => false,
+                }
+        })
+}
+// These original declared-string batch entries collect ordinary row results;
+// lazy child choices remain inside their existing value owners. Inspect only
+// the authentic flat source metadata and its original batch eligibility.
+fn native_string_row_batch(root: &Expression) -> bool {
+    let Expression::ScalarFunction(function) = root else {
+        return false;
+    };
+    matches!(
+        function.func_name.lowercase(),
+        "any_value" | "lower" | "upper" | "ifnull" | "coalesce"
+    ) && function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && !function.has_values_offset()
+        && !function.has_grouping_metadata()
+        && crate::scalar_function::static_batch_target(root) == Some(NativeEvalType::String)
         && function
             .args
             .iter()
@@ -4992,7 +5024,8 @@ fn lower_view_policy(
     let row_value_batch = matches!(root, Expression::ScalarFunction(function)
         if (function.func_name.lowercase() == "cast_char"
             && crate::scalar_function::static_batch_target(root).is_some())
-            || native_concat_row_batch(function));
+            || native_concat_row_batch(function)
+            || native_string_row_batch(root));
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
@@ -8344,7 +8377,7 @@ impl PreparedBatchSuite {
                     .host_metadata
                     .iter()
                     .any(|meta| matches!(meta, NativeHostMetadata::WeightString(_)))
-            }),
+            }) || suite.program.calculated.iter().any(native_string_row_batch),
             workers,
             schema: schema.into_boxed_slice(),
             source_limits: limits,

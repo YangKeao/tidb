@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-22 N38) Five declared-string parameter batch families now reuse original row demands, atomic publication and once-only suite cache binding. Independent287304 original observations/3hashes captured/rerun/SourceRED/pinned before production pass strictly, including2400 long/reuse/flag/panic cases and5same-cap recoveries. Production changes only metadata eligibility/publication/binding in batch.rs. Front2100/exact3/95/all559/346, Projection41, Expand6/hash, lint, dual3fmt and ownership pass. SDKunchanged; receipt evidence/no-fallback-n38.md. Bounded inventory108/2names; continue regexp and global entry/fallback/service/performance work. No push.
+
+
 - [x] (2026-10-22 N37) Positive-arity WEIGHT_STRING now preserves actual0/1/3 data demands separately from logical arity in the existing SDK frame. Independent358560 original observations/2hashes captured/rerun/AdmissionRED/pinned before production pass strictly; direct auth/callback/panic, same-cap recovery and180 long/reuse cases pass. Original suite once-only cache binding is selected from compiled metadata, original scheduling body unchanged. Projection40, front2093/exact3/95/all552/346warnings, Expand6/hash, lint, dual7fmt and source ownership pass. SDKunchanged; receipt evidence/no-fallback-n37.md. Bounded inventory128/7; continue whole-string parameter and regexp contracts and global work. No push.
 
 
@@ -178,6 +181,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N38: equal results, output prefixes and parameter events concealed a late LOWER panic cache difference: old prepared-worker count0 versus new1. The independently fixed long witness records worker state and exposes the missing suite-wide unwind guard. Selecting the existing once-only suite binding for these genuine string templates restores the complete original state without changing value hosts, cache code or expected observations.
 
 N37: original Suite.run binds Ready once before flags and carries an unwind guard across the entire invocation. The prepared route's lazy fallback binding queried the native getter per weight row, changing events/cache lifecycle. Actual WEIGHT_STRING metadata now selects that existing once-only binding; the old suite scheduling body remains exact. Initial source tests also exposed the fixed host first request0 and logical/data arity conflation; all were fixed in source while original digests stayed fixed.
 
@@ -487,6 +492,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+Decision2026-10-22/N38: admit only the actual flat declared-string parameter templates of ANY_VALUE/LOWER/UPPER/IFNULL/COALESCE using their original static batch eligibility. Extend existing row-value atomic publication and existing suite cache-binding facts; retain original per-row lazy/eager demands, kernels and guards elsewhere. Rationale: original collection is per row, not typed-once, and the long witness requires the original invocation unwind policy.
+
 Decision2026-10-22/N37: keep genuine optional WEIGHT_STRING fields, explicit collation, original logical arity and data arity0/1/3 in a dedicated descriptor using EagerValuesNative. Share the original value boundaries and packet helpers, rather than add an SDK driver or infer declarations. Preserve cache binding from the original suite only for compiled owners requiring this original contract. Rationale: independent demand/cache witnesses exposed otherwise invisible ordering and poison-state differences.
 
 - Decision: keep prefix protocol eligibility separate from original common-body classification, share only original pure UNION/CAST value boundaries, and demand the original unary operand afresh after fallthrough. Carry real optional date fields through the existing temporal host rather than creating a new date error owner. Rationale: original recordings distinguish repeated reads, intrinsic source absence, optional return behavior and date operand order. Date/Author: 2026-10-22 ExpressionReuseEngineer.
@@ -786,6 +793,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N38 closed with all287304 strict original/current pairs and3fixed hashes, five same-cap recoveries, real Projection and final gates. The bounded inventory fell128/7 to108/2, leaving REGEXP/REGEXP_LIKE in this fixture. Global entry migration, generic fallback retirement and final service/performance work remain open; no overall completion or performance improvement is claimed.
 
 N37 closed locally with all358560 strict original/current pairs and both unchanged hashes, no fallback/resource exemptions, actual Projection and final gates. The bounded inventory fell344/8 to128/7, leaving regexp and20 declared-string whole-parameter scenarios. This is not overall completion or a performance claim; continue public entries, generic fallback removal and final service/performance validation.
 
@@ -4745,3 +4754,11 @@ Continue from59be8c39 with SDKad73b11 unchanged. The original scalar source eval
 
 
 Revision2026-10-22: closed N37 after restoring first padding demand, genuine logical/data arity validation and original once-only suite cache binding; all original witnesses remained fixed and final gates passed. Continue the overall task without a checkpoint stop.
+
+
+## N38: declared string parameter batch collection
+
+Continue from8a62bea7 and SDKad73b11. The remaining20 fixed-inventory refusals for ANY_VALUE, IFNULL, COALESCE, LOWER and UPPER have real string result and flat string parameter declarations. EligibleBatch.eval_native and eval_batch_values both evaluate these scalar functions per row and collect the complete result before publication. They do not evaluate a live parameter once per whole batch. Add a closed metadata-only exception patterned after native_concat_row_batch, retaining one real parameter, valid original batch target/arity, present string fields, flat literal/parameter/ordinary-column sources and no PB/deferred/virtual/correlated/VALUES/grouping metadata. Existing hosts and their lazy or eager value bodies remain unchanged. Extend only the existing atomic row-value batch publication policy after independent proof. The new StringRowContext records original raw observations with three collations, all149 actual values, repeated markers and changed NULL on later reads. Capture/rerun and pin source Admission RED before modifying production. Validate exact hashes/no fallback, real Projection, same-cap recovery, complete frontend/exact inherited3, Expand/lint/dual formatting and source reconstruction before local DCO.
+
+
+Revision2026-10-22: closed N38 with original row collection and cache unwind state preserved, all independent records fixed and final gates passed. Continue regexp and global work immediately.

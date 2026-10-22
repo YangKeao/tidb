@@ -8876,3 +8876,516 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
         assert_eq!((route.fallback, route.refusals), (0, 0));
     }
 }
+
+// Declared string batch entries still evaluate these functions row by row,
+// including lazy argument selection, and publish only after collection succeeds.
+struct StringRowContext {
+    base: WholeConcatContext,
+}
+impl StringRowContext {
+    fn new(enabled: bool, values: [Datum; 3], profile: usize) -> Self {
+        Self {
+            base: WholeConcatContext::new(enabled, values, u64::MAX, profile),
+        }
+    }
+    fn event(&self, s: String) {
+        self.base.events.borrow_mut().push(s);
+    }
+    fn snapshot(&self) -> String {
+        format!(
+            "{}|workers:{}",
+            self.base.snapshot(),
+            self.base.ready.prepared_worker_count()
+        )
+    }
+}
+impl Columns for StringRowContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        Some(&self.base.ready)
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.base.enable_vectorized_expression()
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        let value = self.base.param_value(order)?;
+        let n = self.base.reads[order].get();
+        if self.base.profile == 8 && order == 0 && n == 1026 {
+            panic!("original string late value callback")
+        }
+        if order == 0 && ((self.base.profile == 9 && n == 1) || (self.base.profile == 10 && n > 1))
+        {
+            Ok(Datum::Null)
+        } else {
+            Ok(value)
+        }
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.event(format!("warning:{code}:{message}"));
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.event("flags".into());
+        tidb_datatype::DEFAULT_STATEMENT_FLAGS.with_ignore_truncate_err(true)
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.event("truncate-level".into());
+        crate::ErrorLevel::Warn
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.event("zone".into());
+        SessionTimeZone::utc()
+    }
+}
+fn string_row_arities(name: &str) -> Vec<usize> {
+    match name {
+        "coalesce" => vec![1, 2, 3, 4, 6, 9],
+        "ifnull" => vec![2],
+        _ => vec![1],
+    }
+}
+#[test]
+fn string_row_batch_original_phases() {
+    if isolate_common_corpus("stateful_tests::string_row_batch_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_string_row_matrix(false, false);
+}
+#[test]
+fn string_row_batch_actual_phases() {
+    if isolate_common_corpus("stateful_tests::string_row_batch_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_string_row_matrix(true, false);
+}
+#[test]
+fn string_row_batch_original_full() {
+    if isolate_common_corpus("stateful_tests::string_row_batch_original_full") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_string_row_matrix(false, true);
+}
+#[test]
+fn string_row_batch_actual_full() {
+    if isolate_common_corpus("stateful_tests::string_row_batch_actual_full") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_string_row_matrix(true, true);
+}
+fn run_string_row_matrix(compare: bool, full: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let values = if full {
+            crate::tikv::byte_unary_value_tests::values()
+        } else {
+            vec![
+                Datum::Null,
+                Datum::new_string("aÉß"),
+                Datum::Int(123),
+                Datum::Bytes(vec![255, b'a']),
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+                Datum::Real(f64::NAN),
+            ]
+        };
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        for name in ["any_value", "lower", "upper", "ifnull", "coalesce"] {
+            for arity in string_row_arities(name) {
+                for (fi, field) in [
+                    string_ty(),
+                    string_ty().with_collation(tidb_datatype::Collation::Utf8Mb4GeneralCi),
+                    native_bytes_type(),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    for shape in 0..if full || arity == 1 { 1 } else { 3 } {
+                        for position in 0..arity {
+                            for (vi, value) in values.iter().enumerate() {
+                                let mut actual_values = [
+                                    Datum::new_string("aÉ"),
+                                    Datum::Null,
+                                    Datum::new_string("selected"),
+                                ];
+                                actual_values[if full { 0 } else { position % 3 }] = value.clone();
+                                for profile in if full {
+                                    vec![0]
+                                } else {
+                                    vec![0, 1, 2, 6, 8, 9, 10]
+                                } {
+                                    for enabled in [false, true] {
+                                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                            let make = || {
+                                                let args = (0..arity)
+                                                    .map(|i| {
+                                                        if full {
+                                                            if i == position {
+                                                                parameter(0, field.clone())
+                                                            } else {
+                                                                literal(Datum::Null, field.clone())
+                                                            }
+                                                        } else {
+                                                            match shape {
+                                                                1 => parameter(0, field.clone()),
+                                                                2 => match i {
+                                                                    0 => {
+                                                                        parameter(0, field.clone())
+                                                                    }
+                                                                    1 => typed_column(0, &field),
+                                                                    _ => literal(
+                                                                        actual_values[i % 3]
+                                                                            .clone(),
+                                                                        field.clone(),
+                                                                    ),
+                                                                },
+                                                                _ => {
+                                                                    parameter(i % 3, field.clone())
+                                                                }
+                                                            }
+                                                        }
+                                                    })
+                                                    .collect();
+                                                suite(call(name, field.clone(), args))
+                                            };
+                                            let original = make();
+                                            let actual = make();
+                                            let old = StringRowContext::new(
+                                                enabled,
+                                                actual_values.clone(),
+                                                profile,
+                                            );
+                                            let new = StringRowContext::new(
+                                                enabled,
+                                                actual_values.clone(),
+                                                profile,
+                                            );
+                                            for reuse in 0..2 {
+                                                let input = || {
+                                                    let mut c = chunk(
+                                                        &[field.clone()],
+                                                        &[
+                                                            vec![Datum::new_string("a")],
+                                                            vec![Datum::new_string("É")],
+                                                            vec![Datum::Null],
+                                                        ],
+                                                    );
+                                                    c.set_sel(selection.clone());
+                                                    c
+                                                };
+                                                let mut a = input();
+                                                let mut left = output_for(&field);
+                                                left.append_null(0);
+                                                let expected = session_read_outcome(|| {
+                                                    original.run(&old, &mut a, &mut left)
+                                                });
+                                                let label=format!("string-row/{full}/{name}/{arity}/{fi}/{shape}/{position}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                                if compare {
+                                                    let mut b = input();
+                                                    let mut right = output_for(&field);
+                                                    right.append_null(0);
+                                                    let got = session_read_outcome(|| {
+                                                        actual.run_with_tikv_batch(
+                                                            &new,
+                                                            &mut b,
+                                                            &mut right,
+                                                            &[field.clone()],
+                                                        )
+                                                    });
+                                                    if got != expected
+                                                        || right.column(0) != left.column(0)
+                                                        || new.snapshot() != old.snapshot()
+                                                    {
+                                                        eprintln!("STRING ROW DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldevents={} newevents={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                    }
+                                                    assert_eq!(got, expected, "{label}");
+                                                    assert_eq!(
+                                                        right.column(0),
+                                                        left.column(0),
+                                                        "{label}"
+                                                    );
+                                                    assert_eq!(
+                                                        new.snapshot(),
+                                                        old.snapshot(),
+                                                        "{label}"
+                                                    );
+                                                    let route = actual.batch_route_snapshot();
+                                                    if (route.fallback != 0 || route.refusals != 0)
+                                                        && gaps.len() < 20
+                                                    {
+                                                        gaps.push(format!("{label}: {route:?}"));
+                                                    }
+                                                }
+                                                for byte in format!(
+                                                    "{label}|{expected}|{:?}|{}",
+                                                    left.column(0),
+                                                    old.snapshot()
+                                                )
+                                                .bytes()
+                                                {
+                                                    hash = (hash ^ u64::from(byte))
+                                                        .wrapping_mul(0x100000001b3);
+                                                }
+                                                count += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("STRING ROW ORIGINAL full={full} {count}/{hash:016X}");
+        assert_eq!(
+            (count, hash),
+            if full {
+                (160920, 0xDCC6C0EF888189A7)
+            } else {
+                (123984, 0x4E87BDA7A984C4DD)
+            }
+        );
+        if !gaps.is_empty() {
+            eprintln!("STRING ROW SOURCE RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+#[test]
+fn string_row_batch_original_long() {
+    if isolate_common_corpus("stateful_tests::string_row_batch_original_long") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_string_row_long(false);
+}
+#[test]
+fn string_row_batch_actual_long() {
+    if isolate_common_corpus("stateful_tests::string_row_batch_actual_long") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_string_row_long(true);
+}
+fn run_string_row_long(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in ["any_value", "lower", "upper", "ifnull", "coalesce"] {
+        for arity in string_row_arities(name) {
+            let make = || {
+                suite(call(
+                    name,
+                    string_ty(),
+                    (0..arity).map(|i| parameter(i % 3, string_ty())).collect(),
+                ))
+            };
+            let original = make();
+            let actual = make();
+            for profile in [0, 2, 6, 8, 9, 10] {
+                for rows in [0usize, 1, 3, 1026, 2051] {
+                    for first in [false, true] {
+                        let values = [
+                            Datum::new_string("aÉ"),
+                            Datum::Null,
+                            Datum::new_string("selected"),
+                        ];
+                        let old = StringRowContext::new(first, values.clone(), profile);
+                        let new = StringRowContext::new(first, values, profile);
+                        for round in 0..4 {
+                            let enabled = if round % 2 == 0 { first } else { !first };
+                            old.base.enabled.set(enabled);
+                            new.base.enabled.set(enabled);
+                            let input = || {
+                                let mut c = chunk(
+                                    &[string_ty()],
+                                    &[
+                                        vec![Datum::new_string("a")],
+                                        vec![Datum::new_string("b")],
+                                        vec![Datum::Null],
+                                    ],
+                                );
+                                c.set_sel(Some((0..rows).map(|i| [2, 0, 2, 1][i % 4]).collect()));
+                                c
+                            };
+                            let mut a = input();
+                            let mut left = output_for(&string_ty());
+                            left.append_null(0);
+                            let expected =
+                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let label=format!("string-row-long/{name}/{arity}/{profile}/{rows}/{first}/{round}/{enabled}");
+                            if compare {
+                                let mut b = input();
+                                let mut right = output_for(&string_ty());
+                                right.append_null(0);
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(
+                                        &new,
+                                        &mut b,
+                                        &mut right,
+                                        &[string_ty()],
+                                    )
+                                });
+                                if got != expected
+                                    || left.column(0) != right.column(0)
+                                    || old.snapshot() != new.snapshot()
+                                {
+                                    eprintln!("STRING ROW LONG DIFFERENCE {label} old={expected:?} new={got:?} oldrows={} newrows={} oldevents={} newevents={}",left.num_rows(),right.num_rows(),old.snapshot(),new.snapshot());
+                                }
+                                assert_eq!(got, expected, "{label}");
+                                assert_eq!(right.column(0), left.column(0), "{label}");
+                                assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                let route = actual.batch_route_snapshot();
+                                assert_eq!(
+                                    (route.fallback, route.refusals),
+                                    (0, 0),
+                                    "{label}: {route:?}"
+                                );
+                            }
+                            for byte in format!(
+                                "{label}|{expected}|{:?}|{}",
+                                left.column(0),
+                                old.snapshot()
+                            )
+                            .bytes()
+                            {
+                                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("STRING ROW LONG ORIGINAL {count}/{hash:016X}");
+    assert_eq!((count, hash), (2400, 0x523058AAC5E4A519));
+}
+
+#[test]
+fn string_row_batch_same_cap_recovery_and_template_guards() {
+    for name in ["any_value", "lower", "upper", "ifnull", "coalesce"] {
+        let arity = if name == "ifnull" {
+            2
+        } else if name == "coalesce" {
+            3
+        } else {
+            1
+        };
+        let make = || {
+            call(
+                name,
+                string_ty(),
+                (0..arity).map(|i| parameter(i, string_ty())).collect(),
+            )
+        };
+        assert!(native_string_row_batch(&make()));
+        let mut missing = make();
+        erase_optional_call_declarations(&mut missing, 2);
+        assert!(!native_string_row_batch(&missing));
+        let mut deferred = make();
+        let Expression::ScalarFunction(f) = &mut deferred else {
+            unreachable!()
+        };
+        let Expression::Constant(c) = &mut f.args[0] else {
+            unreachable!()
+        };
+        c.deferred_expr = Some(Box::new(parameter(0, string_ty())));
+        assert!(!native_string_row_batch(&deferred));
+        let literal_only = call(
+            name,
+            string_ty(),
+            (0..arity)
+                .map(|_| literal(Datum::new_string("constant"), string_ty()))
+                .collect(),
+        );
+        assert!(!native_string_row_batch(&literal_only));
+        let owner = suite(make());
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &[ty()],
+            true,
+            919,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+        .unwrap();
+        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+        let mut ctx = StringRowContext::new(
+            true,
+            [
+                Datum::new_string("X".repeat(32768)),
+                Datum::Null,
+                Datum::new_string("selected"),
+            ],
+            0,
+        );
+        let input = || {
+            chunk(
+                &[ty()],
+                &[
+                    vec![Datum::Int(0)],
+                    vec![Datum::Int(1)],
+                    vec![Datum::Int(2)],
+                ],
+            )
+        };
+        let mut first = input();
+        let mut output = output_for(&string_ty());
+        output.append_null(0);
+        let error = prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut first,
+                &mut output,
+                &[ty()],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
+            "{name}: {error:?}"
+        );
+        assert_eq!(output.num_rows(), 1);
+        ctx.base.values[0] = Datum::Null;
+        ctx.base.enabled.set(false);
+        ctx.base.events.borrow_mut().clear();
+        for n in &ctx.base.reads {
+            n.set(0);
+        }
+        let old = StringRowContext::new(false, ctx.base.values.clone(), 0);
+        let mut a = input();
+        let mut left = output_for(&string_ty());
+        left.append_null(0);
+        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let mut b = input();
+        let mut right = output_for(&string_ty());
+        right.append_null(0);
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut b,
+                    &mut right,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected, "{name}");
+        assert_eq!(right.column(0), left.column(0), "{name}");
+        assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
+        assert_eq!(
+            prepared.workers[0].max_materialization_retained_bytes,
+            16 * 1024
+        );
+    }
+}
