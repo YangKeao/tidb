@@ -130,6 +130,7 @@ impl NativeBatchHosts<'_> {
             output_node,
             output_role,
             overflow_expression,
+            protobuf_owner,
         }) = metadata.get(slot.index())
         else {
             return Err(binding("unary window result descriptor missing"));
@@ -205,6 +206,34 @@ impl NativeBatchHosts<'_> {
                         Ok(bits) => bits,
                         Err(error) => return self.native_failure(error),
                     };
+                    // The original ABS skips its Ready operation for NULL, but
+                    // observes an earlier unwind/reentry before a real value.
+                    if *protobuf_owner && bits.is_some() {
+                        let cache = self.context.ready_value_cache();
+                        // The getter is a user callback. Authenticate the real
+                        // source capability again before using detached data.
+                        let ScalarValueRef::Bytes(Some(token)) =
+                            reply.values.get_scalar_ref(position)
+                        else {
+                            return Err(binding("unary scope source is not a native capability"));
+                        };
+                        store.borrow().get(
+                            token,
+                            NativeValueRole::CharInput,
+                            NativeValueOrigin {
+                                node: *argument_node,
+                                row: InputRow {
+                                    occurrence: start + position,
+                                    input_row,
+                                },
+                            },
+                        )?;
+                        if let Some(cache) = cache {
+                            if let Err(error) = cache.original_scope_status() {
+                                return self.native_failure(error);
+                            }
+                        }
+                    }
                     let result = match tidb_query_expr::impl_math::native_abs_int_value(bits) {
                         Ok(value) => value,
                         Err(_) => {

@@ -31255,6 +31255,7 @@ fn abs_context_window_diagnostic_authenticates_real_text_scope_and_terminal_resu
     .unwrap();
     let slot = catalog.slot(0).unwrap();
     let metadata = [NativeHostMetadata::UnaryWindow {
+        protobuf_owner: false,
         operation: SqlBatchHostOperation::AbsIntWindowNative,
         result_type: ty(),
         source_type: ty(),

@@ -703,8 +703,8 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
         1 << 20
     )
     .is_err());
-    // These are explicit remaining root gaps, not native equivalence cases.
-    // Their original enabled batch bodies can override scalar PB dispatch.
+    // The arithmetic root remains an explicit gap. The three unary roots now
+    // retain both their original bulk body and scalar PB dispatch.
     for (name, arity, result) in [
         ("plus", 2, 8),
         ("abs", 1, 8),
@@ -750,7 +750,7 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
             let route = actual.batch_route_snapshot();
             assert_eq!(
                 (route.prepared, route.fallback, route.refusals),
-                (0, 1, 1),
+                if name == "plus" { (0, 1, 1) } else { (1, 0, 0) },
                 "{name}/{enabled}/{route:?}"
             );
         }
@@ -902,3 +902,6 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
 
 #[path = "batch_pb_result_tests.rs"]
 mod result_tests;
+
+#[path = "batch_pb_unary_tests.rs"]
+mod unary_tests;

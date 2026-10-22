@@ -383,6 +383,7 @@ pub(super) enum NativeHostMetadata {
     },
     UnaryWindow {
         operation: SqlBatchHostOperation,
+        protobuf_owner: bool,
         result_type: FieldType,
         source_type: FieldType,
         source: WindowArithmeticSource,

@@ -114,6 +114,7 @@ fn run_case(
     };
     let function = ScalarFunction::new(CiString::new(name), target.clone(), vec![argument]);
     let metadata = [NativeHostMetadata::UnaryWindow {
+        protobuf_owner: false,
         operation,
         result_type: target.clone(),
         source_type: source.clone(),
@@ -541,6 +542,7 @@ fn unary_json_admission_and_wide_decimal_work_refuse_before_context_or_formattin
         let target = FieldType::new(FieldTypeCode::Json).with_flags(FieldTypeFlags::PARSE_TO_JSON);
         let operation = SqlBatchHostOperation::CastJsonWindowNative;
         let metadata = [NativeHostMetadata::UnaryWindow {
+            protobuf_owner: false,
             operation,
             result_type: target,
             source_type: source.clone(),

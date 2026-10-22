@@ -8165,4 +8165,153 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn protobuf_unary_aliases_keep_actual_projection_bulk_and_scalar_results() {
+        use tidb_proto::tipb as wire;
+        let integer = longlong();
+        for (name, code, result) in [
+            ("abs", 8, 8),
+            ("cast_decimal", 8, 246),
+            ("cast_json", 253, 245),
+        ] {
+            for unsigned in [false, true] {
+                let source_type = wire::FieldType {
+                    tp: Some(code),
+                    flag: Some(if unsigned { 32 } else { 0 }),
+                    flen: Some(if code == 8 { 20 } else { 128 }),
+                    decimal: Some(if code == 8 { 0 } else { -1 }),
+                    charset: Some("utf8mb4".into()),
+                    collate: Some(-46),
+                    ..Default::default()
+                };
+                let result_type = wire::FieldType {
+                    tp: Some(result),
+                    flen: Some(if result == 246 {
+                        65
+                    } else if result == 8 {
+                        20
+                    } else {
+                        128
+                    }),
+                    decimal: Some(if result == 246 {
+                        5
+                    } else if result == 8 {
+                        0
+                    } else {
+                        -1
+                    }),
+                    ..source_type.clone()
+                };
+                let target = tidb_expr::distsql_builtin::pb_type_to_field_type(&result_type);
+                let pb = wire::Expr {
+                    tp: Some(wire::ExprType::ScalarFunc as i32),
+                    sig: Some(wire::ScalarFuncSig::RegexpLikeSig as i32),
+                    children: vec![wire::Expr {
+                        tp: Some(wire::ExprType::Bytes as i32),
+                        val: Some(b"stored".to_vec()),
+                        field_type: Some(source_type),
+                        ..Default::default()
+                    }],
+                    field_type: Some(result_type),
+                    ..Default::default()
+                };
+                let mut root = tidb_expr::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                let Expression::ScalarFunction(f) = &mut root else {
+                    unreachable!()
+                };
+                f.func_name = CiString::new(name);
+                let Expression::Constant(c) = &mut f.args[0] else {
+                    unreachable!()
+                };
+                c.param_marker = Some(tidb_expr::constant::ParamMarker { order: 0 });
+                for value in [Datum::Null, Datum::Int(4), Datum::Int(-4)] {
+                    for enabled in [false, true] {
+                        for rows in [0usize, 3, 2051] {
+                            let context = || {
+                                crate::StmtContext::for_query()
+                                    .with_enable_vectorized_expression(enabled)
+                                    .with_prepared_params(vec![value.clone()].into())
+                            };
+                            let reference = context();
+                            let original = EvaluatorSuite::new(vec![root.clone()], false);
+                            assert!(original.vectorizable());
+                            let mut input = Chunk::new_with_capacity(
+                                &[integer.clone(), integer.clone()],
+                                rows.max(1),
+                            );
+                            for row in 0..rows {
+                                input.append_int64(0, row as i64);
+                                input.append_int64(1, (row * 2) as i64);
+                            }
+                            let mut expected =
+                                Chunk::new_with_capacity(&[target.clone()], rows.max(1));
+                            let result = original
+                                .run(&reference, &mut input, &mut expected)
+                                .map_err(|e| match e {
+                                    EvaluatorError::Eval(e) => format!("{e:?}"),
+                                    other => panic!("unexpected reference {other:?}"),
+                                });
+                            let warnings = reference.take_warnings();
+                            let mut collected =
+                                Chunk::new_with_capacity(&[target.clone()], rows.max(1));
+                            collected.append_range_from(&expected, 0, expected.num_rows());
+                            let expected = collected;
+                            for workers in [0, 2] {
+                                let context = context();
+                                let (source, _) = NumberSource::new(rows as i64, 137);
+                                let schema = Schema::new(vec![Column::new(1, target.clone())]);
+                                let mut projection = ProjectionExec::new(
+                                    ExecutorMeta::new(schema, 1, 137, 1024),
+                                    vec![root.clone()],
+                                    source,
+                                    context.clone(),
+                                )
+                                .with_workers(workers);
+                                projection.open().unwrap();
+                                let mut got =
+                                    Chunk::new_with_capacity(&[target.clone()], rows.max(1));
+                                let actual = loop {
+                                    let mut output = projection.new_chunk();
+                                    if let Err(e) = projection.next(&mut output) {
+                                        break Err(match e {
+                                            ExecError::Eval(e) => format!("{e:?}"),
+                                            other => panic!("unexpected executor {other:?}"),
+                                        });
+                                    }
+                                    if output.num_rows() == 0 {
+                                        break Ok(());
+                                    }
+                                    got.append_range_from(&output, 0, output.num_rows());
+                                };
+                                assert_eq!(
+                                    actual, result,
+                                    "{name}/{unsigned}/{value:?}/{enabled}/{rows}/{workers}"
+                                );
+                                assert_eq!(
+                                    got.column(0),
+                                    expected.column(0),
+                                    "{name}/{unsigned}/{value:?}/{enabled}/{rows}/{workers}"
+                                );
+                                assert_eq!(
+                                    context.take_warnings(),
+                                    warnings,
+                                    "warnings {name}/{enabled}/{rows}/{workers}"
+                                );
+                                if workers == 0 && rows > 0 {
+                                    let route = projection.evaluator_suite.batch_route_snapshot();
+                                    assert!(route.prepared > 0);
+                                    assert_eq!(
+                                        (route.refusals, route.fallback),
+                                        (0, 0),
+                                        "{route:?}"
+                                    );
+                                }
+                                projection.close().unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

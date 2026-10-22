@@ -2246,6 +2246,21 @@ fn pb_regexp_legacy_bulk(root: &Expression) -> bool {
         && (matches!(function.func_name.lowercase(),"abs"|"cast_json"|"cast_decimal") || native_arithmetic_operation(function.func_name.lowercase()).is_some())
         && crate::scalar_function::static_batch_target(root).is_some())
 }
+// A real bulk consumer can select the old unary batch body even though the
+// same PB expression has a scalar arity header. Retain both actual profiles.
+fn pb_regexp_unary_view(function: &ScalarFunction, view: NativeView) -> bool {
+    pb_regexp_owner(function) && window_unary_operation(function, view).is_some()
+}
+fn pb_regexp_unary_batch(root: &Expression) -> Option<NativeEvalType> {
+    let Expression::ScalarFunction(function) = root else {
+        return None;
+    };
+    if !pb_regexp_owner(function) {
+        return None;
+    }
+    let target = crate::scalar_function::static_batch_target(root)?;
+    pb_regexp_unary_view(function, NativeView::BulkRoot(target)).then_some(target)
+}
 fn pb_regexp_row_batch(root: &Expression) -> bool {
     matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function)
         && !function.has_values_offset() && !function.has_grouping_metadata()
@@ -2551,6 +2566,14 @@ fn resolve_call_in_view(
     function: &ScalarFunction,
     view: NativeView,
 ) -> Result<(CallTarget, usize)> {
+    if pb_regexp_unary_view(function, view) {
+        return Ok((
+            CallTarget::Host(
+                window_unary_operation(function, view).expect("actual unary bulk consumer"),
+            ),
+            1,
+        ));
+    }
     if view.value_role().is_some() && native_regexp_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
@@ -3713,6 +3736,7 @@ fn preflight_view<'a>(
         if let Expression::ScalarFunction(function) = node {
             if let Some(kind) =
                 crate::scalar_function::header_value::HeaderKind::for_function(function)
+                    .filter(|_| !pb_regexp_unary_view(function, view))
             {
                 if view.value_role().is_none() {
                     return Err(BatchFailure::admission(
@@ -4608,7 +4632,8 @@ fn preflight_view<'a>(
                 function.func_name.lowercase(),
                 function.args.len(),
             );
-            let header = native_no_argument_header_call(function);
+            let header = native_no_argument_header_call(function)
+                && !pb_regexp_unary_view(function, checked[index].view);
             if header {
                 folds_to_constant = crate::constant_fold::folds_to_constant(checked[index].node);
                 if !function.args.is_empty() {
@@ -5136,7 +5161,7 @@ fn lower_view_policy(
         && matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
     {
         profile_shape(root, limits)?;
-        if pb_regexp_legacy_bulk(root) {
+        if pb_regexp_legacy_bulk(root) && pb_regexp_unary_batch(root).is_none() {
             return Err(BatchFailure::admission(
                 "PB regexp legacy bulk display profile remains outside this closure",
             ));
@@ -6361,6 +6386,7 @@ fn lower_view_policy(
                                 }
                                 NativeHostMetadata::UnaryWindow {
                                     operation,
+                                    protobuf_owner: pb_regexp_owner(sql),
                                     result_type: snapshot_field_type(item.declared_sql()),
                                     source_type: snapshot_field_type(child.declared_sql()),
                                     source,
@@ -6930,6 +6956,15 @@ impl PreparedBatch {
         } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
             && {
                 profile_shape(root, source_limits)?;
+                pb_regexp_unary_batch(root).is_some()
+            }
+        {
+            Some(NativeView::BulkRoot(
+                pb_regexp_unary_batch(root).expect("actual unary batch candidate"),
+            ))
+        } else if matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+            && {
+                profile_shape(root, source_limits)?;
                 pb_regexp_integer_batch(root)
             }
         {
@@ -7216,15 +7251,26 @@ impl PreparedBatch {
             .into());
         }
         let count = input.num_rows();
-        self.selection.clear();
-        reserve(&mut self.selection, count)?;
+        if input
+            .sel()
+            .is_some_and(|selected| selected.iter().any(|row| *row >= physical))
+        {
+            return Err(
+                LocalError::InvalidBatch("batch selection exceeds physical rows".into()).into(),
+            );
+        }
+        // Refusal must not retain an oversized allocation that prevents later
+        // small invocations from recovering under the same materialization cap.
+        self.accept_retained(array_bytes::<usize>(count.max(self.selection.capacity()))?)?;
+        if count > self.selection.capacity() {
+            let mut next = Vec::new();
+            reserve(&mut next, count)?;
+            self.accept_retained(array_bytes::<usize>(next.capacity())?)?;
+            self.selection = next;
+        } else {
+            self.selection.clear();
+        }
         if let Some(selected) = input.sel() {
-            if selected.iter().any(|row| *row >= physical) {
-                return Err(LocalError::InvalidBatch(
-                    "batch selection exceeds physical rows".into(),
-                )
-                .into());
-            }
             self.selection.extend_from_slice(selected);
         } else {
             self.selection.extend(0..physical);
@@ -8552,20 +8598,24 @@ impl PreparedBatchSuite {
         Ok(Self {
             owner: Arc::clone(&suite.program),
             bind_ready_cache: workers.iter().any(|worker| {
-                worker.source.host_metadata.iter().any(|meta| {
-                    matches!(
-                        meta,
-                        NativeHostMetadata::WeightString(_)
-                            | NativeHostMetadata::Regexp(_)
-                            | NativeHostMetadata::RegexpValues(_)
-                    ) || matches!(
+                std::iter::once(worker.source.as_ref())
+                    .chain(worker.row_profile.iter().map(|row| row.source.as_ref()))
+                    .any(|source| {
+                        source.host_metadata.iter().any(|meta| {
+                            matches!(
+                                meta,
+                                NativeHostMetadata::WeightString(_)
+                                    | NativeHostMetadata::Regexp(_)
+                                    | NativeHostMetadata::RegexpValues(_)
+                            ) || matches!(
                         meta,
                         NativeHostMetadata::HeaderOutcome {
                             kind: crate::scalar_function::header_value::HeaderKind::PbRegexpArity,
                             ..
                         }
                     )
-                })
+                        })
+                    })
             }) || suite.program.calculated.iter().any(native_string_row_batch),
             workers,
             schema: schema.into_boxed_slice(),
