@@ -5731,3 +5731,670 @@ fn arithmetic_missing_argument_late_real_div_type_failure_keeps_long_reuse_and_f
     }
     assert_eq!(count, 48);
 }
+
+#[test]
+fn optional_membership_original_phases() {
+    if isolate_common_corpus("stateful_tests::optional_membership_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_membership_phases(false);
+}
+#[test]
+fn optional_membership_actual_phases() {
+    if isolate_common_corpus("stateful_tests::optional_membership_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_membership_phases(true);
+}
+fn run_optional_membership_phases(compare: bool) {
+    let values = [
+        [Datum::Null, Datum::new_string("selected")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+        [Datum::UInt(u64::MAX), Datum::Int(-1)],
+        [
+            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![
+                128, 0, 0, 0, 0, 0, 0, 1,
+            ])),
+            Datum::Int(1),
+        ],
+    ];
+    run_optional_control_matrix(
+        compare,
+        &["in", "interval", "greatest", "least"],
+        &values,
+        "optional-membership",
+        "OPTIONAL MEMBERSHIP",
+        Some((138240, 0x6D23E22B6F5BBE49)),
+    );
+}
+
+#[test]
+fn optional_membership_original_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::optional_membership_original_all_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_membership_all_actual_values(false);
+}
+#[test]
+fn optional_membership_actual_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::optional_membership_actual_all_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_membership_all_actual_values(true);
+}
+fn run_optional_membership_all_actual_values(compare: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            string_ty(),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+            FieldType::new(FieldTypeCode::Json),
+        ];
+        let mut gaps = vec![];
+        let mut bounded_resources = 0usize;
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in ["in", "interval", "greatest", "least"] {
+            for (fi, field) in fields.iter().enumerate() {
+                for arity in [2, 4] {
+                    for mask in [0, 1, 2, 4, 7] {
+                        for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                            .into_iter()
+                            .enumerate()
+                        {
+                            for position in 0..2 {
+                                let mut values = [Datum::Int(2), Datum::Int(3)];
+                                values[position] = value.clone();
+                                for enabled in [false, true] {
+                                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                        let make = || {
+                                            let args = (0..arity)
+                                                .map(|i| {
+                                                    if i < 2 {
+                                                        parameter(i, field.clone())
+                                                    } else {
+                                                        literal(
+                                                            if i == 2 {
+                                                                Datum::Null
+                                                            } else {
+                                                                Datum::Int(10)
+                                                            },
+                                                            field.clone(),
+                                                        )
+                                                    }
+                                                })
+                                                .collect();
+                                            let mut e = call(name, field.clone(), args);
+                                            erase_optional_call_declarations(&mut e, mask);
+                                            suite(e)
+                                        };
+                                        let old_owner = make();
+                                        let new_owner = make();
+                                        let old = C::new(0, enabled, values.clone());
+                                        let new = C::new(0, enabled, values.clone());
+                                        for reuse in 0..2 {
+                                            let input = || {
+                                                let mut c = chunk(
+                                                    &[ty()],
+                                                    &[
+                                                        vec![Datum::Int(1)],
+                                                        vec![Datum::Int(2)],
+                                                        vec![Datum::Int(3)],
+                                                    ],
+                                                );
+                                                c.set_sel(selection.clone());
+                                                c
+                                            };
+                                            let mut a = input();
+                                            let mut left = output_for(field);
+                                            left.append_null(0);
+                                            let expected = session_read_outcome(|| {
+                                                old_owner.run(&old, &mut a, &mut left)
+                                            });
+                                            let label=format!("membership-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
+                                            if compare {
+                                                let mut b = input();
+                                                let mut right = output_for(field);
+                                                right.append_null(0);
+                                                let got = session_read_outcome(|| {
+                                                    new_owner.run_with_tikv_batch(
+                                                        &new,
+                                                        &mut b,
+                                                        &mut right,
+                                                        &[ty()],
+                                                    )
+                                                });
+                                                if got.contains("class: ResourceLimit") {
+                                                    assert_eq!(vi,110,"unexpected resource refusal {label}: {got}");
+                                                    assert!(selection
+                                                        .as_ref()
+                                                        .is_none_or(|s| !s.is_empty()));
+                                                    assert_eq!(
+                                                        right.num_rows(),
+                                                        1,
+                                                        "resource output {label}"
+                                                    );
+                                                    let route = new_owner.batch_route_snapshot();
+                                                    assert_eq!(
+                                                        (route.fallback, route.refusals),
+                                                        (0, 0),
+                                                        "{label}: {route:?}"
+                                                    );
+                                                    bounded_resources += 1;
+                                                } else {
+                                                    if got != expected
+                                                        || right.column(0) != left.column(0)
+                                                        || new.snapshot() != old.snapshot()
+                                                    {
+                                                        eprintln!("MEMBERSHIP FULL DIFFERENCE {label} old={expected} new={got} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                    }
+                                                    assert_eq!(got, expected, "{label}");
+                                                    assert_eq!(
+                                                        right.column(0),
+                                                        left.column(0),
+                                                        "{label}"
+                                                    );
+                                                    assert_eq!(
+                                                        new.snapshot(),
+                                                        old.snapshot(),
+                                                        "{label}"
+                                                    );
+                                                    let route = new_owner.batch_route_snapshot();
+                                                    if (route.fallback != 0 || route.refusals != 0)
+                                                        && gaps.len() < 20
+                                                    {
+                                                        gaps.push(format!("{label}: {route:?}"));
+                                                    }
+                                                }
+                                            }
+                                            for b in format!(
+                                                "{label}|{expected}|{:?}|{}",
+                                                left.column(0),
+                                                old.snapshot()
+                                            )
+                                            .bytes()
+                                            {
+                                                hash = (hash ^ u64::from(b))
+                                                    .wrapping_mul(0x100000001b3);
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("OPTIONAL MEMBERSHIP FULL ORIGINAL {count}/{hash:016X}");
+        eprintln!("MEMBERSHIP FULL BOUNDED RESOURCES {bounded_resources}");
+        assert_eq!(bounded_resources, if compare { 2720 } else { 0 });
+        assert_eq!((count, hash), (1144320, 0x0926C1DF1FCFFBE1));
+        if !gaps.is_empty() {
+            eprintln!("MEMBERSHIP FULL ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+#[test]
+fn optional_membership_original_raw_datums() {
+    if isolate_common_corpus("stateful_tests::optional_membership_original_raw_datums") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_membership_raw_datums(false);
+}
+
+#[test]
+fn optional_membership_actual_raw_datums() {
+    if isolate_common_corpus("stateful_tests::optional_membership_actual_raw_datums") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_membership_raw_datums(true);
+}
+
+fn run_optional_membership_raw_datums(compare: bool) {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, HostStep};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        let mut bounded_resources = 0usize;
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            string_ty(),
+        ];
+        for name in ["in", "interval", "greatest", "least"] {
+            for (fi, field) in fields.iter().enumerate() {
+                for mask in [0u8, 1, 2, 4, 7] {
+                    for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        for position in 0..2 {
+                            let mut values = [Datum::Int(2), Datum::Int(3)];
+                            values[position] = value.clone();
+                            let mut function = ScalarFunction::new(
+                                CiString::new(name),
+                                field.clone(),
+                                values
+                                    .iter()
+                                    .map(|v| literal(v.clone(), field.clone()))
+                                    .collect(),
+                            );
+                            if mask & 1 != 0 {
+                                function.ret_type = None;
+                            }
+                            for (i, arg) in function.args.iter_mut().enumerate() {
+                                if mask & (2 << i) != 0 {
+                                    let Expression::Constant(c) = arg else {
+                                        unreachable!()
+                                    };
+                                    c.ret_type = None;
+                                }
+                            }
+                            function.prepare_in_string_hash_set();
+                            let mut input = Chunk::new_with_capacity(&[], 1);
+                            input.set_num_virtual_rows(1);
+                            let old = C::new(0, false, values.clone());
+                            let expected = session_read_outcome(|| {
+                                function
+                                    .eval(&old, input.get_row(0))
+                                    .map(|v| leaf::frame(&v))
+                            });
+                            let label =
+                                format!("membership-raw/{name}/{fi}/mask{mask}/{vi}/{position}");
+                            if compare {
+                                let actual = suite(Expression::ScalarFunction(function.clone()));
+                                let preparation =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        PreparedBatch::compile_calculation_profile(
+                                            &actual,
+                                            0,
+                                            &[],
+                                            true,
+                                            319,
+                                            limits(),
+                                            ExecutionLimits::default(),
+                                            1 << 24,
+                                            true,
+                                        )
+                                    }));
+                                let preparation = match preparation {
+                                    Ok(result) => result,
+                                    Err(payload) => {
+                                        eprintln!("MEMBERSHIP RAW COMPILE PANIC {label}");
+                                        std::panic::resume_unwind(payload)
+                                    }
+                                };
+                                match preparation {
+                                    Err(error) => {
+                                        if error.refusal() == BatchRefusal::Resource {
+                                            assert_eq!(vi,110,"unexpected preparation resource {label}: {error:?}");
+                                            bounded_resources += 1;
+                                        } else if gaps.len() < 20 {
+                                            gaps.push(format!("{label}:{error:?}"));
+                                        }
+                                    }
+                                    Ok(compiled) => {
+                                        let source = &compiled.source;
+                                        if source.host_metadata.len() != 1 {
+                                            eprintln!(
+                                                "MEMBERSHIP RAW CATALOG {label}: {} hosts",
+                                                source.host_metadata.len()
+                                            );
+                                        }
+                                        assert_eq!(source.host_metadata.len(), 1);
+                                        let new = C::new(0, false, values.clone());
+                                        let store =
+                                            RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                        store.borrow_mut().begin_window().unwrap();
+                                        let catalog = source.hosts.as_ref().unwrap().clone();
+                                        let mut hosts = NativeBatchHosts::new(
+                                            catalog.clone(),
+                                            &source.host_metadata,
+                                            &new,
+                                            1 << 24,
+                                        )
+                                        .with_native_values(Some(&store))
+                                        .with_constant_probes(&source.host_probes)
+                                        .with_numeric_parents(
+                                            source
+                                                .context_policy
+                                                .as_deref()
+                                                .map_or(&[], |policy| {
+                                                    policy.numeric_parents.as_ref()
+                                                }),
+                                        )
+                                        .unwrap_or_else(|error| {
+                                            eprintln!("MEMBERSHIP RAW PARENT {label}: {error:?}");
+                                            panic!("numeric parent rejected")
+                                        });
+                                        let slot = catalog.slot(0).unwrap();
+                                        let signature = catalog.signature(slot).unwrap();
+                                        let row = InputRow {
+                                            occurrence: 19,
+                                            input_row: 0,
+                                        };
+                                        let mut eval = EvalContext::default();
+                                        let got = session_read_outcome(
+                                            || -> std::result::Result<String, EvalError> {
+                                                let HostStart::Pending { task, mut request } =
+                                                    hosts
+                                                        .start(
+                                                            &mut eval,
+                                                            HostInvocation {
+                                                                slot,
+                                                                row,
+                                                                arg_types: &signature.arg_types,
+                                                                return_type: &signature.return_type,
+                                                            },
+                                                        )
+                                                        .unwrap()
+                                                else {
+                                                    panic!(
+                                                        "arithmetic must demand actual arguments"
+                                                    )
+                                                };
+                                                for _ in 0..8 {
+                                                    assert!(request.index < 2);
+                                                    let node = match &source.host_metadata[0] {
+                                                        NativeHostMetadata::In(metadata) => {
+                                                            metadata.arguments[request.index].node
+                                                        }
+                                                        NativeHostMetadata::Interval(metadata) => {
+                                                            metadata.arguments[request.index].node
+                                                        }
+                                                        NativeHostMetadata::Extremum(metadata) => {
+                                                            metadata.arguments[request.index]
+                                                        }
+                                                        _ => panic!("original arithmetic metadata"),
+                                                    };
+                                                    let token = store
+                                                        .borrow_mut()
+                                                        .insert_clone(
+                                                            &values[request.index],
+                                                            NativeValueRole::CharInput,
+                                                            NativeValueOrigin { node, row },
+                                                        )
+                                                        .unwrap();
+                                                    let fetched = VectorValue::from_scalar(
+                                                        &ScalarValue::Bytes(Some(token)),
+                                                        1,
+                                                    );
+                                                    match hosts.resume(
+                                                        &mut eval,
+                                                        &task,
+                                                        HostArgReply {
+                                                            index: request.index,
+                                                            field_type: &signature.arg_types
+                                                                [request.index],
+                                                            values: &fetched,
+                                                        },
+                                                    ) {
+                                                        Ok(HostStep::NeedArg(next)) => {
+                                                            request = next
+                                                        }
+                                                        Ok(HostStep::Ready(output)) => {
+                                                            let ScalarValueRef::Bytes(Some(token)) =
+                                                                output.get_scalar_ref(0)
+                                                            else {
+                                                                panic!("native arithmetic token")
+                                                            };
+                                                            let value = store.borrow();
+                                                            return Ok(leaf::frame(
+                                                                value
+                                                                    .get(
+                                                                        token,
+                                                                        NativeValueRole::Output,
+                                                                        NativeValueOrigin {
+                                                                            node: 0,
+                                                                            row,
+                                                                        },
+                                                                    )
+                                                                    .unwrap(),
+                                                            ));
+                                                        }
+                                                        Ok(HostStep::NeedArgRow { .. }) => panic!(
+                                                        "row arithmetic cannot request another row"
+                                                    ),
+                                                        Err(error) => {
+                                                            if matches!(
+                                                                error,
+                                                                LocalError::ResourceLimit(_)
+                                                            ) {
+                                                                return Err(EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(error,None)));
+                                                            }
+                                                            return Err(hosts
+                                                                .take_native_error()
+                                                                .unwrap_or_else(|| {
+                                                                    panic!(
+                                                                "unexpected host failure {error:?}"
+                                                            )
+                                                                }));
+                                                        }
+                                                    }
+                                                }
+                                                panic!("arithmetic demand did not terminate")
+                                            },
+                                        );
+                                        if got.contains("class: ResourceLimit") {
+                                            assert_eq!(
+                                                vi, 110,
+                                                "unexpected direct resource {label}: {got}"
+                                            );
+                                            bounded_resources += 1;
+                                        } else {
+                                            if got != expected || new.snapshot() != old.snapshot() {
+                                                eprintln!("MEMBERSHIP RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                        }
+                                    }
+                                }
+                            }
+                            for byte in format!("{label}|{expected}|{}", old.snapshot()).bytes() {
+                                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("MEMBERSHIP RAW FINAL {compare} {count}/{hash:016X}");
+        assert_eq!(count, 29800);
+        assert_eq!(hash, 0x0BBCF87024DEBD9F);
+        eprintln!("MEMBERSHIP RAW BOUNDED RESOURCES {bounded_resources}");
+        assert_eq!(bounded_resources, if compare { 79 } else { 0 });
+        eprintln!("MEMBERSHIP RAW ORIGINAL {count}/{hash:016X}");
+        if !gaps.is_empty() {
+            eprintln!("MEMBERSHIP RAW ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+
+#[test]
+fn optional_membership_resource_failure_keeps_same_owner_reusable() {
+    for name in ["in", "interval", "greatest", "least"] {
+        let mut root = call(
+            name,
+            ty(),
+            vec![
+                parameter(0, string_ty()),
+                literal(Datum::Int(1), string_ty()),
+            ],
+        );
+        erase_optional_call_declarations(&mut root, 7);
+        let owner = suite(root);
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &[ty()],
+            true,
+            919,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+        .unwrap();
+        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+        let mut ctx = C::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
+        );
+        let input = || {
+            chunk(
+                &[ty()],
+                &[
+                    vec![Datum::Int(0)],
+                    vec![Datum::Int(1)],
+                    vec![Datum::Int(2)],
+                ],
+            )
+        };
+        let mut first = input();
+        let mut output = output_for(&ty());
+        output.append_null(0);
+        let error = prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut first,
+                &mut output,
+                &[ty()],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
+            "{name}: {error:?}"
+        );
+        assert_eq!(output.num_rows(), 1);
+        ctx.values[0] = Datum::Null;
+        ctx.enabled = false;
+        ctx.events.borrow_mut().clear();
+        for r in &ctx.reads {
+            r.set(0);
+        }
+        let old = C::new(0, false, [Datum::Null, Datum::Int(1)]);
+        let mut a = input();
+        let mut expected = output_for(&ty());
+        expected.append_null(0);
+        owner.run(&old, &mut a, &mut expected).unwrap();
+        let mut b = input();
+        let mut got = output_for(&ty());
+        got.append_null(0);
+        prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut b,
+                &mut got,
+                &[ty()],
+            )
+            .unwrap();
+        assert_eq!(got.column(0), expected.column(0), "{name}");
+        assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
+        assert_eq!(
+            prepared.workers[0].max_materialization_retained_bytes,
+            16 * 1024
+        );
+    }
+}
+
+#[test]
+fn optional_membership_long_late_errors_recover_across_flags() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_membership_long_late_errors_recover_across_flags",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut count = 0;
+    for name in ["in", "interval", "greatest", "least"] {
+        for mask in [0, 1, 2, 4, 7] {
+            for rows in [0usize, 3, 2051] {
+                let make = || {
+                    let mut e = call(name, ty(), vec![parameter(0, ty()), parameter(1, ty())]);
+                    erase_optional_call_declarations(&mut e, mask);
+                    suite(e)
+                };
+                let original = make();
+                let actual = make();
+                let mut old = C::new(4, true, [Datum::Int(10), Datum::Int(3)]);
+                let mut new = C::new(4, true, [Datum::Int(10), Datum::Int(3)]);
+                for (round, enabled) in [true, false, true, false].into_iter().enumerate() {
+                    old.enabled = enabled;
+                    new.enabled = enabled;
+                    old.profile = if round == 0 { 4 } else { 0 };
+                    new.profile = old.profile;
+                    let input = || {
+                        let mut c = chunk(
+                            &[ty()],
+                            &[
+                                vec![Datum::Int(0)],
+                                vec![Datum::Int(1)],
+                                vec![Datum::Int(2)],
+                            ],
+                        );
+                        c.set_sel(Some((0..rows).map(|i| [2, 0, 2][i % 3]).collect()));
+                        c
+                    };
+                    let mut a = input();
+                    let mut left = output_for(&ty());
+                    left.append_null(0);
+                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let mut b = input();
+                    let mut right = output_for(&ty());
+                    right.append_null(0);
+                    let got = session_read_outcome(|| {
+                        actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                    });
+                    let label = format!("{name}/mask{mask}/rows{rows}/round{round}");
+                    assert_eq!(got, expected, "{label}");
+                    assert_eq!(right.column(0), left.column(0), "{label}");
+                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                    let route = actual.batch_route_snapshot();
+                    assert_eq!(
+                        (route.fallback, route.refusals),
+                        (0, 0),
+                        "{label}: {route:?}"
+                    );
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(count, 240);
+    eprintln!("MEMBERSHIP LONG REUSE {count}");
+}

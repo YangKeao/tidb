@@ -10433,7 +10433,7 @@ fn native_in_handles_resource_failure_cancellation_and_reuse_are_terminal() {
                 .into_iter()
                 .map(|node| hosts::NativeInArgument {
                     node,
-                    field: domain.clone(),
+                    field: Some(domain.clone()),
                     facts: crate::ops::OperandFacts {
                         eval_type: Some(domain.eval_type()),
                         unsigned: false,
@@ -10447,7 +10447,7 @@ fn native_in_handles_resource_failure_cancellation_and_reuse_are_terminal() {
             dynamic: Box::new([]),
             has_null: false,
             collation: Collation::Binary,
-            result_type: ty(),
+            result_type: Some(ty()),
             output_node: 2,
             output_role: NativeValueRole::Output,
         })];
@@ -10914,7 +10914,7 @@ fn native_interval_probe_capabilities_resources_cancel_and_reuse_are_terminal() 
                 .into_iter()
                 .map(|node| hosts::NativeIntervalArgument {
                     node,
-                    field: domain.clone(),
+                    field: Some(domain.clone()),
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
@@ -10922,7 +10922,7 @@ fn native_interval_probe_capabilities_resources_cancel_and_reuse_are_terminal() 
                 [Some(crate::tikv::interval_field_metadata(&domain)); 3].into_iter(),
             )
             .unwrap(),
-            result_type: ty(),
+            result_type: Some(ty()),
             output_node: 2,
             output_role: NativeValueRole::Output,
         },
@@ -11378,7 +11378,7 @@ fn native_extremum_source_capabilities_resources_cancel_and_reuse_are_terminal()
             all_constant: false,
             collation: Collation::Binary,
             greatest: true,
-            result_type: string_ty(),
+            result_type: Some(string_ty()),
             output_node: 2,
             output_role: NativeValueRole::Output,
         },

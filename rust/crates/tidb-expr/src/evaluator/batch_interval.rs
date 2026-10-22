@@ -18,12 +18,12 @@ use tidb_query_expr::{NativeIntervalSearch, NativeIntervalValueStep as Step};
 
 pub(in super::super) struct NativeIntervalArgument {
     pub node: usize,
-    pub field: FieldType,
+    pub field: Option<FieldType>,
 }
 pub(in super::super) struct NativeIntervalMetadata {
     pub arguments: Box<[NativeIntervalArgument]>,
     pub search: NativeIntervalSearch,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
@@ -96,7 +96,7 @@ impl NativeBatchHosts<'_> {
         let number = match crate::tikv::prepare_interval_number_in(
             self.context,
             &value,
-            Some(&argument.field),
+            argument.field.as_ref(),
             cast,
             self.max_retained_bytes - base,
         ) {
@@ -126,7 +126,7 @@ impl NativeBatchHosts<'_> {
             Step::Index(index) => {
                 let value = match crate::scalar_function::coerce_function_result(
                     "interval",
-                    Some(&metadata.result_type),
+                    metadata.result_type.as_ref(),
                     Datum::Int(index),
                 ) {
                     Ok(value) => value,

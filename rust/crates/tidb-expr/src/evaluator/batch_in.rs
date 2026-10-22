@@ -19,7 +19,7 @@ use tidb_query_expr::{NativeInMembership, NativeInTypedDomain};
 
 pub(in super::super) struct NativeInArgument {
     pub node: usize,
-    pub field: FieldType,
+    pub field: Option<FieldType>,
     pub facts: crate::ops::OperandFacts,
 }
 pub(in super::super) struct NativeInMetadata {
@@ -28,13 +28,13 @@ pub(in super::super) struct NativeInMetadata {
     pub dynamic: Box<[usize]>,
     pub has_null: bool,
     pub collation: tidb_datatype::Collation,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
 impl NativeInMetadata {
     fn domain(&self) -> Option<NativeInTypedDomain> {
-        Some(match self.arguments[0].field.eval_type() {
+        Some(match self.arguments[0].field.as_ref()?.eval_type() {
             NativeEvalType::Datetime => NativeInTypedDomain::Datetime,
             NativeEvalType::Timestamp => NativeInTypedDomain::Timestamp,
             NativeEvalType::Duration => NativeInTypedDomain::Duration,
@@ -251,7 +251,7 @@ impl NativeBatchHosts<'_> {
         // publication; the latter runs in finish_native_value.
         let result = match crate::scalar_function::coerce_function_result(
             "in",
-            Some(&metadata.result_type),
+            metadata.result_type.as_ref(),
             result,
         ) {
             Ok(value) => value,
@@ -332,16 +332,16 @@ impl NativeBatchHosts<'_> {
             )?;
             let converted = match domain {
                 NativeInTypedDomain::Datetime | NativeInTypedDomain::Timestamp => {
-                    crate::cast::cast_arg_as_datetime(value, Some(&argument.field), self.context)
+                    crate::cast::cast_arg_as_datetime(value, argument.field.as_ref(), self.context)
                 }
                 NativeInTypedDomain::Duration => {
-                    crate::cast::cast_arg_as_duration(value, Some(&argument.field), self.context)
+                    crate::cast::cast_arg_as_duration(value, argument.field.as_ref(), self.context)
                 }
                 NativeInTypedDomain::Json if index == 0 => {
-                    crate::builtin_ext::cast_as_json_typed(value, Some(&argument.field))
+                    crate::builtin_ext::cast_as_json_typed(value, argument.field.as_ref())
                 }
                 NativeInTypedDomain::Json => {
-                    crate::builtin_ext::cast_as_json_value_typed(value, Some(&argument.field))
+                    crate::builtin_ext::cast_as_json_value_typed(value, argument.field.as_ref())
                 }
             };
             let converted = match converted {

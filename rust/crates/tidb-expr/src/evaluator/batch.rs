@@ -544,6 +544,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_concat_value_call(function)
                 || native_optional_wildcard_call(function)
                 || native_optional_arithmetic_call(function)
+                || native_optional_ordered_comparison_call(function)
                 || native_no_argument_header_call(function) =>
         {
             NativeView::RootValue
@@ -1302,6 +1303,51 @@ fn budget_value_call_metadata(
     if native_no_argument_header_call(function) {
         if let Some(result) = result {
             budget.field(result, 1)?;
+        }
+        return Ok(());
+    }
+    if native_optional_ordered_comparison_call(function) {
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
+        match function.func_name.lowercase() {
+            "in" => {
+                budget.array::<hosts::NativeInArgument>(function.args.len())?;
+                for arg in &function.args {
+                    if let Some(field) = arg.static_type() {
+                        budget.field(field, 1)?;
+                    }
+                }
+                let (keys, dynamic, _) = function.native_in_cache();
+                budget.array::<usize>(dynamic.len())?;
+                if let Some(keys) = keys {
+                    budget.array::<(Vec<u8>, u64)>(
+                        keys.capacity()
+                            .checked_mul(4)
+                            .ok_or_else(|| resource("IN key table allowance overflow"))?,
+                    )?;
+                    for key in keys {
+                        budget.add(
+                            key.len()
+                                .checked_mul(2)
+                                .ok_or_else(|| resource("IN key copy allowance overflow"))?,
+                        )?;
+                    }
+                }
+            }
+            "interval" => {
+                budget.array::<hosts::NativeIntervalArgument>(function.args.len())?;
+                for arg in &function.args {
+                    if let Some(field) = arg.static_type() {
+                        budget.field(field, 1)?;
+                    }
+                }
+            }
+            "greatest" | "least" => {
+                budget.array::<usize>(function.args.len())?;
+                budget.array::<i64>(function.args.len())?;
+            }
+            _ => unreachable!("checked ordered comparison owner"),
         }
         return Ok(());
     }
@@ -2246,6 +2292,18 @@ fn native_optional_arithmetic_call(function: &ScalarFunction) -> bool {
         && (function.get_static_type().is_none()
             || function.args.iter().any(|arg| arg.static_type().is_none()))
 }
+// These existing owners consume genuine optional fields in their own phases.
+fn native_optional_ordered_comparison_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && match function.func_name.lowercase() {
+            "in" | "interval" => function.args.len() >= 2,
+            "greatest" | "least" => !function.args.is_empty(),
+            _ => false,
+        }
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|arg| arg.static_type().is_none()))
+}
 // Missing argument types can stop diagnostic text partway through its real
 // demand. Keep that rendering in the existing owned numeric continuation.
 fn native_missing_arithmetic_sources(function: &ScalarFunction) -> bool {
@@ -2260,6 +2318,7 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_optional_wildcard_call(function)
         || native_concat_value_call(function)
         || native_optional_arithmetic_call(function)
+        || native_optional_ordered_comparison_call(function)
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
@@ -2813,7 +2872,8 @@ fn resolve_specific_call_in_view(
                     || function.args.iter().any(|arg| arg.static_type().is_none()))
                     && !native_optional_selection_call(function)
                     && !native_optional_operator_call(function)
-                    && !native_optional_arithmetic_call(function))
+                    && !native_optional_arithmetic_call(function)
+                    && !native_optional_ordered_comparison_call(function))
             {
                 return Err(BatchFailure::admission(
                     "native nullable control requires typed arguments and valid arity",
@@ -4010,6 +4070,7 @@ fn preflight_view<'a>(
                     ) || native_optional_grouping_call(function)
                         || native_optional_wildcard_call(function)
                         || native_optional_arithmetic_call(function)
+                        || native_optional_ordered_comparison_call(function)
                         || (native_concat_value_call(function) && view.value_role().is_some())
                     {
                         budget_value_call_metadata(&mut budget, function, Some(sql))?;
@@ -5848,11 +5909,9 @@ fn lower_view_policy(
                                         .ok_or_else(|| binding("extremum source absent"))?;
                                     arguments.push(child);
                                     decimals.push(
-                                        if source.declared_sql().eval_type() == NativeEvalType::Int {
-                                            0
-                                        } else {
-                                            source.declared_sql().decimal()
-                                        },
+                                        source.sql.map_or(tidb_datatype::UNSPECIFIED_LENGTH, |field| {
+                                            if field.eval_type() == NativeEvalType::Int { 0 } else { field.decimal() }
+                                        }),
                                     );
                                     child = source.subtree_end;
                                 }
@@ -5867,7 +5926,7 @@ fn lower_view_policy(
                                     }),
                                     collation: sql.derived_collation(),
                                     greatest: sql.func_name.lowercase() == "greatest",
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -5887,20 +5946,20 @@ fn lower_view_policy(
                                         .ok_or_else(|| binding("INTERVAL source node absent"))?;
                                     arguments.push(hosts::NativeIntervalArgument {
                                         node: child,
-                                        field: snapshot_field_type(source.declared_sql()),
+                                        field: source.sql.map(snapshot_field_type),
                                     });
                                     child = source.subtree_end;
                                 }
                                 let search = tidb_query_expr::NativeIntervalSearch::new(
                                     arguments.iter().map(|argument| {
-                                        Some(crate::tikv::interval_field_metadata(&argument.field))
+                                        argument.field.as_ref().map(crate::tikv::interval_field_metadata)
                                     }),
                                 )
                                 .map_err(crate::tikv::interval_value_error)?;
                                 NativeHostMetadata::Interval(hosts::NativeIntervalMetadata {
                                     arguments: arguments.into_boxed_slice(),
                                     search,
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item
                                         .view
@@ -5920,16 +5979,15 @@ fn lower_view_policy(
                                         .ok_or_else(|| binding("IN source missing"))?;
                                     arguments.push(hosts::NativeInArgument {
                                         node: child,
-                                        field: snapshot_field_type(source.declared_sql()),
+                                        field: source.sql.map(snapshot_field_type),
                                         facts: crate::ops::OperandFacts {
-                                            eval_type: Some(source.declared_sql().eval_type()),
-                                            unsigned: source.declared_sql().is_unsigned(),
+                                            eval_type: source.sql.map(FieldType::eval_type),
+                                            unsigned: source.sql.is_some_and(FieldType::is_unsigned),
                                             constant: source.folds_to_constant,
                                             duration_column: matches!(
                                                 source.node,
                                                 Expression::Column(_)
-                                            ) && source.declared_sql().code()
-                                                == FieldTypeCode::Duration,
+                                            ) && source.sql.is_some_and(|field| field.code()==FieldTypeCode::Duration),
                                         },
                                     });
                                     child = source.subtree_end;
@@ -5961,7 +6019,7 @@ fn lower_view_policy(
                                     },
                                     has_null,
                                     collation: sql.derived_collation(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item
                                         .view

@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-22 N35 validated) IN/INTERVAL/GREATEST/LEAST preserve genuine optional fields in existing owners and original typed/generic/cache/search/scale phases. Original1312360 observations were captured/rerun and fixed before production:138240/6D23E22B6F5BBE49,1144320/0926C1DF1FCFFBE1,29800/0BBCF87024DEBD9F. All1309561 strict pairs pass without fallback;2799 exact huge-malformed-Decimal cases retain explicit finite resource refusal and are not counted as successful execution. Eight source checks,240 long reuse/late-error/flag cases and same-cap32KiB-to-NULL recovery pass. Frontend2070/exact inherited3/95ignored/all529batch/346warnings,Projection38,Expand6,lint,dual8fmt and ownership reconstruction pass; SDKad73b11 unchanged clean. Fixed inventory83088/512refusals/13names. See evidence/no-fallback-n35.md and continue global entry/fallback/service/performance work.
+
+
 - [x] (2026-10-22 N34 validated) Actual optional arithmetic source declarations preserve unsigned=false and signed=false when absent, original expression-owned real-DIV type failure, and existing owned diagnostic recipes without unused eager formatting. Independent1250280 observations all pass without fallback or exemptions, including the huge malformed literal:552960/20C336358DC26867,643680/1D094031497F3DBD,53640/7623E8AA8B9D6A50; capture/rerun/admission failures preceded production. Same-cap32KiB-to-NULL recovery and48 long late-type-panic/reuse/flag cases pass. Frontend2062/exact inherited3/95ignored/all521batch/346warnings,Projection37,Expand6,lint,dual13fmt and ownership reconstruction pass; SDKad73b11 remains clean. Fixed inventory83088/1172refusals/17names. See evidence/no-fallback-n34.md; continue remaining contracts, public entries, generic fallback removal and service/performance work.
 
 - [x] (2026-10-22 N25–N32 validated) Conditions, raw/comparison operators, zero-value-demand headers, type properties, GROUPING, LIKE/ILIKE, CONCAT/CONCAT_WS and the closed string-parameter CONCAT batch publication boundary now preserve genuine optional metadata in the existing shared frame. Receipts no-fallback-n25.md through no-fallback-n32.md retain exact independent original observations, preceding admission failures and full validations. Latest local DCO caab6a8f; SDK ad73b11 remains clean and unchanged. Latest frontend2047/exact inherited3/95ignored/all506batch/346warnings, Projection35/Expand6/lint/dual-format/checker pass. The fixed83088-case inventory has1352 refusals across23names; it is not a completion percentage. Generic fallback, public scalar/AST/filter/unistore entries, remaining metadata/PB profiles and service/performance gates remain open.
@@ -169,6 +172,9 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N35's expanded domain corpus exposed pre-existing finite work refusals for one exact huge malformed Decimal. They remain separate resource outcomes, with original observations/digests preserved; no limit was raised. A direct host test initially omitted the real suite's promoted source profile and constant-prefix probes. Correcting that test harness restored the real entry contract without changing production computations or original recordings.
+
 
 - Observation (N32): enabled string CONCAT with parameters still reads arguments per row and interleaves packet callbacks. Only output publication is atomic for the complete invocation. A prototype that prepared parameters once for a whole batch failed the recorded read count (two versus three) and was discarded. The existing CAST_CHAR row-demand/atomic-publication mechanism reproduced all80784 original observations and320 long/toggle observations without fallback.
 
@@ -470,6 +476,9 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: retain optional source/result metadata in the original IN/INTERVAL/extremum hosts, while preserving typed IN's full source barrier, exhaustive generic comparison, prepared-cache ownership, original interval search and real extrema signature/scale rules. Record finite resource refusals separately from strict execution comparisons. Rationale: field absence changes original demand/type decisions and cannot be replaced by caller schema or default types. Date/Author: 2026-10-22 ExpressionReuseEngineer.
+
+
 - Decision: retain genuine optional source fields and distinguish absence from explicit signedness. Missing-source arithmetic uses the existing owned numeric diagnostic continuation, including literal-only expressions; unused fixed text is neither rendered nor billed. Keep original expression-owned real DIV's required-source guard at its demand point and preserve the separate literal-value inference contract. Rationale: original recordings expose both signed binary literal differences and premature malformed-Decimal formatting. Date/Author: 2026-10-22 ExpressionReuseEngineer.
 
 
@@ -761,6 +770,9 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N35 removes four more names from the bounded optional-declaration refusal inventory, reducing1172/17 to512/13. The existing value adapters and SDK remain unchanged; optional fields are consumed at their original phases. Exact strict/resource evidence and final gates are in evidence/no-fallback-n35.md. This does not complete public entry migration, generic fallback removal or final service/performance validation.
+
 
 N34 closes the six arithmetic names in the bounded optional-declaration inventory, reducing1316/23 to1172/17. All1250280 original observations now run natively, without the60 literal refusals previously retained for N33's distinct result-only profile. N33's existing profile and resource assertions remain unchanged. Final gates and origin distinctions are recorded in evidence/no-fallback-n34.md; global entry and performance work continues.
 
@@ -4685,3 +4697,11 @@ Revision2026-10-22: opened N34 with independent missing-argument recordings and 
 
 
 N34 validated outcome2026-10-22: all three independent original witnesses and their reruns remain fixed. Early prototypes exposed an inverse-unsigned assumption, a diagnostic missing-type guard and an unused eager DIV subject formatter; each was corrected without changing witnesses or limits. The shared diagnostic recipes now retain original demand order even for literal-only missing-source calls. All eight N34 tests and the actual Projection matrix pass, along with the complete gates above. The original scalar computations are reconstructed exactly except for sharing the existing required-source guard and option metadata access. Generic fallback and public entry migration are still open.
+
+
+## N35: optional membership, interval and extrema
+
+Continue from local5290bc65 and clean SDKad73b11. Add independent original/actual wrappers in evaluator/batch_stateful_tests.rs for the four existing host families. The initial phase witness reuses the unchanged optional control observer for lazy/eager children, type erasures, caller outputs, selections, flags, deferred writes and late callbacks. The expanded witness varies genuine source/result declarations across integer/unsigned/string/real/decimal/datetime/duration/JSON, all149 actual values in each parameter position, arities2/4 and same-context reuse. Pin capture/rerun and reproduce Admission before source changes. Preserve the existing typed IN barrier, generic exhaustive comparisons/prepared cache, INTERVAL binary search and extrema signature/scale rules using actual optional metadata, never fake types. Complete native comparison, direct protocol/resources, Projection and final gates, then continue global work.
+
+
+Revision2026-10-22: validated N35's genuine optional metadata with fixed original records, separately bounded resource outcomes, actual Projection and all final gates. Continue remaining alias, regular-expression, WEIGHT_STRING and whole-parameter contracts before global entry/fallback/service/performance completion.

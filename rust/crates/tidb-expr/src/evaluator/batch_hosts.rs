@@ -501,9 +501,9 @@ impl NativeHostMetadata {
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
             Self::Arithmetic { result_type, .. } => result_type.as_ref(),
-            Self::In(metadata) => Some(&metadata.result_type),
-            Self::Interval(metadata) => Some(&metadata.result_type),
-            Self::Extremum(metadata) => Some(&metadata.result_type),
+            Self::In(metadata) => metadata.result_type.as_ref(),
+            Self::Interval(metadata) => metadata.result_type.as_ref(),
+            Self::Extremum(metadata) => metadata.result_type.as_ref(),
             Self::Charset(metadata) => Some(&metadata.result_type),
             Self::TimestampDiff { result_type, .. }
             | Self::Clock { result_type, .. }
@@ -1451,6 +1451,9 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::Like { .. }
                 | NativeHostMetadata::ConcatValues { .. }
                 | NativeHostMetadata::Arithmetic { batch: None, .. }
+                | NativeHostMetadata::In(_)
+                | NativeHostMetadata::Interval(_)
+                | NativeHostMetadata::Extremum(_)
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {

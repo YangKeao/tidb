@@ -21,7 +21,7 @@ pub(in super::super) struct NativeExtremumMetadata {
     pub all_constant: bool,
     pub collation: tidb_datatype::Collation,
     pub greatest: bool,
-    pub result_type: FieldType,
+    pub result_type: Option<FieldType>,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
@@ -176,7 +176,7 @@ impl NativeBatchHosts<'_> {
         };
         let value = match crate::scalar_function::coerce_function_result(
             name,
-            Some(&metadata.result_type),
+            metadata.result_type.as_ref(),
             value,
         ) {
             Ok(value) => value,
