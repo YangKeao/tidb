@@ -465,6 +465,7 @@ fn promoted_native_root_view(
         || native_identity_call(function)
         || native_grouping_call(function)
         || native_like_call(function)
+        || native_concat_value_call(function)
         || native_extract_call(function).is_some()
         || native_date_arithmetic_call(function).is_some()
         || native_charset_operation(function.func_name.lowercase()).is_some()
@@ -540,6 +541,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_optional_selection_call(function)
                 || native_optional_operator_call(function)
                 || native_optional_grouping_call(function)
+                || native_concat_value_call(function)
                 || native_optional_wildcard_call(function)
                 || native_no_argument_header_call(function) =>
         {
@@ -1299,6 +1301,13 @@ fn budget_value_call_metadata(
         if let Some(result) = result {
             budget.field(result, 1)?;
         }
+        return Ok(());
+    }
+    if native_concat_value_call(function) {
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
+        budget.array::<usize>(arity)?;
         return Ok(());
     }
     if native_optional_wildcard_call(function) {
@@ -2161,6 +2170,15 @@ fn native_optional_operator_call(function: &ScalarFunction) -> bool {
         && (function.get_static_type().is_none()
             || function.args.iter().any(|a| a.static_type().is_none()))
 }
+fn native_concat_value_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && match function.func_name.lowercase() {
+            "concat" => !function.args.is_empty(),
+            "concat_ws" => function.args.len() >= 2,
+            _ => false,
+        }
+}
 // LIKE retains lazy raw operands and the actual optional escape cast fact.
 fn native_optional_wildcard_call(function: &ScalarFunction) -> bool {
     native_like_call(function)
@@ -2185,10 +2203,12 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_optional_operator_call(function)
         || native_optional_grouping_call(function)
         || native_optional_wildcard_call(function)
+        || native_concat_value_call(function)
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_no_argument_header_call(function)
+    native_concat_value_call(function)
+        || native_no_argument_header_call(function)
         || native_json_schema_call(function)
         || native_final_state_call(function)
         || native_stateful_call(function)
@@ -2415,6 +2435,16 @@ fn resolve_specific_call_in_view(
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::ValueIdentityNative {
                 name_const: function.func_name.lowercase() == "name_const",
+            }),
+            function.args.len(),
+        ));
+    }
+    if native_concat_value_call(function) && view.value_role().is_some() {
+        return Ok((
+            CallTarget::Host(if function.func_name.lowercase() == "concat" {
+                SqlBatchHostOperation::Concat
+            } else {
+                SqlBatchHostOperation::ConcatWs
             }),
             function.args.len(),
         ));
@@ -3873,6 +3903,7 @@ fn preflight_view<'a>(
                         CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
                     ) || native_optional_grouping_call(function)
                         || native_optional_wildcard_call(function)
+                        || (native_concat_value_call(function) && view.value_role().is_some())
                     {
                         budget_value_call_metadata(&mut budget, function, Some(sql))?;
                     }
@@ -4978,72 +5009,79 @@ fn lower_view_policy(
                         reserve(&mut arguments, *arity)?;
                         for argument in sql.args.iter().take(*arity) {
                             arguments.push(
-                                if matches!(
+                                if (!matches!(
                                     operation,
-                                    SqlBatchHostOperation::CastCharNative { .. }
-                                        | SqlBatchHostOperation::CastNative
-                                        | SqlBatchHostOperation::CoalesceNative
-                                        | SqlBatchHostOperation::IfNullNative
-                                        | SqlBatchHostOperation::IfNative
-                                        | SqlBatchHostOperation::CaseNative
-                                        | SqlBatchHostOperation::AndNative
-                                        | SqlBatchHostOperation::OrNative
-                                        | SqlBatchHostOperation::IsTrueWithNullNative
-                                        | SqlBatchHostOperation::UnaryNotNative
-                                        | SqlBatchHostOperation::IsNullNative
-                                        | SqlBatchHostOperation::IsTrueNative
-                                        | SqlBatchHostOperation::IsFalseNative
-                                        | SqlBatchHostOperation::IsNotTrueNative
-                                        | SqlBatchHostOperation::IsNotFalseNative
-                                        | SqlBatchHostOperation::IsUnknownNative
-                                        | SqlBatchHostOperation::IsNotUnknownNative
-                                        | SqlBatchHostOperation::CompareNative(_)
-                                        | SqlBatchHostOperation::NullSafeEqNative
-                                        | SqlBatchHostOperation::NullIfNative
-                                        | SqlBatchHostOperation::InNative
-                                        | SqlBatchHostOperation::IntervalNative
-                                        | SqlBatchHostOperation::ExtremumNative
-                                        | SqlBatchHostOperation::TimestampDiffNative { .. }
-                                        | SqlBatchHostOperation::ClockNative { .. }
-                                        | SqlBatchHostOperation::CalendarNative { .. }
-                                        | SqlBatchHostOperation::DurationConstructionNative(_)
-                                        | SqlBatchHostOperation::VectorNative(_)
-                                        | SqlBatchHostOperation::CryptoNative(_)
-                                        | SqlBatchHostOperation::EagerValuesNative
-                                        | SqlBatchHostOperation::CompressionNative(_)
-                                        | SqlBatchHostOperation::ByteUnaryNative(_)
-                                        | SqlBatchHostOperation::MiscNative { .. }
-                                        | SqlBatchHostOperation::ValueIdentityNative { .. }
-                                        | SqlBatchHostOperation::GroupingNative
-                                        | SqlBatchHostOperation::LikeNative { .. }
-                                        | SqlBatchHostOperation::TsoNative(_)
-                                        | SqlBatchHostOperation::EpochNative { .. }
-                                        | SqlBatchHostOperation::ExtractNative { .. }
-                                        | SqlBatchHostOperation::DateArithmeticNative { .. }
-                                        | SqlBatchHostOperation::BoundedStalenessNative { .. }
-                                        | SqlBatchHostOperation::StrToDateNative { .. }
-                                        | SqlBatchHostOperation::JsonSumCrc32Native { .. }
-                                        | SqlBatchHostOperation::CharsetNative(_)
-                                        | SqlBatchHostOperation::AbsNative
-                                        | SqlBatchHostOperation::BitwiseNative(_)
-                                        | SqlBatchHostOperation::XorNative
-                                        | SqlBatchHostOperation::UnarySignNative(_)
-                                        | SqlBatchHostOperation::AddNative
-                                        | SqlBatchHostOperation::SubtractNative
-                                        | SqlBatchHostOperation::MultiplyNative
-                                        | SqlBatchHostOperation::ModuloNative
-                                        | SqlBatchHostOperation::DivideNative
-                                        | SqlBatchHostOperation::IntegerDivideNative
-                                        | SqlBatchHostOperation::AddWindowNative
-                                        | SqlBatchHostOperation::SubtractWindowNative
-                                        | SqlBatchHostOperation::MultiplyWindowNative
-                                        | SqlBatchHostOperation::ModuloWindowNative
-                                        | SqlBatchHostOperation::DivideWindowNative
-                                        | SqlBatchHostOperation::IntegerDivideWindowNative
-                                        | SqlBatchHostOperation::AbsIntWindowNative
-                                        | SqlBatchHostOperation::CastDecimalWindowNative
-                                        | SqlBatchHostOperation::CastJsonWindowNative
-                                ) {
+                                    SqlBatchHostOperation::Concat | SqlBatchHostOperation::ConcatWs
+                                ) || item.view.value_role().is_some())
+                                    && matches!(
+                                        operation,
+                                        SqlBatchHostOperation::CastCharNative { .. }
+                                            | SqlBatchHostOperation::CastNative
+                                            | SqlBatchHostOperation::CoalesceNative
+                                            | SqlBatchHostOperation::IfNullNative
+                                            | SqlBatchHostOperation::IfNative
+                                            | SqlBatchHostOperation::CaseNative
+                                            | SqlBatchHostOperation::AndNative
+                                            | SqlBatchHostOperation::OrNative
+                                            | SqlBatchHostOperation::IsTrueWithNullNative
+                                            | SqlBatchHostOperation::UnaryNotNative
+                                            | SqlBatchHostOperation::IsNullNative
+                                            | SqlBatchHostOperation::IsTrueNative
+                                            | SqlBatchHostOperation::IsFalseNative
+                                            | SqlBatchHostOperation::IsNotTrueNative
+                                            | SqlBatchHostOperation::IsNotFalseNative
+                                            | SqlBatchHostOperation::IsUnknownNative
+                                            | SqlBatchHostOperation::IsNotUnknownNative
+                                            | SqlBatchHostOperation::CompareNative(_)
+                                            | SqlBatchHostOperation::NullSafeEqNative
+                                            | SqlBatchHostOperation::NullIfNative
+                                            | SqlBatchHostOperation::InNative
+                                            | SqlBatchHostOperation::IntervalNative
+                                            | SqlBatchHostOperation::ExtremumNative
+                                            | SqlBatchHostOperation::TimestampDiffNative { .. }
+                                            | SqlBatchHostOperation::ClockNative { .. }
+                                            | SqlBatchHostOperation::CalendarNative { .. }
+                                            | SqlBatchHostOperation::DurationConstructionNative(_)
+                                            | SqlBatchHostOperation::VectorNative(_)
+                                            | SqlBatchHostOperation::CryptoNative(_)
+                                            | SqlBatchHostOperation::EagerValuesNative
+                                            | SqlBatchHostOperation::CompressionNative(_)
+                                            | SqlBatchHostOperation::ByteUnaryNative(_)
+                                            | SqlBatchHostOperation::MiscNative { .. }
+                                            | SqlBatchHostOperation::ValueIdentityNative { .. }
+                                            | SqlBatchHostOperation::Concat
+                                            | SqlBatchHostOperation::ConcatWs
+                                            | SqlBatchHostOperation::GroupingNative
+                                            | SqlBatchHostOperation::LikeNative { .. }
+                                            | SqlBatchHostOperation::TsoNative(_)
+                                            | SqlBatchHostOperation::EpochNative { .. }
+                                            | SqlBatchHostOperation::ExtractNative { .. }
+                                            | SqlBatchHostOperation::DateArithmeticNative { .. }
+                                            | SqlBatchHostOperation::BoundedStalenessNative { .. }
+                                            | SqlBatchHostOperation::StrToDateNative { .. }
+                                            | SqlBatchHostOperation::JsonSumCrc32Native { .. }
+                                            | SqlBatchHostOperation::CharsetNative(_)
+                                            | SqlBatchHostOperation::AbsNative
+                                            | SqlBatchHostOperation::BitwiseNative(_)
+                                            | SqlBatchHostOperation::XorNative
+                                            | SqlBatchHostOperation::UnarySignNative(_)
+                                            | SqlBatchHostOperation::AddNative
+                                            | SqlBatchHostOperation::SubtractNative
+                                            | SqlBatchHostOperation::MultiplyNative
+                                            | SqlBatchHostOperation::ModuloNative
+                                            | SqlBatchHostOperation::DivideNative
+                                            | SqlBatchHostOperation::IntegerDivideNative
+                                            | SqlBatchHostOperation::AddWindowNative
+                                            | SqlBatchHostOperation::SubtractWindowNative
+                                            | SqlBatchHostOperation::MultiplyWindowNative
+                                            | SqlBatchHostOperation::ModuloWindowNative
+                                            | SqlBatchHostOperation::DivideWindowNative
+                                            | SqlBatchHostOperation::IntegerDivideWindowNative
+                                            | SqlBatchHostOperation::AbsIntWindowNative
+                                            | SqlBatchHostOperation::CastDecimalWindowNative
+                                            | SqlBatchHostOperation::CastJsonWindowNative
+                                    )
+                                {
                                     projected(&native_bytes_type(), new_collation)?
                                 } else {
                                     projected(
@@ -5152,6 +5190,22 @@ fn lower_view_policy(
                                     result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
+                                }
+                            }
+                            SqlBatchHostOperation::Concat | SqlBatchHostOperation::ConcatWs if item.view.value_role().is_some() => {
+                                let mut arguments = Vec::new();
+                                reserve(&mut arguments, *arity)?;
+                                let mut child = ordinal.checked_add(1).ok_or_else(|| resource("CONCAT child overflow"))?;
+                                for _ in 0..*arity {
+                                    arguments.push(child);
+                                    child = checked.get(child).ok_or_else(|| binding("CONCAT child missing"))?.subtree_end;
+                                }
+                                NativeHostMetadata::ConcatValues {
+                                    arguments: arguments.into_boxed_slice(),
+                                    kind: if operation == SqlBatchHostOperation::Concat { tidb_query_expr::local::ConcatKind::Concat } else { tidb_query_expr::local::ConcatKind::ConcatWs },
+                                    result_type: item.sql.map(snapshot_field_type),
+                                    output_node: ordinal,
+                                    output_role: item.view.value_role().expect("checked CONCAT value view"),
                                 }
                             }
                             SqlBatchHostOperation::LikeNative { .. } => {

@@ -156,6 +156,25 @@ impl ReadyValueCache {
         PreparationUnwindGuard(self)
     }
 
+    /// Preserve the original operation-scope outcome without executing a worker.
+    pub(crate) fn original_scope_status(&self) -> Result<(), EvalError> {
+        if self.poisoned.get() {
+            return Err(ReadyValueBoundaryError::Scope {
+                kind: ScopeFailureKind::Poisoned,
+                reason: "ready-value cache is poisoned",
+            }
+            .into_eval_error());
+        }
+        if self.busy.get() {
+            return Err(ReadyValueBoundaryError::Scope {
+                kind: ScopeFailureKind::Reentry,
+                reason: "reentrant ready-value cache borrow",
+            }
+            .into_eval_error());
+        }
+        Ok(())
+    }
+
     /// Creates an empty lane cache; no worker is prepared before first demand.
     #[must_use]
     pub fn new() -> Self {

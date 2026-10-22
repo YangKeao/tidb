@@ -1035,114 +1035,124 @@ fn stateful_integer_cast_rejections_do_not_clone_unused_vector_payload() {
 fn stateful_other_services_full_values_and_return_types_keep_original_outputs() {
     if isolate_common_corpus("stateful_tests::stateful_other_services_full_values_and_return_types_keep_original_outputs") { return }
     std::panic::set_hook(Box::new(|_| {}));
-    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
-    for (fi, field) in crate::tikv::eager_scalar_value_tests::types()
-        .into_iter()
-        .enumerate()
-    {
-        for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+    // Duration return conversion uses the real current calendar date. Replay
+    // the historical witness's explicit date with the existing test-only scope;
+    // keep its original values, raw comparisons and digest unchanged.
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for (fi, field) in crate::tikv::eager_scalar_value_tests::types()
             .into_iter()
             .enumerate()
         {
-            let source = crate::tikv::misc_identity_value_tests::field(&value);
-            for variant in 0..8 {
-                let name = [
-                    "values",
-                    "benchmark",
-                    "get_lock",
-                    "get_lock",
-                    "release_lock",
-                    "is_free_lock",
-                    "is_used_lock",
-                    "release_all_locks",
-                ][variant];
-                let Expression::ScalarFunction(mut function) = root(name, 0) else {
-                    unreachable!()
-                };
-                function.ret_type = Some(field.clone());
-                let pair = if variant == 3 {
-                    [Datum::new_string("L"), value.clone()]
-                } else {
-                    [value.clone(), Datum::Int(3)]
-                };
-                if variant == 1 {
-                    // Every positive count validates the original unsupported
-                    // vector body before looping; no enormous count can run.
-                    function.args[0] = parameter(0, source.clone());
-                    function.args[1] = parameter(1, FieldType::new(FieldTypeCode::VectorFloat32));
-                } else if name != "values" && name != "release_all_locks" {
-                    function.args[usize::from(variant == 3)] =
-                        parameter(usize::from(variant == 3), source.clone());
-                }
-                let expression = Expression::ScalarFunction(function);
-                let actual = suite(expression.clone());
-                for profile in 0..6 {
-                    for enabled in [false, true] {
-                        for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
-                            let original = suite(expression.clone());
-                            let old = C::new(profile, enabled, pair.clone());
-                            let new = C::new(profile, enabled, pair.clone());
-                            let input = || {
-                                let mut c = chunk(
-                                    &[ty()],
-                                    &[
-                                        vec![Datum::Int(1)],
-                                        vec![Datum::Int(2)],
-                                        vec![Datum::Int(3)],
-                                    ],
+            for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                .into_iter()
+                .enumerate()
+            {
+                let source = crate::tikv::misc_identity_value_tests::field(&value);
+                for variant in 0..8 {
+                    let name = [
+                        "values",
+                        "benchmark",
+                        "get_lock",
+                        "get_lock",
+                        "release_lock",
+                        "is_free_lock",
+                        "is_used_lock",
+                        "release_all_locks",
+                    ][variant];
+                    let Expression::ScalarFunction(mut function) = root(name, 0) else {
+                        unreachable!()
+                    };
+                    function.ret_type = Some(field.clone());
+                    let pair = if variant == 3 {
+                        [Datum::new_string("L"), value.clone()]
+                    } else {
+                        [value.clone(), Datum::Int(3)]
+                    };
+                    if variant == 1 {
+                        // Every positive count validates the original unsupported
+                        // vector body before looping; no enormous count can run.
+                        function.args[0] = parameter(0, source.clone());
+                        function.args[1] =
+                            parameter(1, FieldType::new(FieldTypeCode::VectorFloat32));
+                    } else if name != "values" && name != "release_all_locks" {
+                        function.args[usize::from(variant == 3)] =
+                            parameter(usize::from(variant == 3), source.clone());
+                    }
+                    let expression = Expression::ScalarFunction(function);
+                    let actual = suite(expression.clone());
+                    for profile in 0..6 {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let original = suite(expression.clone());
+                                let old = C::new(profile, enabled, pair.clone());
+                                let new = C::new(profile, enabled, pair.clone());
+                                let input = || {
+                                    let mut c = chunk(
+                                        &[ty()],
+                                        &[
+                                            vec![Datum::Int(1)],
+                                            vec![Datum::Int(2)],
+                                            vec![Datum::Int(3)],
+                                        ],
+                                    );
+                                    c.set_sel(selection.clone());
+                                    c
+                                };
+                                let mut a = input();
+                                let mut b = input();
+                                let mut left = output_for(&field);
+                                let mut right = output_for(&field);
+                                left.append_null(0);
+                                right.append_null(0);
+                                let expected =
+                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let got = session_read_outcome(|| {
+                                    actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                                });
+                                let label = format!(
+                                    "{fi}/{vi}/{variant}/{profile}/{enabled}/{selection:?}"
                                 );
-                                c.set_sel(selection.clone());
-                                c
-                            };
-                            let mut a = input();
-                            let mut b = input();
-                            let mut left = output_for(&field);
-                            let mut right = output_for(&field);
-                            left.append_null(0);
-                            right.append_null(0);
-                            let expected =
-                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
-                            let got = session_read_outcome(|| {
-                                actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
-                            });
-                            let label =
-                                format!("{fi}/{vi}/{variant}/{profile}/{enabled}/{selection:?}");
-                            if got != expected
-                                || right.column(0) != left.column(0)
-                                || new.snapshot() != old.snapshot()
-                            {
-                                eprintln!("STATEFUL OTHER DIFFERENCE {label} input={} expected={expected:?} got={got:?} left={:?} right={:?} oldeffects={} neweffects={}",leaf::frame(&value), left.column(0), right.column(0),old.snapshot(),new.snapshot());
+                                if got != expected
+                                    || right.column(0) != left.column(0)
+                                    || new.snapshot() != old.snapshot()
+                                {
+                                    eprintln!("STATEFUL OTHER DIFFERENCE {label} input={} expected={expected:?} got={got:?} left={:?} right={:?} oldeffects={} neweffects={}",leaf::frame(&value), left.column(0), right.column(0),old.snapshot(),new.snapshot());
+                                }
+                                assert_eq!(got, expected, "result {label}");
+                                assert_eq!(right.column(0), left.column(0), "output {label}");
+                                assert_eq!(new.snapshot(), old.snapshot(), "effects {label}");
+                                let route = actual.batch_route_snapshot();
+                                if (route.refusals, route.fallback) != (0, 0) {
+                                    eprintln!("STATEFUL OTHER ROUTE {label}: {route:?}");
+                                }
+                                assert_eq!(
+                                    (route.refusals, route.fallback),
+                                    (0, 0),
+                                    "{label}: {route:?}"
+                                );
+                                for byte in format!(
+                                    "{label}|{expected}|{:?}|{}",
+                                    left.column(0),
+                                    old.snapshot()
+                                )
+                                .bytes()
+                                {
+                                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                }
+                                count += 1;
                             }
-                            assert_eq!(got, expected, "result {label}");
-                            assert_eq!(right.column(0), left.column(0), "output {label}");
-                            assert_eq!(new.snapshot(), old.snapshot(), "effects {label}");
-                            let route = actual.batch_route_snapshot();
-                            if (route.refusals, route.fallback) != (0, 0) {
-                                eprintln!("STATEFUL OTHER ROUTE {label}: {route:?}");
-                            }
-                            assert_eq!(
-                                (route.refusals, route.fallback),
-                                (0, 0),
-                                "{label}: {route:?}"
-                            );
-                            for byte in format!(
-                                "{label}|{expected}|{:?}|{}",
-                                left.column(0),
-                                old.snapshot()
-                            )
-                            .bytes()
-                            {
-                                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
-                            }
-                            count += 1;
                         }
                     }
                 }
             }
         }
-    }
-    eprintln!("STATEFUL OTHER ORIGINAL {count}/{hash:016X}");
-    assert_eq!((count, hash), (472032, 0xE1A862511376506D));
+        eprintln!("STATEFUL OTHER ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (472032, 0xE1A862511376506D));
+    });
 }
 
 #[test]
@@ -3293,4 +3303,565 @@ fn optional_wildcard_full_actual_values_in_each_operand() {
     }
     assert_eq!((count, hash), (42912, 0x65B1761CB7A9C6A1));
     eprintln!("OPTIONAL WILDCARD FULL {count}/{hash:016X}");
+}
+
+struct ConcatContext {
+    base: C,
+    limit: u64,
+    failure: usize,
+    packet_reads: Cell<usize>,
+}
+impl ConcatContext {
+    fn new(enabled: bool, values: [Datum; 2], limit: u64, failure: usize) -> Self {
+        Self {
+            base: C::new(0, enabled, values),
+            limit,
+            failure,
+            packet_reads: Cell::new(0),
+        }
+    }
+    fn snapshot(&self) -> String {
+        self.base.snapshot()
+    }
+}
+impl Columns for ConcatContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no concat expression callback")
+    }
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        Some(&self.base.ready)
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        self.base.param_value(order)
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.base.enable_vectorized_expression()
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.base.time_zone()
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.base.type_flags()
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.base.truncate_level()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.base.append_warning(code, message)
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.base.set_uservar(name, value)
+    }
+    fn max_allowed_packet(&self) -> u64 {
+        let n = self.packet_reads.get();
+        self.packet_reads.set(n + 1);
+        self.base.event(format!("packet:{n}:{}", self.limit));
+        if self.failure == 2 && n == 0 {
+            panic!("original packet limit callback")
+        }
+        self.limit
+    }
+    fn handle_allowed_packet_overflowed(&self, name: &str) -> std::result::Result<(), EvalError> {
+        self.base.event(format!("packet-overflow:{name}"));
+        if self.failure == 1 {
+            Err(EvalError::Unsupported("original packet overflow callback"))
+        } else {
+            Ok(())
+        }
+    }
+}
+#[test]
+fn optional_concat_original_packet_metadata_and_demands() {
+    if isolate_common_corpus("stateful_tests::optional_concat_original_packet_metadata_and_demands")
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_concat_matrix(false);
+}
+#[test]
+fn optional_concat_actual_packet_metadata_and_demands() {
+    if isolate_common_corpus("stateful_tests::optional_concat_actual_packet_metadata_and_demands") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_concat_matrix(true);
+}
+fn run_optional_concat_matrix(compare: bool) {
+    let cases = [
+        [
+            Datum::new_string("a"),
+            Datum::new_string("B"),
+            Datum::new_string("c"),
+        ],
+        [
+            Datum::Null,
+            Datum::new_string("long"),
+            Datum::Bytes(vec![255]),
+        ],
+        [
+            Datum::new_string("abcdef"),
+            Datum::Null,
+            Datum::UInt(u64::MAX),
+        ],
+        [
+            Datum::Bytes(vec![255]),
+            Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+            Datum::Real(f64::NAN),
+        ],
+    ];
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    let mut retained_whole = 0usize;
+    for name in ["concat", "concat_ws"] {
+        for shape in 0..4 {
+            for mask in 0..16 {
+                for (fi, field) in [string_ty(), ty(), FieldType::new(FieldTypeCode::Json)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for (vi, values) in cases.iter().enumerate() {
+                        for limit in [0, 1, 4, u64::MAX] {
+                            for failure in 0..3 {
+                                for enabled in [false, true] {
+                                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                        let make = || {
+                                            let deferred = |variable, expr| {
+                                                let mut c =
+                                                    Constant::new(Datum::Int(99), string_ty());
+                                                c.deferred_expr = Some(Box::new(leaf::assignment(
+                                                    variable,
+                                                    expr,
+                                                    &string_ty(),
+                                                )));
+                                                Expression::Constant(c)
+                                            };
+                                            let p0 = parameter(0, string_ty());
+                                            let p1 = parameter(1, string_ty());
+                                            let tail = literal(values[2].clone(), string_ty());
+                                            let args = match shape {
+                                                1 => vec![
+                                                    deferred("concat-first", p0),
+                                                    deferred("concat-second", p1),
+                                                    deferred("concat-last", tail),
+                                                ],
+                                                2 => vec![
+                                                    p0,
+                                                    literal(Datum::Null, string_ty()),
+                                                    call(
+                                                        "__unread_concat_tail__",
+                                                        string_ty(),
+                                                        vec![],
+                                                    ),
+                                                ],
+                                                3 => vec![
+                                                    p0,
+                                                    p1,
+                                                    call(
+                                                        "__actual_concat_tail_error__",
+                                                        string_ty(),
+                                                        vec![],
+                                                    ),
+                                                ],
+                                                _ => vec![p0, p1, tail],
+                                            };
+                                            let mut f = ScalarFunction::new(
+                                                CiString::new(name),
+                                                field.clone(),
+                                                args,
+                                            );
+                                            if mask & 1 != 0 {
+                                                f.ret_type = None
+                                            }
+                                            for (i, a) in f.args.iter_mut().enumerate() {
+                                                if mask & (2 << i) != 0 {
+                                                    match a {
+                                                        Expression::Constant(c) => {
+                                                            c.ret_type = None
+                                                        }
+                                                        Expression::ScalarFunction(f) => {
+                                                            f.ret_type = None
+                                                        }
+                                                        _ => unreachable!(),
+                                                    }
+                                                }
+                                            }
+                                            suite(Expression::ScalarFunction(f))
+                                        };
+                                        let original = make();
+                                        let actual = make();
+                                        let old = ConcatContext::new(
+                                            enabled,
+                                            [values[0].clone(), values[1].clone()],
+                                            limit,
+                                            failure,
+                                        );
+                                        let new = ConcatContext::new(
+                                            enabled,
+                                            [values[0].clone(), values[1].clone()],
+                                            limit,
+                                            failure,
+                                        );
+                                        for reuse in 0..2 {
+                                            let input = || {
+                                                let mut c = chunk(
+                                                    &[ty()],
+                                                    &[
+                                                        vec![Datum::Int(0)],
+                                                        vec![Datum::Int(1)],
+                                                        vec![Datum::Int(2)],
+                                                    ],
+                                                );
+                                                c.set_sel(selection.clone());
+                                                c
+                                            };
+                                            let mut a = input();
+                                            let mut left = output_for(&field);
+                                            left.append_null(0);
+                                            let expected = session_read_outcome(|| {
+                                                original.run(&old, &mut a, &mut left)
+                                            });
+                                            let label=format!("optional-concat/{name}/{shape}/{mask}/{fi}/{vi}/{limit}/{failure}/{enabled}/{selection:?}/{reuse}");
+                                            if compare {
+                                                let mut b = input();
+                                                let mut right = output_for(&field);
+                                                right.append_null(0);
+                                                let got = session_read_outcome(|| {
+                                                    actual.run_with_tikv_batch(
+                                                        &new,
+                                                        &mut b,
+                                                        &mut right,
+                                                        &[ty()],
+                                                    )
+                                                });
+                                                if got != expected
+                                                    || right.column(0) != left.column(0)
+                                                    || new.snapshot() != old.snapshot()
+                                                {
+                                                    eprintln!("OPTIONAL CONCAT DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                }
+                                                assert_eq!(got, expected, "{label}");
+                                                assert_eq!(
+                                                    right.column(0),
+                                                    left.column(0),
+                                                    "{label}"
+                                                );
+                                                assert_eq!(
+                                                    new.snapshot(),
+                                                    old.snapshot(),
+                                                    "{label}"
+                                                );
+                                                let route = actual.batch_route_snapshot();
+                                                if route.fallback != 0 || route.refusals != 0 {
+                                                    // The unchanged contextual typed-root guard
+                                                    // retains this original whole-operand profile.
+                                                    if shape == 0
+                                                        && mask == 0
+                                                        && fi == 0
+                                                        && route.refusal
+                                                            == Some(BatchRefusal::Admission)
+                                                    {
+                                                        retained_whole += 1;
+                                                    } else if gaps.len() < 20 {
+                                                        gaps.push(format!("{label}: {route:?}"));
+                                                    }
+                                                }
+                                            }
+                                            for byte in format!(
+                                                "{label}|{expected}|{:?}|{}",
+                                                left.column(0),
+                                                old.snapshot()
+                                            )
+                                            .bytes()
+                                            {
+                                                hash = (hash ^ u64::from(byte))
+                                                    .wrapping_mul(0x100000001b3)
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (221184, 0xEE3A7F821B85B619));
+    eprintln!("OPTIONAL CONCAT ORIGINAL {count}/{hash:016X}; retained whole {retained_whole}");
+    if !gaps.is_empty() {
+        eprintln!("OPTIONAL CONCAT ADMISSION RED {gaps:?}")
+    }
+    assert!(gaps.is_empty());
+}
+
+#[test]
+fn optional_concat_full_actual_values_in_each_operand() {
+    if isolate_common_corpus("stateful_tests::optional_concat_full_actual_values_in_each_operand") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in ["concat", "concat_ws"] {
+        for position in 0..3 {
+            for mask in [1, 2, 8, 15] {
+                for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut values = [
+                        Datum::new_string("a"),
+                        Datum::new_string("b"),
+                        Datum::new_string("c"),
+                    ];
+                    values[position] = value;
+                    for limit in [0, 4, u64::MAX] {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let make = || {
+                                    let mut f = ScalarFunction::new(
+                                        CiString::new(name),
+                                        string_ty(),
+                                        vec![
+                                            parameter(0, string_ty()),
+                                            parameter(1, string_ty()),
+                                            literal(values[2].clone(), string_ty()),
+                                        ],
+                                    );
+                                    if mask & 1 != 0 {
+                                        f.ret_type = None;
+                                    }
+                                    for (i, arg) in f.args.iter_mut().enumerate() {
+                                        if mask & (2 << i) != 0 {
+                                            let Expression::Constant(c) = arg else {
+                                                unreachable!()
+                                            };
+                                            c.ret_type = None;
+                                        }
+                                    }
+                                    suite(Expression::ScalarFunction(f))
+                                };
+                                let original = make();
+                                let actual = make();
+                                let old = ConcatContext::new(
+                                    enabled,
+                                    [values[0].clone(), values[1].clone()],
+                                    limit,
+                                    0,
+                                );
+                                let new = ConcatContext::new(
+                                    enabled,
+                                    [values[0].clone(), values[1].clone()],
+                                    limit,
+                                    0,
+                                );
+                                for reuse in 0..2 {
+                                    let input = || {
+                                        let mut c = chunk(
+                                            &[ty()],
+                                            &[
+                                                vec![Datum::Int(0)],
+                                                vec![Datum::Int(1)],
+                                                vec![Datum::Int(2)],
+                                            ],
+                                        );
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let mut a = input();
+                                    let mut b = input();
+                                    let mut left = output_for(&string_ty());
+                                    let mut right = output_for(&string_ty());
+                                    left.append_null(0);
+                                    right.append_null(0);
+                                    let expected = session_read_outcome(|| {
+                                        original.run(&old, &mut a, &mut left)
+                                    });
+                                    let got = session_read_outcome(|| {
+                                        actual.run_with_tikv_batch(
+                                            &new,
+                                            &mut b,
+                                            &mut right,
+                                            &[ty()],
+                                        )
+                                    });
+                                    let label=format!("optional-concat-full/{name}/{position}/{mask}/{vi}/{limit}/{enabled}/{selection:?}/{reuse}");
+                                    if got != expected
+                                        || right.column(0) != left.column(0)
+                                        || new.snapshot() != old.snapshot()
+                                    {
+                                        eprintln!("OPTIONAL CONCAT FULL DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                    }
+                                    assert_eq!(got, expected, "{label}");
+                                    assert_eq!(right.column(0), left.column(0), "{label}");
+                                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                    let route = actual.batch_route_snapshot();
+                                    assert_eq!(
+                                        (route.fallback, route.refusals),
+                                        (0, 0),
+                                        "{label} {route:?}"
+                                    );
+                                    for byte in format!(
+                                        "{label}|{expected}|{:?}|{}",
+                                        left.column(0),
+                                        old.snapshot()
+                                    )
+                                    .bytes()
+                                    {
+                                        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (128736, 0xD556346B4B92D109));
+    eprintln!("OPTIONAL CONCAT FULL {count}/{hash:016X}");
+}
+
+#[test]
+fn optional_concat_actual_arities_keep_raw_values_and_packet_demand() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_concat_actual_arities_keep_raw_values_and_packet_demand",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in ["concat", "concat_ws"] {
+        for arity in [1, 2, 3, 5, 6, 9] {
+            if name == "concat_ws" && arity == 1 {
+                continue;
+            }
+            for mask in [1, 2, 3] {
+                for (vi, value) in vec![
+                    Datum::Null,
+                    Datum::new_string("ab"),
+                    Datum::UInt(u64::MAX),
+                    Datum::Bytes(vec![255]),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut values = [
+                        Datum::new_string("a"),
+                        Datum::new_string("b"),
+                        Datum::new_string("c"),
+                    ];
+                    values[0] = value;
+                    for limit in [0, 4, u64::MAX] {
+                        for enabled in [false, true] {
+                            for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                let make = || {
+                                    let mut f = ScalarFunction::new(
+                                        CiString::new(name),
+                                        string_ty(),
+                                        (0..arity)
+                                            .map(|i| {
+                                                if i % 3 == 2 {
+                                                    literal(values[2].clone(), string_ty())
+                                                } else {
+                                                    parameter(i % 2, string_ty())
+                                                }
+                                            })
+                                            .collect(),
+                                    );
+                                    if mask & 1 != 0 {
+                                        f.ret_type = None;
+                                    }
+                                    for (i, arg) in f.args.iter_mut().enumerate() {
+                                        if mask & (2 << i) != 0 {
+                                            let Expression::Constant(c) = arg else {
+                                                unreachable!()
+                                            };
+                                            c.ret_type = None;
+                                        }
+                                    }
+                                    suite(Expression::ScalarFunction(f))
+                                };
+                                let original = make();
+                                let actual = make();
+                                let old = ConcatContext::new(
+                                    enabled,
+                                    [values[0].clone(), values[1].clone()],
+                                    limit,
+                                    0,
+                                );
+                                let new = ConcatContext::new(
+                                    enabled,
+                                    [values[0].clone(), values[1].clone()],
+                                    limit,
+                                    0,
+                                );
+                                for reuse in 0..2 {
+                                    let input = || {
+                                        let mut c = chunk(
+                                            &[ty()],
+                                            &[
+                                                vec![Datum::Int(0)],
+                                                vec![Datum::Int(1)],
+                                                vec![Datum::Int(2)],
+                                            ],
+                                        );
+                                        c.set_sel(selection.clone());
+                                        c
+                                    };
+                                    let mut a = input();
+                                    let mut b = input();
+                                    let mut left = output_for(&string_ty());
+                                    let mut right = output_for(&string_ty());
+                                    left.append_null(0);
+                                    right.append_null(0);
+                                    let expected = session_read_outcome(|| {
+                                        original.run(&old, &mut a, &mut left)
+                                    });
+                                    let got = session_read_outcome(|| {
+                                        actual.run_with_tikv_batch(
+                                            &new,
+                                            &mut b,
+                                            &mut right,
+                                            &[ty()],
+                                        )
+                                    });
+                                    let label=format!("optional-concat-arity/{name}/{arity}/{mask}/{vi}/{limit}/{enabled}/{selection:?}/{reuse}");
+                                    if got != expected
+                                        || right.column(0) != left.column(0)
+                                        || new.snapshot() != old.snapshot()
+                                    {
+                                        eprintln!("CONCAT ARITIES DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                    }
+                                    assert_eq!(got, expected, "{label}");
+                                    assert_eq!(right.column(0), left.column(0), "{label}");
+                                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                    let route = actual.batch_route_snapshot();
+                                    assert_eq!(
+                                        (route.fallback, route.refusals),
+                                        (0, 0),
+                                        "{label} {route:?}"
+                                    );
+                                    for byte in format!(
+                                        "{label}|{expected}|{:?}|{}",
+                                        left.column(0),
+                                        old.snapshot()
+                                    )
+                                    .bytes()
+                                    {
+                                        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                                    }
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (4752, 0x344B99C07DBAD21D));
+    eprintln!("CONCAT ARITIES {count}/{hash:016X}");
 }

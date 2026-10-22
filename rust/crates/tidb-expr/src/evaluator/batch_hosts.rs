@@ -244,6 +244,13 @@ pub(super) enum NativeHostMetadata {
         output_node: usize,
         output_role: NativeValueRole,
     },
+    ConcatValues {
+        arguments: Box<[usize]>,
+        kind: ConcatKind,
+        result_type: Option<FieldType>,
+        output_node: usize,
+        output_role: NativeValueRole,
+    },
     Like {
         arguments: [usize; 3],
         escape_type: Option<FieldType>,
@@ -472,6 +479,7 @@ impl NativeHostMetadata {
             Self::CachedList(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
+            Self::ConcatValues { result_type, .. } => result_type.as_ref(),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
@@ -512,6 +520,9 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    ConcatValues {
+        pending: Option<ConcatDemand>,
+    },
     HeaderOutcome,
     Consumed,
     JsonSchema(Box<json_schema_source::SchemaTask>),
@@ -675,6 +686,10 @@ impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
             SqlDemand::Consumed | SqlDemand::HeaderOutcome => Ok(None),
+            SqlDemand::ConcatValues { pending } => match pending {
+                Some(demand) => demand.next_argument(),
+                None => Ok(None),
+            },
             SqlDemand::JsonSchema(task) => Ok(Some(task.next_argument())),
             SqlDemand::Stateful(task) => Ok(Some(task.next_argument())),
             SqlDemand::FinalState(task) => Ok(Some(task.next)),
@@ -739,6 +754,7 @@ impl NativeTask {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
+            SqlDemand::ConcatValues { .. } => Err(binding("raw CONCAT owns its actual prefix")),
             SqlDemand::JsonSchema(_) => Err(binding("schema host cannot buffer wire values")),
             SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
             SqlDemand::FinalState(_) => Err(binding("final state host cannot buffer wire values")),
@@ -1413,6 +1429,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::RawValues { .. }
                 | NativeHostMetadata::Grouping { .. }
                 | NativeHostMetadata::Like { .. }
+                | NativeHostMetadata::ConcatValues { .. }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {
@@ -3195,6 +3212,39 @@ impl NativeBatchHosts<'_> {
                     membership: None,
                 }
             }
+            SqlBatchHostOperation::Concat | SqlBatchHostOperation::ConcatWs
+                if matches!(
+                    self.metadata.get(invocation.slot.index()),
+                    Some(NativeHostMetadata::ConcatValues { .. })
+                ) =>
+            {
+                let Some(NativeHostMetadata::ConcatValues {
+                    arguments, kind, ..
+                }) = self.metadata.get(invocation.slot.index())
+                else {
+                    unreachable!()
+                };
+                let expected = if self.catalog.sql_batch_operation(invocation.slot)?
+                    == SqlBatchHostOperation::Concat
+                {
+                    ConcatKind::Concat
+                } else {
+                    ConcatKind::ConcatWs
+                };
+                if self.native_values.is_none()
+                    || *kind != expected
+                    || arguments.len() != invocation.arg_types.len()
+                {
+                    return Err(binding("CONCAT value descriptor differs"));
+                }
+                ready_preparation = self
+                    .context
+                    .ready_value_cache()
+                    .map(|cache| cache.preparation_unwind_guard());
+                SqlDemand::ConcatValues {
+                    pending: Some(ConcatDemand::new(*kind, arguments.len())?),
+                }
+            }
             SqlBatchHostOperation::Concat => SqlDemand::Concat {
                 kind: ConcatKind::Concat,
                 demand: ConcatDemand::new(ConcatKind::Concat, invocation.arg_types.len())?,
@@ -3618,6 +3668,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("stateful source cannot be wire NULL"));
             };
             return self.resume_stateful(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::ConcatValues { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("CONCAT value cannot be wire NULL"));
+            };
+            return self.resume_concat_value(id, token);
         }
         if matches!(task.demand, SqlDemand::CachedList(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -4472,3 +4528,6 @@ mod context_value_source;
 mod diagnostic_source;
 
 pub(super) use diagnostic_source::CompiledDiagnosticParent;
+
+#[path = "batch_concat_value.rs"]
+mod concat_value_source;

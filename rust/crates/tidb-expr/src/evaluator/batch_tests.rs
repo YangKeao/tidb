@@ -3758,13 +3758,24 @@ fn complete_literal_budget_precedes_even_earlier_temporary_conversions() {
         string_ty(),
         vec![literal(Datum::Int(1), string_ty()), text(Some(b"x"))],
     );
-    assert_eq!(
-        preflight(&small, &[], limits())
-            .map(|_| ())
-            .unwrap_err()
-            .refusal(),
-        BatchRefusal::Admission
-    );
+    // The raw-value source now represents this actual Int without a typed
+    // temporary conversion; the complete large-literal gate above stays first.
+    preflight(&small, &[], limits()).unwrap();
+    let original = suite(small.clone());
+    let actual = suite(small);
+    let mut left_input = chunk(&[], &[vec![]]);
+    let mut right_input = chunk(&[], &[vec![]]);
+    let mut left = output_for(&string_ty());
+    let mut right = output_for(&string_ty());
+    original
+        .run(&crate::NoColumns, &mut left_input, &mut left)
+        .unwrap();
+    actual
+        .run_with_tikv_batch(&crate::NoColumns, &mut right_input, &mut right, &[])
+        .unwrap();
+    assert_eq!(right.column(0), left.column(0));
+    let route = actual.batch_route_snapshot();
+    assert_eq!((route.refusals, route.fallback), (0, 0));
 }
 
 #[derive(Default)]
@@ -34613,6 +34624,387 @@ fn metadata_property_protocol_authenticates_snapshot_and_zero_value_demand() {
                     ));
                     assert!(provider.take_native_error().is_none());
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_concat_values_authenticate_prefix_cancel_scope_and_resources() {
+    use super::hosts::{NativeBatchHosts, NativeHostMetadata};
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{
+        ConcatKind, HostArgReply, HostInvocation, HostStart, HostStep, HostTaskId,
+        LocalHostServices,
+    };
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        cache: crate::ReadyValueCache,
+        events: RefCell<Vec<&'static str>>,
+        limit: Cell<u64>,
+        panic_packet: Cell<bool>,
+        fail_packet: Cell<bool>,
+        reset_packet: Cell<bool>,
+        reset_overflow: Cell<bool>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no concat expression callback")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            Some(&self.cache)
+        }
+        fn max_allowed_packet(&self) -> u64 {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("packet");
+            assert!(
+                !self.panic_packet.replace(false),
+                "original packet callback"
+            );
+            if self.reset_packet.replace(false) {
+                self.store.borrow_mut().begin_window().unwrap();
+            }
+            self.limit.get()
+        }
+        fn handle_allowed_packet_overflowed(&self, _: &str) -> std::result::Result<(), EvalError> {
+            drop(self.store.borrow_mut());
+            self.events.borrow_mut().push("overflow");
+            if self.reset_overflow.replace(false) {
+                self.store.borrow_mut().begin_window().unwrap();
+            }
+            if self.fail_packet.get() {
+                Err(EvalError::Unsupported("original packet callback error"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let field = projected(&native_bytes_type(), true).unwrap();
+    let args = vec![field.clone(); 3];
+    let row = InputRow {
+        occurrence: 0,
+        input_row: 2,
+    };
+    for kind in [ConcatKind::Concat, ConcatKind::ConcatWs] {
+        for result_type in [Some(string_ty()), None] {
+            for role in [NativeValueRole::Output, NativeValueRole::CharInput] {
+                let operation = if kind == ConcatKind::Concat {
+                    SqlBatchHostOperation::Concat
+                } else {
+                    SqlBatchHostOperation::ConcatWs
+                };
+                let catalog = HostCatalog::for_sql_batch(vec![(
+                    operation,
+                    HostSignature {
+                        arg_types: args.clone().into(),
+                        return_type: field.clone(),
+                    },
+                )])
+                .unwrap();
+                let slot = catalog.slot(0).unwrap();
+                let metadata = [NativeHostMetadata::ConcatValues {
+                    arguments: vec![3, 4, 5].into(),
+                    kind,
+                    result_type: result_type.clone(),
+                    output_node: 2,
+                    output_role: role,
+                }];
+                let store = RefCell::new(NativeValueStore::new(256 << 10).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let stale = store
+                    .borrow_mut()
+                    .insert_clone(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin { node: 3, row },
+                    )
+                    .unwrap();
+                store.borrow_mut().begin_window().unwrap();
+                let context = C {
+                    store: &store,
+                    cache: crate::ReadyValueCache::new(),
+                    events: RefCell::new(vec![]),
+                    limit: Cell::new(u64::MAX),
+                    panic_packet: Cell::new(false),
+                    fail_packet: Cell::new(false),
+                    reset_packet: Cell::new(false),
+                    reset_overflow: Cell::new(false),
+                };
+                let mut provider =
+                    NativeBatchHosts::new(catalog.clone(), &metadata, &context, 16 << 10)
+                        .with_native_values(Some(&store));
+                let mut eval = EvalContext::default();
+                let begin = |p: &mut NativeBatchHosts<'_>, e: &mut EvalContext| {
+                    let HostStart::Pending { task, .. } = p
+                        .start(
+                            e,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &args,
+                                return_type: &field,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    task
+                };
+                let insert = |value: &Datum, role, node, row| {
+                    store
+                        .borrow_mut()
+                        .insert_clone(value, role, NativeValueOrigin { node, row })
+                        .unwrap()
+                };
+                let reply = |p: &mut NativeBatchHosts<'_>,
+                             e: &mut EvalContext,
+                             t: &HostTaskId,
+                             index,
+                             token| {
+                    p.resume(
+                        e,
+                        t,
+                        HostArgReply {
+                            index,
+                            field_type: &field,
+                            values: &VectorValue::from_scalar(&ScalarValue::Bytes(token), 1),
+                        },
+                    )
+                };
+                for bad in [
+                    None,
+                    Some(stale),
+                    Some(vec![0; 8]),
+                    Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 1,
+                            input_row: 2,
+                        },
+                    )),
+                    Some(insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 0,
+                            input_row: 1,
+                        },
+                    )),
+                ] {
+                    let task = begin(&mut provider, &mut eval);
+                    context.events.borrow_mut().clear();
+                    assert!(matches!(
+                        reply(&mut provider, &mut eval, &task, 0, bad),
+                        Err(LocalError::BindingContract(_))
+                    ));
+                    assert!(context.events.borrow().is_empty());
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    provider.cancel(&task);
+                }
+                for prefix in 0..3 {
+                    for _ in 0..128 {
+                        store.borrow_mut().begin_window().unwrap();
+                        let task = begin(&mut provider, &mut eval);
+                        for index in 0..prefix {
+                            let token = insert(
+                                &Datum::new_string("a"),
+                                NativeValueRole::CharInput,
+                                3 + index,
+                                row,
+                            );
+                            assert!(matches!(
+                                reply(&mut provider, &mut eval, &task, index, Some(token)),
+                                Ok(HostStep::NeedArg(_))
+                            ));
+                        }
+                        provider.cancel(&task);
+                        provider.cancel(&task);
+                        assert!(reply(
+                            &mut provider,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        )
+                        .is_err());
+                    }
+                }
+                for limit in [0, 2, u64::MAX] {
+                    for values in [
+                        [
+                            Datum::new_string("a"),
+                            Datum::new_string("b"),
+                            Datum::new_string("c"),
+                        ],
+                        [
+                            Datum::Null,
+                            Datum::new_string("unread"),
+                            Datum::Bytes(vec![255; 4096]),
+                        ],
+                        [Datum::new_string(","), Datum::Null, Datum::new_string("c")],
+                    ] {
+                        store.borrow_mut().begin_window().unwrap();
+                        context.limit.set(limit);
+                        context.events.borrow_mut().clear();
+                        let task = begin(&mut provider, &mut eval);
+                        let mut result = None;
+                        for (index, value) in values.iter().enumerate() {
+                            let token = insert(value, NativeValueRole::CharInput, 3 + index, row);
+                            match reply(&mut provider, &mut eval, &task, index, Some(token)) {
+                                Ok(HostStep::NeedArg(_)) => (),
+                                Ok(HostStep::Ready(output)) => {
+                                    let ScalarValueRef::Bytes(Some(token)) =
+                                        output.get_scalar_ref(0)
+                                    else {
+                                        panic!()
+                                    };
+                                    result = Some(
+                                        store
+                                            .borrow()
+                                            .get(token, role, NativeValueOrigin { node: 2, row })
+                                            .unwrap()
+                                            .clone(),
+                                    );
+                                    break;
+                                }
+                                other => panic!("{other:?}"),
+                            }
+                        }
+                        let events = context.events.borrow().clone();
+                        context.events.borrow_mut().clear();
+                        let mut root = ScalarFunction::new(
+                            CiString::new(if kind == ConcatKind::Concat {
+                                "concat"
+                            } else {
+                                "concat_ws"
+                            }),
+                            string_ty(),
+                            values
+                                .iter()
+                                .map(|v| literal(v.clone(), string_ty()))
+                                .collect(),
+                        );
+                        root.ret_type = result_type.clone();
+                        let input = chunk(&[], &[vec![]]);
+                        let expected = root.eval(&context, input.get_row(0)).unwrap();
+                        assert_eq!(result, Some(expected));
+                        assert_eq!(events, *context.events.borrow());
+                        assert!(reply(
+                            &mut provider,
+                            &mut eval,
+                            &task,
+                            0,
+                            Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                        )
+                        .is_err());
+                        provider.cancel(&task);
+                    }
+                }
+                for reset_overflow in [false, true] {
+                    store.borrow_mut().begin_window().unwrap();
+                    context.events.borrow_mut().clear();
+                    context.limit.set(0);
+                    context.reset_packet.set(!reset_overflow);
+                    context.reset_overflow.set(reset_overflow);
+                    let task = begin(&mut provider, &mut eval);
+                    let mut rejected = false;
+                    for index in 0..3 {
+                        let token = insert(
+                            &Datum::new_string("a"),
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            row,
+                        );
+                        match reply(&mut provider, &mut eval, &task, index, Some(token)) {
+                            Err(LocalError::BindingContract(_)) => {
+                                rejected = true;
+                                break;
+                            }
+                            Ok(HostStep::NeedArg(_)) => (),
+                            other => panic!("callback generation reset accepted: {other:?}"),
+                        }
+                    }
+                    assert!(rejected);
+                    assert!(provider.take_native_error().is_none());
+                    provider.cancel(&task);
+                    assert_eq!(
+                        *context.events.borrow(),
+                        if reset_overflow {
+                            vec!["packet", "overflow"]
+                        } else {
+                            vec!["packet"]
+                        }
+                    );
+                    assert!(context.cache.original_scope_status().is_ok());
+                }
+                store.borrow_mut().begin_window().unwrap();
+                context.events.borrow_mut().clear();
+                context.limit.set(u64::MAX);
+                let task = begin(&mut provider, &mut eval);
+                let huge = insert(
+                    &Datum::Bytes(vec![b'x'; 32 << 10]),
+                    NativeValueRole::CharInput,
+                    3,
+                    row,
+                );
+                assert!(reply(&mut provider, &mut eval, &task, 0, Some(huge)).is_err());
+                assert!(context.events.borrow().is_empty());
+                if let Some(error) = provider.take_native_error() {
+                    assert!(matches!(error, EvalError::ExpressionRuntimeFailure(_)));
+                }
+                assert!(reply(
+                    &mut provider,
+                    &mut eval,
+                    &task,
+                    0,
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                )
+                .is_err());
+                provider.cancel(&task);
+                store.borrow_mut().begin_window().unwrap();
+                let task = begin(&mut provider, &mut eval);
+                assert!(matches!(
+                    reply(
+                        &mut provider,
+                        &mut eval,
+                        &task,
+                        0,
+                        Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                    ),
+                    Ok(HostStep::Ready(_))
+                ));
+                provider.cancel(&task);
+                assert!(context.cache.original_scope_status().is_ok());
+                // A caught callback unwind drops the provider, poisoning only
+                // the original compatibility scope; normal cancel above did not.
+                context.limit.set(0);
+                context.panic_packet.set(true);
+                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut p =
+                        NativeBatchHosts::new(catalog.clone(), &metadata, &context, 16 << 10)
+                            .with_native_values(Some(&store));
+                    let task = begin(&mut p, &mut eval);
+                    for index in 0..3 {
+                        let token = insert(
+                            &Datum::new_string("a"),
+                            NativeValueRole::CharInput,
+                            3 + index,
+                            row,
+                        );
+                        let _ = reply(&mut p, &mut eval, &task, index, Some(token));
+                    }
+                }));
+                assert!(panic.is_err());
+                assert!(context.cache.original_scope_status().is_err());
+                drop(provider);
+                drop(store.borrow_mut());
             }
         }
     }
