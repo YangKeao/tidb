@@ -32,3 +32,11 @@ pub(crate) fn operator_strings(
         .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
     Ok((text, pattern))
 }
+
+/// The selected scalar implementation rejects arity before cache or children.
+pub(crate) fn accepts_arity(arity: usize) -> bool {
+    matches!(arity, 2 | 3)
+}
+pub(crate) fn arity_error() -> EvalError {
+    EvalError::WrongParameterCount("regexp_like")
+}

@@ -7,6 +7,8 @@ use crate::{Columns, Datum, EvalError};
 /// A closed original before-name phase, independent of argument values.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum HeaderKind {
+    /// Genuine selected PB regexp rejects logical arity without value demand.
+    PbRegexpArity,
     /// The truth predicate reports its original invalid parameter count.
     TruthArity,
     /// GROUPING rejects invalid logical arity before reading any value.
@@ -21,6 +23,10 @@ pub(crate) enum HeaderKind {
 impl HeaderKind {
     /// Select only the real SQL scalar owner and its original zero-demand phase.
     pub(crate) fn for_function(function: &ScalarFunction) -> Option<Self> {
+        if function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig) {
+            return (!super::regexp_value::accepts_arity(function.args.len()))
+                .then_some(Self::PbRegexpArity);
+        }
         if function.pb_signature().is_some() || function.pb_origin().is_some() {
             return None;
         }
@@ -44,6 +50,7 @@ impl HeaderKind {
     /// Authenticate original logical arity separately from zero value operands.
     pub(crate) fn accepts_arity(self, arity: usize) -> bool {
         match self {
+            Self::PbRegexpArity => !super::regexp_value::accepts_arity(arity),
             Self::TruthArity | Self::GroupingArity => arity != 1,
             Self::EmptyCase | Self::EmptyCoalesce => arity == 0,
             Self::Property(_) => arity == 1,
@@ -60,6 +67,7 @@ impl HeaderKind {
     /// The original name used by the result-family boundary.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Self::PbRegexpArity => "regexp_like",
             Self::TruthArity => "istrue",
             Self::GroupingArity => "grouping",
             Self::EmptyCase => "case",
@@ -82,6 +90,7 @@ impl HeaderKind {
         property: Option<Datum>,
     ) -> Result<Datum, EvalError> {
         match self {
+            Self::PbRegexpArity => Err(super::regexp_value::arity_error()),
             Self::TruthArity => Err(truth_arity_error()),
             Self::GroupingArity => Err(grouping_arity_error()),
             Self::EmptyCase => crate::tikv::eval_case_in(

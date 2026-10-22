@@ -741,6 +741,7 @@ fn context_root_policy(
             && !matches!(root, Expression::ScalarFunction(function) if native_concat_row_batch(function))
             && !native_string_row_batch(root)
             && !native_regexp_row_batch(root)
+            && !pb_regexp_row_batch(root)
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -1803,8 +1804,12 @@ fn parts_optional(
 fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
     let expected_arity = resolve_call_in_view(function, view)?.1;
     if source_data_arity(function) != expected_arity
-        || (function.pb_signature().is_some() && !pb_timestamp_diff(function))
-        || (function.pb_origin().is_some() && !pb_timestamp_diff(function))
+        || (function.pb_signature().is_some()
+            && !pb_timestamp_diff(function)
+            && !pb_regexp_owner(function))
+        || (function.pb_origin().is_some()
+            && !pb_timestamp_diff(function)
+            && !pb_regexp_owner(function))
         || (function.has_values_offset() && !native_stateful_call(function))
         || (function.has_grouping_metadata() && !native_grouping_call(function))
     {
@@ -2230,17 +2235,35 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 }
 // Closed value owners retain actual optional metadata and their own demand
 // policy, including the distinct stateful, schema and lazy AES continuations.
+// The decoder's selected implementation is independent of display spelling.
+fn pb_regexp_owner(function: &ScalarFunction) -> bool {
+    function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig)
+}
+// Some legacy enabled batch bodies bypass ScalarFunction::eval. Keep those
+// root profiles outside this scalar-signature closure until separately proven.
+fn pb_regexp_legacy_bulk(root: &Expression) -> bool {
+    matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function)
+        && (matches!(function.func_name.lowercase(),"abs"|"cast_json"|"cast_decimal") || native_arithmetic_operation(function.func_name.lowercase()).is_some())
+        && crate::scalar_function::static_batch_target(root).is_some())
+}
+fn pb_regexp_row_batch(root: &Expression) -> bool {
+    matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function)
+        && !function.has_values_offset() && !function.has_grouping_metadata()
+        && crate::scalar_function::static_batch_target(root).is_some())
+}
 fn native_regexp_call(function: &ScalarFunction) -> bool {
-    function.pb_signature().is_none()
-        && function.pb_origin().is_none()
-        && matches!(
-            (function.func_name.lowercase(), function.args.len()),
-            ("regexp", 2) | ("regexp_like", 2 | 3)
-        )
+    (pb_regexp_owner(function)
+        && crate::scalar_function::regexp_value::accepts_arity(function.args.len()))
+        || function.pb_signature().is_none()
+            && function.pb_origin().is_none()
+            && matches!(
+                (function.func_name.lowercase(), function.args.len()),
+                ("regexp", 2) | ("regexp_like", 2 | 3)
+            )
 }
 fn native_regexp_source_value(function: &ScalarFunction, limits: CompileLimits) -> bool {
     native_regexp_call(function)
-        && (function.func_name.lowercase() == "regexp"
+        && (pb_regexp_owner(function) || function.func_name.lowercase() == "regexp"
             || !matches!(
                 resolve_call(function),
                 Ok((
@@ -2498,6 +2521,9 @@ fn source_prefix_probe<'a>(
     function: &'a ScalarFunction,
     operation: SqlBatchHostOperation,
 ) -> Option<&'a Datum> {
+    if pb_regexp_owner(function) {
+        return None;
+    }
     if native_final_state_call(function)
         || native_weight_string_call(function)
         || native_regexp_call(function)
@@ -3651,13 +3677,28 @@ fn preflight_view<'a>(
         root,
         1usize,
         view.unwrap_or_else(|| root_source_view(root, limits.tree)),
-        matches!(root, Expression::ScalarFunction(function) if pb_timestamp_diff(function)),
+        matches!(root, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_regexp_owner(function)),
     ));
     let mut scheduled = 1usize;
     while let Some((node, depth, view, allow_pb)) = pending.pop() {
         let allow_pb = allow_pb
-            || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function));
+            || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_regexp_owner(function));
         let (declaration, collation) = parts_optional(node, allow_pb)?;
+        if let Expression::ScalarFunction(function) = node {
+            if pb_regexp_owner(function) {
+                if let Some(origin) = function.pb_origin() {
+                    if origin.expr_type != Some(tidb_proto::tipb::ExprType::ScalarFunc as i32)
+                        || origin.signature
+                            != Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig as i32)
+                        || origin.child_count != function.args.len()
+                    {
+                        return Err(BatchFailure::admission(
+                            "PB regexp selected implementation differs from its origin",
+                        ));
+                    }
+                }
+            }
+        }
         // Header metadata has no value operands. Keep original logical arity
         // and attributes in its descriptor; unused row-value bindings are not
         // part of this data program. The real tree is still shape-bounded.
@@ -3674,6 +3715,18 @@ fn preflight_view<'a>(
                 budget.field(&native_bytes_type(), 5)?;
                 if let Some(field) = declaration {
                     budget.field(field, 2)?;
+                }
+                if pb_regexp_owner(function) {
+                    if let Some(origin) = function.pb_origin() {
+                        if let Some(original) = origin.effective_type_ref() {
+                            budget.field(original, 1)?;
+                        }
+                        if !declaration.is_some_and(|field| origin.matches_effective_type(field)) {
+                            return Err(BatchFailure::admission(
+                                "PB header declaration differs from its original snapshot",
+                            ));
+                        }
+                    }
                 }
                 budget.array::<CheckedNode<'_>>(1)?;
                 budget.array::<NodeRecord>(1)?;
@@ -5071,6 +5124,16 @@ fn lower_view_policy(
         .calculated
         .get(calculated_slot)
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
+    if suite.program.vectorizable
+        && matches!(root,Expression::ScalarFunction(function) if pb_regexp_owner(function))
+    {
+        profile_shape(root, limits)?;
+        if pb_regexp_legacy_bulk(root) {
+            return Err(BatchFailure::admission(
+                "PB regexp legacy bulk display profile remains outside this closure",
+            ));
+        }
+    }
     let (constant_root_shortcut, context_row_only, root_type_probe) = if deferred_closed {
         (false, true, None)
     } else {
@@ -5084,7 +5147,7 @@ fn lower_view_policy(
             && crate::scalar_function::static_batch_target(root).is_some())
             || native_concat_row_batch(function)
             || native_string_row_batch(root)
-            || native_regexp_row_batch(root));
+            || native_regexp_row_batch(root) || pb_regexp_row_batch(root));
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
@@ -5605,7 +5668,7 @@ fn lower_view_policy(
                                 for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("regexp child absent"))?.subtree_end;}
                                 NativeHostMetadata::RegexpValues(Box::new(hosts::NativeRegexpValues{
                                     arguments:arguments.into_boxed_slice(),source_types:sql.args.iter().map(|arg|arg.static_type().map(snapshot_field_type)).collect(),
-                                    operator:sql.func_name.lowercase()=="regexp",invocation:sql.batch_regexp_like_invocation(),collation:sql.derived_collation(),
+                                    operator:!pb_regexp_owner(sql) && sql.func_name.lowercase()=="regexp",invocation:sql.batch_regexp_like_invocation(),collation:sql.derived_collation(),
                                     result_type:item.sql.map(snapshot_field_type),output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("regexp output view absent"))?,
                                 }))
                             }
@@ -8478,6 +8541,12 @@ impl PreparedBatchSuite {
                         NativeHostMetadata::WeightString(_)
                             | NativeHostMetadata::Regexp(_)
                             | NativeHostMetadata::RegexpValues(_)
+                    ) || matches!(
+                        meta,
+                        NativeHostMetadata::HeaderOutcome {
+                            kind: crate::scalar_function::header_value::HeaderKind::PbRegexpArity,
+                            ..
+                        }
                     )
                 })
             }) || suite.program.calculated.iter().any(native_string_row_batch),

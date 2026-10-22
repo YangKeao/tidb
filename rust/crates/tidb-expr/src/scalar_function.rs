@@ -1995,8 +1995,8 @@ impl ScalarFunction {
     }
 
     fn eval_regexp_like(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
-        if !matches!(self.args.len(), 2 | 3) {
-            return Err(EvalError::WrongParameterCount("regexp_like"));
+        if !regexp_value::accepts_arity(self.args.len()) {
+            return Err(regexp_value::arity_error());
         }
         let string_arg = |index: usize| {
             regexp_value::named_string(

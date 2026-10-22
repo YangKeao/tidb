@@ -10331,3 +10331,6 @@ fn regexp_source_same_cap_resource_then_null_recovery() {
         );
     }
 }
+
+#[path = "batch_pb_regexp_tests.rs"]
+mod pb_regexp_tests;
