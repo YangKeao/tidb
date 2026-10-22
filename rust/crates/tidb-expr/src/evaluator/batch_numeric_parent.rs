@@ -199,6 +199,7 @@ impl<'a> NativeBatchHosts<'a> {
                 batch,
                 operation,
                 name,
+                result_type,
                 source_types,
                 binary_literal,
                 generic_mode,
@@ -265,7 +266,8 @@ impl<'a> NativeBatchHosts<'a> {
                 return Err(binding("numeric parent graph differs"));
             }
             if let Some(batch) = batch {
-                if (name.as_ref() == "intdiv" && batch.domain == NativeEvalType::Real)
+                if result_type.is_none()
+                    || (name.as_ref() == "intdiv" && batch.domain == NativeEvalType::Real)
                     || p.requests[1] != [0, 1]
                     || !matches!(
                         batch.domain,
@@ -484,7 +486,7 @@ impl<'a> NativeBatchHosts<'a> {
                 };
                 let value = match crate::scalar_function::coerce_function_result(
                     name,
-                    Some(result_type),
+                    result_type.as_ref(),
                     value,
                 ) {
                     Ok(value) => value,
@@ -935,7 +937,9 @@ impl<'a> NativeBatchHosts<'a> {
                                 return Err(resource("numeric overflow text allowance exceeded"));
                             }
                             return Ok(DiagnosticTransition::Failure(EvalError::DataOutOfRange {
-                                value: kind.class(result_type.is_unsigned()),
+                                value: kind.class(
+                                    result_type.as_ref().is_some_and(FieldType::is_unsigned),
+                                ),
                                 expression: native_render_binary_expression(&left, op, &text),
                             }));
                         }
@@ -1057,7 +1061,7 @@ mod tests {
                 batch: None,
                 operation,
                 name: name.into(),
-                result_type: result,
+                result_type: Some(result),
                 argument_nodes: [1, 2],
                 source_types: [source.clone(), source],
                 literal: [true; 2],
@@ -1533,8 +1537,16 @@ mod tests {
             domain,
             integer: domain == NativeEvalType::Int
                 && source_types[0].eval_type() == NativeEvalType::Int
-                && result_type.eval_type() == NativeEvalType::Int,
-            output_integer: result_type.eval_type() == NativeEvalType::Int,
+                && result_type
+                    .as_ref()
+                    .expect("window result declaration")
+                    .eval_type()
+                    == NativeEvalType::Int,
+            output_integer: result_type
+                .as_ref()
+                .expect("window result declaration")
+                .eval_type()
+                == NativeEvalType::Int,
             sources: [WindowArithmeticSource::TypedReady; 2],
         });
         *literal = [true; 2];

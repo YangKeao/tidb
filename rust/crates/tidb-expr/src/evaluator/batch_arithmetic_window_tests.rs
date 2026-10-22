@@ -153,7 +153,7 @@ fn execute_case(
         }),
         operation,
         name: name.into(),
-        result_type: result.clone(),
+        result_type: Some(result.clone()),
         argument_nodes: [1, 2],
         source_types: fields.clone(),
         literal,

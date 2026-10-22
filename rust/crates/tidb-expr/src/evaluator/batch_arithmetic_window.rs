@@ -53,6 +53,7 @@ impl NativeBatchHosts<'_> {
             operation: actual,
             batch: Some(batch),
             name,
+            result_type,
             source_types,
             binary_literal,
             literal,
@@ -63,7 +64,8 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("window arithmetic descriptor missing"));
         };
-        if signature.arg_types.as_ref() != invocation.arg_types
+        if result_type.is_none()
+            || signature.arg_types.as_ref() != invocation.arg_types
             || &signature.return_type != invocation.return_type
             || invocation.arg_types.len() != 2
             || invocation.physical_rows.is_empty()
@@ -267,6 +269,9 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("window result descriptor missing"));
         };
+        let result_type = result_type
+            .as_ref()
+            .ok_or_else(|| binding("window result declaration missing"))?;
         let op = match operation {
             SqlBatchHostOperation::AddWindowNative => tidb_ast::BinaryOp::Plus,
             SqlBatchHostOperation::SubtractWindowNative => tidb_ast::BinaryOp::Minus,

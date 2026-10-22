@@ -224,7 +224,7 @@ impl NativeBatchHosts<'_> {
             Err(error) => {
                 let (class, text) = match error {
                     EvalError::IntOverflow => (
-                        if result_type.is_unsigned() {
+                        if result_type.as_ref().is_some_and(FieldType::is_unsigned) {
                             "BIGINT UNSIGNED"
                         } else {
                             "BIGINT"
@@ -248,7 +248,8 @@ impl NativeBatchHosts<'_> {
             }
         };
         let value =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
+            match crate::scalar_function::coerce_function_result(name, result_type.as_ref(), value)
+            {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };

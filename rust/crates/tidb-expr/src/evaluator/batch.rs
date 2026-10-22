@@ -543,6 +543,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_optional_grouping_call(function)
                 || native_concat_value_call(function)
                 || native_optional_wildcard_call(function)
+                || native_optional_arithmetic_result_call(function)
                 || native_no_argument_header_call(function) =>
         {
             NativeView::RootValue
@@ -1301,6 +1302,12 @@ fn budget_value_call_metadata(
     if native_no_argument_header_call(function) {
         if let Some(result) = result {
             budget.field(result, 1)?;
+        }
+        return Ok(());
+    }
+    if native_optional_arithmetic_result_call(function) {
+        for arg in &function.args {
+            budget.field(arg.static_type().expect("declared arithmetic source"), 1)?;
         }
         return Ok(());
     }
@@ -2225,6 +2232,15 @@ fn native_optional_grouping_call(function: &ScalarFunction) -> bool {
 fn native_no_argument_header_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::header_value::HeaderKind::for_function(function).is_some()
 }
+// Only the result declaration is absent; source declarations remain genuine.
+fn native_optional_arithmetic_result_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && function.get_static_type().is_none()
+        && function.args.len() == 2
+        && native_arithmetic_operation(function.func_name.lowercase()).is_some()
+        && function.args.iter().all(|arg| arg.static_type().is_some())
+}
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
     native_optional_value_call(function)
         || native_optional_selection_call(function)
@@ -2232,6 +2248,7 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_optional_grouping_call(function)
         || native_optional_wildcard_call(function)
         || native_concat_value_call(function)
+        || native_optional_arithmetic_result_call(function)
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
@@ -2784,7 +2801,8 @@ fn resolve_specific_call_in_view(
                 || ((function.get_static_type().is_none()
                     || function.args.iter().any(|arg| arg.static_type().is_none()))
                     && !native_optional_selection_call(function)
-                    && !native_optional_operator_call(function))
+                    && !native_optional_operator_call(function)
+                    && !native_optional_arithmetic_result_call(function))
             {
                 return Err(BatchFailure::admission(
                     "native nullable control requires typed arguments and valid arity",
@@ -3347,6 +3365,38 @@ fn survey_common_math_diagnostic<'a>(
     Ok(())
 }
 
+// The detached numeric recipes preserve the same diagnostic re-demands for
+// genuinely present and absent result declarations.
+fn survey_arithmetic_diagnostic<'a>(
+    function: &'a ScalarFunction,
+    view: NativeView,
+    ordinal: usize,
+    depth: usize,
+    allow_pb: bool,
+    limits: BatchSourceLimits,
+    budget: &mut Budget,
+    scheduled: &mut usize,
+    pending: &mut Vec<(&'a Expression, usize, NativeView, bool)>,
+    numerics: &mut Vec<PendingNumeric<'a>>,
+) -> Result<()> {
+    let numeric = numeric_source::survey(function, view, ordinal, limits, budget)?;
+    *scheduled = (*scheduled)
+        .checked_add(numeric.extras.len())
+        .filter(|n| *n <= limits.tree.max_nodes)
+        .ok_or_else(|| resource("numeric extra source node policy exceeded"))?;
+    let child_depth = depth
+        .checked_add(1)
+        .filter(|n| *n <= limits.tree.max_depth)
+        .ok_or_else(|| resource("numeric extra source depth policy exceeded"))?;
+    reserve(pending, numeric.extras.len())?;
+    for &(child, child_view) in numeric.extras.iter().rev() {
+        pending.push((child, child_depth, child_view, allow_pb));
+    }
+    reserve(numerics, 1)?;
+    numerics.push(numeric);
+    Ok(())
+}
+
 // Complete source and incoming schema byte gates precede EVERY equality and
 // detached/projected/C snapshot. Borrowed temporary nodes have no executable
 // children and are not a second interpreter. Stable owner interval is required.
@@ -3529,6 +3579,28 @@ fn preflight_view<'a>(
                         )?;
                     }
 
+                    if native_optional_arithmetic_result_call(function)
+                        && function.args.iter().any(|child| {
+                            contains_context_value(child, limits.tree.max_depth, &mut {
+                                limits.tree.max_nodes
+                            }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
+                                limits.tree.max_nodes
+                            })
+                        })
+                    {
+                        survey_arithmetic_diagnostic(
+                            function,
+                            view,
+                            checked.len(),
+                            depth,
+                            allow_pb,
+                            limits,
+                            &mut budget,
+                            &mut scheduled,
+                            &mut pending,
+                            &mut numerics,
+                        )?;
+                    }
                     budget.array::<tipb::FieldType>(arity)?;
                     for arg in &function.args {
                         if let Some(field) = arg.static_type() {
@@ -3799,29 +3871,18 @@ fn preflight_view<'a>(
                     ) && function.args.len() == 2
                         && view.value_role().is_some()
                     {
-                        let numeric = numeric_source::survey(
+                        survey_arithmetic_diagnostic(
                             function,
                             view,
                             checked.len(),
+                            depth,
+                            allow_pb,
                             limits,
                             &mut budget,
+                            &mut scheduled,
+                            &mut pending,
+                            &mut numerics,
                         )?;
-                        scheduled = scheduled
-                            .checked_add(numeric.extras.len())
-                            .filter(|n| *n <= limits.tree.max_nodes)
-                            .ok_or_else(|| resource("numeric extra source node policy exceeded"))?;
-                        let child_depth = depth
-                            .checked_add(1)
-                            .filter(|n| *n <= limits.tree.max_depth)
-                            .ok_or_else(|| {
-                                resource("numeric extra source depth policy exceeded")
-                            })?;
-                        reserve(&mut pending, numeric.extras.len())?;
-                        for &(child, child_view) in numeric.extras.iter().rev() {
-                            pending.push((child, child_depth, child_view, allow_pb));
-                        }
-                        reserve(&mut numerics, 1)?;
-                        numerics.push(numeric);
                     } else {
                         return Err(BatchFailure::admission(
                             "dynamic numeric diagnostic re-demand is not yet closed",
@@ -4694,7 +4755,7 @@ fn arithmetic_host_metadata(
         None
     };
     Ok(NativeHostMetadata::Arithmetic {
-                                    batch, operation,name:sql.func_name.lowercase().into(),result_type:snapshot_field_type(item.declared_sql()),
+                                    batch, operation,name:sql.func_name.lowercase().into(),result_type:item.sql.map(snapshot_field_type),
                                     argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].declared_sql()),snapshot_field_type(checked[right].declared_sql())],
                                     literal:[matches!(sql.args[0],Expression::Constant(_)),matches!(sql.args[1],Expression::Constant(_))],
                                     binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),

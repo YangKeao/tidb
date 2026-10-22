@@ -4268,3 +4268,644 @@ fn run_concat_row_batch_long(compare: bool) {
     assert_eq!((count, hash), (320, 0x11E1_A259_0FCF_4497));
     eprintln!("CONCAT ROW BATCH LONG {count}/{hash:016X}");
 }
+
+// This witness keeps the result declaration absent and both source declarations
+// present. The caller's actual column/storage declarations are independent.
+struct ArithmeticAbsentContext {
+    base: C,
+}
+impl ArithmeticAbsentContext {
+    fn new(profile: usize, enabled: bool, values: [Datum; 2]) -> Self {
+        Self {
+            base: C::new(profile, enabled, values),
+        }
+    }
+    fn snapshot(&self) -> String {
+        self.base.snapshot()
+    }
+}
+impl Columns for ArithmeticAbsentContext {
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        Some(&self.base.ready)
+    }
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        self.base.param_value(order)
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.base.enable_vectorized_expression()
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.base.time_zone()
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.base.type_flags()
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.base.truncate_level()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.base.append_warning(code, message)
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.base.set_uservar(name, value)
+    }
+    fn division_by_zero_level(&self) -> crate::ErrorLevel {
+        self.base.event("division-level".into());
+        match self.base.profile {
+            6 => crate::ErrorLevel::Error,
+            7 => crate::ErrorLevel::Ignore,
+            _ => crate::ErrorLevel::Warn,
+        }
+    }
+    fn div_precision_increment(&self) -> u32 {
+        self.base.event("precision".into());
+        if self.base.profile == 3 {
+            panic!("original absent arithmetic precision callback")
+        }
+        if self.base.profile == 2 {
+            12
+        } else {
+            4
+        }
+    }
+}
+#[test]
+fn arithmetic_absent_result_original_phases() {
+    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_arithmetic_absent_result(false, false);
+}
+#[test]
+fn arithmetic_absent_result_actual_phases() {
+    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_arithmetic_absent_result(true, false);
+}
+#[test]
+fn arithmetic_absent_result_original_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_original_all_actual_values")
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_arithmetic_absent_result(false, true);
+}
+#[test]
+fn arithmetic_absent_result_actual_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_actual_all_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_arithmetic_absent_result(true, true);
+}
+fn run_arithmetic_absent_result(compare: bool, full: bool) {
+    let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_761_004_800);
+    tidb_datatype::with_test_conversion_clock(now.into(), || {
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        let fields = [
+            ty(),
+            ty().with_flags(tidb_datatype::FieldTypeFlags::UNSIGNED),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            string_ty(),
+        ];
+        let storage = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6);
+        let pairs = if full {
+            let mut pairs = vec![];
+            for value in crate::tikv::byte_unary_value_tests::values() {
+                pairs.push([value.clone(), Datum::Int(3)]);
+                pairs.push([Datum::Int(2), value]);
+            }
+            pairs
+        } else {
+            vec![
+                [Datum::Int(i64::MAX), Datum::Int(1)],
+                [Datum::UInt(u64::MAX), Datum::Int(1)],
+                [Datum::Null, Datum::new_string("not-number")],
+                [Datum::Real(f64::MAX), Datum::Int(2)],
+                [
+                    Datum::Decimal(tidb_datatype::Decimal::from_int(2)),
+                    Datum::Int(0),
+                ],
+                [
+                    Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![
+                        128, 0, 0, 0, 0, 0, 0, 1,
+                    ])),
+                    Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![255])),
+                ],
+                [Datum::new_string("not-number"), Datum::Int(0)],
+                [Datum::Real(f64::NAN), Datum::Real(f64::INFINITY)],
+            ]
+        };
+        for name in ["plus", "minus", "mul", "mod", "div", "intdiv"] {
+            for (fi, field) in fields.iter().enumerate() {
+                for (vi, values) in pairs.iter().enumerate() {
+                    for shape in 0..if full { 1 } else { 4 } {
+                        for profile in if full {
+                            vec![0]
+                        } else {
+                            vec![0, 2, 3, 4, 5, 6, 7]
+                        } {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let deferred = |order| {
+                                            let mut c =
+                                                Constant::new(Datum::Int(99), field.clone());
+                                            c.deferred_expr = Some(Box::new(leaf::assignment(
+                                                if order == 0 {
+                                                    "absent-left"
+                                                } else {
+                                                    "absent-right"
+                                                },
+                                                parameter(order, field.clone()),
+                                                field,
+                                            )));
+                                            Expression::Constant(c)
+                                        };
+                                        let actual_column = |index| {
+                                            let mut c = crate::column::Column::new(
+                                                index + 1,
+                                                field.clone(),
+                                            );
+                                            c.index = index;
+                                            c.orig_name = format!("t.absent{index}");
+                                            Expression::Column(c)
+                                        };
+                                        let args = match shape {
+                                            1 => vec![
+                                                parameter(0, field.clone()),
+                                                literal(values[1].clone(), field.clone()),
+                                            ],
+                                            2 => vec![actual_column(0), actual_column(1)],
+                                            3 => vec![deferred(0), deferred(1)],
+                                            _ => vec![
+                                                parameter(0, field.clone()),
+                                                parameter(1, field.clone()),
+                                            ],
+                                        };
+                                        let mut f = ScalarFunction::new(
+                                            CiString::new(name),
+                                            field.clone(),
+                                            args,
+                                        );
+                                        f.ret_type = None;
+                                        suite(Expression::ScalarFunction(f))
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let old = ArithmeticAbsentContext::new(
+                                        profile,
+                                        enabled,
+                                        values.clone(),
+                                    );
+                                    let new = ArithmeticAbsentContext::new(
+                                        profile,
+                                        enabled,
+                                        values.clone(),
+                                    );
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let numeric = match field.eval_type() {
+                                                NativeEvalType::Int if field.is_unsigned() => {
+                                                    [Datum::UInt(u64::MAX), Datum::UInt(3)]
+                                                }
+                                                NativeEvalType::Int => {
+                                                    [Datum::Int(2), Datum::Int(3)]
+                                                }
+                                                NativeEvalType::Real => {
+                                                    [Datum::Real(2.5), Datum::Real(0.0)]
+                                                }
+                                                NativeEvalType::Decimal => [
+                                                    Datum::Decimal(
+                                                        tidb_datatype::Decimal::from_int(2),
+                                                    ),
+                                                    Datum::Decimal(
+                                                        tidb_datatype::Decimal::from_int(0),
+                                                    ),
+                                                ],
+                                                NativeEvalType::String => [
+                                                    Datum::new_string("2.5"),
+                                                    Datum::new_string("0"),
+                                                ],
+                                                _ => unreachable!(),
+                                            };
+                                            let mut c = chunk(
+                                                &[field.clone(), field.clone()],
+                                                &[
+                                                    numeric.to_vec(),
+                                                    vec![Datum::Null, numeric[1].clone()],
+                                                    numeric.to_vec(),
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&storage);
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let label=format!("arithmetic-absent/{full}/{name}/{fi}/{vi}/{shape}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&storage);
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[field.clone(), field.clone()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || right.column(0) != left.column(0)
+                                                || new.snapshot() != old.snapshot()
+                                            {
+                                                eprintln!("ARITHMETIC ABSENT DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if (route.fallback, route.refusals) != (0, 0)
+                                                && gaps.len() < 20
+                                            {
+                                                gaps.push(format!("{label}: {route:?}"));
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            (count, hash),
+            if full {
+                (107280, 0x65E3_A879_08E5_1839)
+            } else {
+                (80640, 0x80D3_DF5F_B7E2_AFFF)
+            }
+        );
+        eprintln!("ARITHMETIC ABSENT ORIGINAL full={full} {count}/{hash:016X}");
+        if !gaps.is_empty() {
+            eprintln!("ARITHMETIC ABSENT ADMISSION RED full={full} {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+
+#[test]
+fn arithmetic_absent_result_original_raw_datums() {
+    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_original_raw_datums") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_arithmetic_absent_raw_datums(false);
+}
+#[test]
+fn arithmetic_absent_result_actual_raw_datums() {
+    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_actual_raw_datums") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_arithmetic_absent_raw_datums(true);
+}
+fn run_arithmetic_absent_raw_datums(compare: bool) {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, HostStep};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        let mut resources = 0;
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            string_ty(),
+        ];
+        for name in ["plus", "minus", "mul", "mod", "div", "intdiv"] {
+            for (fi, field) in fields.iter().enumerate() {
+                for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                    .into_iter()
+                    .enumerate()
+                {
+                    for position in 0..2 {
+                        let mut values = [Datum::Int(2), Datum::Int(3)];
+                        values[position] = value.clone();
+                        let mut function = ScalarFunction::new(
+                            CiString::new(name),
+                            field.clone(),
+                            values
+                                .iter()
+                                .map(|v| literal(v.clone(), field.clone()))
+                                .collect(),
+                        );
+                        function.ret_type = None;
+                        let mut input = Chunk::new_with_capacity(&[], 1);
+                        input.set_num_virtual_rows(1);
+                        let old = ArithmeticAbsentContext::new(0, false, values.clone());
+                        let expected = session_read_outcome(|| {
+                            function
+                                .eval(&old, input.get_row(0))
+                                .map(|v| leaf::frame(&v))
+                        });
+                        let label = format!("arithmetic-absent-raw/{name}/{fi}/{vi}/{position}");
+                        if compare {
+                            let actual = suite(Expression::ScalarFunction(function.clone()));
+                            let before_compile =
+                                crate::scalar_function::static_numeric_formats_for_test();
+                            match PreparedBatch::compile(
+                                &actual,
+                                &[],
+                                true,
+                                319,
+                                limits(),
+                                ExecutionLimits::default(),
+                                1 << 24,
+                            ) {
+                                Err(error) => {
+                                    if matches!(
+                                        error.local_error(),
+                                        Some(LocalError::ResourceLimit(_))
+                                    ) {
+                                        assert!(
+                                            matches!(&value,Datum::Decimal(d) if d.scale()==u32::MAX && d.storage_scale()==3 && d.is_negative() && d.coefficient_bytes()==[0,255,b'0'] && d.declared_shape()==Some((-1,i64::MAX))),
+                                            "unexpected resource {label}: {error:?}"
+                                        );
+                                        assert_eq!(
+                                            crate::scalar_function::static_numeric_formats_for_test(
+                                            ),
+                                            before_compile,
+                                            "resource gate must precede formatting {label}"
+                                        );
+                                        eprintln!("ARITHMETIC ABSENT RESOURCE {label}");
+                                        resources += 1;
+                                    } else if gaps.len() < 20 {
+                                        gaps.push(format!("{label}:{error:?}"));
+                                    }
+                                }
+                                Ok(compiled) => {
+                                    let source = &compiled.source;
+                                    assert_eq!(source.host_metadata.len(), 1);
+                                    let new =
+                                        ArithmeticAbsentContext::new(0, false, values.clone());
+                                    let store =
+                                        RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                    store.borrow_mut().begin_window().unwrap();
+                                    let catalog = source.hosts.as_ref().unwrap().clone();
+                                    let mut hosts = NativeBatchHosts::new(
+                                        catalog.clone(),
+                                        &source.host_metadata,
+                                        &new,
+                                        1 << 24,
+                                    )
+                                    .with_native_values(Some(&store));
+                                    let slot = catalog.slot(0).unwrap();
+                                    let signature = catalog.signature(slot).unwrap();
+                                    let row = InputRow {
+                                        occurrence: 19,
+                                        input_row: 0,
+                                    };
+                                    let mut eval = EvalContext::default();
+                                    let got = session_read_outcome(
+                                        || -> std::result::Result<String, EvalError> {
+                                            let HostStart::Pending { task, mut request } = hosts
+                                                .start(
+                                                    &mut eval,
+                                                    HostInvocation {
+                                                        slot,
+                                                        row,
+                                                        arg_types: &signature.arg_types,
+                                                        return_type: &signature.return_type,
+                                                    },
+                                                )
+                                                .unwrap()
+                                            else {
+                                                panic!("arithmetic must demand actual arguments")
+                                            };
+                                            for _ in 0..8 {
+                                                assert!(request.index < 2);
+                                                let node = match &source.host_metadata[0] {
+                                                    NativeHostMetadata::Arithmetic {
+                                                        argument_nodes,
+                                                        ..
+                                                    } => argument_nodes[request.index],
+                                                    _ => panic!("original arithmetic metadata"),
+                                                };
+                                                let token = store
+                                                    .borrow_mut()
+                                                    .insert_clone(
+                                                        &values[request.index],
+                                                        NativeValueRole::CharInput,
+                                                        NativeValueOrigin { node, row },
+                                                    )
+                                                    .unwrap();
+                                                let fetched = VectorValue::from_scalar(
+                                                    &ScalarValue::Bytes(Some(token)),
+                                                    1,
+                                                );
+                                                match hosts.resume(
+                                                    &mut eval,
+                                                    &task,
+                                                    HostArgReply {
+                                                        index: request.index,
+                                                        field_type: &signature.arg_types
+                                                            [request.index],
+                                                        values: &fetched,
+                                                    },
+                                                ) {
+                                                    Ok(HostStep::NeedArg(next)) => request = next,
+                                                    Ok(HostStep::Ready(output)) => {
+                                                        let ScalarValueRef::Bytes(Some(token)) =
+                                                            output.get_scalar_ref(0)
+                                                        else {
+                                                            panic!("native arithmetic token")
+                                                        };
+                                                        let value = store.borrow();
+                                                        return Ok(leaf::frame(
+                                                            value
+                                                                .get(
+                                                                    token,
+                                                                    NativeValueRole::Output,
+                                                                    NativeValueOrigin {
+                                                                        node: 0,
+                                                                        row,
+                                                                    },
+                                                                )
+                                                                .unwrap(),
+                                                        ));
+                                                    }
+                                                    Ok(HostStep::NeedArgRow { .. }) => panic!(
+                                                        "row arithmetic cannot request another row"
+                                                    ),
+                                                    Err(error) => {
+                                                        return Err(hosts
+                                                            .take_native_error()
+                                                            .unwrap_or_else(|| {
+                                                                panic!(
+                                                                "unexpected host failure {error:?}"
+                                                            )
+                                                            }))
+                                                    }
+                                                }
+                                            }
+                                            panic!("arithmetic demand did not terminate")
+                                        },
+                                    );
+                                    if got != expected || new.snapshot() != old.snapshot() {
+                                        eprintln!("ARITHMETIC ABSENT RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                    }
+                                    assert_eq!(got, expected, "{label}");
+                                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                }
+                            }
+                        }
+                        for byte in format!("{label}|{expected}|{}", old.snapshot()).bytes() {
+                            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!((count, hash), (8940, 0x07DA_5D6E_BAB0_FE48));
+        eprintln!("ARITHMETIC ABSENT RAW ORIGINAL {count}/{hash:016X}");
+        if compare {
+            assert_eq!(resources, 60);
+            eprintln!("ARITHMETIC ABSENT RAW actual8880/terminal_resource60/before_formatting60");
+        }
+        if !gaps.is_empty() {
+            eprintln!("ARITHMETIC ABSENT RAW ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+
+#[test]
+fn arithmetic_absent_result_resource_failure_keeps_same_owner_reusable() {
+    let storage = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(6);
+    for name in ["plus", "minus", "mul", "mod", "div", "intdiv"] {
+        let mut f = ScalarFunction::new(
+            CiString::new(name),
+            storage.clone(),
+            vec![
+                parameter(0, string_ty()),
+                literal(Datum::Int(1), string_ty()),
+            ],
+        );
+        f.ret_type = None;
+        let owner = suite(Expression::ScalarFunction(f));
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &[ty()],
+            true,
+            919,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+        .unwrap();
+        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+        let mut ctx = ArithmeticAbsentContext::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
+        );
+        let input = || {
+            chunk(
+                &[ty()],
+                &[
+                    vec![Datum::Int(0)],
+                    vec![Datum::Int(1)],
+                    vec![Datum::Int(2)],
+                ],
+            )
+        };
+        let mut first = input();
+        let mut output = output_for(&storage);
+        output.append_null(0);
+        let error = prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut first,
+                &mut output,
+                &[ty()],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
+            "{name}: {error:?}"
+        );
+        assert_eq!(output.num_rows(), 1);
+        assert!(!ctx.base.events.borrow().iter().any(|e| e == "precision"));
+        ctx.base.values[0] = Datum::Null;
+        ctx.base.enabled = false;
+        ctx.base.events.borrow_mut().clear();
+        for reads in &ctx.base.reads {
+            reads.set(0);
+        }
+        let old = ArithmeticAbsentContext::new(0, false, [Datum::Null, Datum::Int(1)]);
+        let mut original_input = input();
+        let mut expected = output_for(&storage);
+        expected.append_null(0);
+        owner.run(&old, &mut original_input, &mut expected).unwrap();
+        let mut second = input();
+        let mut got = output_for(&storage);
+        got.append_null(0);
+        prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut second,
+                &mut got,
+                &[ty()],
+            )
+            .unwrap();
+        assert_eq!(got.column(0), expected.column(0), "{name}");
+        assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
+        assert_eq!(
+            prepared.workers[0].max_materialization_retained_bytes,
+            16 * 1024
+        );
+    }
+}

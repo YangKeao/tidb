@@ -413,7 +413,7 @@ pub(super) enum NativeHostMetadata {
         batch: Option<WindowArithmeticMetadata>,
         operation: SqlBatchHostOperation,
         name: Box<str>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         argument_nodes: [usize; 2],
         source_types: [FieldType; 2],
         literal: [bool; 2],
@@ -480,6 +480,7 @@ impl NativeHostMetadata {
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
+            Self::Arithmetic { result_type, .. } => result_type.as_ref(),
             Self::In(metadata) => Some(&metadata.result_type),
             Self::Interval(metadata) => Some(&metadata.result_type),
             Self::Extremum(metadata) => Some(&metadata.result_type),
@@ -502,7 +503,6 @@ impl NativeHostMetadata {
             | Self::StrToDate { result_type, .. }
             | Self::JsonSumCrc32 { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
-            | Self::Arithmetic { result_type, .. }
             | Self::Math { result_type, .. }
             | Self::ValueCast { result_type, .. } => Some(result_type),
             _ => None,
@@ -1430,6 +1430,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::Grouping { .. }
                 | NativeHostMetadata::Like { .. }
                 | NativeHostMetadata::ConcatValues { .. }
+                | NativeHostMetadata::Arithmetic { batch: None, .. }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {

@@ -66,7 +66,11 @@ impl NativeBatchHosts<'_> {
             || self.native_values.is_none()
             || !matches!(
                 self.metadata.get(invocation.slot.index()),
-                Some(NativeHostMetadata::Arithmetic { batch: Some(_), .. })
+                Some(NativeHostMetadata::Arithmetic {
+                    batch: Some(_),
+                    result_type: Some(_),
+                    ..
+                })
             )
         {
             return Err(binding("numeric window invocation differs"));
@@ -332,6 +336,9 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("numeric window metadata absent"));
         };
+        let result_type = result_type
+            .as_ref()
+            .ok_or_else(|| binding("numeric window result declaration missing"))?;
         let op = match operation {
             SqlBatchHostOperation::AddWindowNative => BinaryOp::Plus,
             SqlBatchHostOperation::SubtractWindowNative => BinaryOp::Minus,
