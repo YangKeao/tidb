@@ -6473,4 +6473,118 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn pure_parameter_concat_batches_reach_serial_parallel_projection_without_fallback() {
+        let integer = longlong();
+        let string = FieldType::new(FieldTypeCode::VarString)
+            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin);
+        for name in ["concat", "concat_ws"] {
+            let args = (0..3)
+                .map(|order| {
+                    let mut c = Constant::new(Datum::Int(99), string.clone());
+                    c.param_marker = Some(tidb_expr::constant::ParamMarker { order });
+                    Expression::Constant(c)
+                })
+                .collect();
+            let root = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                string.clone(),
+                args,
+            ));
+            for values in [
+                vec![
+                    Datum::new_string("ab"),
+                    Datum::new_string("c"),
+                    Datum::new_string("d"),
+                ],
+                vec![
+                    Datum::Null,
+                    Datum::new_string("unused"),
+                    Datum::Bytes(vec![255]),
+                ],
+                vec![Datum::new_string(","), Datum::Null, Datum::UInt(u64::MAX)],
+                vec![
+                    Datum::Bytes(vec![255]),
+                    Datum::new_string("b"),
+                    Datum::new_string("c"),
+                ],
+            ] {
+                for limit in [0, u64::MAX] {
+                    for enabled in [false, true] {
+                        for rows in [0, 3, 2051] {
+                            let context = || {
+                                crate::StmtContext::for_query()
+                                    .with_enable_vectorized_expression(enabled)
+                                    .with_max_allowed_packet(limit)
+                                    .with_prepared_params(values.clone().into())
+                            };
+                            let reference = context();
+                            let original = EvaluatorSuite::new(vec![root.clone()], false);
+                            assert!(original.vectorizable());
+                            let mut input = Chunk::new_with_capacity(
+                                &[integer.clone(), integer.clone()],
+                                rows.max(1),
+                            );
+                            for row in 0..rows {
+                                input.append_int64(0, row as i64);
+                                input.append_int64(1, (row * 2) as i64);
+                            }
+                            let mut expected =
+                                Chunk::new_with_capacity(&[string.clone()], rows.max(1));
+                            original.run(&reference, &mut input, &mut expected).unwrap();
+                            let warnings = reference.take_warnings();
+                            for workers in [0, 2] {
+                                let context = context();
+                                let (source, _) = NumberSource::new(rows as i64, 137);
+                                let schema = Schema::new(vec![Column::new(1, string.clone())]);
+                                let mut projection = ProjectionExec::new(
+                                    ExecutorMeta::new(schema, 1, 137, 1024),
+                                    vec![root.clone()],
+                                    source,
+                                    context.clone(),
+                                )
+                                .with_workers(workers);
+                                assert!(projection.evaluator_suite.vectorizable());
+                                projection.open().unwrap();
+                                let mut got =
+                                    Chunk::new_with_capacity(&[string.clone()], rows.max(1));
+                                loop {
+                                    let mut output = projection.new_chunk();
+                                    projection.next(&mut output).unwrap();
+                                    if output.num_rows() == 0 {
+                                        break;
+                                    }
+                                    for row in 0..output.num_rows() {
+                                        let value = output.get_row(row).get_datum(0, &string);
+                                        got.append_datum(0, &value);
+                                    }
+                                }
+                                assert_eq!(
+                                    got.column(0),
+                                    expected.column(0),
+                                    "{name}/{limit}/{enabled}/{rows}/{workers}"
+                                );
+                                assert_eq!(
+                                    context.take_warnings(),
+                                    warnings,
+                                    "warnings {name}/{limit}/{enabled}/{rows}/{workers}"
+                                );
+                                if workers == 0 && rows > 0 {
+                                    let route = projection.evaluator_suite.batch_route_snapshot();
+                                    assert!(route.prepared > 0);
+                                    assert_eq!(
+                                        (route.refusals, route.fallback),
+                                        (0, 0),
+                                        "{route:?}"
+                                    );
+                                }
+                                projection.close().unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

@@ -731,6 +731,7 @@ fn context_root_policy(
         }
         if matches!(root, Expression::ScalarFunction(function) if native_unary_sign_operation(function.func_name.lowercase()).is_none() && !matches!(function.func_name.lowercase(), "abs" | "cast_decimal" | "cast_json" | "cast_char" | "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"))
             && crate::scalar_function::static_batch_target(root).is_some()
+            && !matches!(root, Expression::ScalarFunction(function) if native_concat_row_batch(function))
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -2178,6 +2179,33 @@ fn native_concat_value_call(function: &ScalarFunction) -> bool {
             "concat_ws" => function.args.len() >= 2,
             _ => false,
         }
+}
+// The original batch entry keeps these argument demands row based and
+// publishes their results only after the complete invocation succeeds.
+fn native_concat_row_batch(function: &ScalarFunction) -> bool {
+    native_concat_value_call(function)
+        && !function.has_values_offset()
+        && !function.has_grouping_metadata()
+        && function
+            .get_static_type()
+            .is_some_and(|field| field.eval_type() == NativeEvalType::String)
+        && batch_call_signature(function)
+            .is_some_and(|signature| signature.output_type() == TikvEvalType::Bytes)
+        && function
+            .args
+            .iter()
+            .any(|arg| matches!(arg,Expression::Constant(c) if c.param_marker.is_some()))
+        && function.args.iter().all(|arg| {
+            arg.static_type()
+                .is_some_and(|field| field.eval_type() == NativeEvalType::String)
+                && match arg {
+                    Expression::Constant(c) => c.deferred_expr.is_none(),
+                    Expression::Column(c) => {
+                        c.virtual_expr.is_none() && c.correlated_col_unique_id == 0
+                    }
+                    _ => false,
+                }
+        })
 }
 // LIKE retains lazy raw operands and the actual optional escape cast fact.
 fn native_optional_wildcard_call(function: &ScalarFunction) -> bool {
@@ -4737,13 +4765,14 @@ fn lower_view_policy(
         context_root_policy(root, suite.program.vectorizable, limits)?
     };
     let mut checked = preflight_view(root, row_schema, limits, view, root_type_probe.is_some())?;
-    // The original non-integer CAST_CHAR batch collects generic row results
-    // before publishing. It has row operands but a typed atomic output boundary.
-    let row_cast_batch = matches!(root, Expression::ScalarFunction(function)
-        if function.func_name.lowercase() == "cast_char"
-            && crate::scalar_function::static_batch_target(root).is_some());
+    // These original batch entries collect ordinary row results before
+    // publishing. Their argument demand and atomic output are separate policies.
+    let row_value_batch = matches!(root, Expression::ScalarFunction(function)
+        if (function.func_name.lowercase() == "cast_char"
+            && crate::scalar_function::static_batch_target(root).is_some())
+            || native_concat_row_batch(function));
     let context_row_only =
-        context_row_only && checked[0].view.bulk_target().is_none() && !row_cast_batch;
+        context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
     let mirrored = !checked.diagnostics.is_empty() || !checked.numerics.is_empty();
     let mut diagnostic_slots = Vec::new();

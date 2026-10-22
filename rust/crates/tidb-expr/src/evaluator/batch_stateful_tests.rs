@@ -3865,3 +3865,406 @@ fn optional_concat_actual_arities_keep_raw_values_and_packet_demand() {
     assert_eq!((count, hash), (4752, 0x344B99C07DBAD21D));
     eprintln!("CONCAT ARITIES {count}/{hash:016X}");
 }
+
+struct WholeConcatContext {
+    ready: crate::ReadyValueCache,
+    enabled: Cell<bool>,
+    values: [Datum; 3],
+    reads: [Cell<usize>; 3],
+    packet_reads: Cell<usize>,
+    limit: u64,
+    profile: usize,
+    events: RefCell<Vec<String>>,
+}
+impl WholeConcatContext {
+    fn new(enabled: bool, values: [Datum; 3], limit: u64, profile: usize) -> Self {
+        Self {
+            ready: crate::ReadyValueCache::new(),
+            enabled: Cell::new(enabled),
+            values,
+            reads: [Cell::new(0), Cell::new(0), Cell::new(0)],
+            packet_reads: Cell::new(0),
+            limit,
+            profile,
+            events: RefCell::new(vec![]),
+        }
+    }
+    fn snapshot(&self) -> String {
+        format!(
+            "{}:{}:{}|{:?}",
+            self.reads[0].get(),
+            self.reads[1].get(),
+            self.reads[2].get(),
+            self.events.borrow()
+        )
+    }
+}
+impl Columns for WholeConcatContext {
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no whole expression callback")
+    }
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        Some(&self.ready)
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.events
+            .borrow_mut()
+            .push(format!("flag:{}", self.enabled.get()));
+        self.enabled.get()
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        let n = self.reads[order].get();
+        self.reads[order].set(n + 1);
+        self.events.borrow_mut().push(format!("param:{order}:{n}"));
+        if self.profile == 1 && order == 1 && n == 1 {
+            return Err(EvalError::Unsupported("original whole parameter failure"));
+        }
+        if self.profile == 6 && order == 1 && n == 1026 {
+            return Err(EvalError::Unsupported(
+                "original late batch parameter failure",
+            ));
+        }
+        if self.profile == 2 && n > 0 {
+            return Ok(Datum::new_string(format!("changed:{order}:{n}")));
+        }
+        Ok(self.values[order].clone())
+    }
+    fn max_allowed_packet(&self) -> u64 {
+        let n = self.packet_reads.get();
+        self.packet_reads.set(n + 1);
+        self.events
+            .borrow_mut()
+            .push(format!("packet:{n}:{}", self.limit));
+        assert!(
+            !((self.profile == 3 && n == 0) || (self.profile == 7 && n == 3073)),
+            "original whole packet callback"
+        );
+        self.limit
+    }
+    fn handle_allowed_packet_overflowed(&self, name: &str) -> std::result::Result<(), EvalError> {
+        self.events.borrow_mut().push(format!("overflow:{name}"));
+        if self.profile == 4 {
+            Err(EvalError::Unsupported("original whole overflow callback"))
+        } else {
+            Ok(())
+        }
+    }
+}
+#[test]
+fn concat_whole_original_parameter_phases() {
+    if isolate_common_corpus("stateful_tests::concat_whole_original_parameter_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_concat_whole_matrix(false, false, None);
+}
+#[test]
+fn concat_whole_actual_parameter_phases() {
+    if isolate_common_corpus("stateful_tests::concat_whole_actual_parameter_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_concat_whole_matrix(true, false, None);
+}
+#[test]
+fn concat_whole_original_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::concat_whole_original_all_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_concat_whole_matrix(false, true, None);
+}
+#[test]
+fn concat_whole_actual_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::concat_whole_actual_all_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_concat_whole_matrix(true, true, None);
+}
+#[test]
+fn concat_whole_original_arities() {
+    if isolate_common_corpus("stateful_tests::concat_whole_original_arities") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    for arity in [1, 2, 5, 6, 9] {
+        run_concat_whole_matrix(false, false, Some(arity));
+    }
+}
+#[test]
+fn concat_whole_actual_arities() {
+    if isolate_common_corpus("stateful_tests::concat_whole_actual_arities") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    for arity in [1, 2, 5, 6, 9] {
+        run_concat_whole_matrix(true, false, Some(arity));
+    }
+}
+fn run_concat_whole_matrix(compare: bool, full: bool, arity: Option<usize>) {
+    let values = if full {
+        crate::tikv::byte_unary_value_tests::values()
+    } else {
+        vec![
+            Datum::new_string("ab"),
+            Datum::Null,
+            Datum::Int(123),
+            Datum::Bytes(vec![255]),
+            Datum::Decimal(tidb_datatype::Decimal::from_literal("2.5")),
+            Datum::Real(f64::NAN),
+        ]
+    };
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    for name in ["concat", "concat_ws"] {
+        if name == "concat_ws" && arity == Some(1) {
+            continue;
+        }
+        for shape in 0..if full || arity.is_some() { 1 } else { 3 } {
+            for position in 0..3 {
+                for (vi, value) in values.iter().enumerate() {
+                    let mut actual_values = [
+                        Datum::new_string("ab"),
+                        Datum::new_string("c"),
+                        Datum::new_string("d"),
+                    ];
+                    actual_values[position] = value.clone();
+                    for profile in 0..if full { 1 } else { 5 } {
+                        for limit in [0, 4, u64::MAX] {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let args = match shape {
+                                            1 => vec![
+                                                parameter(0, string_ty()),
+                                                parameter(0, string_ty()),
+                                                parameter(0, string_ty()),
+                                            ],
+                                            2 => vec![
+                                                parameter(0, string_ty()),
+                                                string_column(0),
+                                                literal(actual_values[2].clone(), string_ty()),
+                                            ],
+                                            _ => (0..arity.unwrap_or(3))
+                                                .map(|i| parameter(i % 3, string_ty()))
+                                                .collect(),
+                                        };
+                                        suite(call(name, string_ty(), args))
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let old = WholeConcatContext::new(
+                                        enabled,
+                                        actual_values.clone(),
+                                        limit,
+                                        profile,
+                                    );
+                                    let new = WholeConcatContext::new(
+                                        enabled,
+                                        actual_values.clone(),
+                                        limit,
+                                        profile,
+                                    );
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let mut c = chunk(
+                                                &[string_ty()],
+                                                &[
+                                                    vec![Datum::new_string("r0")],
+                                                    vec![Datum::new_string("r1")],
+                                                    vec![Datum::new_string("r2")],
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&string_ty());
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let mut label=format!("concat-whole/{full}/{name}/{shape}/{position}/{vi}/{profile}/{limit}/{enabled}/{selection:?}/{reuse}");
+                                        if let Some(arity) = arity {
+                                            label.push_str(&format!("/arity-{arity}"));
+                                        }
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&string_ty());
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[string_ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || right.column(0) != left.column(0)
+                                                || new.snapshot() != old.snapshot()
+                                            {
+                                                eprintln!("CONCAT WHOLE DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot())
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if (route.fallback != 0 || route.refusals != 0)
+                                                && gaps.len() < 20
+                                            {
+                                                gaps.push(format!("{label}: {route:?}"))
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash =
+                                                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(arity) = arity {
+        let expected = match arity {
+            1 => (3240, 0x9B21916B002CA553),
+            2 => (6480, 0x8947CBC47EC5D18D),
+            5 => (6480, 0x9746E47C0EBFF03F),
+            6 => (6480, 0x3B7D87B0EA8F1545),
+            9 => (6480, 0x7BA6E0F9E0044141),
+            _ => unreachable!("explicit original arity cohort"),
+        };
+        assert_eq!((count, hash), expected);
+        eprintln!("CONCAT WHOLE ARITY {arity} {count}/{hash:016X}");
+    } else {
+        assert_eq!(
+            (count, hash),
+            if full {
+                (32184, 0xE1B29ADC97CAEEC9)
+            } else {
+                (19440, 0x3CE163458ACA2747)
+            }
+        );
+        eprintln!("CONCAT WHOLE ORIGINAL full={full} {count}/{hash:016X}");
+    }
+    if !gaps.is_empty() {
+        eprintln!("CONCAT WHOLE ADMISSION RED full={full} {gaps:?}")
+    }
+    assert!(gaps.is_empty());
+}
+
+#[test]
+fn concat_row_batch_original_long_reuse_and_flag_switch() {
+    if isolate_common_corpus("stateful_tests::concat_row_batch_original_long_reuse_and_flag_switch")
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_concat_row_batch_long(false);
+}
+#[test]
+fn concat_row_batch_actual_long_reuse_and_flag_switch() {
+    if isolate_common_corpus("stateful_tests::concat_row_batch_actual_long_reuse_and_flag_switch") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_concat_row_batch_long(true);
+}
+fn run_concat_row_batch_long(compare: bool) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    for name in ["concat", "concat_ws"] {
+        let make = || {
+            suite(call(
+                name,
+                string_ty(),
+                vec![
+                    parameter(0, string_ty()),
+                    parameter(1, string_ty()),
+                    parameter(2, string_ty()),
+                ],
+            ))
+        };
+        let original = make();
+        let actual = make();
+        for profile in [0, 2, 6, 7] {
+            for rows in [0, 1, 3, 1026, 2051] {
+                for first in [false, true] {
+                    let values = [
+                        Datum::new_string("ab"),
+                        Datum::new_string("c"),
+                        Datum::new_string("d"),
+                    ];
+                    let old = WholeConcatContext::new(first, values.clone(), u64::MAX, profile);
+                    let new = WholeConcatContext::new(first, values, u64::MAX, profile);
+                    for round in 0..4 {
+                        let enabled = if round % 2 == 0 { first } else { !first };
+                        old.enabled.set(enabled);
+                        new.enabled.set(enabled);
+                        let input = || {
+                            let mut c = chunk(
+                                &[string_ty()],
+                                &[
+                                    vec![Datum::new_string("r0")],
+                                    vec![Datum::new_string("r1")],
+                                    vec![Datum::new_string("r2")],
+                                ],
+                            );
+                            c.set_sel(Some((0..rows).map(|i| [2, 0, 2, 1][i % 4]).collect()));
+                            c
+                        };
+                        let mut a = input();
+                        let mut left = output_for(&string_ty());
+                        left.append_null(0);
+                        let expected =
+                            session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                        let label=format!("concat-row-batch-long/{name}/{profile}/{rows}/{first}/{round}/{enabled}");
+                        if compare {
+                            let mut b = input();
+                            let mut right = output_for(&string_ty());
+                            right.append_null(0);
+                            let got = session_read_outcome(|| {
+                                actual.run_with_tikv_batch(&new, &mut b, &mut right, &[string_ty()])
+                            });
+                            if got != expected
+                                || right.column(0) != left.column(0)
+                                || new.snapshot() != old.snapshot()
+                            {
+                                eprintln!("CONCAT ROW BATCH LONG DIFFERENCE {label} old={expected:?} new={got:?} oldrows={} newrows={} oldeffects={} neweffects={}",left.num_rows(),right.num_rows(),old.snapshot(),new.snapshot())
+                            }
+                            assert_eq!(got, expected, "{label}");
+                            assert_eq!(right.column(0), left.column(0), "{label}");
+                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                            let route = actual.batch_route_snapshot();
+                            assert_eq!(
+                                (route.fallback, route.refusals),
+                                (0, 0),
+                                "{label} {route:?}"
+                            );
+                        }
+                        for byte in
+                            format!("{label}|{expected}|{:?}|{}", left.column(0), old.snapshot())
+                                .bytes()
+                        {
+                            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!((count, hash), (320, 0x11E1_A259_0FCF_4497));
+    eprintln!("CONCAT ROW BATCH LONG {count}/{hash:016X}");
+}
