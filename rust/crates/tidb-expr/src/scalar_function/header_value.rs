@@ -9,6 +9,8 @@ use crate::{Columns, Datum, EvalError};
 pub(crate) enum HeaderKind {
     /// Genuine selected PB regexp rejects logical arity without value demand.
     PbRegexpArity,
+    /// The actual selected PB binary body rejects arity before any child.
+    PbBinaryArity,
     /// The truth predicate reports its original invalid parameter count.
     TruthArity,
     /// GROUPING rejects invalid logical arity before reading any value.
@@ -26,6 +28,13 @@ impl HeaderKind {
         if function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig) {
             return (!super::regexp_value::accepts_arity(function.args.len()))
                 .then_some(Self::PbRegexpArity);
+        }
+        if function
+            .pb_binary_values()
+            .is_some_and(|kernel| kernel.domain().is_some())
+            && function.args.len() != 2
+        {
+            return Some(Self::PbBinaryArity);
         }
         if function.pb_signature().is_some() || function.pb_origin().is_some() {
             return None;
@@ -51,6 +60,7 @@ impl HeaderKind {
     pub(crate) fn accepts_arity(self, arity: usize) -> bool {
         match self {
             Self::PbRegexpArity => !super::regexp_value::accepts_arity(arity),
+            Self::PbBinaryArity => arity != 2,
             Self::TruthArity | Self::GroupingArity => arity != 1,
             Self::EmptyCase | Self::EmptyCoalesce => arity == 0,
             Self::Property(_) => arity == 1,
@@ -68,6 +78,7 @@ impl HeaderKind {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::PbRegexpArity => "regexp_like",
+            Self::PbBinaryArity => "protobuf binary builtin",
             Self::TruthArity => "istrue",
             Self::GroupingArity => "grouping",
             Self::EmptyCase => "case",
@@ -91,6 +102,7 @@ impl HeaderKind {
     ) -> Result<Datum, EvalError> {
         match self {
             Self::PbRegexpArity => Err(super::regexp_value::arity_error()),
+            Self::PbBinaryArity => Err(super::PbBinaryValues::arity_error()),
             Self::TruthArity => Err(truth_arity_error()),
             Self::GroupingArity => Err(grouping_arity_error()),
             Self::EmptyCase => crate::tikv::eval_case_in(

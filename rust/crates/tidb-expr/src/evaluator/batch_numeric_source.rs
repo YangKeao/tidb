@@ -55,7 +55,12 @@ impl PendingNumeric<'_> {
         Ok(plans.into_boxed_slice())
     }
 }
-fn mode_view(function: &ScalarFunction, index: usize, mode: Mode, diagnostic: bool) -> NativeView {
+pub(super) fn mode_view(
+    function: &ScalarFunction,
+    index: usize,
+    mode: Mode,
+    diagnostic: bool,
+) -> NativeView {
     let value = match mode {
         Mode::Raw => NativeView::ValueToken,
         Mode::TypedInteger => NativeView::RowTyped(NativeEvalType::Int),
@@ -89,7 +94,8 @@ pub(super) fn survey<'a>(
 ) -> Result<PendingNumeric<'a>> {
     let mut extras = Vec::new();
     let mut requests = [[0, 1]; 2];
-    if function.native_arithmetic_mode() == Mode::TypedInteger
+    let selected = pb_scalar_binary_domain(function, view).map(Mode::Numeric);
+    if selected.unwrap_or_else(|| function.native_arithmetic_mode()) == Mode::TypedInteger
         && window_arithmetic_operation(function, view).is_none()
     {
         for index in 0..2 {

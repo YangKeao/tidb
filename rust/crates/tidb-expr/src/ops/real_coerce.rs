@@ -119,12 +119,16 @@ pub(super) fn decimal_div_operand(
         }
         Operand::Expr(expression) => expression.static_type(),
         Operand::Literal => None,
+        // Detached binary owners exclude IntDiv; its source cast retains
+        // the declaration and diagnostic subject through its own controller.
+        Operand::Captured(_) => unreachable!("captured binary facts do not select DIV"),
     };
     decimal_div_operand_value(value, field, ctx, || match operand {
         Operand::Expr(expression) => {
             crate::scalar_function::numeric_expression_text(expression, true, ctx)
         }
         Operand::Literal => real.map(tidb_datatype::format_float_g_shortest),
+        Operand::Captured(_) => unreachable!("captured binary facts do not select DIV"),
     })
 }
 

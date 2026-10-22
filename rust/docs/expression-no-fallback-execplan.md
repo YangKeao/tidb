@@ -18,6 +18,10 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N46 actual binary integration: all11,113,152/six original assertions and16 source/protocol checks pass, no strict exceptions. Whole frontend2178/exact inherited3/95ignored/all637batch/346warnings; Projection49, Expand6+unchanged64/B42, inventory83088/0/0, freshlint, dual13fmt and exact ownership/SHA audit pass. The same64KiB policy has independent original raw-return controls. Continue remaining PB/metadata/public callers/fallback/service/performance; overall task stays open.
+
+- [x] N46 original binary contracts: archived13 baseline files at37c97648 before new observers; captured and independently reran all11,113,152 observations, reproduced admission/fallback RED with identical six hashes, and pinned all six cohorts before production edits. Pure extraction passed all six original hashes. Five actual source cohorts and the new raw/typed callback and overflow protocol tests pass. Phase validation exposed masked malformed-arity headers, now corrected. Direct consumers and fixed64KiB recovery pass; every non-NULL finite refusal is independently reproduced by the existing return guard over the original raw PB body. The six strict cohorts retain zero exemptions. Projection and global gates remain. Six declared cohorts cover early arity versus late missing/ignored operands, typed conversion/NULL gates, full149, real columns/nested producers, real BinaryLiteral constructors/independent unsigned flags and all ten actual source families.
+
 - [x] N45 original contracts: before production, eleven baseline snapshots at545cfb0d and3,927,648 original observations were independently rerun, the four source Admission failures reproduced, and all four count/hash pairs pinned:3068928/22458E71C1756ADD,643680/C01D3EC8C49C7815,7680/C235536AFFBF7269,207360/18C4F5C7B906E8A3. Real physical columns, nested selected PB owners and live cache histories are included.
 - [x] N45 selected JSON values validated: actual signature/argument fields/constant-path eligibility and live cache handle execute all original3,927,648/4PIN observations strictly in the existing PB frame without fallback/exemptions. Original PB JSON facade/table/algorithms and ordinary eager logic remain unchanged. All12 source checks include real warm-cache sharing versus owner clone/reset, context rotation/cached NULL, three-stage raw demand/authentication, exclusive callbacks/epoch/panic/cancel/reuse, fixed16KiB document refusal->NULL recovery, actual legacy consumers/24 stale guards and4608 typed binary-field comparisons. Full frontend2162/exact inherited3/95/all621batch/346warnings, actual mixed Projection48, Expand6+64/B42FB8BE316E6C79, fixed inventory83088/0/0, fresh lint and dual9fmt/original ownership reconstruction pass; save signed local checkpoint then continue remaining PB and global work.
 
@@ -197,6 +201,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N46: KernelBinary requires exact arity2 before evaluating any child, then applies the selected typed numeric operand view and cast before its NULL gate and RHS. IntegerMod has no such header: it casts raw arg0 then arg1 even after left NULL, ignores suffix children, and bakes signedness into the selected signature. Actual input-domain selection and actual display-name diagnostic rendering are separate facts. First integration checks exposed two independent header masks: generic PB metadata before headers, and the legacy display-name refusal on a valid malformed-arity header. Both have original differential witnesses. The fixed64KiB check obtains the original raw PB body through a test-only accessor and independently applies the existing return guard. The original PlusInt raw body can return Decimal6 before final Int conversion; checking only final ScalarFunction::eval misses that boundary. The actual guard refuses at64KiB, NULL recovery stays exact, and this separate policy evidence never contributes to the strict equivalence corpus.
 
 N45: all four selected JSON PB bodies demand every raw child before JSON logic, including NULL and otherwise ignored suffixes. Cached JSON_REPLACE parses the document before its context/path-cache lookup and path-arity check; its uncached route checks arity first. Reusing an ordinary name-selected eager descriptor would also select unrelated session/prefix/math phases, so the actual PB value descriptor retains its own selected-body facts.
 
@@ -522,6 +528,12 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+N46: reuse the existing numeric continuation and diagnostic plans with actual selected-domain and argument-owner facts. Keep the original operator algorithms unchanged. The separate integer MOD controller preserves baked signedness, missing-argument timing and ignored suffixes; neither controller invokes expression evaluators. Captured binary facts exclude IntDiv, whose existing controller owns its declaration and diagnostic subject.
+
+- Decision: investigate the complete38-signature binary PB owner with the existing numeric argument/diagnostic continuations and pure operator kernels; do not route it through a raw-only eager value descriptor or a name-substituted arithmetic parent.
+  Rationale: typed argument normalization, late diagnostic re-demands, baked MOD signedness and exact NULL/missing-operand order belong to the actual selected implementation. Original observation and source RED must fix that contract first.
+  Date/Author: 2026-10-22 / ExpressionReuseEngineer.
+
 - Decision: N45 adds a selected JSON value descriptor and an enum body to the existing PB token controller. Its NULL-stop fact is false, while the original non-JSON descriptor remains true. Preserve the complete original Kernel::Json facade and reuse builtin_ext::json::eval_pb for all algorithms.
   Rationale: original argument types, constant-path eligibility and json_modify_path_cache.share_for_invocation preserve the real owner and live state; no fake ScalarFunction, name-derived signature, alternate interpreter or duplicated JSON algorithm is required.
   Date/Author: 2026-10-22 / ExpressionReuseEngineer.
@@ -841,6 +853,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N46 binary checkpoint is verified: all six pinned original observations and actual source paths agree; the existing numeric controller serves the actual typed binary owner, and baked MOD retains its original raw prefix. All final gates preserve their inherited baselines. Mixed Projection checks exact serial order and the actual parallel shared-warning contract. Remaining optional/malformed PB metadata, lazy/cast owners, public callers, fallback removal and whole service/performance gates still prevent an overall completion claim. Continue through actual source/Projection/global gates, then remaining PB/public/fallback/service/performance work.
 
 N45 validated: the complete selected JSON group retains its original algorithms, argument metadata, raw demand and live caches. The four before-production pins and all final gates pass; see evidence/no-fallback-n45.md. Remaining PB and actual public caller/fallback/service/performance work continue.
 

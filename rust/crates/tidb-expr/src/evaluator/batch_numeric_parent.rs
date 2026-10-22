@@ -34,6 +34,15 @@ pub(in super::super) struct CompiledNumericParent {
     /// Subjects left/right, integer overflow left/right, real overflow left/right.
     pub plans: Box<[NumericPlan]>,
 }
+struct NumericContract<'m> {
+    source_types: &'m [Option<FieldType>; 2],
+    binary_literal: [bool; 2],
+    mode: Mode,
+    generic_mode: Mode,
+    operation: BinaryOp,
+    pb: Option<&'m super::pb_binary_values_source::NativePbBinary>,
+}
+
 #[derive(Clone, Copy)]
 enum Overflow {
     Int,
@@ -195,6 +204,24 @@ impl<'a> NativeBatchHosts<'a> {
         }
         for p in parents {
             let slot = self.catalog.slot(p.slot)?;
+            if let Some(NativeHostMetadata::PbBinary(meta)) = self.metadata.get(p.slot) {
+                if meta.kernel.domain().is_none()
+                    || meta.logical_arity != 2
+                    || meta.arguments.len() != 2
+                    || meta.operands.is_none()
+                    || meta.source_types.iter().any(Option::is_none)
+                    || self.catalog.sql_batch_operation(slot)?
+                        != SqlBatchHostOperation::EagerValuesNative
+                    || p.arguments.len() != self.catalog.signature(slot)?.arg_types.len()
+                    || p.arguments.get(..2) != Some(meta.arguments.as_ref())
+                    || p.requests != [[0, 1]; 2]
+                    || p.plans.len() != 6
+                {
+                    return Err(binding("selected PB numeric parent graph differs"));
+                }
+                Self::validate_numeric_plan_graph(p)?;
+                continue;
+            }
             let Some(NativeHostMetadata::Arithmetic {
                 batch,
                 operation,
@@ -298,36 +325,92 @@ impl<'a> NativeBatchHosts<'a> {
                     return Err(binding("numeric window source declarations differ"));
                 }
             }
-            let mut end = 2usize;
-            for (logical, &physical) in p.requests[1].iter().enumerate() {
-                if physical != logical {
-                    if physical != end {
-                        return Err(binding("numeric alternate producer order differs"));
-                    }
-                    end += 1;
-                }
-            }
-            for (i, plan) in p.plans.iter().enumerate() {
-                if plan.base != end
-                    || plan
-                        .base
-                        .checked_add(plan.bindings)
-                        .is_none_or(|end| end > p.arguments.len())
-                    || matches!(
-                        (&plan.body, i < 2),
-                        (NumericPlanBody::Subject(_), false) | (NumericPlanBody::Argument(_), true)
-                    )
-                {
-                    return Err(binding("numeric diagnostic graph differs"));
-                }
-                end = plan.base + plan.bindings;
-            }
-            if end != p.arguments.len() {
-                return Err(binding("numeric graph contains unused producers"));
-            }
+            Self::validate_numeric_plan_graph(p)?;
         }
         self.numeric_parents = parents;
         Ok(self)
+    }
+    fn validate_numeric_plan_graph(p: &CompiledNumericParent) -> LocalResult<()> {
+        let mut end = 2usize;
+        for (logical, &physical) in p.requests[1].iter().enumerate() {
+            if physical != logical {
+                if physical != end {
+                    return Err(binding("numeric alternate producer order differs"));
+                }
+                end += 1;
+            }
+        }
+        for (i, plan) in p.plans.iter().enumerate() {
+            if plan.base != end
+                || plan
+                    .base
+                    .checked_add(plan.bindings)
+                    .is_none_or(|end| end > p.arguments.len())
+                || matches!(
+                    (&plan.body, i < 2),
+                    (NumericPlanBody::Subject(_), false) | (NumericPlanBody::Argument(_), true)
+                )
+            {
+                return Err(binding("numeric diagnostic graph differs"));
+            }
+            end = plan.base + plan.bindings;
+        }
+        if end != p.arguments.len() {
+            return Err(binding("numeric graph contains unused producers"));
+        }
+        Ok(())
+    }
+    fn numeric_contract(&self, slot: HostSlot) -> LocalResult<NumericContract<'_>> {
+        match self.metadata.get(slot.index()) {
+            Some(NativeHostMetadata::PbBinary(meta)) => {
+                let domain = meta
+                    .kernel
+                    .domain()
+                    .ok_or_else(|| binding("raw MOD is not a typed numeric parent"))?;
+                Ok(NumericContract {
+                    source_types: &meta.source_types,
+                    binary_literal: meta.binary_literal,
+                    mode: Mode::Numeric(domain),
+                    generic_mode: Mode::Numeric(domain),
+                    operation: meta.kernel.operation(),
+                    pb: Some(meta),
+                })
+            }
+            Some(NativeHostMetadata::Arithmetic {
+                operation,
+                source_types,
+                binary_literal,
+                mode,
+                generic_mode,
+                ..
+            }) => {
+                let operation = match operation {
+                    SqlBatchHostOperation::AddNative | SqlBatchHostOperation::AddWindowNative => {
+                        BinaryOp::Plus
+                    }
+                    SqlBatchHostOperation::SubtractNative
+                    | SqlBatchHostOperation::SubtractWindowNative => BinaryOp::Minus,
+                    SqlBatchHostOperation::MultiplyNative
+                    | SqlBatchHostOperation::MultiplyWindowNative => BinaryOp::Mul,
+                    SqlBatchHostOperation::ModuloNative
+                    | SqlBatchHostOperation::ModuloWindowNative => BinaryOp::Mod,
+                    SqlBatchHostOperation::DivideNative
+                    | SqlBatchHostOperation::DivideWindowNative => BinaryOp::Div,
+                    SqlBatchHostOperation::IntegerDivideNative
+                    | SqlBatchHostOperation::IntegerDivideWindowNative => BinaryOp::IntDiv,
+                    _ => return Err(binding("numeric operation differs")),
+                };
+                Ok(NumericContract {
+                    source_types,
+                    binary_literal: *binary_literal,
+                    mode: *mode,
+                    generic_mode: *generic_mode,
+                    operation,
+                    pb: None,
+                })
+            }
+            _ => Err(binding("numeric metadata absent")),
+        }
     }
     pub(super) fn numeric_parent(&self, slot: HostSlot) -> Option<&'a CompiledNumericParent> {
         self.numeric_parents
@@ -345,18 +428,19 @@ impl<'a> NativeBatchHosts<'a> {
         let parent = self
             .numeric_parent(invocation.slot)
             .ok_or_else(|| binding("numeric parent absent"))?;
-        let Some(NativeHostMetadata::Arithmetic {
-            mode, batch: None, ..
-        }) = self.metadata.get(invocation.slot.index())
-        else {
+        let contract = self.numeric_contract(invocation.slot)?;
+        if matches!(
+            self.metadata.get(invocation.slot.index()),
+            Some(NativeHostMetadata::Arithmetic { batch: Some(_), .. })
+        ) {
             return Err(binding("numeric metadata absent"));
-        };
+        }
         self.install_task(
             invocation.slot,
             invocation.row,
             parent.arguments.len(),
             SqlDemand::Numeric(Box::new(NumericTask {
-                typed: *mode == Mode::TypedInteger,
+                typed: contract.mode == Mode::TypedInteger,
                 index: 0,
                 next: 0,
                 left: None,
@@ -484,6 +568,37 @@ impl<'a> NativeBatchHosts<'a> {
             }
             Transition::Failure(error) => self.native_failure(error),
             Transition::Value(value) => {
+                if let Some(NativeHostMetadata::PbBinary(meta)) = self.metadata.get(slot.index()) {
+                    let held = base
+                        .checked_add(
+                            native_payload_bytes(&value)?
+                                .checked_mul(2)
+                                .ok_or_else(|| resource("PB numeric result allowance overflow"))?,
+                        )
+                        .ok_or_else(|| resource("PB numeric result extent overflow"))?;
+                    self.check_bytes(held)?;
+                    let result = super::pb_binary_values_source::present_pb_binary_value(
+                        meta,
+                        value,
+                        self.context,
+                        self.max_retained_bytes - held,
+                    );
+                    auth.check()?;
+                    let value = match result {
+                        Ok(value) => value,
+                        Err(error) => return self.native_failure(error),
+                    };
+                    return self
+                        .finish_native_value(
+                            id,
+                            value,
+                            meta.output_node,
+                            meta.output_role,
+                            row,
+                            base,
+                        )
+                        .map(HostStep::Ready);
+                }
                 let Some(NativeHostMetadata::Arithmetic {
                     name,
                     result_type,
@@ -519,25 +634,11 @@ impl<'a> NativeBatchHosts<'a> {
         let parent = self
             .numeric_parent(slot)
             .ok_or_else(|| binding("numeric parent absent"))?;
-        let Some(NativeHostMetadata::Arithmetic {
-            operation,
-            source_types,
-            binary_literal,
-            generic_mode,
-            ..
-        }) = self.metadata.get(slot.index())
-        else {
-            return Err(binding("numeric metadata absent"));
-        };
-        let op = match operation {
-            SqlBatchHostOperation::AddNative => BinaryOp::Plus,
-            SqlBatchHostOperation::SubtractNative => BinaryOp::Minus,
-            SqlBatchHostOperation::MultiplyNative => BinaryOp::Mul,
-            SqlBatchHostOperation::ModuloNative => BinaryOp::Mod,
-            SqlBatchHostOperation::DivideNative => BinaryOp::Div,
-            SqlBatchHostOperation::IntegerDivideNative => BinaryOp::IntDiv,
-            _ => return Err(binding("numeric operation differs")),
-        };
+        let contract = self.numeric_contract(slot)?;
+        let source_types = contract.source_types;
+        let binary_literal = contract.binary_literal;
+        let generic_mode = &contract.generic_mode;
+        let op = contract.operation;
         let available = self
             .max_retained_bytes
             .checked_sub(base)
@@ -655,6 +756,39 @@ impl<'a> NativeBatchHosts<'a> {
         } else {
             *generic_mode
         };
+        if let Some(meta) = contract.pb {
+            if task.index == 0 {
+                if value.is_null() && meta.kernel.stops_on_left_null() {
+                    let result = meta.kernel.left_null_result(value, self.context);
+                    auth.check()?;
+                    return self.numeric_result(slot, task, result, available, auth);
+                }
+                task.left = Some(value);
+                task.index = 1;
+                task.next = parent.requests[1][1];
+                return Ok(Transition::Need(task));
+            }
+            let left = task
+                .left
+                .take()
+                .ok_or_else(|| binding("PB numeric left operand absent"))?;
+            let signed = meta
+                .source_types
+                .each_ref()
+                .map(|field| field.as_ref().is_some_and(|field| !field.is_unsigned()));
+            let result = meta.kernel.eval_values(
+                left,
+                value,
+                signed,
+                meta.collation,
+                crate::ops::Operands::from_facts(
+                    meta.operands.expect("authenticated PB operand facts"),
+                ),
+                self.context,
+            );
+            auth.check()?;
+            return self.numeric_result(slot, task, result, available, auth);
+        }
         let prepared = if task.index == 0 {
             if value.is_null()
                 && (task.typed
@@ -735,6 +869,18 @@ impl<'a> NativeBatchHosts<'a> {
         match result {
             Ok(value) => Ok(Transition::Value(value)),
             Err(error) => {
+                if self.numeric_contract(slot)?.pb.is_some()
+                    && !matches!(
+                        self.numeric_contract(slot)?.operation,
+                        BinaryOp::Plus
+                            | BinaryOp::Minus
+                            | BinaryOp::Mul
+                            | BinaryOp::Div
+                            | BinaryOp::Mod
+                    )
+                {
+                    return Ok(Transition::Failure(error));
+                }
                 let kind = match error {
                     EvalError::IntOverflow => Overflow::Int,
                     EvalError::FloatOverflow => Overflow::Real,
@@ -796,11 +942,7 @@ impl<'a> NativeBatchHosts<'a> {
                 }
                 DiagnosticStep::Done(text) => match diag.reason {
                     DiagnosticReason::Subject(pending) => {
-                        let Some(NativeHostMetadata::Arithmetic { source_types, .. }) =
-                            self.metadata.get(slot.index())
-                        else {
-                            unreachable!()
-                        };
+                        let source_types = self.numeric_contract(slot)?.source_types;
                         let value = pending.finish(
                             arithmetic_typed_source(source_types, task.index)?,
                             text.as_deref(),
@@ -907,39 +1049,23 @@ impl<'a> NativeBatchHosts<'a> {
                             return Ok(DiagnosticTransition::Failure(kind.raw()));
                         };
                         if let Some(left) = left {
-                            let Some(NativeHostMetadata::Arithmetic {
-                                operation,
-                                result_type,
-                                ..
-                            }) = self.metadata.get(slot.index())
-                            else {
-                                unreachable!()
+                            let contract = self.numeric_contract(slot)?;
+                            let result_type = match self.metadata.get(slot.index()) {
+                                Some(NativeHostMetadata::Arithmetic { result_type, .. }) => {
+                                    result_type.as_ref()
+                                }
+                                Some(NativeHostMetadata::PbBinary(meta)) => {
+                                    meta.result_type.as_ref()
+                                }
+                                _ => unreachable!(),
                             };
-                            let op = match operation {
-                                SqlBatchHostOperation::AddNative
-                                | SqlBatchHostOperation::AddWindowNative => {
-                                    NativeArithmeticOperator::Plus
-                                }
-                                SqlBatchHostOperation::SubtractNative
-                                | SqlBatchHostOperation::SubtractWindowNative => {
-                                    NativeArithmeticOperator::Minus
-                                }
-                                SqlBatchHostOperation::MultiplyNative
-                                | SqlBatchHostOperation::MultiplyWindowNative => {
-                                    NativeArithmeticOperator::Multiply
-                                }
-                                SqlBatchHostOperation::ModuloNative
-                                | SqlBatchHostOperation::ModuloWindowNative => {
-                                    NativeArithmeticOperator::Modulo
-                                }
-                                SqlBatchHostOperation::DivideNative
-                                | SqlBatchHostOperation::DivideWindowNative => {
-                                    NativeArithmeticOperator::Divide
-                                }
-                                SqlBatchHostOperation::IntegerDivideNative
-                                | SqlBatchHostOperation::IntegerDivideWindowNative => {
-                                    NativeArithmeticOperator::IntegerDivide
-                                }
+                            let op = match contract.operation {
+                                BinaryOp::Plus => NativeArithmeticOperator::Plus,
+                                BinaryOp::Minus => NativeArithmeticOperator::Minus,
+                                BinaryOp::Mul => NativeArithmeticOperator::Multiply,
+                                BinaryOp::Mod => NativeArithmeticOperator::Modulo,
+                                BinaryOp::Div => NativeArithmeticOperator::Divide,
+                                BinaryOp::IntDiv => NativeArithmeticOperator::IntegerDivide,
                                 _ => unreachable!(),
                             };
                             let extent = left
@@ -952,9 +1078,7 @@ impl<'a> NativeBatchHosts<'a> {
                                 return Err(resource("numeric overflow text allowance exceeded"));
                             }
                             return Ok(DiagnosticTransition::Failure(EvalError::DataOutOfRange {
-                                value: kind.class(
-                                    result_type.as_ref().is_some_and(FieldType::is_unsigned),
-                                ),
+                                value: kind.class(result_type.is_some_and(FieldType::is_unsigned)),
                                 expression: native_render_binary_expression(&left, op, &text),
                             }));
                         }
@@ -2354,6 +2478,291 @@ mod tests {
                     hosts.cancel(&task);
                 }
             }
+        }
+    }
+    fn pb_fixture(name: &str, source: FieldType, result: FieldType, alternate: bool) -> Fixture {
+        let mut args: Vec<_> = (0..2)
+            .map(|i| {
+                let mut c = Constant::new(
+                    if alternate && i == 0 {
+                        Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![3]))
+                    } else {
+                        Datum::Int(0)
+                    },
+                    source.clone(),
+                );
+                c.param_marker = Some(crate::constant::ParamMarker { order: i });
+                Expression::Constant(c)
+            })
+            .collect();
+        let signature = match name {
+            "plus" => tidb_proto::tipb::ScalarFuncSig::PlusInt,
+            "minus" => tidb_proto::tipb::ScalarFuncSig::MinusDecimal,
+            "mul" => tidb_proto::tipb::ScalarFuncSig::MultiplyDecimal,
+            "div" => tidb_proto::tipb::ScalarFuncSig::DivideReal,
+            _ => unreachable!(),
+        };
+        let mut function = crate::scalar_function::ScalarFunction::from_pb(
+            crate::scalar_function::PbBuiltin::new(signature).unwrap(),
+            result.clone(),
+            std::mem::take(&mut args),
+        );
+        function.func_name = CiString::new("wire display");
+        assert!(!alternate);
+        let mut arguments = vec![1, 2];
+        if alternate {
+            arguments.push(3);
+        }
+        let mut plans = vec![];
+        for arg in &function.args {
+            let (plan, bindings) =
+                DynamicDiagnostic::capture_numeric(arg, true, 128, 1 << 20).unwrap();
+            let base = arguments.len();
+            for _ in &bindings {
+                arguments.push(arguments.len() + 1);
+            }
+            plans.push(NumericPlan {
+                base,
+                bindings: bindings.len(),
+                body: NumericPlanBody::Subject(plan),
+            });
+        }
+        for float in [false, true] {
+            for arg in &function.args {
+                let (plan, bindings) =
+                    ArgumentDiagnostic::survey(&function, arg, float, 128, 1 << 20)
+                        .unwrap()
+                        .freeze()
+                        .unwrap();
+                let base = arguments.len();
+                for _ in &bindings {
+                    arguments.push(arguments.len() + 1);
+                }
+                plans.push(NumericPlan {
+                    base,
+                    bindings: bindings.len(),
+                    body: NumericPlanBody::Argument(plan),
+                });
+            }
+        }
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::EagerValuesNative,
+            HostSignature {
+                arg_types: vec![field.clone(); arguments.len()].into(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        Fixture {
+            catalog,
+            field,
+            metadata: [NativeHostMetadata::PbBinary(Box::new(
+                super::super::pb_binary_values_source::NativePbBinary {
+                    kernel: function.pb_binary_values().unwrap(),
+                    logical_arity: 2,
+                    arguments: vec![1, 2].into_boxed_slice(),
+                    source_types: [Some(source.clone()), Some(source)],
+                    binary_literal: [false; 2],
+                    operands: Some(
+                        crate::ops::Operands::of(&function.args[0], &function.args[1]).facts(),
+                    ),
+                    name: function.func_name.lowercase().into(),
+                    collation: function.derived_collation(),
+                    result_type: Some(result),
+                    integer_batch_result: false,
+                    output_node: 0,
+                    output_role: NativeValueRole::Output,
+                },
+            ))],
+            parents: [CompiledNumericParent {
+                slot: 0,
+                arguments: arguments.into(),
+                requests: [[0, 1], if alternate { [2, 1] } else { [0, 1] }],
+                preparation: [[NativeValuePreparation::TypedReady; 2]; 2],
+                plans: plans.into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn pb_binary_parent_original_overflow_reloads_text_in_order_and_authenticates_it() {
+        for name in ["plus"] {
+            for text in [Some("9"), None] {
+                let int = FieldType::new(FieldTypeCode::LongLong);
+                let f = pb_fixture(name, int.clone(), int, false);
+                let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                store.borrow_mut().begin_window().unwrap();
+                let mut hosts = NativeBatchHosts::new(
+                    f.catalog.clone(),
+                    &f.metadata,
+                    &crate::NoColumns,
+                    1 << 20,
+                )
+                .with_native_values(Some(&store))
+                .with_numeric_parents(&f.parents)
+                .unwrap();
+                let row = InputRow {
+                    occurrence: 11,
+                    input_row: 7,
+                };
+                let mut eval = EvalContext::default();
+                let task = start(&mut hosts, &mut eval, &f, row);
+                let left = sql(&store, 1, row, Datum::Int(i64::MAX));
+                let right = sql(
+                    &store,
+                    2,
+                    row,
+                    Datum::Int(if name == "minus" { -1 } else { 2 }),
+                );
+                assert!(matches!(
+                    hosts
+                        .resume(&mut eval, &task, reply(&f.field, 0, &left))
+                        .unwrap(),
+                    HostStep::NeedArg(HostArgRequest {
+                        index: 1,
+                        mode: ArgMode::Fresh
+                    })
+                ));
+                let left_diag = f.parents[0].plans[2].base;
+                assert!(
+                    matches!(hosts.resume(&mut eval, &task, reply(&f.field, 1, &right)).unwrap(), HostStep::NeedArg(r) if r.index == left_diag)
+                );
+                assert!(hosts.take_native_error().is_none());
+                let node = f.parents[0].arguments[left_diag];
+                for (badnode, badrow) in [
+                    (node + 100, row),
+                    (
+                        node,
+                        InputRow {
+                            occurrence: 12,
+                            ..row
+                        },
+                    ),
+                    (
+                        node,
+                        InputRow {
+                            input_row: 8,
+                            ..row
+                        },
+                    ),
+                ] {
+                    let token = store
+                        .borrow_mut()
+                        .insert_diagnostic_text(
+                            "9".into(),
+                            NativeValueOrigin {
+                                node: badnode,
+                                row: badrow,
+                            },
+                        )
+                        .unwrap();
+                    let bad = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    assert!(hosts
+                        .resume(&mut eval, &task, reply(&f.field, left_diag, &bad))
+                        .is_err());
+                }
+                let null = sql(&store, node, row, Datum::Null);
+                assert!(hosts
+                    .resume(&mut eval, &task, reply(&f.field, left_diag, &null))
+                    .is_err());
+                let origin = NativeValueOrigin { node, row };
+                let token = match text {
+                    Some(text) => store
+                        .borrow_mut()
+                        .insert_diagnostic_text(text.into(), origin),
+                    None => store.borrow_mut().insert_diagnostic_unavailable(origin),
+                }
+                .unwrap();
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let result = hosts.resume(&mut eval, &task, reply(&f.field, left_diag, &values));
+                if text.is_some() {
+                    let right_diag = f.parents[0].plans[3].base;
+                    assert!(
+                        matches!(result.unwrap(), HostStep::NeedArg(r) if r.index == right_diag)
+                    );
+                    let token = store
+                        .borrow_mut()
+                        .insert_diagnostic_text(
+                            "3".into(),
+                            NativeValueOrigin {
+                                node: f.parents[0].arguments[right_diag],
+                                row,
+                            },
+                        )
+                        .unwrap();
+                    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    assert!(hosts
+                        .resume(&mut eval, &task, reply(&f.field, right_diag, &values))
+                        .is_err());
+                    let error = hosts.take_native_error().unwrap();
+                    assert!(
+                        matches!(error, EvalError::DataOutOfRange { value: "BIGINT", expression } if expression == format!("(9 {} 3)", if name == "plus" { "+" } else if name == "minus" { "-" } else { "*" }))
+                    );
+                    assert!(hosts
+                        .resume(&mut eval, &task, reply(&f.field, right_diag, &values))
+                        .is_err());
+                } else {
+                    assert!(result.is_err());
+                    assert!(matches!(
+                        hosts.take_native_error(),
+                        Some(EvalError::IntOverflow)
+                    ));
+                    assert!(hosts
+                        .resume(&mut eval, &task, reply(&f.field, left_diag, &values))
+                        .is_err());
+                }
+                hosts.cancel(&task);
+            }
+        }
+    }
+
+    #[test]
+    fn pb_binary_parent_consumes_before_callbacks_and_reauthenticates_before_future_demands_or_output(
+    ) {
+        let real = FieldType::new(FieldTypeCode::Double);
+        let f = pb_fixture("div", real.clone(), real, false);
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let ctx = Callback {
+            store: &store,
+            mode: Cell::new(0),
+            calls: Cell::new(0),
+        };
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+            .with_native_values(Some(&store))
+            .with_numeric_parents(&f.parents)
+            .unwrap();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        let mut eval = EvalContext::default();
+        for mode in [1, 2, 0] {
+            ctx.mode.set(mode);
+            store.borrow_mut().begin_window().unwrap();
+            let task = start(&mut hosts, &mut eval, &f, row);
+            let left = sql(&store, 1, row, Datum::Real(1.0));
+            let right = sql(&store, 2, row, Datum::Real(2.0));
+            assert!(matches!(
+                hosts
+                    .resume(&mut eval, &task, reply(&f.field, 0, &left))
+                    .unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hosts.resume(&mut eval, &task, reply(&f.field, 1, &right))
+            }));
+            match mode {
+                1 => assert!(result.is_err()),
+                2 => assert!(result.unwrap().is_err()),
+                _ => assert!(matches!(result.unwrap().unwrap(), HostStep::Ready(_))),
+            }
+            let calls = ctx.calls.get();
+            assert!(hosts
+                .resume(&mut eval, &task, reply(&f.field, 1, &right))
+                .is_err());
+            assert_eq!(ctx.calls.get(), calls);
+            hosts.cancel(&task);
         }
     }
 }

@@ -37,7 +37,7 @@ pub(crate) use pb_json_values::PbJsonValues;
 #[cfg(test)]
 mod json_preparation_tests;
 
-pub(crate) use pb_builtin::{interpret_integer_result, PbBuiltin, PbEagerValues};
+pub(crate) use pb_builtin::{interpret_integer_result, PbBinaryValues, PbBuiltin, PbEagerValues};
 
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
@@ -1071,6 +1071,23 @@ impl ScalarFunction {
         })
     }
 
+    /// Independent fixed-policy tests observe the real pre-return PB body.
+    #[cfg(test)]
+    pub(crate) fn original_pb_binary_value_for_test(
+        &self,
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        assert!(self.pb_binary_values().is_some());
+        self.pb_builtin
+            .expect("actual selected PB owner")
+            .eval(self, ctx, row)
+    }
+
+    pub(crate) fn pb_binary_values(&self) -> Option<PbBinaryValues> {
+        self.pb_builtin.and_then(PbBuiltin::binary_values)
+    }
+
     pub(crate) fn pb_json_signature(&self) -> Option<tidb_proto::tipb::ScalarFuncSig> {
         self.pb_builtin.and_then(PbBuiltin::json_signature)
     }
@@ -1763,7 +1780,7 @@ impl ScalarFunction {
             op,
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
         ) {
-            return crate::ops::eval_comparison_values_in(
+            return eval_binary_value_body(
                 op,
                 lhs,
                 rhs,
@@ -1817,11 +1834,10 @@ impl ScalarFunction {
             } else {
                 None
             };
-        crate::ops::eval_binary_full(
+        eval_binary_value_body(
             op,
             lhs,
             rhs,
-            ctx.div_precision_increment(),
             self.derived_collation(),
             crate::ops::Operands::of(&self.args[0], &self.args[1]),
             ctx,
@@ -2941,6 +2957,33 @@ pub(crate) fn finish_native_temporal_result(
 
 /// Value-only result boundary shared by expression callers and frame hosts.
 /// This descriptor contains no arguments or expression evaluation callback.
+/// Original value dispatch after signed-literal preparation; no expression
+/// evaluation or diagnostic rendering is performed at this boundary.
+pub(crate) fn eval_binary_value_body(
+    op: BinaryOp,
+    lhs: Datum,
+    rhs: Datum,
+    collation: tidb_datatype::Collation,
+    operands: crate::ops::Operands<'_>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    if matches!(
+        op,
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+    ) {
+        return crate::ops::eval_comparison_values_in(op, lhs, rhs, collation, operands, ctx);
+    }
+    crate::ops::eval_binary_full(
+        op,
+        lhs,
+        rhs,
+        ctx.div_precision_increment(),
+        collation,
+        operands,
+        ctx,
+    )
+}
+
 pub(crate) fn coerce_function_result(
     name: &str,
     ret_type: Option<&FieldType>,

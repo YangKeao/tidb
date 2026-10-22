@@ -50,6 +50,8 @@ pub(crate) enum Operand<'a> {
     /// `*Constant` before any signature is built. Its field type is genuinely
     /// absent, so every type-driven rule below declines instead of guessing.
     Literal,
+    /// Immutable facts captured from the real compiled argument owner.
+    Captured(OperandFacts),
 }
 
 impl<'a> Operand<'a> {
@@ -58,16 +60,23 @@ impl<'a> Operand<'a> {
         match self {
             Operand::Expr(expr) => expr.static_type(),
             Operand::Literal => None,
+            Operand::Captured(_) => unreachable!("captured arguments expose their actual facts"),
         }
     }
 
     /// Go `mysql.HasUnsignedFlag(args[i].GetType(ctx).GetFlag())`.
     pub(crate) fn is_unsigned(self) -> bool {
+        if let Self::Captured(facts) = self {
+            return facts.unsigned;
+        }
         self.field_type().is_some_and(FieldType::is_unsigned)
     }
 
     /// Go `args[i].GetType(ctx).EvalType()`.
     pub(crate) fn eval_type(self) -> Option<EvalType> {
+        if let Self::Captured(facts) = self {
+            return facts.eval_type;
+        }
         self.field_type().map(FieldType::eval_type)
     }
 
@@ -97,6 +106,7 @@ impl<'a> Operand<'a> {
         match self {
             Operand::Expr(expr) => crate::constant_fold::folds_to_constant(expr),
             Operand::Literal => true,
+            Operand::Captured(facts) => facts.constant,
         }
     }
 
@@ -112,6 +122,9 @@ impl<'a> Operand<'a> {
     /// Unlike [`Self::is_constant`] this is a genuine node test -- folding
     /// never turns a subtree INTO a column.
     pub(crate) fn is_duration_column(self) -> bool {
+        if let Self::Captured(facts) = self {
+            return facts.duration_column;
+        }
         let Operand::Expr(expr) = self else {
             return false;
         };
@@ -131,6 +144,20 @@ pub(crate) struct Operands<'a> {
 }
 
 impl Operands<'_> {
+    pub(crate) fn from_facts(facts: [OperandFacts; 2]) -> Self {
+        Self {
+            lhs: Operand::Captured(facts[0]),
+            rhs: Operand::Captured(facts[1]),
+        }
+    }
+    pub(crate) fn facts(self) -> [OperandFacts; 2] {
+        [self.lhs, self.rhs].map(|operand| OperandFacts {
+            eval_type: operand.eval_type(),
+            unsigned: operand.is_unsigned(),
+            constant: operand.is_constant(),
+            duration_column: operand.is_duration_column(),
+        })
+    }
     /// Both operands as AST-tier literals; see [`Operand::Literal`].
     pub(crate) const LITERALS: Operands<'static> = Operands {
         lhs: Operand::Literal,

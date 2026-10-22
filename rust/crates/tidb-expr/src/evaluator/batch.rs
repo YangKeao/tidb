@@ -534,7 +534,8 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
-            if native_pb_eager_values(function)
+            if function.pb_binary_values().is_some()
+                || native_pb_eager_values(function)
                 || native_regexp_source_value(function, limits)
                 || native_json_schema_call(function)
                 || native_final_state_call(function)
@@ -1309,6 +1310,20 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
+    if function.pb_binary_values().is_some() && !native_no_argument_header_call(function) {
+        budget.array::<hosts::NativePbBinary>(1)?;
+        budget.array::<usize>(source_data_arity(function))?;
+        for argument in function.args.iter().take(2) {
+            if let Some(field) = argument.static_type() {
+                budget.field(field, 1)?;
+            }
+        }
+        if let Some(field) = result {
+            budget.field(field, 1)?;
+        }
+        budget.add(function.func_name.lowercase().len())?;
+        return Ok(());
+    }
     if native_pb_eager_values(function) {
         budget.array::<hosts::NativePbEagerValues>(1)?;
         if function.pb_json_signature().is_some() {
@@ -1641,6 +1656,14 @@ fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize
     }
     // The selected PB scalar body has raw demands. Only the genuine bulk
     // branches above may choose the old arithmetic operand preparation.
+    if let Some(domain) = pb_scalar_binary_domain(function, view) {
+        return numeric_source::mode_view(
+            function,
+            index,
+            crate::scalar_function::NativeArithmeticInputMode::Numeric(domain),
+            view.diagnostic(),
+        );
+    }
     if pb_value_owner(function) {
         return NativeView::ValueToken;
     }
@@ -2263,11 +2286,21 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 fn pb_regexp_owner(function: &ScalarFunction) -> bool {
     function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig)
 }
+fn pb_scalar_binary_domain(function: &ScalarFunction, view: NativeView) -> Option<NativeEvalType> {
+    if pb_value_unary_view(function, view) || pb_value_arithmetic_view(function, view) {
+        return None;
+    }
+    function
+        .pb_binary_values()?
+        .domain()
+        .filter(|_| function.args.len() == 2)
+}
 fn native_pb_eager_values(function: &ScalarFunction) -> bool {
     function.pb_eager_values().is_some() || function.pb_json_signature().is_some()
 }
 fn pb_value_owner(function: &ScalarFunction) -> bool {
     pb_regexp_owner(function)
+        || function.pb_binary_values().is_some()
         || function.pb_json_signature().is_some()
         || function
             .pb_eager_values()
@@ -2278,7 +2311,8 @@ fn pb_value_owner(function: &ScalarFunction) -> bool {
 fn pb_value_legacy_bulk(root: &Expression) -> bool {
     matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function)
         && (matches!(function.func_name.lowercase(),"abs"|"cast_json"|"cast_decimal") || native_arithmetic_operation(function.func_name.lowercase()).is_some())
-        && crate::scalar_function::static_batch_target(root).is_some())
+        && crate::scalar_function::static_batch_target(root).is_some()
+        && (!native_no_argument_header_call(function) || pb_value_unary_batch(root).is_some()))
 }
 // A real bulk consumer can select the old unary batch body even though the
 // same PB expression has a scalar arity header. Retain both actual profiles.
@@ -2360,6 +2394,12 @@ fn native_weight_string_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::weight_value::supports(function)
 }
 fn source_data_arity(function: &ScalarFunction) -> usize {
+    if function
+        .pb_binary_values()
+        .is_some_and(|kernel| kernel.domain().is_none())
+    {
+        return function.args.len().min(2);
+    }
     if native_weight_string_call(function) {
         crate::scalar_function::weight_value::data_arity(
             function.args.len(),
@@ -2525,7 +2565,8 @@ fn native_missing_arithmetic_sources(function: &ScalarFunction) -> bool {
         && function.args.iter().any(|arg| arg.static_type().is_none())
 }
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
-    native_pb_eager_values(function)
+    function.pb_binary_values().is_some()
+        || native_pb_eager_values(function)
         || native_optional_value_call(function)
         || native_optional_selection_call(function)
         || native_optional_operator_call(function)
@@ -2538,7 +2579,8 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    native_pb_eager_values(function)
+    function.pb_binary_values().is_some()
+        || native_pb_eager_values(function)
         || native_concat_value_call(function)
         || native_no_argument_header_call(function)
         || native_json_schema_call(function)
@@ -2635,24 +2677,26 @@ fn resolve_call_in_view(
             2,
         ));
     }
+    if view.value_role().is_some() && native_no_argument_header_call(function) {
+        return Ok((
+            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
+            0,
+        ));
+    }
     if view.value_role().is_some()
-        && (native_pb_eager_values(function) || native_regexp_call(function))
+        && (function.pb_binary_values().is_some()
+            || native_pb_eager_values(function)
+            || native_regexp_call(function))
     {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
-            function.args.len(),
+            source_data_arity(function),
         ));
     }
     if view.value_role().is_some() && native_weight_string_call(function) {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
             source_data_arity(function),
-        ));
-    }
-    if view.value_role().is_some() && native_no_argument_header_call(function) {
-        return Ok((
-            CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
-            0,
         ));
     }
     if view.value_role().is_some()
@@ -4208,6 +4252,7 @@ fn preflight_view<'a>(
                     .ok_or_else(|| resource("batch source node policy exceeded"))?;
                 budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
 
+                let selected_pb_numeric = pb_scalar_binary_domain(function, view).is_some();
                 let contextual_numeric =
                     (native_arithmetic_operation(function.func_name.lowercase()).is_some()
                         || native_unary_sign_operation(function.func_name.lowercase()).is_some()
@@ -4225,30 +4270,35 @@ fn preflight_view<'a>(
                                     &mut { limits.tree.max_nodes },
                                 )
                             }));
-                if contextual_numeric
-                    && (!pb_value_owner(function)
-                        || pb_value_unary_view(function, view)
-                        || pb_value_arithmetic_view(function, view))
-                    && (!crate::scalar_function::eager_values::supports(function)
-                        || matches!(
+                if selected_pb_numeric
+                    || (contextual_numeric
+                        && (!pb_value_owner(function)
+                            || pb_value_unary_view(function, view)
+                            || pb_value_arithmetic_view(function, view))
+                        && (!crate::scalar_function::eager_values::supports(function)
+                            || matches!(
+                                function.func_name.lowercase(),
+                                "abs" | "cot" | "exp" | "pow" | "power"
+                            ))
+                        && function.func_name.lowercase() != "exp"
+                        && !(view.value_role().is_some()
+                            && native_unary_sign_operation(function.func_name.lowercase())
+                                .is_some()))
+                {
+                    if !selected_pb_numeric
+                        && matches!(
                             function.func_name.lowercase(),
                             "abs" | "cot" | "exp" | "pow" | "power"
-                        ))
-                    && function.func_name.lowercase() != "exp"
-                    && !(view.value_role().is_some()
-                        && native_unary_sign_operation(function.func_name.lowercase()).is_some())
-                {
-                    if matches!(
-                        function.func_name.lowercase(),
-                        "abs" | "cot" | "exp" | "pow" | "power"
-                    ) && matches!(
-                        resolve_call_in_view(function, view)?.0,
-                        CallTarget::Host(
-                            SqlBatchHostOperation::EagerValuesNative
-                                | SqlBatchHostOperation::AbsNative
-                                | SqlBatchHostOperation::AbsIntWindowNative
                         )
-                    ) {
+                        && matches!(
+                            resolve_call_in_view(function, view)?.0,
+                            CallTarget::Host(
+                                SqlBatchHostOperation::EagerValuesNative
+                                    | SqlBatchHostOperation::AbsNative
+                                    | SqlBatchHostOperation::AbsIntWindowNative
+                            )
+                        )
+                    {
                         survey_common_math_diagnostic(
                             function,
                             checked.len(),
@@ -4260,10 +4310,12 @@ fn preflight_view<'a>(
                             &mut pending,
                             &mut diagnostics,
                         )?;
-                    } else if matches!(
-                        function.func_name.lowercase(),
-                        "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"
-                    ) && function.args.len() == 2
+                    } else if (selected_pb_numeric
+                        || matches!(
+                            function.func_name.lowercase(),
+                            "plus" | "minus" | "mul" | "mod" | "div" | "intdiv"
+                        ))
+                        && function.args.len() == 2
                         && view.value_role().is_some()
                     {
                         survey_arithmetic_diagnostic(
@@ -4861,6 +4913,8 @@ fn preflight_view<'a>(
         };
         if item.view.value_role().is_none()
             || native_arithmetic_operation(function.func_name.lowercase()).is_none()
+            || (function.pb_binary_values().is_some()
+                && !pb_value_arithmetic_view(function, item.view))
         {
             continue;
         }
@@ -5781,6 +5835,20 @@ fn lower_view_policy(
                                         .value_role()
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
+                            }
+                            SqlBatchHostOperation::EagerValuesNative if sql.pb_binary_values().is_some() && !native_no_argument_header_call(sql) => {
+                                let kernel=sql.pb_binary_values().expect("actual selected binary owner");
+                                debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
+                                let mut arguments=Vec::new();let data=source_data_arity(sql);reserve(&mut arguments,data)?;let mut child=ordinal+1;
+                                for _ in 0..data{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB binary child absent"))?.subtree_end;}
+                                NativeHostMetadata::PbBinary(Box::new(hosts::NativePbBinary {
+                                    kernel,logical_arity:sql.args.len(),arguments:arguments.into_boxed_slice(),
+                                    source_types:[0,1].map(|i|sql.args.get(i).and_then(Expression::static_type).map(snapshot_field_type)),
+                                    binary_literal:[0,1].map(|i|sql.args.get(i).is_some_and(crate::scalar_function::dynamic_diagnostic::saved_binary_literal)),
+                                    operands:kernel.domain().map(|_|crate::ops::Operands::of(&sql.args[0],&sql.args[1]).facts()),
+                                    name:sql.func_name.lowercase().into(),collation:sql.derived_collation(),result_type:item.sql.map(snapshot_field_type),
+                                    integer_batch_result:item.view==NativeView::BulkRoot(NativeEvalType::Int),output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("PB binary output view absent"))?,
+                                }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_pb_eager_values(sql) => {
                                 let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
@@ -8715,10 +8783,11 @@ impl PreparedBatchSuite {
                                     | NativeHostMetadata::Regexp(_)
                                     | NativeHostMetadata::RegexpValues(_)
                                     | NativeHostMetadata::PbEagerValues(_)
+                                    | NativeHostMetadata::PbBinary(_)
                             ) || matches!(
                         meta,
                         NativeHostMetadata::HeaderOutcome {
-                            kind: crate::scalar_function::header_value::HeaderKind::PbRegexpArity,
+                            kind: crate::scalar_function::header_value::HeaderKind::PbRegexpArity | crate::scalar_function::header_value::HeaderKind::PbBinaryArity,
                             ..
                         }
                     )

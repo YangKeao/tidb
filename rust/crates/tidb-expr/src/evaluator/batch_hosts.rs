@@ -166,6 +166,9 @@ pub(super) use regexp_values_source::NativeRegexpValues;
 #[path = "batch_pb_eager_values.rs"]
 mod pb_eager_values_source;
 pub(super) use pb_eager_values_source::{NativePbEagerValues, PbValueKernel};
+#[path = "batch_pb_binary_values.rs"]
+mod pb_binary_values_source;
+pub(super) use pb_binary_values_source::NativePbBinary;
 
 #[path = "batch_typed_context.rs"]
 mod typed_context_source;
@@ -187,6 +190,7 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    PbBinary(Box<NativePbBinary>),
     PbEagerValues(Box<NativePbEagerValues>),
     RegexpValues(Box<NativeRegexpValues>),
     WeightString(Box<NativeWeightString>),
@@ -542,6 +546,7 @@ impl NativeHostMetadata {
             Self::WeightString(metadata) => metadata.result_type.as_ref(),
             Self::RegexpValues(metadata) => metadata.result_type.as_ref(),
             Self::PbEagerValues(metadata) => metadata.result_type.as_ref(),
+            Self::PbBinary(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
@@ -585,6 +590,7 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    PbIntegerMod(Box<pb_binary_values_source::PbModTask>),
     PbEagerValues {
         tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -760,6 +766,7 @@ impl NativeTask {
         match &self.demand {
             SqlDemand::WeightString(task) => Ok(task.next_argument()),
             SqlDemand::RegexpValues(task) => Ok(task.next_argument()),
+            SqlDemand::PbIntegerMod(task) => Ok(Some(task.tokens.len())),
             SqlDemand::PbEagerValues { tokens } => Ok(Some(tokens.len())),
             SqlDemand::PrefixValues { phase } => Ok((*phase
                 != crate::scalar_function::prefix_value::PrefixPhase::Consumed)
@@ -833,6 +840,7 @@ impl NativeTask {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::RegexpValues(_) => Err(binding("regexp values own their actual phases")),
+            SqlDemand::PbIntegerMod(_) => Err(binding("PB MOD owns its actual raw prefix")),
             SqlDemand::PbEagerValues { .. } => Err(binding("PB eager values own their raw prefix")),
             SqlDemand::WeightString(_) => Err(binding("weight owns its actual value phases")),
             SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
@@ -937,6 +945,11 @@ impl NativeTask {
             return bytes
                 .checked_add(task.retained_bytes()?)
                 .ok_or_else(|| resource("stateful retained extent overflow"));
+        }
+        if let SqlDemand::PbIntegerMod(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("PB MOD task retained extent overflow"));
         }
         if let SqlDemand::RegexpValues(task) = &self.demand {
             return bytes
@@ -1515,6 +1528,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::WeightString(_)
                 | NativeHostMetadata::RegexpValues(_)
                 | NativeHostMetadata::PbEagerValues(_)
+                | NativeHostMetadata::PbBinary(_)
                 | NativeHostMetadata::Selection { .. }
                 | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
@@ -2780,6 +2794,21 @@ impl NativeBatchHosts<'_> {
                         return Err(binding("header outcome declaration differs"));
                     }
                     SqlDemand::HeaderOutcome
+                } else if let Some(NativeHostMetadata::PbBinary(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if meta.kernel.domain().is_some()
+                        || self.native_values.is_none()
+                        || meta.arguments.len() != meta.logical_arity.min(2)
+                        || meta.arguments.len() != invocation.arg_types.len()
+                        || !matches!(
+                            meta.output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                    {
+                        return Err(binding("PB raw MOD declaration differs"));
+                    }
+                    SqlDemand::PbIntegerMod(Box::new(pb_binary_values_source::PbModTask::new()))
                 } else if let Some(NativeHostMetadata::PbEagerValues(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
@@ -3756,6 +3785,7 @@ impl NativeBatchHosts<'_> {
             }
         };
         let immediate = matches!(demand, SqlDemand::HeaderOutcome)
+            || matches!(demand, SqlDemand::PbIntegerMod(_)) && invocation.arg_types.is_empty()
             || matches!(demand, SqlDemand::PbEagerValues { .. }) && invocation.arg_types.is_empty()
             || matches!(
                 demand,
@@ -3810,6 +3840,11 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::HeaderOutcome
             ) {
                 guard.provider.finish_header_outcome(&guard.task)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::PbIntegerMod(_)
+            ) {
+                guard.provider.resume_pb_integer_mod(&guard.task, None)
             } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::PbEagerValues { .. }
@@ -3960,6 +3995,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("PB eager reply is not a capability"));
             };
             return self.resume_pb_eager_values(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::PbIntegerMod(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("PB MOD reply is not a capability"));
+            };
+            return self.resume_pb_integer_mod(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::RegexpValues(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

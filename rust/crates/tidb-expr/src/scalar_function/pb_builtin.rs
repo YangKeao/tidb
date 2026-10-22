@@ -103,7 +103,120 @@ impl PbEagerValues {
     }
 }
 
+/// Actual selected binary implementation, without expression children.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PbBinaryValues {
+    builtin: PbBuiltin,
+}
+impl PbBinaryValues {
+    pub(crate) fn arity_error() -> EvalError {
+        EvalError::Unsupported("protobuf binary builtin arity")
+    }
+    pub(crate) fn missing_argument_error() -> EvalError {
+        EvalError::Unsupported("missing protobuf builtin argument")
+    }
+    pub(crate) fn signature(self) -> ScalarFuncSig {
+        self.builtin.signature
+    }
+    pub(crate) fn operation(self) -> BinaryOp {
+        match self.builtin.kernel {
+            Kernel::Binary(op, _) => op,
+            Kernel::IntegerMod { .. } => BinaryOp::Mod,
+            _ => unreachable!("actual binary owner"),
+        }
+    }
+    pub(crate) fn domain(self) -> Option<EvalType> {
+        match self.builtin.kernel {
+            Kernel::Binary(_, domain) => Some(domain),
+            Kernel::IntegerMod { .. } => None,
+            _ => unreachable!("actual binary owner"),
+        }
+    }
+    pub(crate) fn stops_on_left_null(self) -> bool {
+        self.operation() != BinaryOp::NullEq
+            && !(self.operation() == BinaryOp::Mod && self.domain() != Some(EvalType::Decimal))
+    }
+    pub(crate) fn left_null_result(
+        self,
+        observed: Datum,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        debug_assert!(observed.is_null() && self.domain().is_some() && self.stops_on_left_null());
+        let op = self.operation();
+        if matches!(
+            op,
+            BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul | BinaryOp::Mod | BinaryOp::Div
+        ) {
+            crate::ops::eval_binary_arithmetic_null_in(ctx)
+        } else if matches!(
+            op,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+        ) {
+            // Strict PB comparisons stop before RHS demand. NULL-safe
+            // equality instead needs both arguments and bypasses this arm.
+            crate::ops::eval_comparison_null_in(op, ctx)
+        } else {
+            Ok(observed)
+        }
+    }
+    pub(crate) fn integer_mod_operand(
+        self,
+        index: usize,
+        value: Datum,
+    ) -> Result<Datum, EvalError> {
+        let Kernel::IntegerMod { unsigned } = self.builtin.kernel else {
+            unreachable!("actual integer MOD owner")
+        };
+        Ok(match crate::arg_eval_type::eval_int(&value)? {
+            None => Datum::Null,
+            Some(value) if unsigned[index] => Datum::UInt(value as u64),
+            Some(value) => Datum::Int(value),
+        })
+    }
+    pub(crate) fn integer_mod_values(
+        self,
+        left: Datum,
+        right: Datum,
+        precision: u32,
+        collation: tidb_datatype::Collation,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        debug_assert!(self.domain().is_none());
+        crate::ops::eval_binary_full(
+            BinaryOp::Mod,
+            left,
+            right,
+            precision,
+            collation,
+            crate::ops::Operands::LITERALS,
+            ctx,
+        )
+    }
+    pub(crate) fn eval_values(
+        self,
+        left: Datum,
+        right: Datum,
+        signed: [bool; 2],
+        collation: tidb_datatype::Collation,
+        operands: crate::ops::Operands<'_>,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        debug_assert!(self.domain().is_some());
+        let (left, right) = crate::binary_literal::cast_signed_literal_operands(
+            self.operation(),
+            left,
+            right,
+            signed,
+        );
+        super::eval_binary_value_body(self.operation(), left, right, collation, operands, ctx)
+    }
+}
+
 impl PbBuiltin {
+    pub(crate) fn binary_values(self) -> Option<PbBinaryValues> {
+        matches!(self.kernel, Kernel::Binary(..) | Kernel::IntegerMod { .. })
+            .then_some(PbBinaryValues { builtin: self })
+    }
     pub(crate) fn json_signature(self) -> Option<ScalarFuncSig> {
         matches!(self.kernel, Kernel::Json).then_some(self.signature)
     }
@@ -266,7 +379,7 @@ impl PbBuiltin {
         let args = &function.args;
         let argument = |index: usize| {
             args.get(index)
-                .ok_or(EvalError::Unsupported("missing protobuf builtin argument"))?
+                .ok_or_else(PbBinaryValues::missing_argument_error)?
                 .eval(ctx, row)
         };
         match self.kernel {
@@ -361,62 +474,32 @@ impl PbBuiltin {
                 let right = logic_truthy(&argument(1)?, ctx)?;
                 crate::eval_logical_ready_in(function, crate::LogicalArgs::Both(left, right), ctx)
             }
-            Kernel::IntegerMod { unsigned } => {
-                // The four Go MOD signatures bake signedness into the builtin,
-                // rather than reselecting it from each row or the SQL name.
-                let operand = |index: usize| -> Result<Datum, EvalError> {
-                    let value = argument(index)?;
-                    Ok(match crate::arg_eval_type::eval_int(&value)? {
-                        None => Datum::Null,
-                        Some(value) if unsigned[index] => Datum::UInt(value as u64),
-                        Some(value) => Datum::Int(value),
-                    })
-                };
+            Kernel::IntegerMod { .. } => {
+                let builtin = self.binary_values().expect("actual integer MOD owner");
+                let operand = |index| builtin.integer_mod_operand(index, argument(index)?);
                 let left = operand(0)?;
                 let right = operand(1)?;
-                crate::ops::eval_binary_full(
-                    BinaryOp::Mod,
+                builtin.integer_mod_values(
                     left,
                     right,
                     ctx.div_precision_increment(),
                     function.derived_collation(),
-                    crate::ops::Operands::LITERALS,
                     ctx,
                 )
             }
             Kernel::Binary(op, domain) => {
                 if args.len() != 2 {
-                    return Err(EvalError::Unsupported("protobuf binary builtin arity"));
+                    return Err(PbBinaryValues::arity_error());
                 }
                 let left = eval_numeric_operand_row(&args[0], ctx, row, domain)?;
                 if left.is_null()
                     && op != BinaryOp::NullEq
                     && !(op == BinaryOp::Mod && domain != EvalType::Decimal)
                 {
-                    return if matches!(
-                        op,
-                        BinaryOp::Plus
-                            | BinaryOp::Minus
-                            | BinaryOp::Mul
-                            | BinaryOp::Mod
-                            | BinaryOp::Div
-                    ) {
-                        crate::ops::eval_binary_arithmetic_null_in(ctx)
-                    } else if matches!(
-                        op,
-                        BinaryOp::Eq
-                            | BinaryOp::Ne
-                            | BinaryOp::Lt
-                            | BinaryOp::Le
-                            | BinaryOp::Gt
-                            | BinaryOp::Ge
-                    ) {
-                        // Strict PB comparisons stop before RHS demand. NULL-safe
-                        // equality instead needs both arguments and bypasses this arm.
-                        crate::ops::eval_comparison_null_in(op, ctx)
-                    } else {
-                        Ok(Datum::Null)
-                    };
+                    return self
+                        .binary_values()
+                        .expect("actual selected binary owner")
+                        .left_null_result(left, ctx);
                 }
                 let right = eval_numeric_operand_row(&args[1], ctx, row, domain)?;
                 function.eval_binary_values(op, left, right, ctx)

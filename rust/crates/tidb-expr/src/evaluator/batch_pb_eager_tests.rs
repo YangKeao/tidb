@@ -1163,3 +1163,6 @@ fn pb_eager_source_rejects_stale_optional_declarations_and_selected_origins() {
 
 #[path = "batch_pb_json_tests.rs"]
 mod json_tests;
+
+#[path = "batch_pb_binary_tests.rs"]
+mod binary_tests;
