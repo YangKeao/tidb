@@ -17,12 +17,12 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("DIV source metadata absent"));
         };
-        let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+        let unsigned = arithmetic_unsigned(source_types);
         let (left, right) = crate::binary_literal::cast_signed_literal_operands(
             BinaryOp::IntDiv,
             left,
             right,
-            unsigned.map(|u| !u),
+            arithmetic_signed(source_types),
         );
         // This route precedes the generic precision read, and retains the
         // actual converted Decimals for the original cast-width refinement.
@@ -102,7 +102,7 @@ impl NativeBatchHosts<'_> {
                     continuation,
                 } => {
                     let result = crate::scalar_function::prepare_native_integer_division_operand(
-                        &source_types[index],
+                        source_types[index].as_ref(),
                         value,
                         self.context,
                     );

@@ -526,32 +526,28 @@ impl NativeIntDivDiagnostics {
     ) -> Self {
         Self {
             arguments, format_failures,
-            wrap: [0, 1].map(|index| native_should_wrap_intdiv_decimal_argument(
+            wrap: [0, 1].map(|index| function.args[index].static_type().is_some_and(|field| native_should_wrap_intdiv_decimal_argument(
                 true, native_numeric_diagnostic_domain(function.numeric_operand_domain()),
-                function.args[index].static_type().expect("checked DIV argument").eval_type() == EvalType::Decimal,
+                field.eval_type() == EvalType::Decimal,
                 matches!(&function.args[index], Expression::Constant(value) if value.literal_value().is_some()),
-            )),
+            ))),
             refine: [0, 1].map(|index| function.args[index].const_level() == ConstLevel::STRICT),
         }
     }
     pub(crate) fn decimal_overflow(
         &self,
-        fields: &[FieldType; 2],
+        fields: &[Option<FieldType>; 2],
         values: [&tidb_datatype::Decimal; 2],
         unsigned: bool,
     ) -> EvalError {
         let text = |index: usize| -> Option<String> {
+            let field = fields[index].as_ref()?;
             if let Some(bits) = self.format_failures[index] {
                 let _ = render_numeric_format_failure(bits);
             }
             let text = self.arguments[index].as_deref()?.to_owned();
             Some(if self.wrap[index] {
-                native_intdiv_argument_text(
-                    text,
-                    &fields[index],
-                    self.refine[index],
-                    Some(values[index]),
-                )
+                native_intdiv_argument_text(text, field, self.refine[index], Some(values[index]))
             } else {
                 text
             })
@@ -641,6 +637,9 @@ pub(crate) fn static_numeric_argument_text(
     expression: &Expression,
     float: bool,
 ) -> Option<String> {
+    // Numeric argument diagnostics require the original argument declaration
+    // before inspecting or formatting its value.
+    expression.static_type()?;
     if let Expression::Constant(constant) = expression {
         if let Datum::BinaryLiteral(value) = &constant.value {
             let value = value.to_int().value();
@@ -3660,7 +3659,7 @@ impl ScalarFunction {
 /// Prepare DIV's already fetched promotion operand. Integer/Decimal values
 /// preserve their actual shape; only real values cross the original cast owner.
 pub(crate) fn prepare_native_integer_division_operand(
-    field: &FieldType,
+    field: Option<&FieldType>,
     value: Datum,
     ctx: &dyn Columns,
 ) -> Result<NumericOperandStep, EvalError> {
@@ -3672,9 +3671,13 @@ pub(crate) fn prepare_native_integer_division_operand(
         Datum::UInt(value) => Ok(NumericOperandStep::Ready(Datum::Decimal(
             tidb_datatype::Decimal::from_uint(value),
         ))),
-        value @ (Datum::Real(_) | Datum::Float32(_)) => {
-            numeric_argument_value::prepare(field, value, EvalType::Decimal, ctx, false)
-        }
+        value @ (Datum::Real(_) | Datum::Float32(_)) => numeric_argument_value::prepare(
+            crate::ops::require_decimal_expression_source(field),
+            value,
+            EvalType::Decimal,
+            ctx,
+            false,
+        ),
         _ => Err(EvalError::Unsupported("DIV numeric argument domain")),
     }
 }

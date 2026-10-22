@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-22 N34 validated) Actual optional arithmetic source declarations preserve unsigned=false and signed=false when absent, original expression-owned real-DIV type failure, and existing owned diagnostic recipes without unused eager formatting. Independent1250280 observations all pass without fallback or exemptions, including the huge malformed literal:552960/20C336358DC26867,643680/1D094031497F3DBD,53640/7623E8AA8B9D6A50; capture/rerun/admission failures preceded production. Same-cap32KiB-to-NULL recovery and48 long late-type-panic/reuse/flag cases pass. Frontend2062/exact inherited3/95ignored/all521batch/346warnings,Projection37,Expand6,lint,dual13fmt and ownership reconstruction pass; SDKad73b11 remains clean. Fixed inventory83088/1172refusals/17names. See evidence/no-fallback-n34.md; continue remaining contracts, public entries, generic fallback removal and service/performance work.
+
 - [x] (2026-10-22 N25–N32 validated) Conditions, raw/comparison operators, zero-value-demand headers, type properties, GROUPING, LIKE/ILIKE, CONCAT/CONCAT_WS and the closed string-parameter CONCAT batch publication boundary now preserve genuine optional metadata in the existing shared frame. Receipts no-fallback-n25.md through no-fallback-n32.md retain exact independent original observations, preceding admission failures and full validations. Latest local DCO caab6a8f; SDK ad73b11 remains clean and unchanged. Latest frontend2047/exact inherited3/95ignored/all506batch/346warnings, Projection35/Expand6/lint/dual-format/checker pass. The fixed83088-case inventory has1352 refusals across23names; it is not a completion percentage. Generic fallback, public scalar/AST/filter/unistore entries, remaining metadata/PB profiles and service/performance gates remain open.
 
 - [x] (2026-10-22 N33 validated) Genuine optional arithmetic result metadata is integrated while both source declarations remain present. Independent196860 observations retain80640/80D3DF5FB7E2AFFF,107280/65E3A87908E51839 and8940/07DA5D6EBAB0FE48. All187920 parameter/phase pairs and8880 raw literal Datum pairs pass without fallback;60 exact malformed huge-declaration literal configurations retain terminal metadata Resource before formatting, and remain in the original digest. Same-owner32KiB rejection at16KiB followed by NULL recovery at the same cap passes. Frontend2054/exact3/95ignored/all513batch/346warnings,Projection36,Expand6,lint,dual9fmt and ownership reconstruction pass. Fixed inventory83088/1316refusals/23names. See evidence/no-fallback-n33.md. Continue argument declaration absence and global entry/fallback/service/performance work; this is not overall completion.
@@ -468,6 +470,9 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: retain genuine optional source fields and distinguish absence from explicit signedness. Missing-source arithmetic uses the existing owned numeric diagnostic continuation, including literal-only expressions; unused fixed text is neither rendered nor billed. Keep original expression-owned real DIV's required-source guard at its demand point and preserve the separate literal-value inference contract. Rationale: original recordings expose both signed binary literal differences and premature malformed-Decimal formatting. Date/Author: 2026-10-22 ExpressionReuseEngineer.
+
+
 - Decision: keep argument demand and output publication independent for the closed CONCAT parameter template; preserve all other contextual typed-root guards.
   Rationale: direct original recordings contradicted typed-once preparation. Only valid non-PB string-result/string-leaf calls with a genuine parameter and no deferred/virtual/correlated or special header metadata are admitted by N32.
   Date/Author: 2026-10-22 / ExpressionReuseEngineer.
@@ -756,6 +761,9 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N34 closes the six arithmetic names in the bounded optional-declaration inventory, reducing1316/23 to1172/17. All1250280 original observations now run natively, without the60 literal refusals previously retained for N33's distinct result-only profile. N33's existing profile and resource assertions remain unchanged. Final gates and origin distinctions are recorded in evidence/no-fallback-n34.md; global entry and performance work continues.
+
 
 N25–N32 are validated local milestones only. Their receipts preserve the precise scope and independent evidence. The bounded inventory fell from4410 refusals/57names after N24 to1352/23 after N32. N32 also closes the1152 observations explicitly retained by N31, while preserving that221184/EE3A7F821B85B619 witness. These counts do not certify global entry coverage or performance. Task #4 continues through remaining genuine source contracts, public entries and generic fallback deletion before final service/performance validation; no push or release is authorized.
 
@@ -4663,3 +4671,17 @@ N33 validated outcome: the original classifiers, source fields, signedness, oper
 Next, independently capture missing argument declaration behavior before changing source_types. Absence must remain distinct from an explicit signed declaration for binary literals. Raw arithmetic must not normalize against an invented field. For DIV, the original expression-owned real operand can panic when its source type is absent, whereas a literal-value API has a separate type-derivation contract; preserve genuine origin and failure timing rather than selecting a convenient fallback. Public AST sources will require their distinct origin semantics.
 
 Revision2026-10-22: closed N33 with its actual gates and explicitly bounded literal-resource cases; optional argument declarations, public entries and global fallback remain open.
+
+## N34: genuine missing arithmetic argument declarations
+
+
+Continue from local06945e90 and clean SDKad73b11. The arithmetic_missing_argument_* tests in rust/crates/tidb-expr/src/evaluator/batch_stateful_tests.rs erase the genuine left/right declarations independently and combine them with present/absent result declarations. They retain actual input schema, valid physical column cells, separate caller output storage, both flags and the original static batch target as recorded data. A changed-read provider exposes repeated parameter demands. The original six arithmetic classifiers, scalar computation and SDK remain untouched during capture. Original552960/20C336358DC26867 and643680/1D094031497F3DBD are already fixed; capture/rerun and reproduce refusal for the direct Datum witness before widening anything.
+
+Represent source_types as actual Option<FieldType> entries, never default signed fields. Missing source declaration means unsigned=false and signed=false; signed is not the inverse of unsigned when metadata is absent. Raw-mode operand preparation must retain its actual Datum before requiring a field, while typed/window profiles still authenticate complete source facts. Reuse original value kernels and detached diagnostic recipes. An unavailable argument type suppresses its numeric diagnostic text before formatter/parameter reads; preserve sequential ordinary overflow diagnostics and eager paired DIV reporting.
+
+For expression-owned real DIV promotion, preserve the existing ops/real_coerce.rs type-presence panic at its original demand point. The literal-value API's inferred real type is a separate existing contract, and cannot stand in for the missing expression type. Share the original guard rather than duplicate its failure or manufacture a type. The canonical expression source remains distinct from future parsed AST origins. Validate all original hashes and actual no-fallback paths, explicit finite failures and same-owner recovery, real Projection, complete frontend/exact inherited failures, Expand, lint, dual formatting and ownership reconstruction before a local DCO. Continue global entry/fallback/service/performance work afterward.
+
+Revision2026-10-22: opened N34 with independent missing-argument recordings and explicit source-type/origin invariants; production remains unchanged pending the direct witness.
+
+
+N34 validated outcome2026-10-22: all three independent original witnesses and their reruns remain fixed. Early prototypes exposed an inverse-unsigned assumption, a diagnostic missing-type guard and an unused eager DIV subject formatter; each was corrected without changing witnesses or limits. The shared diagnostic recipes now retain original demand order even for literal-only missing-source calls. All eight N34 tests and the actual Projection matrix pass, along with the complete gates above. The original scalar computations are reconstructed exactly except for sharing the existing required-source guard and option metadata access. Generic fallback and public entry migration are still open.

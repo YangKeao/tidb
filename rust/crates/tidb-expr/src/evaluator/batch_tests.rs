@@ -32705,7 +32705,7 @@ fn integer_division_operand_preparation_matches_independent_original_before_reti
                     &mut || {
                         let value =
                             match crate::scalar_function::prepare_native_integer_division_operand(
-                                field,
+                                Some(field),
                                 value.clone(),
                                 &ctx,
                             )? {

@@ -415,7 +415,7 @@ pub(super) enum NativeHostMetadata {
         name: Box<str>,
         result_type: Option<FieldType>,
         argument_nodes: [usize; 2],
-        source_types: [FieldType; 2],
+        source_types: [Option<FieldType>; 2],
         literal: [bool; 2],
         binary_literal: [bool; 2],
         mode: crate::scalar_function::NativeArithmeticInputMode,
@@ -451,6 +451,26 @@ pub(super) enum NativeHostMetadata {
         source_type: FieldType,
         argument_node: usize,
     },
+}
+// An absent declaration is neither an explicit signed nor unsigned operand.
+fn arithmetic_unsigned(fields: &[Option<FieldType>; 2]) -> [bool; 2] {
+    fields
+        .each_ref()
+        .map(|field| field.as_ref().is_some_and(FieldType::is_unsigned))
+}
+fn arithmetic_signed(fields: &[Option<FieldType>; 2]) -> [bool; 2] {
+    fields
+        .each_ref()
+        .map(|field| field.as_ref().is_some_and(|field| !field.is_unsigned()))
+}
+fn arithmetic_typed_source(
+    fields: &[Option<FieldType>; 2],
+    index: usize,
+) -> LocalResult<&FieldType> {
+    fields
+        .get(index)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| binding("typed arithmetic source declaration missing"))
 }
 // Absence is actual SQL metadata; do not synthesize a coercion target.
 fn coerce_optional_value_result(
@@ -1658,18 +1678,22 @@ impl<'a> NativeBatchHosts<'a> {
         } else {
             *generic_mode
         };
-        let value = match crate::scalar_function::native_numeric_operand(
-            &source_types[index],
-            literal[index],
-            binary_literal[index],
-            value,
-            mode,
-            self.context,
-            subjects[index].as_deref(),
-            subject_format_failures[index],
-        ) {
-            Ok(value) => value,
-            Err(error) => return self.native_failure(error),
+        let value = if mode == Mode::Raw {
+            value
+        } else {
+            match crate::scalar_function::native_numeric_operand(
+                arithmetic_typed_source(source_types, index)?,
+                literal[index],
+                binary_literal[index],
+                value,
+                mode,
+                self.context,
+                subjects[index].as_deref(),
+                subject_format_failures[index],
+            ) {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            }
         };
         let prepared = if index == 0 {
             let stop = value.is_null()
@@ -1721,7 +1745,7 @@ impl<'a> NativeBatchHosts<'a> {
             let left = left
                 .take()
                 .ok_or_else(|| binding("arithmetic left value missing"))?;
-            let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+            let unsigned = arithmetic_unsigned(source_types);
             if quotient::is_quotient(op) {
                 let available = self
                     .max_retained_bytes
@@ -1765,7 +1789,7 @@ impl<'a> NativeBatchHosts<'a> {
                     op,
                     left,
                     value,
-                    unsigned.map(|value| !value),
+                    arithmetic_signed(source_types),
                 );
                 let _ = self.context.div_precision_increment();
                 match crate::ops::arithmetic::prepare(op, left, right, unsigned, self.context) {
@@ -3279,6 +3303,8 @@ impl NativeBatchHosts<'_> {
                     batch: None,
                     name,
                     mode,
+                    generic_mode,
+                    source_types,
                     intdiv,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
@@ -3290,6 +3316,9 @@ impl NativeBatchHosts<'_> {
                     || operation != *descriptor_operation
                     || native_arithmetic_operation(name) != Some(operation)
                     || (name.as_ref() == "intdiv") != intdiv.is_some()
+                    || ((*mode != crate::scalar_function::NativeArithmeticInputMode::Raw
+                        || *generic_mode != crate::scalar_function::NativeArithmeticInputMode::Raw)
+                        && source_types.iter().any(Option::is_none))
                 {
                     return Err(binding("arithmetic catalog descriptor differs"));
                 }

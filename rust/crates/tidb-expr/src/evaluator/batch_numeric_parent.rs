@@ -202,6 +202,7 @@ impl<'a> NativeBatchHosts<'a> {
                 result_type,
                 source_types,
                 binary_literal,
+                mode,
                 generic_mode,
                 argument_nodes,
                 ..
@@ -211,6 +212,13 @@ impl<'a> NativeBatchHosts<'a> {
                     "numeric parent requires its original row arithmetic",
                 ));
             };
+            if (*mode != Mode::Raw || *generic_mode != Mode::Raw || batch.is_some())
+                && source_types.iter().any(Option::is_none)
+            {
+                return Err(binding(
+                    "typed arithmetic parent source declaration missing",
+                ));
+            }
             let window = batch.is_some();
             let valid_operation = if window {
                 matches!(
@@ -279,7 +287,9 @@ impl<'a> NativeBatchHosts<'a> {
                             || !batch.output_integer
                             || [0, 1].into_iter().any(|i| {
                                 crate::scalar_function::native_numeric_batch_source(
-                                    &source_types[i],
+                                    source_types[i]
+                                        .as_ref()
+                                        .expect("checked numeric window source"),
                                     binary_literal[i],
                                     batch.domain,
                                 ) != NativeEvalType::Int
@@ -580,15 +590,20 @@ impl<'a> NativeBatchHosts<'a> {
                 *generic_mode
             };
             let prep = parent.preparation[usize::from(!task.typed)][task.index];
-            let result = crate::scalar_function::prepare_native_numeric_operand(
-                &source_types[task.index],
-                matches!(prep, NativeValuePreparation::Literal),
-                matches!(prep, NativeValuePreparation::TypedReady),
-                binary_literal[task.index],
-                value.ok_or_else(|| binding("numeric operand absent"))?,
-                mode,
-                self.context,
-            );
+            let value = value.ok_or_else(|| binding("numeric operand absent"))?;
+            let result = if mode == Mode::Raw {
+                Ok(NumericOperandStep::Ready(value))
+            } else {
+                crate::scalar_function::prepare_native_numeric_operand(
+                    arithmetic_typed_source(source_types, task.index)?,
+                    matches!(prep, NativeValuePreparation::Literal),
+                    matches!(prep, NativeValuePreparation::TypedReady),
+                    binary_literal[task.index],
+                    value,
+                    mode,
+                    self.context,
+                )
+            };
             auth.check()?;
             match result {
                 Ok(NumericOperandStep::Ready(value)) => normalized = value,
@@ -657,7 +672,7 @@ impl<'a> NativeBatchHosts<'a> {
                 .left
                 .take()
                 .ok_or_else(|| binding("numeric left operand absent"))?;
-            let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+            let unsigned = arithmetic_unsigned(source_types);
             if op == BinaryOp::IntDiv {
                 return self.begin_integer_division_row(slot, task, left, value, available, auth);
             }
@@ -691,7 +706,7 @@ impl<'a> NativeBatchHosts<'a> {
                     op,
                     left,
                     value,
-                    unsigned.map(|u| !u),
+                    arithmetic_signed(source_types),
                 );
                 let _ = self.context.div_precision_increment();
                 auth.check()?;
@@ -787,7 +802,7 @@ impl<'a> NativeBatchHosts<'a> {
                             unreachable!()
                         };
                         let value = pending.finish(
-                            &source_types[task.index],
+                            arithmetic_typed_source(source_types, task.index)?,
                             text.as_deref(),
                             self.context,
                         );
@@ -807,7 +822,7 @@ impl<'a> NativeBatchHosts<'a> {
                             unreachable!()
                         };
                         let result = pending.finish(
-                            &source_types[task.index],
+                            arithmetic_typed_source(source_types, task.index)?,
                             text.as_deref(),
                             self.context,
                         );
@@ -1063,7 +1078,7 @@ mod tests {
                 name: name.into(),
                 result_type: Some(result),
                 argument_nodes: [1, 2],
-                source_types: [source.clone(), source],
+                source_types: [Some(source.clone()), Some(source)],
                 literal: [true; 2],
                 binary_literal: [alternate, false],
                 mode: function.native_arithmetic_mode(),
@@ -1536,7 +1551,11 @@ mod tests {
         *batch = Some(WindowArithmeticMetadata {
             domain,
             integer: domain == NativeEvalType::Int
-                && source_types[0].eval_type() == NativeEvalType::Int
+                && source_types[0]
+                    .as_ref()
+                    .expect("window source declaration")
+                    .eval_type()
+                    == NativeEvalType::Int
                 && result_type
                     .as_ref()
                     .expect("window result declaration")

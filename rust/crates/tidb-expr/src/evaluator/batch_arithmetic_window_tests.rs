@@ -155,7 +155,7 @@ fn execute_case(
         name: name.into(),
         result_type: Some(result.clone()),
         argument_nodes: [1, 2],
-        source_types: fields.clone(),
+        source_types: fields.clone().map(Some),
         literal,
         binary_literal: [false; 2],
         mode: function.native_arithmetic_mode(),

@@ -64,7 +64,8 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("window arithmetic descriptor missing"));
         };
-        if result_type.is_none()
+        if source_types.iter().any(Option::is_none)
+            || result_type.is_none()
             || signature.arg_types.as_ref() != invocation.arg_types
             || &signature.return_type != invocation.return_type
             || invocation.arg_types.len() != 2
@@ -92,7 +93,9 @@ impl NativeBatchHosts<'_> {
                     || !batch.output_integer
                     || [0, 1].into_iter().any(|index| {
                         crate::scalar_function::native_numeric_batch_source(
-                            &source_types[index],
+                            source_types[index]
+                                .as_ref()
+                                .expect("checked arithmetic window source"),
                             binary_literal[index],
                             batch.domain,
                         ) != NativeEvalType::Int
@@ -156,7 +159,7 @@ impl NativeBatchHosts<'_> {
         else {
             return Err(binding("window arithmetic metadata disappeared"));
         };
-        let field = &source_types[index];
+        let field = arithmetic_typed_source(source_types, index)?;
         let source = crate::scalar_function::native_numeric_batch_source(
             field,
             binary_literal[index],
@@ -330,7 +333,7 @@ impl NativeBatchHosts<'_> {
             };
             let lhs = std::mem::replace(&mut left[position], Datum::Null);
             let rhs = std::mem::replace(&mut right[position], Datum::Null);
-            let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+            let unsigned = arithmetic_unsigned(source_types);
             let available = self
                 .max_retained_bytes
                 .checked_sub(current)

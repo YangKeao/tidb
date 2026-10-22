@@ -93,6 +93,14 @@ pub(super) fn float_binary(
     })
 }
 
+// Expression-owned real DIV requires its actual declared source type. The
+// literal-value API has a separate inference contract and does not use this.
+pub(crate) fn require_decimal_expression_source(
+    field: Option<&tidb_datatype::FieldType>,
+) -> &tidb_datatype::FieldType {
+    field.expect("numeric argument has a type")
+}
+
 // This value-level entrypoint also serves the literal AST evaluator. Keep
 // its operands in their own domains: converting a Decimal/UInt partner to
 // f64 first would irreversibly lose precision before the DIV cast.
@@ -106,11 +114,9 @@ pub(super) fn decimal_div_operand(
         _ => None,
     };
     let field = match operand {
-        Operand::Expr(expression) if real.is_some() => Some(
-            expression
-                .static_type()
-                .expect("numeric argument has a type"),
-        ),
+        Operand::Expr(expression) if real.is_some() => {
+            Some(require_decimal_expression_source(expression.static_type()))
+        }
         Operand::Expr(expression) => expression.static_type(),
         Operand::Literal => None,
     };

@@ -543,7 +543,7 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_optional_grouping_call(function)
                 || native_concat_value_call(function)
                 || native_optional_wildcard_call(function)
-                || native_optional_arithmetic_result_call(function)
+                || native_optional_arithmetic_call(function)
                 || native_no_argument_header_call(function) =>
         {
             NativeView::RootValue
@@ -1305,9 +1305,14 @@ fn budget_value_call_metadata(
         }
         return Ok(());
     }
-    if native_optional_arithmetic_result_call(function) {
+    if native_optional_arithmetic_call(function) {
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
         for arg in &function.args {
-            budget.field(arg.static_type().expect("declared arithmetic source"), 1)?;
+            if let Some(field) = arg.static_type() {
+                budget.field(field, 1)?;
+            }
         }
         return Ok(());
     }
@@ -2232,14 +2237,20 @@ fn native_optional_grouping_call(function: &ScalarFunction) -> bool {
 fn native_no_argument_header_call(function: &ScalarFunction) -> bool {
     crate::scalar_function::header_value::HeaderKind::for_function(function).is_some()
 }
-// Only the result declaration is absent; source declarations remain genuine.
-fn native_optional_arithmetic_result_call(function: &ScalarFunction) -> bool {
+// Retain the actual optional declarations of this original arithmetic call.
+fn native_optional_arithmetic_call(function: &ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && function.pb_origin().is_none()
-        && function.get_static_type().is_none()
         && function.args.len() == 2
         && native_arithmetic_operation(function.func_name.lowercase()).is_some()
-        && function.args.iter().all(|arg| arg.static_type().is_some())
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|arg| arg.static_type().is_none()))
+}
+// Missing argument types can stop diagnostic text partway through its real
+// demand. Keep that rendering in the existing owned numeric continuation.
+fn native_missing_arithmetic_sources(function: &ScalarFunction) -> bool {
+    native_optional_arithmetic_call(function)
+        && function.args.iter().any(|arg| arg.static_type().is_none())
 }
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
     native_optional_value_call(function)
@@ -2248,7 +2259,7 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_optional_grouping_call(function)
         || native_optional_wildcard_call(function)
         || native_concat_value_call(function)
-        || native_optional_arithmetic_result_call(function)
+        || native_optional_arithmetic_call(function)
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
@@ -2802,7 +2813,7 @@ fn resolve_specific_call_in_view(
                     || function.args.iter().any(|arg| arg.static_type().is_none()))
                     && !native_optional_selection_call(function)
                     && !native_optional_operator_call(function)
-                    && !native_optional_arithmetic_result_call(function))
+                    && !native_optional_arithmetic_call(function))
             {
                 return Err(BatchFailure::admission(
                     "native nullable control requires typed arguments and valid arity",
@@ -3579,14 +3590,17 @@ fn preflight_view<'a>(
                         )?;
                     }
 
-                    if native_optional_arithmetic_result_call(function)
-                        && function.args.iter().any(|child| {
-                            contains_context_value(child, limits.tree.max_depth, &mut {
-                                limits.tree.max_nodes
-                            }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
-                                limits.tree.max_nodes
-                            })
-                        })
+                    if native_optional_arithmetic_call(function)
+                        && (native_missing_arithmetic_sources(function)
+                            || function.args.iter().any(|child| {
+                                contains_context_value(child, limits.tree.max_depth, &mut {
+                                    limits.tree.max_nodes
+                                }) || contains_metadata_property(
+                                    child,
+                                    limits.tree.max_depth,
+                                    &mut { limits.tree.max_nodes },
+                                )
+                            }))
                     {
                         survey_arithmetic_diagnostic(
                             function,
@@ -3826,13 +3840,16 @@ fn preflight_view<'a>(
                             function.func_name.lowercase(),
                             "abs" | "cot" | "exp" | "pow" | "power"
                         ))
-                        && function.args.iter().any(|child| {
-                            contains_context_value(child, limits.tree.max_depth, &mut {
-                                limits.tree.max_nodes
-                            }) || contains_metadata_property(child, limits.tree.max_depth, &mut {
-                                limits.tree.max_nodes
-                            })
-                        });
+                        && (native_missing_arithmetic_sources(function)
+                            || function.args.iter().any(|child| {
+                                contains_context_value(child, limits.tree.max_depth, &mut {
+                                    limits.tree.max_nodes
+                                }) || contains_metadata_property(
+                                    child,
+                                    limits.tree.max_depth,
+                                    &mut { limits.tree.max_nodes },
+                                )
+                            }));
                 if contextual_numeric
                     && (!crate::scalar_function::eager_values::supports(function)
                         || matches!(
@@ -3992,6 +4009,7 @@ fn preflight_view<'a>(
                         CallTarget::Host(SqlBatchHostOperation::EagerValuesNative)
                     ) || native_optional_grouping_call(function)
                         || native_optional_wildcard_call(function)
+                        || native_optional_arithmetic_call(function)
                         || (native_concat_value_call(function) && view.value_role().is_some())
                     {
                         budget_value_call_metadata(&mut budget, function, Some(sql))?;
@@ -4461,6 +4479,13 @@ fn preflight_view<'a>(
         {
             continue;
         }
+        if native_missing_arithmetic_sources(function) {
+            if function.func_name.lowercase() == "intdiv" {
+                budget.array::<crate::scalar_function::NativeIntDivDiagnostics>(1)?;
+                budget.add(512)?;
+            }
+            continue;
+        }
         if let Some(bytes) = item.numeric_render_bound {
             budget.add(
                 bytes
@@ -4652,9 +4677,13 @@ fn arithmetic_host_metadata(
         .ok_or_else(|| binding("arithmetic left source missing"))?
         .subtree_end;
     let nodes = [left, right];
+    let owned_missing_sources = native_missing_arithmetic_sources(sql);
     let op = crate::scalar_function::binary_op_for_name(sql.func_name.lowercase())
         .ok_or_else(|| binding("arithmetic source operation missing"))?;
     let capture = |float| -> Result<Option<Box<str>>> {
+        if owned_missing_sources {
+            return Ok(None);
+        }
         if let Some(bound) = item.numeric_render_bound {
             let text =
                 crate::scalar_function::static_arithmetic_overflow_expression(sql, op, float);
@@ -4672,7 +4701,7 @@ fn arithmetic_host_metadata(
         let child = checked
             .get(nodes[index])
             .ok_or_else(|| binding("arithmetic child source missing"))?;
-        if arithmetic_subject_required(sql, &sql.args[index]) {
+        if !owned_missing_sources && arithmetic_subject_required(sql, &sql.args[index]) {
             subject_format_failures[index] = child.numeric_format_failure;
             if let Some(bound) = child.numeric_render_bound {
                 let text = crate::scalar_function::static_numeric_expression_text(child.node, true);
@@ -4730,25 +4759,31 @@ fn arithmetic_host_metadata(
     };
     let intdiv = if sql.func_name.lowercase() == "intdiv" {
         let mut arguments = [None, None];
-        for index in 0..2 {
-            let child = &checked[nodes[index]];
-            if let Some(bound) = child.numeric_render_bound {
-                let text = crate::scalar_function::static_numeric_argument_text(
-                    sql,
-                    &sql.args[index],
-                    false,
-                );
-                if text.as_ref().is_some_and(|text| text.len() > bound) {
-                    return Err(binding("DIV argument text exceeds admitted bound").into());
+        if !owned_missing_sources {
+            for index in 0..2 {
+                let child = &checked[nodes[index]];
+                if let Some(bound) = child.numeric_render_bound {
+                    let text = crate::scalar_function::static_numeric_argument_text(
+                        sql,
+                        &sql.args[index],
+                        false,
+                    );
+                    if text.as_ref().is_some_and(|text| text.len() > bound) {
+                        return Err(binding("DIV argument text exceeds admitted bound").into());
+                    }
+                    arguments[index] = text.map(String::into_boxed_str);
                 }
-                arguments[index] = text.map(String::into_boxed_str);
             }
         }
         Some(Box::new(
             crate::scalar_function::NativeIntDivDiagnostics::new(
                 sql,
                 arguments,
-                nodes.map(|node| checked[node].numeric_format_failure),
+                if owned_missing_sources {
+                    [None, None]
+                } else {
+                    nodes.map(|node| checked[node].numeric_format_failure)
+                },
             ),
         ))
     } else {
@@ -4756,11 +4791,11 @@ fn arithmetic_host_metadata(
     };
     Ok(NativeHostMetadata::Arithmetic {
                                     batch, operation,name:sql.func_name.lowercase().into(),result_type:item.sql.map(snapshot_field_type),
-                                    argument_nodes:nodes,source_types:[snapshot_field_type(checked[left].declared_sql()),snapshot_field_type(checked[right].declared_sql())],
+                                    argument_nodes:nodes,source_types:[checked[left].sql.map(snapshot_field_type),checked[right].sql.map(snapshot_field_type)],
                                     literal:[matches!(sql.args[0],Expression::Constant(_)),matches!(sql.args[1],Expression::Constant(_))],
                                     binary_literal:[0,1].map(|index|matches!(&sql.args[index],Expression::Constant(value) if matches!(value.value,Datum::BinaryLiteral(_)))),
                                     mode:sql.native_arithmetic_mode(),generic_mode:sql.native_arithmetic_generic_mode(),subjects,
-                                    subject_format_failures,overflow_format_failure:item.numeric_format_failure,
+                                    subject_format_failures,overflow_format_failure:if owned_missing_sources {None}else{item.numeric_format_failure},
                                     overflow_expressions:[capture(false)?,capture(true)?],intdiv,output_node:ordinal,
                                     output_role:item.view.value_role().ok_or_else(||binding("arithmetic result role missing"))?,
                                 })

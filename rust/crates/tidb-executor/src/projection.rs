@@ -6748,4 +6748,198 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn missing_arithmetic_arguments_keep_actual_projection_values_variables_and_errors() {
+        let integer = longlong();
+        for name in ["plus", "minus", "mul", "mod", "div", "intdiv"] {
+            let field = if name == "div" {
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(65)
+                    .with_decimal(6)
+            } else {
+                integer.clone()
+            };
+            for deferred in [false, true] {
+                let parameter = |order| {
+                    let mut c = Constant::new(Datum::Int(99), integer.clone());
+                    c.param_marker = Some(tidb_expr::constant::ParamMarker { order });
+                    Expression::Constant(c)
+                };
+                let left = if deferred {
+                    let mut c = Constant::new(Datum::Int(99), integer.clone());
+                    c.deferred_expr =
+                        Some(Box::new(Expression::ScalarFunction(ScalarFunction::new(
+                            CiString::new("setvar"),
+                            integer.clone(),
+                            vec![
+                                Expression::Constant(Constant::new(
+                                    Datum::new_string("missing-arithmetic-left"),
+                                    FieldType::new(FieldTypeCode::VarString)
+                                        .with_collation(tidb_datatype::Collation::Utf8Mb4Bin),
+                                )),
+                                parameter(0),
+                            ],
+                        ))));
+                    Expression::Constant(c)
+                } else {
+                    parameter(0)
+                };
+                let mut function = ScalarFunction::new(
+                    CiString::new(name),
+                    field.clone(),
+                    vec![left, parameter(1)],
+                );
+
+                for mask in [2u8, 4, 6, 3, 5, 7] {
+                    let mut f = function.clone();
+                    if mask & 1 != 0 {
+                        f.ret_type = None;
+                    }
+                    for (i, arg) in f.args.iter_mut().enumerate() {
+                        if mask & (2 << i) != 0 {
+                            let Expression::Constant(c) = arg else {
+                                unreachable!()
+                            };
+                            c.ret_type = None;
+                        }
+                    }
+                    let root = Expression::ScalarFunction(f);
+                    for values in [
+                        [Datum::Int(12), Datum::Int(3)],
+                        [Datum::Null, Datum::Int(0)],
+                        [Datum::Int(12), Datum::Int(0)],
+                        [Datum::Int(i64::MAX), Datum::Int(1)],
+                        [
+                            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![
+                                128, 0, 0, 0, 0, 0, 0, 1,
+                            ])),
+                            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![255])),
+                        ],
+                    ] {
+                        for no_unsigned in [false, true] {
+                            for strict in [false, true] {
+                                for enabled in [false, true] {
+                                    for rows in [0usize, 3, 2051] {
+                                        let context = || {
+                                            (if strict {
+                                                crate::StmtContext::for_dml(true, true, false)
+                                            } else {
+                                                crate::StmtContext::for_query()
+                                            })
+                                            .with_enable_vectorized_expression(enabled)
+                                            .with_no_unsigned_subtraction(no_unsigned)
+                                            .with_prepared_params(values.to_vec().into())
+                                            .with_user_vars(std::sync::Arc::new(
+                                                std::sync::Mutex::new(
+                                                    std::collections::HashMap::new(),
+                                                ),
+                                            ))
+                                        };
+                                        let reference = context();
+                                        let original =
+                                            EvaluatorSuite::new(vec![root.clone()], false);
+                                        assert!(original.vectorizable());
+                                        let mut input = Chunk::new_with_capacity(
+                                            &[integer.clone(), integer.clone()],
+                                            rows.max(1),
+                                        );
+                                        for row in 0..rows {
+                                            input.append_int64(0, row as i64);
+                                            input.append_int64(1, (row * 2) as i64);
+                                        }
+                                        let mut expected =
+                                            Chunk::new_with_capacity(&[field.clone()], rows.max(1));
+                                        let result =
+                                            original.run(&reference, &mut input, &mut expected);
+                                        let warnings = reference.take_warnings();
+                                        for workers in [0, 2] {
+                                            let context = context();
+                                            let (source, _) = NumberSource::new(rows as i64, 137);
+                                            let schema =
+                                                Schema::new(vec![Column::new(1, field.clone())]);
+                                            let mut projection = ProjectionExec::new(
+                                                ExecutorMeta::new(schema, 1, 137, 1024),
+                                                vec![root.clone()],
+                                                source,
+                                                context.clone(),
+                                            )
+                                            .with_workers(workers);
+                                            projection.open().unwrap();
+                                            let mut got = Chunk::new_with_capacity(
+                                                &[field.clone()],
+                                                rows.max(1),
+                                            );
+                                            let actual = loop {
+                                                let mut output = projection.new_chunk();
+                                                match projection.next(&mut output) {
+                                                    Err(error) => {
+                                                        if workers == 0 {
+                                                            assert_eq!(output.column(0),expected.column(0),"prefix {name}/mask{mask}/{deferred}/{strict}/{enabled}/{rows}/unsigned{no_unsigned}");
+                                                        }
+                                                        break Err(error);
+                                                    }
+                                                    Ok(()) => {
+                                                        if output.num_rows() == 0 {
+                                                            break Ok(());
+                                                        }
+                                                        for row in 0..output.num_rows() {
+                                                            got.append_datum(
+                                                                0,
+                                                                &output
+                                                                    .get_row(row)
+                                                                    .get_datum(0, &field),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            };
+                                            match &result {
+                                                Ok(()) => {
+                                                    actual.unwrap();
+                                                    assert_eq!(got.column(0),expected.column(0),"{name}/mask{mask}/{deferred}/{strict}/{enabled}/{rows}/unsigned{no_unsigned}/{workers}");
+                                                }
+                                                Err(EvaluatorError::Eval(expected)) => {
+                                                    let Err(ExecError::Eval(got)) = actual else {
+                                                        panic!("lost arithmetic error: {actual:?}")
+                                                    };
+                                                    assert_eq!(&got, expected);
+                                                }
+                                                other => {
+                                                    panic!("unexpected original result {other:?}")
+                                                }
+                                            }
+                                            assert_eq!(context.take_warnings(),warnings,"warnings {name}/mask{mask}/{deferred}/{strict}/{enabled}/{rows}/unsigned{no_unsigned}/{workers}");
+                                            assert_eq!(
+                                                tidb_expr::Columns::get_uservar(
+                                                    &context,
+                                                    "missing-arithmetic-left"
+                                                ),
+                                                tidb_expr::Columns::get_uservar(
+                                                    &reference,
+                                                    "missing-arithmetic-left"
+                                                )
+                                            );
+                                            if workers == 0 && rows > 0 {
+                                                let route = projection
+                                                    .evaluator_suite
+                                                    .batch_route_snapshot();
+                                                assert!(route.prepared > 0);
+                                                assert_eq!(
+                                                    (route.refusals, route.fallback),
+                                                    (0, 0),
+                                                    "{route:?}"
+                                                );
+                                            }
+                                            projection.close().unwrap();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

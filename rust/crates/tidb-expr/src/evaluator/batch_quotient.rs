@@ -53,12 +53,12 @@ impl NativeBatchHosts<'_> {
             | SqlBatchHostOperation::IntegerDivideWindowNative => BinaryOp::IntDiv,
             _ => return Err(binding("quotient operation differs")),
         };
-        let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+        let unsigned = arithmetic_unsigned(source_types);
         let (left, right) = crate::binary_literal::cast_signed_literal_operands(
             op,
             left,
             right,
-            unsigned.map(|value| !value),
+            arithmetic_signed(source_types),
         );
         if batch.as_ref().is_some_and(|batch| batch.integer) {
             return Ok(
@@ -171,16 +171,18 @@ impl NativeBatchHosts<'_> {
             unsigned,
             self.context,
             &mut |index, value| {
-                crate::ops::decimal_div_operand_value(
-                    value,
-                    Some(&source_types[index]),
-                    self.context,
-                    || {
-                        subject_format_failures[index]
-                            .map(crate::scalar_function::render_numeric_format_failure)
-                            .or_else(|| subjects[index].as_deref().map(str::to_owned))
-                    },
-                )
+                let field = if matches!(value, Datum::Real(_) | Datum::Float32(_)) {
+                    Some(crate::ops::require_decimal_expression_source(
+                        source_types[index].as_ref(),
+                    ))
+                } else {
+                    source_types[index].as_ref()
+                };
+                crate::ops::decimal_div_operand_value(value, field, self.context, || {
+                    subject_format_failures[index]
+                        .map(crate::scalar_function::render_numeric_format_failure)
+                        .or_else(|| subjects[index].as_deref().map(str::to_owned))
+                })
             },
         );
         let prepared = match prepared {

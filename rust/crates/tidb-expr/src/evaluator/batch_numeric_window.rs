@@ -69,6 +69,7 @@ impl NativeBatchHosts<'_> {
                 Some(NativeHostMetadata::Arithmetic {
                     batch: Some(_),
                     result_type: Some(_),
+                    source_types: [Some(_), Some(_)],
                     ..
                 })
             )
@@ -231,7 +232,7 @@ impl NativeBatchHosts<'_> {
             else {
                 unreachable!()
             };
-            let field = &source_types[state.index];
+            let field = arithmetic_typed_source(source_types, state.index)?;
             let target = crate::scalar_function::native_numeric_batch_source(
                 field,
                 binary_literal[state.index],
@@ -427,7 +428,7 @@ impl NativeBatchHosts<'_> {
                 }
                 let index = task.index;
                 let source = crate::scalar_function::native_numeric_batch_source(
-                    &source_types[index],
+                    arithmetic_typed_source(source_types, index)?,
                     binary_literal[index],
                     batch.domain,
                 );
@@ -439,7 +440,7 @@ impl NativeBatchHosts<'_> {
                     .checked_sub(payload)
                     .ok_or_else(|| resource("numeric window cast ledger underflow"))?;
                 let step = crate::scalar_function::prepare_native_numeric_batch_cast(
-                    &source_types[index],
+                    arithmetic_typed_source(source_types, index)?,
                     source,
                     batch.domain,
                     value,
@@ -505,7 +506,7 @@ impl NativeBatchHosts<'_> {
             let position = task.position;
             let lhs = std::mem::replace(&mut task.values[0][position], Datum::Null);
             let rhs = std::mem::replace(&mut task.values[1][position], Datum::Null);
-            let unsigned = source_types.each_ref().map(FieldType::is_unsigned);
+            let unsigned = arithmetic_unsigned(source_types);
             let computed = if matches!(op, BinaryOp::Mod | BinaryOp::Div | BinaryOp::IntDiv) {
                 self.compute_quotient(&self.metadata[slot.index()], lhs, rhs, available)?
             } else {
