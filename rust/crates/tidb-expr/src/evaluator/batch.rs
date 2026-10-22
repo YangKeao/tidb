@@ -534,7 +534,7 @@ fn promoted_native_root_view(
 fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
     match root {
         Expression::ScalarFunction(function)
-            if function.pb_eager_values().is_some()
+            if native_pb_eager_values(function)
                 || native_regexp_source_value(function, limits)
                 || native_json_schema_call(function)
                 || native_final_state_call(function)
@@ -1309,8 +1309,17 @@ fn budget_value_call_metadata(
     result: Option<&FieldType>,
 ) -> LocalResult<()> {
     let arity = function.args.len();
-    if function.pb_eager_values().is_some() {
+    if native_pb_eager_values(function) {
         budget.array::<hosts::NativePbEagerValues>(1)?;
+        if function.pb_json_signature().is_some() {
+            budget.array::<crate::scalar_function::PbJsonValues>(1)?;
+            budget.array::<Option<FieldType>>(arity)?;
+            for argument in &function.args {
+                if let Some(field) = argument.static_type() {
+                    budget.field(field, 1)?;
+                }
+            }
+        }
         budget.array::<usize>(arity)?;
         budget.add(function.func_name.lowercase().len())?;
         if let Some(field) = result {
@@ -2254,8 +2263,12 @@ fn native_cached_list_call(function: &ScalarFunction) -> bool {
 fn pb_regexp_owner(function: &ScalarFunction) -> bool {
     function.pb_signature() == Some(tidb_proto::tipb::ScalarFuncSig::RegexpLikeSig)
 }
+fn native_pb_eager_values(function: &ScalarFunction) -> bool {
+    function.pb_eager_values().is_some() || function.pb_json_signature().is_some()
+}
 fn pb_value_owner(function: &ScalarFunction) -> bool {
     pb_regexp_owner(function)
+        || function.pb_json_signature().is_some()
         || function
             .pb_eager_values()
             .is_some_and(|owner| Some(owner.signature()) == function.pb_signature())
@@ -2512,7 +2525,7 @@ fn native_missing_arithmetic_sources(function: &ScalarFunction) -> bool {
         && function.args.iter().any(|arg| arg.static_type().is_none())
 }
 fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
-    function.pb_eager_values().is_some()
+    native_pb_eager_values(function)
         || native_optional_value_call(function)
         || native_optional_selection_call(function)
         || native_optional_operator_call(function)
@@ -2525,7 +2538,7 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
-    function.pb_eager_values().is_some()
+    native_pb_eager_values(function)
         || native_concat_value_call(function)
         || native_no_argument_header_call(function)
         || native_json_schema_call(function)
@@ -2623,7 +2636,7 @@ fn resolve_call_in_view(
         ));
     }
     if view.value_role().is_some()
-        && (function.pb_eager_values().is_some() || native_regexp_call(function))
+        && (native_pb_eager_values(function) || native_regexp_call(function))
     {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
@@ -5769,11 +5782,13 @@ fn lower_view_policy(
                                         .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
                             }
-                            SqlBatchHostOperation::EagerValuesNative if sql.pb_eager_values().is_some() => {
+                            SqlBatchHostOperation::EagerValuesNative if native_pb_eager_values(sql) => {
                                 let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
                                 for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB eager child absent"))?.subtree_end;}
+                                let kernel=if let Some(kernel)=sql.pb_eager_values(){hosts::PbValueKernel::Eager(kernel)}else{hosts::PbValueKernel::Json(Box::new(sql.pb_json_values().expect("actual selected JSON owner")))};
+                                debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
                                 NativeHostMetadata::PbEagerValues(Box::new(hosts::NativePbEagerValues {
-                                    arguments:arguments.into_boxed_slice(), kernel:sql.pb_eager_values().expect("actual selected PB owner"),
+                                    arguments:arguments.into_boxed_slice(), kernel,
                                     name:sql.func_name.lowercase().into(), result_type:item.sql.map(snapshot_field_type),
                                     integer_batch_result:item.view==NativeView::BulkRoot(NativeEvalType::Int),
                                     output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("PB eager output view absent"))?,

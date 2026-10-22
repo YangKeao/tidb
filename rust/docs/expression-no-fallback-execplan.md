@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N45 original contracts: before production, eleven baseline snapshots at545cfb0d and3,927,648 original observations were independently rerun, the four source Admission failures reproduced, and all four count/hash pairs pinned:3068928/22458E71C1756ADD,643680/C01D3EC8C49C7815,7680/C235536AFFBF7269,207360/18C4F5C7B906E8A3. Real physical columns, nested selected PB owners and live cache histories are included.
+- [x] N45 selected JSON values validated: actual signature/argument fields/constant-path eligibility and live cache handle execute all original3,927,648/4PIN observations strictly in the existing PB frame without fallback/exemptions. Original PB JSON facade/table/algorithms and ordinary eager logic remain unchanged. All12 source checks include real warm-cache sharing versus owner clone/reset, context rotation/cached NULL, three-stage raw demand/authentication, exclusive callbacks/epoch/panic/cancel/reuse, fixed16KiB document refusal->NULL recovery, actual legacy consumers/24 stale guards and4608 typed binary-field comparisons. Full frontend2162/exact inherited3/95/all621batch/346warnings, actual mixed Projection48, Expand6+64/B42FB8BE316E6C79, fixed inventory83088/0/0, fresh lint and dual9fmt/original ownership reconstruction pass; save signed local checkpoint then continue remaining PB and global work.
+
 - [x] N44 validated: all10,006,848 original observations were captured/rerun/pinned before production and pass strictly (7672320/F82657AC72E2284D,2317248/529CC9B973792E9D,17280/F4427E1341D6858D). Shared original non-JSON eager PB NULL/value bodies, actual signature/precision/return facts and legacy consumer profiles retain original demand and presentation. Nine source checks include direct consumers, capability/callback epoch+panic/cancel, fixed16/64KiB policy checks and220 stale-origin guards; actual stale optional declarations are rejected before the optional arm. Full frontend2150/exact inherited3/95/all609batch/346warnings, mixed Projection47, Expand6+64/B42FB8BE316E6C79, inventory83088/0/0, fresh lint and dual10fmt/original ownership reconstruction pass. Finite return-formatter refusals are explicit separate policy evidence, not strict-equivalence counts. Save the signed local checkpoint, then continue JSON and global work.
 
 - [x] N43: all5149728 original arithmetic/PB observations were independently captured/rerun/pinned before production and pass strictly:4752000/3227AB25DBF1A2CB,386208/F179850F4FA9F719,11520/AA6B736726DD9D61. Actual selected-signature raw demand/diagnostic ownership and genuine legacy window pairs preserve both consumers. Existing owned vectors stage complete generic arithmetic/coercion before original integer presentation. Eight source checks, direct/native-candidate controls, late precision panic/recovery and fixed64KiB recovery pass. Full frontend2141/exact inherited3/95/all600batch/346warnings, Projection46/Expand6+64/B42FB8BE316E6C79/fixed inventory83088/0/0/lint/dual6fmt/final ownership audit pass; local signed checkpoint, then continuous global work.
@@ -194,6 +197,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N45: all four selected JSON PB bodies demand every raw child before JSON logic, including NULL and otherwise ignored suffixes. Cached JSON_REPLACE parses the document before its context/path-cache lookup and path-arity check; its uncached route checks arity first. Reusing an ordinary name-selected eager descriptor would also select unrelated session/prefix/math phases, so the actual PB value descriptor retains its own selected-body facts.
 
 N44: selected eager PB signatures demand raw children until any NULL before converting an earlier value or inspecting final arity. Their shared NULL policy may itself call an existing closed value kernel. The old char_length/lower/upper/substring batch specialization collects raw scalar expression results before generic integer presentation, even with BIT/ENUM declarations; preserve that actual predicate rather than infer the consumer solely from the result type. A display alias coalesce also owns temporal FSP stamping at the original return boundary.
 
@@ -517,6 +522,10 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: N45 adds a selected JSON value descriptor and an enum body to the existing PB token controller. Its NULL-stop fact is false, while the original non-JSON descriptor remains true. Preserve the complete original Kernel::Json facade and reuse builtin_ext::json::eval_pb for all algorithms.
+  Rationale: original argument types, constant-path eligibility and json_modify_path_cache.share_for_invocation preserve the real owner and live state; no fake ScalarFunction, name-derived signature, alternate interpreter or duplicated JSON algorithm is required.
+  Date/Author: 2026-10-22 / ExpressionReuseEngineer.
+
 - Decision: N44 covers the complete 37-signature non-JSON eager PB owner using actual selected implementation and precision facts, raw capability prefix, original NULL/body helpers, genuine existing bulk/scalar profiles, actual display name only for original return conversion, and once-only suite cache binding. JSON remains a separate coherent owner requiring its actual argument types, constant paths and live cache handles.
   Rationale: the existing value helpers already enter closed SDK kernels; no synthetic ScalarFunction, name-selected algorithm, new expression driver, or replacement value algorithm is needed.
   Date/Author: 2026-10-22 / ExpressionReuseEngineer.
@@ -832,6 +841,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N45 validated: the complete selected JSON group retains its original algorithms, argument metadata, raw demand and live caches. The four before-production pins and all final gates pass; see evidence/no-fallback-n45.md. Remaining PB and actual public caller/fallback/service/performance work continue.
 
 N44 in progress: all original/source strict observations pass without fallback or exemptions, including wrong arity, ignored suffixes, actual callback panics, optional caches, unsigned carriers and long selection reuse. All nine source checks, actual mixed Projection and broad gates now pass; see evidence/no-fallback-n44.md. This is source-owner progress; public recursive entries, remaining PB owners, generic fallback retirement, service tests and final performance comparison still remain.
 
@@ -4861,3 +4872,10 @@ The immutable PbEagerValues facts in crates/tidb-expr/src/scalar_function/pb_bui
 Generalized pb_value profile predicates in batch.rs retain original legacy unary/arithmetic batch bodies when a genuine consumer selects them; native regexp dispatch remains restricted to the actual regexp signature. The exact original native_scalar_row_batch predicate is shared with EligibleBatch. The generic integer presenter is extracted unchanged from the regexp controller into batch_hosts.rs and shared by both owners. Existing native eligibility, SDK kernels, old test observers and fixed byte caps remain unchanged.
 
 Run from the TiDB repository: RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib pb_eager_ -- --nocapture. Expect all nine wrappers/checks to pass, the three original counts/hashes above to remain fixed, and no source refusals or fallback. Run the full expression library, projection::tests for tidb-executor, current Expand and fixed admission inventory, make lint, both recorded formatters and ownership reconstruction before signing. Inspect exact inherited failures rather than changing their expectations. JSON and other PB owners plus global caller/fallback/service/performance work follow continuously.
+
+## N45: preserve the complete selected JSON protobuf owner
+
+
+Cover JsonMemberOfSig, JsonReplaceSig, JsonArrayAppendSig and JsonMergePatchSig together. Capture actual argument declarations and the original odd-position constant-path eligibility without evaluating any expression. Share the original owner cache via share_for_invocation; cloning an owner would reset it and change repeated calls. Use the existing PB raw-capability controller and EagerValuesNative frame, with an actual body variant distinguishing NULL-short-circuiting non-JSON values from JSON values that demand every raw argument. Call the existing builtin_ext/json/mod.rs::eval_pb value algorithms without changing the original Kernel::Json facade or any ordinary eager behavior. Retain actual display name solely for original result conversion, unsigned carriers, special row collection and genuine legacy batch consumer profiles.
+
+Run from the TiDB checkout: RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib pb_json_source_ -- --nocapture. All eight initial original/source wrappers must pass their four fixed counts/hashes without refusals, fallback or exemptions. Add real cache-identity/prewarm/context-rotation/clone and callback-epoch/cancellation/fixed-cap recovery checks, then actual mixed Projection and full expression/lint/format/original-ownership gates before signing locally. Global task closure is not implied by this group.

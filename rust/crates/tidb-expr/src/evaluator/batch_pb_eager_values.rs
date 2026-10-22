@@ -5,13 +5,51 @@ use super::*;
 
 pub(in super::super) struct NativePbEagerValues {
     pub arguments: Box<[usize]>,
-    pub kernel: crate::scalar_function::PbEagerValues,
+    pub kernel: PbValueKernel,
     pub name: Box<str>,
     pub result_type: Option<FieldType>,
     pub integer_batch_result: bool,
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
+pub(in super::super) enum PbValueKernel {
+    Eager(crate::scalar_function::PbEagerValues),
+    Json(Box<crate::scalar_function::PbJsonValues>),
+}
+impl PbValueKernel {
+    pub(in super::super) fn signature(&self) -> tidb_proto::tipb::ScalarFuncSig {
+        match self {
+            Self::Eager(kernel) => kernel.signature(),
+            Self::Json(kernel) => kernel.signature(),
+        }
+    }
+    fn stops_on_null(&self) -> bool {
+        matches!(self, Self::Eager(_))
+    }
+    fn null_result(
+        &self,
+        observed: &Datum,
+        arity: usize,
+        index: usize,
+        context: &dyn Columns,
+    ) -> std::result::Result<Datum, EvalError> {
+        match self {
+            Self::Eager(kernel) => kernel.null_result(observed, arity, index, context),
+            Self::Json(_) => unreachable!("JSON demands every raw argument"),
+        }
+    }
+    fn eval_values(
+        &self,
+        values: &mut [Datum],
+        context: &dyn Columns,
+    ) -> std::result::Result<Datum, EvalError> {
+        match self {
+            Self::Eager(kernel) => kernel.eval_values(values, context),
+            Self::Json(kernel) => kernel.eval_values(values, context),
+        }
+    }
+}
+
 impl NativeBatchHosts<'_> {
     pub(super) fn resume_pb_eager_values(
         &mut self,
@@ -51,6 +89,7 @@ impl NativeBatchHosts<'_> {
                 None => false,
             }
         };
+        let is_null = is_null && meta.kernel.stops_on_null();
         if let Some(token) = token {
             let owned = token
                 .try_into()

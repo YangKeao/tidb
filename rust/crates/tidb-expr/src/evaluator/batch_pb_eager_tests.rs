@@ -896,7 +896,9 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
     let metadata = [NativeHostMetadata::PbEagerValues(Box::new(
         NativePbEagerValues {
             arguments: vec![3, 4].into(),
-            kernel: function.pb_eager_values().unwrap(),
+            kernel: super::super::super::hosts::PbValueKernel::Eager(
+                function.pb_eager_values().unwrap(),
+            ),
             name: "wire display".into(),
             result_type: function.ret_type.clone(),
             integer_batch_result: false,
@@ -1158,3 +1160,6 @@ fn pb_eager_source_rejects_stale_optional_declarations_and_selected_origins() {
         }
     }
 }
+
+#[path = "batch_pb_json_tests.rs"]
+mod json_tests;

@@ -104,6 +104,9 @@ impl PbEagerValues {
 }
 
 impl PbBuiltin {
+    pub(crate) fn json_signature(self) -> Option<ScalarFuncSig> {
+        matches!(self.kernel, Kernel::Json).then_some(self.signature)
+    }
     pub(crate) fn eager_values(self, result_decimal: Option<i64>) -> Option<PbEagerValues> {
         matches!(
             self.kernel,

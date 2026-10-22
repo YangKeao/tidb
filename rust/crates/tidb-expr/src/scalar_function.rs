@@ -31,6 +31,8 @@
 
 pub(crate) mod header_value;
 mod pb_builtin;
+mod pb_json_values;
+pub(crate) use pb_json_values::PbJsonValues;
 
 #[cfg(test)]
 mod json_preparation_tests;
@@ -1067,6 +1069,13 @@ impl ScalarFunction {
         self.pb_builtin.and_then(|builtin| {
             builtin.eager_values(self.get_static_type().map(FieldType::decimal))
         })
+    }
+
+    pub(crate) fn pb_json_signature(&self) -> Option<tidb_proto::tipb::ScalarFuncSig> {
+        self.pb_builtin.and_then(PbBuiltin::json_signature)
+    }
+    pub(crate) fn pb_json_values(&self) -> Option<PbJsonValues> {
+        PbJsonValues::capture(self)
     }
 
     /// Builds Go's `NewValuesFunc(ctx, offset, retTp)` node. The offset is

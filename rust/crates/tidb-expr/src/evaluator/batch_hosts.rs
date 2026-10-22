@@ -165,7 +165,7 @@ mod regexp_values_source;
 pub(super) use regexp_values_source::NativeRegexpValues;
 #[path = "batch_pb_eager_values.rs"]
 mod pb_eager_values_source;
-pub(super) use pb_eager_values_source::NativePbEagerValues;
+pub(super) use pb_eager_values_source::{NativePbEagerValues, PbValueKernel};
 
 #[path = "batch_typed_context.rs"]
 mod typed_context_source;
