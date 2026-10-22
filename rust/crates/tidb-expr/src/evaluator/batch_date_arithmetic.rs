@@ -119,8 +119,8 @@ impl NativeBatchHosts<'_> {
             self.context,
             unit,
             &mut owned,
-            [Some(&argument_types[0]), Some(&argument_types[1])],
-            Some(result_type),
+            argument_types.each_ref().map(Option::as_ref),
+            result_type.as_ref(),
             *sign,
             *result_fsp,
             remaining,
@@ -135,9 +135,9 @@ impl NativeBatchHosts<'_> {
             .and_then(|n| base.checked_add(n))
             .ok_or_else(|| resource("date return coercion extent overflow"))?;
         self.check_bytes(live)?;
-        let value = match crate::tikv::coerce_result_bounded(
+        let value = match coerce_optional_value_result(
             if *sign < 0 { "date_sub" } else { "date_add" },
-            result_type,
+            result_type.as_ref(),
             value,
             self.max_retained_bytes - live,
         ) {
@@ -149,7 +149,7 @@ impl NativeBatchHosts<'_> {
                 .finish_native_value(id, value, *output_node, *role, row, base)
                 .map(HostStep::Ready);
         }
-        let value = crate::expression::apply_enum_set_integer_view(value, Some(result_type));
+        let value = crate::expression::apply_enum_set_integer_view(value, result_type.as_ref());
         let output = match output {
             tidb_query_expr::local::SqlTemporalOutput::Value => {
                 return Err(binding("date arithmetic native carrier lost output role"))

@@ -6398,3 +6398,1688 @@ fn optional_membership_long_late_errors_recover_across_flags() {
     assert_eq!(count, 240);
     eprintln!("MEMBERSHIP LONG REUSE {count}");
 }
+
+// The original prefix branches can demand the same live parameter again.
+struct PrefixContext {
+    base: C,
+}
+impl PrefixContext {
+    fn new(profile: usize, enabled: bool, values: [Datum; 2]) -> Self {
+        Self {
+            base: C::new(profile, enabled, values),
+        }
+    }
+    fn snapshot(&self) -> String {
+        self.base.snapshot()
+    }
+}
+impl Columns for PrefixContext {
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        self.base.ready_value_cache()
+    }
+    fn get(&self, _: &[String]) -> Option<Datum> {
+        panic!("no expression callback")
+    }
+    fn param_value(&self, order: usize) -> std::result::Result<Datum, EvalError> {
+        let value = self.base.param_value(order)?;
+        let n = self.base.reads[order].get();
+        if order == 0 && ((self.base.profile == 8 && n > 1) || (self.base.profile == 9 && n == 1)) {
+            Ok(Datum::Null)
+        } else {
+            Ok(value)
+        }
+    }
+    fn enable_vectorized_expression(&self) -> bool {
+        self.base.enable_vectorized_expression()
+    }
+    fn time_zone(&self) -> SessionTimeZone {
+        self.base.time_zone()
+    }
+    fn type_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.base.type_flags()
+    }
+    fn truncate_level(&self) -> crate::ErrorLevel {
+        self.base.truncate_level()
+    }
+    fn append_warning(&self, code: u16, message: &str) {
+        self.base.append_warning(code, message)
+    }
+    fn set_uservar(&self, name: &str, value: Datum) {
+        self.base.set_uservar(name, value)
+    }
+}
+#[test]
+fn optional_reserved_prefix_original_phases() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_matrix(false);
+}
+#[test]
+fn optional_reserved_prefix_actual_phases() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_matrix(true);
+}
+fn run_optional_reserved_prefix_matrix(compare: bool) {
+    let pairs = [
+        [Datum::Null, Datum::new_string("selected")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+        [Datum::UInt(u64::MAX), Datum::Int(-1)],
+        [
+            Datum::new_string("2026-10-21 01:02:03"),
+            Datum::new_string("1"),
+        ],
+    ];
+    reserved_prefix_phase_observer(
+        compare,
+        &[
+            "cast_unknown",
+            "cast_unknown_in_union",
+            "unknown_in_union",
+            "date_add_invalid_unit",
+            "date_sub_invalid_unit",
+        ],
+        &pairs,
+        "reserved-prefix",
+        "RESERVED PREFIX",
+        Some((288000, 0x0F79E3203A9C6199)),
+    );
+}
+fn reserved_prefix_phase_observer(
+    compare: bool,
+    names: &[&str],
+    values: &[[Datum; 2]],
+    prefix: &str,
+    heading: &str,
+    golden: Option<(usize, u64)>,
+) {
+    let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+    let mut gaps = vec![];
+    let retained_bulk_gaps = 0usize;
+    for &name in names {
+        for shape in 0..5 {
+            for mask in 0..8 {
+                for (fi, field) in [ty(), string_ty(), FieldType::new(FieldTypeCode::Json)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    for (vi, values) in values.iter().cloned().enumerate() {
+                        for profile in [0, 4, 5, 8, 9] {
+                            for enabled in [false, true] {
+                                for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                    let make = || {
+                                        let p0 = parameter(0, string_ty());
+                                        let p1 = parameter(1, string_ty());
+                                        let fallback =
+                                            literal(Datum::new_string("fallback"), string_ty());
+                                        let mut args = match name {
+                                            name if name.starts_with("cast_")
+                                                || name.ends_with("_in_union") =>
+                                            {
+                                                vec![p0]
+                                            }
+                                            "if" | "case" => vec![p0, p1, fallback],
+                                            "not" | "isnull" | "istrue" | "isfalse"
+                                            | "isnottrue" | "isnotfalse" | "isunknown"
+                                            | "isnotunknown" | "istrue_with_null" | "bitneg"
+                                            | "unaryplus" | "unaryminus" | "charset"
+                                            | "collation" | "coercibility" => vec![p0],
+                                            _ => vec![p0, p1],
+                                        };
+                                        match shape {
+                                            1 => {
+                                                for (index, arg) in args.iter_mut().enumerate() {
+                                                    let mut c = Constant::new(
+                                                        Datum::new_string("stored deferred"),
+                                                        string_ty(),
+                                                    );
+                                                    c.deferred_expr =
+                                                        Some(Box::new(leaf::assignment(
+                                                            &format!("selected{index}"),
+                                                            arg.clone(),
+                                                            &string_ty(),
+                                                        )));
+                                                    *arg = Expression::Constant(c);
+                                                }
+                                            }
+                                            2 => {
+                                                let last = args.len() - 1;
+                                                args[last] = call(
+                                                    "__actual_unselected_error__",
+                                                    string_ty(),
+                                                    vec![],
+                                                );
+                                            }
+                                            3 => {
+                                                let index = usize::from(args.len() > 1);
+                                                args[index] = string_column(0);
+                                            }
+                                            4 => {
+                                                let index = usize::from(args.len() > 1);
+                                                args[index] = call(
+                                                    "ifnull",
+                                                    string_ty(),
+                                                    vec![
+                                                        args[index].clone(),
+                                                        literal(
+                                                            Datum::new_string("nested"),
+                                                            string_ty(),
+                                                        ),
+                                                    ],
+                                                );
+                                            }
+                                            _ => (),
+                                        }
+                                        let mut e = call(name, field.clone(), args);
+                                        erase_optional_call_declarations(&mut e, mask);
+                                        suite(e)
+                                    };
+                                    let original = make();
+                                    let actual = make();
+                                    let old = PrefixContext::new(profile, enabled, values.clone());
+                                    let new = PrefixContext::new(profile, enabled, values.clone());
+                                    // Record retained whole-selection profiles
+                                    // separately; they are an explicit existing
+                                    // entry gap, not an optional row declaration.
+                                    let root = &original.program.calculated[0];
+                                    let _whole = original.program.vectorizable
+                                        && crate::scalar_function::static_batch_target(root)
+                                            .is_some()
+                                        && contains_context_value(root, 128, &mut 4096);
+                                    for reuse in 0..2 {
+                                        let input = || {
+                                            let mut c = chunk(
+                                                &[string_ty()],
+                                                &[
+                                                    vec![Datum::new_string("a")],
+                                                    vec![Datum::new_string("b")],
+                                                    vec![Datum::new_string("c")],
+                                                ],
+                                            );
+                                            c.set_sel(selection.clone());
+                                            c
+                                        };
+                                        let mut a = input();
+                                        let mut left = output_for(&field);
+                                        left.append_null(0);
+                                        let expected = session_read_outcome(|| {
+                                            original.run(&old, &mut a, &mut left)
+                                        });
+                                        let label=format!("{prefix}/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
+                                        if compare {
+                                            let mut b = input();
+                                            let mut right = output_for(&field);
+                                            right.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                actual.run_with_tikv_batch(
+                                                    &new,
+                                                    &mut b,
+                                                    &mut right,
+                                                    &[string_ty()],
+                                                )
+                                            });
+                                            if got != expected
+                                                || left.column(0) != right.column(0)
+                                                || old.snapshot() != new.snapshot()
+                                            {
+                                                eprintln!("{heading} DIFFERENCE {label} old={expected:?} new={got:?} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                            }
+                                            assert_eq!(got, expected, "{label}");
+                                            assert_eq!(right.column(0), left.column(0), "{label}");
+                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            let route = actual.batch_route_snapshot();
+                                            if route.fallback != 0 || route.refusals != 0 {
+                                                if gaps.len() < 20 {
+                                                    gaps.push(format!("{label}: {route:?}"));
+                                                }
+                                            }
+                                        }
+                                        for byte in format!(
+                                            "{label}|{expected}|{:?}|{}",
+                                            left.column(0),
+                                            old.snapshot()
+                                        )
+                                        .bytes()
+                                        {
+                                            hash = (hash ^ u64::from(byte))
+                                                .wrapping_mul(0x100000001b3);
+                                        }
+                                        if matches!(name, "charset" | "collation" | "coercibility")
+                                        {
+                                            assert_eq!(
+                                                (old.base.reads[0].get(), old.base.reads[1].get()),
+                                                (0, 0),
+                                                "{label}"
+                                            );
+                                            if compare {
+                                                assert_eq!(
+                                                    (
+                                                        new.base.reads[0].get(),
+                                                        new.base.reads[1].get()
+                                                    ),
+                                                    (0, 0),
+                                                    "{label}"
+                                                );
+                                            }
+                                        }
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "{heading} ORIGINAL {count}/{hash:016X}; retained whole profiles {retained_bulk_gaps}"
+    );
+    if let Some(golden) = golden {
+        assert_eq!((count, hash), golden);
+    }
+    if !gaps.is_empty() {
+        eprintln!("{heading} ROW ADMISSION RED {gaps:?}");
+    }
+    assert!(gaps.is_empty());
+}
+
+#[test]
+fn optional_reserved_prefix_original_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_original_all_actual_values")
+    {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_all_actual_values(false);
+}
+#[test]
+fn optional_reserved_prefix_actual_all_actual_values() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_actual_all_actual_values") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_all_actual_values(true);
+}
+fn run_optional_reserved_prefix_all_actual_values(compare: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            string_ty(),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+            FieldType::new(FieldTypeCode::Json),
+        ];
+        let mut gaps = vec![];
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in [
+            "cast_unknown",
+            "cast_unknown_in_union",
+            "unknown_in_union",
+            "date_add_invalid_unit",
+            "date_sub_invalid_unit",
+        ] {
+            for (fi, field) in fields.iter().enumerate() {
+                for arity in [if name.starts_with("date_") { 2 } else { 1 }] {
+                    for mask in [0, 1, 2, 4, 7] {
+                        for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                            .into_iter()
+                            .enumerate()
+                        {
+                            for position in 0..arity {
+                                let mut values = [Datum::Int(2), Datum::Int(3)];
+                                values[position] = value.clone();
+                                for enabled in [false, true] {
+                                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                        let make = || {
+                                            let args = (0..arity)
+                                                .map(|i| {
+                                                    if i < 2 {
+                                                        parameter(i, field.clone())
+                                                    } else {
+                                                        literal(
+                                                            if i == 2 {
+                                                                Datum::Null
+                                                            } else {
+                                                                Datum::Int(10)
+                                                            },
+                                                            field.clone(),
+                                                        )
+                                                    }
+                                                })
+                                                .collect();
+                                            let mut e = call(name, field.clone(), args);
+                                            erase_optional_call_declarations(&mut e, mask);
+                                            suite(e)
+                                        };
+                                        let old_owner = make();
+                                        let new_owner = make();
+                                        let old = PrefixContext::new(0, enabled, values.clone());
+                                        let new = PrefixContext::new(0, enabled, values.clone());
+                                        for reuse in 0..2 {
+                                            let input = || {
+                                                let mut c = chunk(
+                                                    &[ty()],
+                                                    &[
+                                                        vec![Datum::Int(1)],
+                                                        vec![Datum::Int(2)],
+                                                        vec![Datum::Int(3)],
+                                                    ],
+                                                );
+                                                c.set_sel(selection.clone());
+                                                c
+                                            };
+                                            let mut a = input();
+                                            let mut left = output_for(field);
+                                            left.append_null(0);
+                                            let expected = session_read_outcome(|| {
+                                                old_owner.run(&old, &mut a, &mut left)
+                                            });
+                                            let label=format!("reserved-prefix-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
+                                            if compare {
+                                                let mut b = input();
+                                                let mut right = output_for(field);
+                                                right.append_null(0);
+                                                let got = session_read_outcome(|| {
+                                                    new_owner.run_with_tikv_batch(
+                                                        &new,
+                                                        &mut b,
+                                                        &mut right,
+                                                        &[ty()],
+                                                    )
+                                                });
+                                                if got != expected
+                                                    || right.column(0) != left.column(0)
+                                                    || new.snapshot() != old.snapshot()
+                                                {
+                                                    eprintln!("RESERVED PREFIX FULL DIFFERENCE {label} old={expected} new={got} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                }
+                                                assert_eq!(got, expected, "{label}");
+                                                assert_eq!(
+                                                    right.column(0),
+                                                    left.column(0),
+                                                    "{label}"
+                                                );
+                                                assert_eq!(
+                                                    new.snapshot(),
+                                                    old.snapshot(),
+                                                    "{label}"
+                                                );
+                                                let route = new_owner.batch_route_snapshot();
+                                                if (route.fallback != 0 || route.refusals != 0)
+                                                    && gaps.len() < 20
+                                                {
+                                                    gaps.push(format!("{label}: {route:?}"));
+                                                }
+                                            }
+                                            for b in format!(
+                                                "{label}|{expected}|{:?}|{}",
+                                                left.column(0),
+                                                old.snapshot()
+                                            )
+                                            .bytes()
+                                            {
+                                                hash = (hash ^ u64::from(b))
+                                                    .wrapping_mul(0x100000001b3);
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("RESERVED PREFIX FULL ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (500640, 0x34F5F154574439E5));
+        if !gaps.is_empty() {
+            eprintln!("RESERVED PREFIX FULL ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+
+#[test]
+fn optional_reserved_prefix_extended_original_phases() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_extended_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_reserved_prefix_extended_phases(false);
+}
+#[test]
+fn optional_reserved_prefix_extended_actual_phases() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_extended_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_reserved_prefix_extended_phases(true);
+}
+fn run_reserved_prefix_extended_phases(compare: bool) {
+    let pairs = [
+        [Datum::Null, Datum::new_string("selected")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+        [Datum::UInt(u64::MAX), Datum::Int(-1)],
+        [
+            Datum::new_string("2026-10-21 01:02:03"),
+            Datum::new_string("1"),
+        ],
+    ];
+    reserved_prefix_phase_observer(
+        compare,
+        &N36_EXTENDED_PREFIX_NAMES,
+        &pairs,
+        "reserved-prefix-extended",
+        "RESERVED PREFIX EXTENDED",
+        Some((691200, 0x5AD410F03E154979)),
+    );
+}
+const N36_EXTENDED_PREFIX_NAMES: [&str; 12] = [
+    "cast_unsigned_in_union",
+    "cast_real_to_decimal_in_union",
+    "cast_int_to_decimal_in_union",
+    "cast_string_to_decimal_in_union",
+    "cast_decimal_in_union",
+    "cast_real_int_in_union",
+    "cast_real_in_union",
+    "cast_unrecognized_target",
+    "cast_unrecognized_in_union",
+    "yet_unregistered_in_union",
+    "date_add_zz_unknown",
+    "date_sub_zz_unknown",
+];
+#[test]
+fn optional_reserved_prefix_extended_original_all_actual_values() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_reserved_prefix_extended_original_all_actual_values",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_extended_all_actual_values(false);
+}
+#[test]
+fn optional_reserved_prefix_extended_actual_all_actual_values() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_reserved_prefix_extended_actual_all_actual_values",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_extended_all_actual_values(true);
+}
+fn run_optional_reserved_prefix_extended_all_actual_values(compare: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            string_ty(),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+            FieldType::new(FieldTypeCode::Json),
+        ];
+        let mut gaps = vec![];
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in N36_EXTENDED_PREFIX_NAMES {
+            for (fi, field) in fields.iter().enumerate() {
+                for arity in [if name.starts_with("date_") { 2 } else { 1 }] {
+                    for mask in [0, 1, 2, 4, 7] {
+                        for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                            .into_iter()
+                            .enumerate()
+                        {
+                            for position in 0..arity {
+                                let mut values = [Datum::Int(2), Datum::Int(3)];
+                                values[position] = value.clone();
+                                for enabled in [false, true] {
+                                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                        let make = || {
+                                            let args = (0..arity)
+                                                .map(|i| {
+                                                    if i < 2 {
+                                                        parameter(i, field.clone())
+                                                    } else {
+                                                        literal(
+                                                            if i == 2 {
+                                                                Datum::Null
+                                                            } else {
+                                                                Datum::Int(10)
+                                                            },
+                                                            field.clone(),
+                                                        )
+                                                    }
+                                                })
+                                                .collect();
+                                            let mut e = call(name, field.clone(), args);
+                                            erase_optional_call_declarations(&mut e, mask);
+                                            suite(e)
+                                        };
+                                        let old_owner = make();
+                                        let new_owner = make();
+                                        let old = PrefixContext::new(0, enabled, values.clone());
+                                        let new = PrefixContext::new(0, enabled, values.clone());
+                                        for reuse in 0..2 {
+                                            let input = || {
+                                                let mut c = chunk(
+                                                    &[ty()],
+                                                    &[
+                                                        vec![Datum::Int(1)],
+                                                        vec![Datum::Int(2)],
+                                                        vec![Datum::Int(3)],
+                                                    ],
+                                                );
+                                                c.set_sel(selection.clone());
+                                                c
+                                            };
+                                            let mut a = input();
+                                            let mut left = output_for(field);
+                                            left.append_null(0);
+                                            let expected = session_read_outcome(|| {
+                                                old_owner.run(&old, &mut a, &mut left)
+                                            });
+                                            let label=format!("reserved-prefix-extended-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
+                                            if compare {
+                                                let mut b = input();
+                                                let mut right = output_for(field);
+                                                right.append_null(0);
+                                                let got = session_read_outcome(|| {
+                                                    new_owner.run_with_tikv_batch(
+                                                        &new,
+                                                        &mut b,
+                                                        &mut right,
+                                                        &[ty()],
+                                                    )
+                                                });
+                                                if got != expected
+                                                    || right.column(0) != left.column(0)
+                                                    || new.snapshot() != old.snapshot()
+                                                {
+                                                    eprintln!("RESERVED PREFIX EXTENDED FULL DIFFERENCE {label} old={expected} new={got} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                }
+                                                assert_eq!(got, expected, "{label}");
+                                                assert_eq!(
+                                                    right.column(0),
+                                                    left.column(0),
+                                                    "{label}"
+                                                );
+                                                assert_eq!(
+                                                    new.snapshot(),
+                                                    old.snapshot(),
+                                                    "{label}"
+                                                );
+                                                let route = new_owner.batch_route_snapshot();
+                                                if (route.fallback != 0 || route.refusals != 0)
+                                                    && gaps.len() < 20
+                                                {
+                                                    gaps.push(format!("{label}: {route:?}"));
+                                                }
+                                            }
+                                            for b in format!(
+                                                "{label}|{expected}|{:?}|{}",
+                                                left.column(0),
+                                                old.snapshot()
+                                            )
+                                            .bytes()
+                                            {
+                                                hash = (hash ^ u64::from(b))
+                                                    .wrapping_mul(0x100000001b3);
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("RESERVED PREFIX EXTENDED FULL ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (1001280, 0x0883DF2991A572B5));
+        if !gaps.is_empty() {
+            eprintln!("RESERVED PREFIX EXTENDED FULL ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+#[test]
+fn optional_reserved_prefix_dates_original_phases() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_dates_original_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_reserved_prefix_dates_phases(false);
+}
+#[test]
+fn optional_reserved_prefix_dates_actual_phases() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_dates_actual_phases") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_reserved_prefix_dates_phases(true);
+}
+fn run_reserved_prefix_dates_phases(compare: bool) {
+    let pairs = [
+        [Datum::Null, Datum::new_string("selected")],
+        [Datum::Int(0), Datum::Int(7)],
+        [Datum::Int(1), Datum::new_string("7")],
+        [Datum::new_string("1tail"), Datum::Bytes(vec![255])],
+        [Datum::MinNotNull, Datum::Null],
+        [Datum::Real(f64::NAN), Datum::new_string("null")],
+        [Datum::UInt(u64::MAX), Datum::Int(-1)],
+        [
+            Datum::new_string("2026-10-21 01:02:03"),
+            Datum::new_string("1"),
+        ],
+    ];
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        reserved_prefix_phase_observer(
+            compare,
+            &N36_DATE_PREFIX_NAMES,
+            &pairs,
+            "reserved-prefix-dates",
+            "RESERVED PREFIX DATES",
+            Some((288000, 0xA62BA14E9B59AC03)),
+        );
+    });
+}
+const N36_DATE_PREFIX_NAMES: [&str; 5] = [
+    "date_add_day",
+    "date_sub_month",
+    "date_add_second_microsecond",
+    "date_sub_hour",
+    "date_add_year",
+];
+#[test]
+fn optional_reserved_prefix_dates_original_all_actual_values() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_reserved_prefix_dates_original_all_actual_values",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_dates_all_actual_values(false);
+}
+#[test]
+fn optional_reserved_prefix_dates_actual_all_actual_values() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_reserved_prefix_dates_actual_all_actual_values",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_dates_all_actual_values(true);
+}
+fn run_optional_reserved_prefix_dates_all_actual_values(compare: bool) {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            string_ty(),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+            FieldType::new(FieldTypeCode::Json),
+        ];
+        let mut gaps = vec![];
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        for name in N36_DATE_PREFIX_NAMES {
+            for (fi, field) in fields.iter().enumerate() {
+                for arity in [if name.starts_with("date_") { 2 } else { 1 }] {
+                    for mask in [0, 1, 2, 4, 7] {
+                        for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                            .into_iter()
+                            .enumerate()
+                        {
+                            for position in 0..arity {
+                                let mut values = [Datum::Int(2), Datum::Int(3)];
+                                values[position] = value.clone();
+                                for enabled in [false, true] {
+                                    for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
+                                        let make = || {
+                                            let args = (0..arity)
+                                                .map(|i| {
+                                                    if i < 2 {
+                                                        parameter(i, field.clone())
+                                                    } else {
+                                                        literal(
+                                                            if i == 2 {
+                                                                Datum::Null
+                                                            } else {
+                                                                Datum::Int(10)
+                                                            },
+                                                            field.clone(),
+                                                        )
+                                                    }
+                                                })
+                                                .collect();
+                                            let mut e = call(name, field.clone(), args);
+                                            erase_optional_call_declarations(&mut e, mask);
+                                            suite(e)
+                                        };
+                                        let old_owner = make();
+                                        let new_owner = make();
+                                        let old = PrefixContext::new(0, enabled, values.clone());
+                                        let new = PrefixContext::new(0, enabled, values.clone());
+                                        for reuse in 0..2 {
+                                            let input = || {
+                                                let mut c = chunk(
+                                                    &[ty()],
+                                                    &[
+                                                        vec![Datum::Int(1)],
+                                                        vec![Datum::Int(2)],
+                                                        vec![Datum::Int(3)],
+                                                    ],
+                                                );
+                                                c.set_sel(selection.clone());
+                                                c
+                                            };
+                                            let mut a = input();
+                                            let mut left = output_for(field);
+                                            left.append_null(0);
+                                            let expected = session_read_outcome(|| {
+                                                old_owner.run(&old, &mut a, &mut left)
+                                            });
+                                            let label=format!("reserved-prefix-dates-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
+                                            if compare {
+                                                let mut b = input();
+                                                let mut right = output_for(field);
+                                                right.append_null(0);
+                                                let got = session_read_outcome(|| {
+                                                    new_owner.run_with_tikv_batch(
+                                                        &new,
+                                                        &mut b,
+                                                        &mut right,
+                                                        &[ty()],
+                                                    )
+                                                });
+                                                if got != expected
+                                                    || right.column(0) != left.column(0)
+                                                    || new.snapshot() != old.snapshot()
+                                                {
+                                                    eprintln!("RESERVED PREFIX DATES FULL DIFFERENCE {label} old={expected} new={got} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
+                                                }
+                                                assert_eq!(got, expected, "{label}");
+                                                assert_eq!(
+                                                    right.column(0),
+                                                    left.column(0),
+                                                    "{label}"
+                                                );
+                                                assert_eq!(
+                                                    new.snapshot(),
+                                                    old.snapshot(),
+                                                    "{label}"
+                                                );
+                                                let route = new_owner.batch_route_snapshot();
+                                                if (route.fallback != 0 || route.refusals != 0)
+                                                    && gaps.len() < 20
+                                                {
+                                                    gaps.push(format!("{label}: {route:?}"));
+                                                }
+                                            }
+                                            for b in format!(
+                                                "{label}|{expected}|{:?}|{}",
+                                                left.column(0),
+                                                old.snapshot()
+                                            )
+                                            .bytes()
+                                            {
+                                                hash = (hash ^ u64::from(b))
+                                                    .wrapping_mul(0x100000001b3);
+                                            }
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("RESERVED PREFIX DATES FULL ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (715200, 0xDC98E2D526F3CF37));
+        if !gaps.is_empty() {
+            eprintln!("RESERVED PREFIX DATES FULL ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+#[test]
+fn optional_reserved_prefix_original_raw_datums() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_original_raw_datums") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_raw_datums(false);
+}
+
+#[test]
+fn optional_reserved_prefix_actual_raw_datums() {
+    if isolate_common_corpus("stateful_tests::optional_reserved_prefix_actual_raw_datums") {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    run_optional_reserved_prefix_raw_datums(true);
+}
+
+fn run_optional_reserved_prefix_raw_datums(compare: bool) {
+    use tidb_query_datatype::codec::data_type::ScalarValueRef;
+    use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, HostStep};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    tidb_datatype::with_test_conversion_clock(now, || {
+        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let mut gaps = vec![];
+        let fields = [
+            ty(),
+            ty().with_unsigned(true),
+            FieldType::new(FieldTypeCode::Double),
+            FieldType::new(FieldTypeCode::NewDecimal)
+                .with_flen(65)
+                .with_decimal(5),
+            string_ty(),
+            FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            FieldType::new(FieldTypeCode::Duration).with_decimal(3),
+            FieldType::new(FieldTypeCode::Json),
+        ];
+        for name in [
+            "cast_unknown",
+            "cast_unknown_in_union",
+            "unknown_in_union",
+            "date_add_invalid_unit",
+            "date_sub_invalid_unit",
+        ]
+        .into_iter()
+        .chain(N36_EXTENDED_PREFIX_NAMES)
+        .chain(N36_DATE_PREFIX_NAMES)
+        {
+            let arity = if name.starts_with("date_") { 2 } else { 1 };
+            for (fi, field) in fields.iter().enumerate() {
+                for mask in [0u8, 1, 2, 4, 7] {
+                    for (vi, value) in crate::tikv::byte_unary_value_tests::values()
+                        .into_iter()
+                        .enumerate()
+                    {
+                        for position in 0..arity {
+                            let mut values = [Datum::Int(2), Datum::Int(3)];
+                            values[position] = value.clone();
+                            let mut function = ScalarFunction::new(
+                                CiString::new(name),
+                                field.clone(),
+                                values[..arity]
+                                    .iter()
+                                    .map(|v| literal(v.clone(), field.clone()))
+                                    .collect(),
+                            );
+                            if mask & 1 != 0 {
+                                function.ret_type = None;
+                            }
+                            for (i, arg) in function.args.iter_mut().enumerate() {
+                                if mask & (2 << i) != 0 {
+                                    let Expression::Constant(c) = arg else {
+                                        unreachable!()
+                                    };
+                                    c.ret_type = None;
+                                }
+                            }
+                            function.prepare_in_string_hash_set();
+                            let mut input = Chunk::new_with_capacity(&[], 1);
+                            input.set_num_virtual_rows(1);
+                            let old = C::new(0, false, values.clone());
+                            let expected = session_read_outcome(|| {
+                                function
+                                    .eval(&old, input.get_row(0))
+                                    .map(|v| leaf::frame(&v))
+                            });
+                            let label = format!(
+                                "reserved-prefix-raw/{name}/{fi}/mask{mask}/{vi}/{position}"
+                            );
+                            if compare {
+                                let actual = suite(Expression::ScalarFunction(function.clone()));
+                                let preparation =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        PreparedBatch::compile_calculation_profile(
+                                            &actual,
+                                            0,
+                                            &[],
+                                            true,
+                                            319,
+                                            limits(),
+                                            ExecutionLimits::default(),
+                                            1 << 24,
+                                            true,
+                                        )
+                                    }));
+                                let preparation = match preparation {
+                                    Ok(result) => result,
+                                    Err(payload) => {
+                                        eprintln!("RESERVED PREFIX RAW COMPILE PANIC {label}");
+                                        std::panic::resume_unwind(payload)
+                                    }
+                                };
+                                match preparation {
+                                    Err(error) => {
+                                        if gaps.len() < 20 {
+                                            gaps.push(format!("{label}:{error:?}"));
+                                        }
+                                    }
+                                    Ok(compiled) => {
+                                        let source = &compiled.source;
+                                        if source.host_metadata.len() != 1 {
+                                            eprintln!(
+                                                "RESERVED PREFIX RAW CATALOG {label}: {} hosts",
+                                                source.host_metadata.len()
+                                            );
+                                        }
+                                        assert_eq!(source.host_metadata.len(), 1);
+                                        let new = C::new(0, false, values.clone());
+                                        let store =
+                                            RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                        store.borrow_mut().begin_window().unwrap();
+                                        let catalog = source.hosts.as_ref().unwrap().clone();
+                                        let mut hosts = NativeBatchHosts::new(
+                                            catalog.clone(),
+                                            &source.host_metadata,
+                                            &new,
+                                            1 << 24,
+                                        )
+                                        .with_native_values(Some(&store))
+                                        .with_constant_probes(&source.host_probes)
+                                        .with_numeric_parents(
+                                            source
+                                                .context_policy
+                                                .as_deref()
+                                                .map_or(&[], |policy| {
+                                                    policy.numeric_parents.as_ref()
+                                                }),
+                                        )
+                                        .unwrap_or_else(|error| {
+                                            eprintln!(
+                                                "RESERVED PREFIX RAW PARENT {label}: {error:?}"
+                                            );
+                                            panic!("numeric parent rejected")
+                                        });
+                                        let slot = catalog.slot(0).unwrap();
+                                        let signature = catalog.signature(slot).unwrap();
+                                        let row = InputRow {
+                                            occurrence: 19,
+                                            input_row: 0,
+                                        };
+                                        let mut eval = EvalContext::default();
+                                        let got = session_read_outcome(
+                                            || -> std::result::Result<String, EvalError> {
+                                                let HostStart::Pending { task, mut request } =
+                                                    hosts
+                                                        .start(
+                                                            &mut eval,
+                                                            HostInvocation {
+                                                                slot,
+                                                                row,
+                                                                arg_types: &signature.arg_types,
+                                                                return_type: &signature.return_type,
+                                                            },
+                                                        )
+                                                        .unwrap()
+                                                else {
+                                                    panic!(
+                                                        "arithmetic must demand actual arguments"
+                                                    )
+                                                };
+                                                for _ in 0..8 {
+                                                    assert!(request.index < 2);
+                                                    let node = match &source.host_metadata[0] {
+                                                        NativeHostMetadata::EagerValues {
+                                                            arguments,
+                                                            ..
+                                                        } => arguments[request.index],
+                                                        NativeHostMetadata::DateArithmetic {
+                                                            arguments,
+                                                            ..
+                                                        } => arguments[request.index],
+                                                        NativeHostMetadata::ValueCast {
+                                                            argument_node,
+                                                            ..
+                                                        } => {
+                                                            assert_eq!(request.index, 0);
+                                                            *argument_node
+                                                        }
+                                                        _ => panic!("original arithmetic metadata"),
+                                                    };
+                                                    let token = store
+                                                        .borrow_mut()
+                                                        .insert_clone(
+                                                            &values[request.index],
+                                                            NativeValueRole::CharInput,
+                                                            NativeValueOrigin { node, row },
+                                                        )
+                                                        .unwrap();
+                                                    let fetched = VectorValue::from_scalar(
+                                                        &ScalarValue::Bytes(Some(token)),
+                                                        1,
+                                                    );
+                                                    match hosts.resume(
+                                                        &mut eval,
+                                                        &task,
+                                                        HostArgReply {
+                                                            index: request.index,
+                                                            field_type: &signature.arg_types
+                                                                [request.index],
+                                                            values: &fetched,
+                                                        },
+                                                    ) {
+                                                        Ok(HostStep::NeedArg(next)) => {
+                                                            request = next
+                                                        }
+                                                        Ok(HostStep::Ready(output)) => {
+                                                            let ScalarValueRef::Bytes(Some(token)) =
+                                                                output.get_scalar_ref(0)
+                                                            else {
+                                                                panic!("native arithmetic token")
+                                                            };
+                                                            let value = store.borrow();
+                                                            return Ok(leaf::frame(
+                                                                value
+                                                                    .get(
+                                                                        token,
+                                                                        NativeValueRole::Output,
+                                                                        NativeValueOrigin {
+                                                                            node: 0,
+                                                                            row,
+                                                                        },
+                                                                    )
+                                                                    .unwrap(),
+                                                            ));
+                                                        }
+                                                        Ok(HostStep::NeedArgRow { .. }) => panic!(
+                                                        "row arithmetic cannot request another row"
+                                                    ),
+                                                        Err(error) => {
+                                                            if matches!(
+                                                                error,
+                                                                LocalError::ResourceLimit(_)
+                                                            ) {
+                                                                return Err(EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(error,None)));
+                                                            }
+                                                            return Err(hosts
+                                                                .take_native_error()
+                                                                .unwrap_or_else(|| {
+                                                                    panic!(
+                                                                "unexpected host failure {error:?}"
+                                                            )
+                                                                }));
+                                                        }
+                                                    }
+                                                }
+                                                panic!("arithmetic demand did not terminate")
+                                            },
+                                        );
+                                        if got != expected || new.snapshot() != old.snapshot() {
+                                            eprintln!("RESERVED PREFIX RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                        }
+                                        assert_eq!(got, expected, "{label}");
+                                        assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                    }
+                                }
+                            }
+                            for byte in format!("{label}|{expected}|{}", old.snapshot()).bytes() {
+                                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("RESERVED PREFIX RAW FINAL {compare} {count}/{hash:016X}");
+        eprintln!("RESERVED PREFIX RAW ORIGINAL {count}/{hash:016X}");
+        assert_eq!((count, hash), (184760, 0xD58D2A1C0604554C));
+        if !gaps.is_empty() {
+            eprintln!("RESERVED PREFIX RAW ADMISSION RED {gaps:?}");
+        }
+        assert!(gaps.is_empty());
+    });
+}
+
+#[test]
+fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
+    use tidb_query_expr::local::{
+        HostArgReply, HostInvocation, HostStart, HostStep, LocalHostServices,
+    };
+    struct Context<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        mode: Cell<u8>,
+        warnings: Cell<usize>,
+    }
+    impl Columns for Context<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no expression callback")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            panic!("no Ready worker")
+        }
+        fn append_warning(&self, _: u16, _: &str) {
+            drop(self.store.borrow_mut());
+            self.warnings.set(self.warnings.get() + 1);
+            if self.mode.get() == 1 {
+                self.store.borrow_mut().begin_window().unwrap();
+            }
+            if self.mode.get() == 2 {
+                panic!("prefix warning callback");
+            }
+        }
+        fn time_zone(&self) -> SessionTimeZone {
+            drop(self.store.borrow_mut());
+            SessionTimeZone::utc()
+        }
+    }
+    for name in ["cast_unknown_in_union", "cast_unsigned_in_union"] {
+        for mask in [0, 7] {
+            let mut root = call(name, ty(), vec![parameter(0, string_ty())]);
+            erase_optional_call_declarations(&mut root, mask);
+            let owner = suite(root);
+            let compiled = PreparedBatch::compile_calculation_profile(
+                &owner,
+                0,
+                &[],
+                true,
+                919,
+                limits(),
+                ExecutionLimits::default(),
+                1 << 20,
+                true,
+            )
+            .unwrap();
+            let source = &compiled.source;
+            let NativeHostMetadata::EagerValues {
+                arguments, kernel, ..
+            } = &source.host_metadata[0]
+            else {
+                panic!("original prefix owner")
+            };
+            assert!(kernel.prefix_phase().is_some());
+            let node = arguments[0];
+            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let row = InputRow {
+                occurrence: 7,
+                input_row: 0,
+            };
+            let origin = NativeValueOrigin { node, row };
+            let stale = store
+                .borrow_mut()
+                .insert_clone(&Datum::Int(1), NativeValueRole::CharInput, origin)
+                .unwrap();
+            store.borrow_mut().begin_window().unwrap();
+            let context = Context {
+                store: &store,
+                mode: Cell::new(0),
+                warnings: Cell::new(0),
+            };
+            let catalog = source.hosts.as_ref().unwrap().clone();
+            let slot = catalog.slot(0).unwrap();
+            let sig = catalog.signature(slot).unwrap();
+            let mut hosts =
+                NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context, 8192)
+                    .with_native_values(Some(&store))
+                    .with_constant_probes(&source.host_probes);
+            let mut eval = EvalContext::default();
+            let insert = |value: &Datum, role, node, row| {
+                store
+                    .borrow_mut()
+                    .insert_clone(value, role, NativeValueOrigin { node, row })
+                    .unwrap()
+            };
+            let wrong_role = insert(&Datum::Int(1), NativeValueRole::Output, node, row);
+            let wrong_node = insert(&Datum::Int(1), NativeValueRole::CharInput, node + 1, row);
+            let wrong_row = insert(
+                &Datum::Int(1),
+                NativeValueRole::CharInput,
+                node,
+                InputRow {
+                    occurrence: 8,
+                    input_row: 0,
+                },
+            );
+            let large = insert(
+                &Datum::Bytes(vec![b'X'; 16384]),
+                NativeValueRole::CharInput,
+                node,
+                row,
+            );
+            for (token, resource) in [
+                (stale, false),
+                (wrong_role, false),
+                (wrong_node, false),
+                (wrong_row, false),
+                (large, true),
+            ] {
+                let HostStart::Pending { task, request } = hosts
+                    .start(
+                        &mut eval,
+                        HostInvocation {
+                            slot,
+                            row,
+                            arg_types: &sig.arg_types,
+                            return_type: &sig.return_type,
+                        },
+                    )
+                    .unwrap()
+                else {
+                    panic!("prefix pending")
+                };
+                assert_eq!(request.index, 0);
+                let value = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let error = hosts
+                    .resume(
+                        &mut eval,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &sig.arg_types[0],
+                            values: &value,
+                        },
+                    )
+                    .unwrap_err();
+                assert!(
+                    if resource {
+                        matches!(error, LocalError::ResourceLimit(_))
+                    } else {
+                        matches!(error, LocalError::BindingContract(_))
+                    },
+                    "{name}/{mask}: {error:?}"
+                );
+                assert_eq!(context.warnings.get(), 0);
+                hosts.cancel(&task);
+                assert!(hosts
+                    .resume(
+                        &mut eval,
+                        &task,
+                        HostArgReply {
+                            index: 0,
+                            field_type: &sig.arg_types[0],
+                            values: &value
+                        }
+                    )
+                    .is_err());
+            }
+            // Cancelled and refused stages preserve the same descriptor/cap.
+            let HostStart::Pending { task, .. } = hosts
+                .start(
+                    &mut eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &sig.arg_types,
+                        return_type: &sig.return_type,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("prefix pending")
+            };
+            let token = insert(&Datum::Int(1), NativeValueRole::CharInput, node, row);
+            let fetched = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let first = hosts
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &sig.arg_types[0],
+                        values: &fetched,
+                    },
+                )
+                .unwrap();
+            if name == "cast_unknown_in_union" {
+                let HostStep::NeedArg(request) = first else {
+                    panic!("original live second demand")
+                };
+                assert_eq!(request.index, 0);
+                assert!(matches!(
+                    request.mode,
+                    tidb_query_expr::local::ArgMode::Fresh
+                ));
+                let token = insert(&Datum::Null, NativeValueRole::CharInput, node, row);
+                let value = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                assert!(matches!(
+                    hosts
+                        .resume(
+                            &mut eval,
+                            &task,
+                            HostArgReply {
+                                index: 0,
+                                field_type: &sig.arg_types[0],
+                                values: &value
+                            }
+                        )
+                        .unwrap(),
+                    HostStep::Ready(_)
+                ));
+            } else {
+                assert!(matches!(first, HostStep::Ready(_)));
+            }
+            assert!(hosts
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &sig.arg_types[0],
+                        values: &fetched
+                    }
+                )
+                .is_err());
+            hosts.cancel(&task);
+            if name == "cast_unsigned_in_union" {
+                // Warning callbacks may mutate the arena or unwind. No store
+                // Ref or previous work scope may survive either boundary.
+                for mode in [1, 2, 0] {
+                    context.mode.set(mode);
+                    let token = insert(
+                        &Datum::Real(f64::MAX),
+                        NativeValueRole::CharInput,
+                        node,
+                        row,
+                    );
+                    let fetched = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let HostStart::Pending { task, .. } = hosts
+                        .start(
+                            &mut eval,
+                            HostInvocation {
+                                slot,
+                                row,
+                                arg_types: &sig.arg_types,
+                                return_type: &sig.return_type,
+                            },
+                        )
+                        .unwrap()
+                    else {
+                        panic!("prefix pending")
+                    };
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        hosts.resume(
+                            &mut eval,
+                            &task,
+                            HostArgReply {
+                                index: 0,
+                                field_type: &sig.arg_types[0],
+                                values: &fetched,
+                            },
+                        )
+                    }));
+                    match mode {
+                        1 => assert!(matches!(result, Ok(Err(LocalError::BindingContract(_))))),
+                        2 => assert!(result.is_err()),
+                        _ => assert!(matches!(result, Ok(Ok(HostStep::Ready(_))))),
+                    }
+                    hosts.cancel(&task);
+                    assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
+                }
+                assert_eq!(context.warnings.get(), 3);
+            }
+        }
+    }
+}
+
+#[test]
+fn optional_reserved_prefix_resources_long_reuse_and_flags() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_reserved_prefix_resources_long_reuse_and_flags",
+    ) {
+        return;
+    }
+    std::panic::set_hook(Box::new(|_| {}));
+    for name in [
+        "cast_unknown",
+        "cast_unknown_in_union",
+        "unknown_in_union",
+        "date_add_invalid_unit",
+        "date_add_day",
+    ] {
+        let arity = if name.starts_with("date_") { 2 } else { 1 };
+        let make = |mask| {
+            let mut root = call(
+                name,
+                string_ty(),
+                (0..arity).map(|i| parameter(i, string_ty())).collect(),
+            );
+            erase_optional_call_declarations(&mut root, mask);
+            suite(root)
+        };
+        let owner = make(7);
+        let mut prepared = PreparedBatchSuite::compile(
+            &owner,
+            &[ty()],
+            true,
+            919,
+            limits(),
+            ExecutionLimits::default(),
+            1 << 20,
+        )
+        .unwrap();
+        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+        let mut ctx = PrefixContext::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
+        );
+        let input = || {
+            chunk(
+                &[ty()],
+                &[
+                    vec![Datum::Int(0)],
+                    vec![Datum::Int(1)],
+                    vec![Datum::Int(2)],
+                ],
+            )
+        };
+        let mut first = input();
+        let mut output = output_for(&string_ty());
+        output.append_null(0);
+        let error = prepared
+            .run(
+                &owner,
+                &ctx,
+                &mut EvalContext::default(),
+                &mut first,
+                &mut output,
+                &[ty()],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
+            "{name}: {error:?}"
+        );
+        assert_eq!(output.num_rows(), 1);
+        ctx.base.values[0] = Datum::Null;
+        ctx.base.enabled = false;
+        ctx.base.events.borrow_mut().clear();
+        for n in &ctx.base.reads {
+            n.set(0);
+        }
+        let old = PrefixContext::new(0, false, [Datum::Null, Datum::Int(1)]);
+        let mut a = input();
+        let mut left = output_for(&string_ty());
+        left.append_null(0);
+        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let mut b = input();
+        let mut right = output_for(&string_ty());
+        right.append_null(0);
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut b,
+                    &mut right,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected, "{name}");
+        assert_eq!(right.column(0), left.column(0), "{name}");
+        assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
+        assert_eq!(
+            prepared.workers[0].max_materialization_retained_bytes,
+            16 * 1024
+        );
+        for mask in [0, 1, 2, 4, 7] {
+            for rows in [0usize, 3, 2051] {
+                let original = make(mask);
+                let actual = make(mask);
+                let mut old = PrefixContext::new(5, true, [Datum::Null, Datum::Null]);
+                let mut new = PrefixContext::new(5, true, [Datum::Null, Datum::Null]);
+                for (round, enabled) in [true, false, true, false].into_iter().enumerate() {
+                    old.base.enabled = enabled;
+                    new.base.enabled = enabled;
+                    old.base.profile = if round == 0 { 5 } else { 0 };
+                    new.base.profile = old.base.profile;
+                    let input = || {
+                        let mut c = input();
+                        c.set_sel(Some((0..rows).map(|i| [2, 0, 2][i % 3]).collect()));
+                        c
+                    };
+                    let mut a = input();
+                    let mut left = output_for(&string_ty());
+                    left.append_null(0);
+                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let mut b = input();
+                    let mut right = output_for(&string_ty());
+                    right.append_null(0);
+                    let got = session_read_outcome(|| {
+                        actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
+                    });
+                    let label = format!("{name}/{mask}/{rows}/{round}");
+                    assert_eq!(got, expected, "{label}");
+                    assert_eq!(right.column(0), left.column(0), "{label}");
+                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                    let route = actual.batch_route_snapshot();
+                    assert_eq!(
+                        (route.fallback, route.refusals),
+                        (0, 0),
+                        "{label}: {route:?}"
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("RESERVED PREFIX LONG REUSE 300; SAME CAP RECOVERY 5");
+}
+
+#[test]
+fn optional_reserved_prefix_date_typed_claims_require_genuine_fields() {
+    use tidb_query_expr::local::{
+        HostInvocation, HostStart, LocalHostServices, SqlTemporalOutput as Output,
+    };
+    let context = C::new(0, false, [Datum::Null, Datum::Null]);
+    for output in [
+        Output::Bytes,
+        Output::DateTime,
+        Output::Duration,
+        Output::Value,
+    ] {
+        let result = match output {
+            Output::DateTime => FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+            Output::Duration => FieldType::new(FieldTypeCode::Duration).with_decimal(6),
+            _ => string_ty(),
+        };
+        let field = projected(&native_bytes_type(), true).unwrap();
+        let args = vec![field.clone(); 2];
+        let ret = if output == Output::Value {
+            field.clone()
+        } else {
+            projected(&result, true).unwrap()
+        };
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            SqlBatchHostOperation::DateArithmeticNative { output },
+            HostSignature {
+                arg_types: args.clone().into_boxed_slice(),
+                return_type: ret.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        for mask in [0u8, 1, 2, 4, 7] {
+            let metadata = [NativeHostMetadata::DateArithmetic {
+                arguments: [1, 2],
+                argument_types: [
+                    (mask & 2 == 0).then(string_ty),
+                    (mask & 4 == 0).then(string_ty),
+                ],
+                unit: "DAY".into(),
+                sign: 1,
+                result_fsp: None,
+                result_type: (mask & 1 == 0).then(|| result.clone()),
+                output_node: 0,
+                output_role: (output == Output::Value).then_some(NativeValueRole::Output),
+                output,
+            }];
+            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            store.borrow_mut().begin_window().unwrap();
+            let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context, 1 << 20)
+                .with_native_values(Some(&store));
+            let start = hosts.start(
+                &mut EvalContext::default(),
+                HostInvocation {
+                    slot,
+                    row: InputRow {
+                        occurrence: 0,
+                        input_row: 0,
+                    },
+                    arg_types: &args,
+                    return_type: &ret,
+                },
+            );
+            if output == Output::Value || mask == 0 {
+                let HostStart::Pending { task, .. } = start.unwrap() else {
+                    panic!("date demand")
+                };
+                hosts.cancel(&task);
+            } else {
+                assert!(matches!(start, Err(LocalError::BindingContract(_))));
+            }
+        }
+    }
+    assert_eq!(context.snapshot(), "0:0|[]");
+}

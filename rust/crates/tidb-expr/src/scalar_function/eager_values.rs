@@ -20,6 +20,7 @@ impl EagerArgument {
 #[derive(Debug)]
 pub(crate) struct EagerValueKernel {
     func_name: tidb_ast::CiString,
+    prefix: Option<super::prefix_value::PrefixKind>,
     overflow_expression: Option<super::math_diagnostic::MathDiagnostic>,
     ret_type: Option<FieldType>,
     session_read: Option<super::session_read::SessionRead>,
@@ -36,6 +37,64 @@ pub(crate) struct EagerValueKernel {
 impl EagerValueKernel {
     pub(crate) fn name(&self) -> &str {
         self.func_name.lowercase()
+    }
+    pub(crate) fn prefix_phase(&self) -> Option<super::prefix_value::PrefixPhase> {
+        self.prefix.map(super::prefix_value::PrefixKind::first)
+    }
+    pub(crate) fn accepts_prefix_phase(&self, phase: super::prefix_value::PrefixPhase) -> bool {
+        use super::prefix_value::{PrefixKind as Kind, PrefixPhase as Phase};
+        match (self.prefix, phase) {
+            (Some(Kind::Union), Phase::Union) => true,
+            (Some(Kind::Union), Phase::Cast) => self.name().starts_with("cast_"),
+            (Some(Kind::Union), Phase::Common) => !self.name().starts_with("cast_"),
+            (Some(Kind::UnknownCast), Phase::Cast) => true,
+            _ => false,
+        }
+    }
+    pub(crate) fn eval_prefix(
+        &self,
+        phase: super::prefix_value::PrefixPhase,
+        value: Datum,
+        ctx: &dyn Columns,
+    ) -> Result<super::prefix_value::PrefixStep, EvalError> {
+        use super::prefix_value::{PrefixPhase as Phase, PrefixStep as Step};
+        match phase {
+            Phase::Union => {
+                if matches!(self.name(), "cast_real_in_union" | "cast_real_int_in_union")
+                    && matches!(&value, Datum::Decimal(_))
+                {
+                    charge_string_work(&value)?;
+                }
+                match super::prefix_value::union_value(
+                    self.name(),
+                    value,
+                    self.args[0].static_type(),
+                    self.ret_type.as_ref(),
+                    ctx,
+                ) {
+                    Some(value) => value.map(Step::Value),
+                    None => Ok(Step::Need(if self.name().starts_with("cast_") {
+                        Phase::Cast
+                    } else {
+                        Phase::Common
+                    })),
+                }
+            }
+            Phase::Cast => super::prefix_value::cast_value(
+                self.name()
+                    .strip_prefix("cast_")
+                    .expect("authenticated CAST prefix"),
+                value,
+                self.args[0].static_type(),
+                self.ret_type.as_ref(),
+                ctx,
+            )
+            .map(Step::Value),
+            Phase::Common => self
+                .eval_in(ctx, vec![value], |error| error)
+                .map(Step::Value),
+            Phase::Consumed => unreachable!("authenticated prefix phase"),
+        }
     }
     pub(crate) fn user_variable(&self) -> Option<super::user_variable::UserVariableAction> {
         self.user_variable
@@ -59,6 +118,7 @@ impl EagerValueKernel {
         );
         Self {
             func_name: function.func_name.clone(),
+            prefix: super::prefix_value::PrefixKind::for_function(function),
             overflow_expression: None,
             ret_type: function.ret_type.clone(),
             session_read: super::session_read::SessionRead::for_function(function),

@@ -155,6 +155,8 @@ impl NativeRawValueOperation {
 
 #[path = "batch_eager_values.rs"]
 mod eager_values_source;
+#[path = "batch_prefix_values.rs"]
+mod prefix_values_source;
 
 #[path = "batch_typed_context.rs"]
 mod typed_context_source;
@@ -333,11 +335,11 @@ pub(super) enum NativeHostMetadata {
     },
     DateArithmetic {
         arguments: [usize; 2],
-        argument_types: [FieldType; 2],
+        argument_types: [Option<FieldType>; 2],
         unit: Box<str>,
         sign: i64,
         result_fsp: Option<u32>,
-        result_type: FieldType,
+        result_type: Option<FieldType>,
         output_node: usize,
         output_role: Option<NativeValueRole>,
         output: tidb_query_expr::local::SqlTemporalOutput,
@@ -501,6 +503,7 @@ impl NativeHostMetadata {
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
             Self::Arithmetic { result_type, .. } => result_type.as_ref(),
+            Self::DateArithmetic { result_type, .. } => result_type.as_ref(),
             Self::In(metadata) => metadata.result_type.as_ref(),
             Self::Interval(metadata) => metadata.result_type.as_ref(),
             Self::Extremum(metadata) => metadata.result_type.as_ref(),
@@ -518,7 +521,6 @@ impl NativeHostMetadata {
             | Self::Tso { result_type, .. }
             | Self::Epoch { result_type, .. }
             | Self::Extract { result_type, .. }
-            | Self::DateArithmetic { result_type, .. }
             | Self::BoundedStaleness { result_type, .. }
             | Self::StrToDate { result_type, .. }
             | Self::JsonSumCrc32 { result_type, .. }
@@ -540,6 +542,9 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    PrefixValues {
+        phase: crate::scalar_function::prefix_value::PrefixPhase,
+    },
     ConcatValues {
         pending: Option<ConcatDemand>,
     },
@@ -705,6 +710,9 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::PrefixValues { phase } => Ok((*phase
+                != crate::scalar_function::prefix_value::PrefixPhase::Consumed)
+                .then_some(0)),
             SqlDemand::Consumed | SqlDemand::HeaderOutcome => Ok(None),
             SqlDemand::ConcatValues { pending } => match pending {
                 Some(demand) => demand.next_argument(),
@@ -774,6 +782,7 @@ impl NativeTask {
         match &mut self.demand {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
+            SqlDemand::PrefixValues { .. } => Err(binding("prefix outcome cannot buffer a reply")),
             SqlDemand::ConcatValues { .. } => Err(binding("raw CONCAT owns its actual prefix")),
             SqlDemand::JsonSchema(_) => Err(binding("schema host cannot buffer wire values")),
             SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
@@ -1454,6 +1463,10 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::In(_)
                 | NativeHostMetadata::Interval(_)
                 | NativeHostMetadata::Extremum(_)
+                | NativeHostMetadata::DateArithmetic {
+                    output: tidb_query_expr::local::SqlTemporalOutput::Value,
+                    ..
+                }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {
@@ -2806,25 +2819,35 @@ impl NativeBatchHosts<'_> {
                             Ok(name) => name,
                             Err(e) => return self.native_failure(e),
                         };
-                    match (kernel.user_variable(), name) {
-                        (
-                            Some(crate::scalar_function::user_variable::UserVariableAction::Get(_)),
-                            Some(name),
-                        ) => SqlDemand::UserVariableRead {
-                            name,
-                            consumed: false,
-                        },
-                        (
-                            Some(crate::scalar_function::user_variable::UserVariableAction::Set),
-                            Some(name),
-                        ) => SqlDemand::UserVariableWrite {
-                            name,
-                            consumed: false,
-                        },
-                        _ => SqlDemand::EagerValues {
-                            next: 0,
-                            tokens: Vec::new(),
-                        },
+                    if let Some(phase) = kernel.prefix_phase() {
+                        SqlDemand::PrefixValues { phase }
+                    } else {
+                        match (kernel.user_variable(), name) {
+                            (
+                                Some(
+                                    crate::scalar_function::user_variable::UserVariableAction::Get(
+                                        _,
+                                    ),
+                                ),
+                                Some(name),
+                            ) => SqlDemand::UserVariableRead {
+                                name,
+                                consumed: false,
+                            },
+                            (
+                                Some(
+                                    crate::scalar_function::user_variable::UserVariableAction::Set,
+                                ),
+                                Some(name),
+                            ) => SqlDemand::UserVariableWrite {
+                                name,
+                                consumed: false,
+                            },
+                            _ => SqlDemand::EagerValues {
+                                next: 0,
+                                tokens: Vec::new(),
+                            },
+                        }
                     }
                 }
             }
@@ -3167,6 +3190,8 @@ impl NativeBatchHosts<'_> {
                 let Some(NativeHostMetadata::DateArithmetic {
                     output: declared,
                     output_role,
+                    argument_types,
+                    result_type,
                     ..
                 }) = self.metadata.get(invocation.slot.index())
                 else {
@@ -3175,6 +3200,8 @@ impl NativeBatchHosts<'_> {
                 if self.native_values.is_none()
                     || invocation.arg_types.len() != 2
                     || output != *declared
+                    || (output != tidb_query_expr::local::SqlTemporalOutput::Value
+                        && (result_type.is_none() || argument_types.iter().any(Option::is_none)))
                     || (output == tidb_query_expr::local::SqlTemporalOutput::Value)
                         != output_role.is_some()
                 {
@@ -3758,6 +3785,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("user variable operand cannot be wire NULL"));
             };
             return self.finish_user_variable(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::PrefixValues { .. }) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("prefix reply is not a value capability"));
+            };
+            return self.resume_prefix_value(id, token);
         }
         if matches!(task.demand, SqlDemand::EagerValues { .. }) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

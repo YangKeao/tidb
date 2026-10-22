@@ -7130,4 +7130,253 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn reserved_prefixes_keep_actual_projection_values_variables_and_errors() {
+        let integer = longlong();
+        for name in [
+            "cast_unknown",
+            "cast_unknown_in_union",
+            "unknown_in_union",
+            "cast_unsigned_in_union",
+            "cast_real_to_decimal_in_union",
+            "cast_int_to_decimal_in_union",
+            "cast_string_to_decimal_in_union",
+            "cast_decimal_in_union",
+            "cast_real_int_in_union",
+            "cast_real_in_union",
+            "date_add_invalid_unit",
+            "date_add_day",
+            "date_sub_month",
+        ] {
+            let arity = if name.starts_with("date_") { 2 } else { 1 };
+            let field = if name.starts_with("date_") {
+                FieldType::new(FieldTypeCode::Datetime).with_decimal(3)
+            } else if name == "cast_unsigned_in_union" {
+                integer.clone().with_unsigned(true)
+            } else if name == "cast_real_in_union" {
+                FieldType::new(FieldTypeCode::Double)
+            } else if name.contains("decimal") {
+                FieldType::new(FieldTypeCode::NewDecimal)
+                    .with_flen(65)
+                    .with_decimal(4)
+            } else if name == "cast_real_int_in_union" {
+                integer.clone()
+            } else {
+                FieldType::new(FieldTypeCode::VarString)
+                    .with_collation(tidb_datatype::Collation::Utf8Mb4Bin)
+            };
+            for deferred in [false, true] {
+                let parameter = |order| {
+                    let mut c = Constant::new(Datum::Int(99), integer.clone());
+                    c.param_marker = Some(tidb_expr::constant::ParamMarker { order });
+                    Expression::Constant(c)
+                };
+                let left = if deferred {
+                    let mut c = Constant::new(Datum::Int(99), integer.clone());
+                    c.deferred_expr =
+                        Some(Box::new(Expression::ScalarFunction(ScalarFunction::new(
+                            CiString::new("setvar"),
+                            integer.clone(),
+                            vec![
+                                Expression::Constant(Constant::new(
+                                    Datum::new_string("reserved-prefix-left"),
+                                    FieldType::new(FieldTypeCode::VarString)
+                                        .with_collation(tidb_datatype::Collation::Utf8Mb4Bin),
+                                )),
+                                parameter(0),
+                            ],
+                        ))));
+                    Expression::Constant(c)
+                } else {
+                    parameter(0)
+                };
+                let function = ScalarFunction::new(
+                    CiString::new(name),
+                    field.clone(),
+                    if arity == 1 {
+                        vec![left]
+                    } else {
+                        vec![left, parameter(1)]
+                    },
+                );
+
+                for mask in [0u8, 1, 2, 4, 7] {
+                    let mut f = function.clone();
+                    if mask & 1 != 0 {
+                        f.ret_type = None;
+                    }
+                    for (i, arg) in f.args.iter_mut().enumerate() {
+                        if (mask & 2 != 0 && i == 0) || mask & 4 != 0 {
+                            let Expression::Constant(c) = arg else {
+                                unreachable!()
+                            };
+                            c.ret_type = None;
+                        }
+                    }
+                    let root = Expression::ScalarFunction(f);
+                    for values in [
+                        [Datum::Null, Datum::Int(1)],
+                        [Datum::Real(2.5), Datum::Int(1)],
+                        [Datum::new_string("2026-10-21 01:02:03"), Datum::Int(1)],
+                        [
+                            Datum::Decimal(tidb_datatype::Decimal::parse_mysql("-1.2300").0),
+                            Datum::Int(1),
+                        ],
+                        [Datum::UInt(u64::MAX), Datum::Int(1)],
+                    ] {
+                        // The caller supplies a valid storage column for the
+                        // original raw result; expression declarations stay erased.
+                        let field = if mask & 1 != 0 && name.starts_with("date_") {
+                            FieldType::new(FieldTypeCode::VarString)
+                                .with_collation(tidb_datatype::Collation::Utf8Mb4Bin)
+                        } else if mask & 1 != 0 && name == "cast_decimal_in_union" {
+                            if deferred && !matches!(&values[0], Datum::Null | Datum::Decimal(_)) {
+                                integer.clone()
+                            } else {
+                                match &values[0] {
+                                    Datum::Real(_) => FieldType::new(FieldTypeCode::Double),
+                                    Datum::UInt(_) => integer.clone().with_unsigned(true),
+                                    Datum::Int(_) => integer.clone(),
+                                    Datum::String(_) | Datum::Bytes(_) => {
+                                        FieldType::new(FieldTypeCode::VarString)
+                                            .with_collation(tidb_datatype::Collation::Utf8Mb4Bin)
+                                    }
+                                    _ => field.clone(),
+                                }
+                            }
+                        } else {
+                            field.clone()
+                        };
+                        for no_unsigned in [false] {
+                            for strict in [false, true] {
+                                for enabled in [false, true] {
+                                    for rows in [0usize, 3, 2051] {
+                                        let context = || {
+                                            (if strict {
+                                                crate::StmtContext::for_dml(true, true, false)
+                                            } else {
+                                                crate::StmtContext::for_query()
+                                            })
+                                            .with_enable_vectorized_expression(enabled)
+                                            .with_no_unsigned_subtraction(no_unsigned)
+                                            .with_prepared_params(values.to_vec().into())
+                                            .with_user_vars(std::sync::Arc::new(
+                                                std::sync::Mutex::new(
+                                                    std::collections::HashMap::new(),
+                                                ),
+                                            ))
+                                        };
+                                        let reference = context();
+                                        let original =
+                                            EvaluatorSuite::new(vec![root.clone()], false);
+                                        assert!(original.vectorizable());
+                                        let mut input = Chunk::new_with_capacity(
+                                            &[integer.clone(), integer.clone()],
+                                            rows.max(1),
+                                        );
+                                        for row in 0..rows {
+                                            input.append_int64(0, row as i64);
+                                            input.append_int64(1, (row * 2) as i64);
+                                        }
+                                        let mut expected =
+                                            Chunk::new_with_capacity(&[field.clone()], rows.max(1));
+                                        let result =
+                                            original.run(&reference, &mut input, &mut expected);
+                                        // A missing result declaration can retain an actual
+                                        // kind that differs from the caller's column slot.
+                                        // Copy published cells without decoding that slot.
+                                        let mut expected_raw =
+                                            Chunk::new_with_capacity(&[field.clone()], rows.max(1));
+                                        expected_raw.append_range_from(
+                                            &expected,
+                                            0,
+                                            expected.num_rows(),
+                                        );
+                                        let warnings = reference.take_warnings();
+                                        for workers in [0, 2] {
+                                            let context = context();
+                                            let (source, _) = NumberSource::new(rows as i64, 137);
+                                            let schema =
+                                                Schema::new(vec![Column::new(1, field.clone())]);
+                                            let mut projection = ProjectionExec::new(
+                                                ExecutorMeta::new(schema, 1, 137, 1024),
+                                                vec![root.clone()],
+                                                source,
+                                                context.clone(),
+                                            )
+                                            .with_workers(workers);
+                                            projection.open().unwrap();
+                                            let mut got = Chunk::new_with_capacity(
+                                                &[field.clone()],
+                                                rows.max(1),
+                                            );
+                                            let actual = loop {
+                                                let mut output = projection.new_chunk();
+                                                match projection.next(&mut output) {
+                                                    Err(error) => {
+                                                        if workers == 0 {
+                                                            assert_eq!(output.column(0),expected.column(0),"prefix {name}/mask{mask}/{deferred}/{strict}/{enabled}/{rows}/unsigned{no_unsigned}");
+                                                        }
+                                                        break Err(error);
+                                                    }
+                                                    Ok(()) => {
+                                                        if output.num_rows() == 0 {
+                                                            break Ok(());
+                                                        }
+                                                        got.append_range_from(
+                                                            &output,
+                                                            0,
+                                                            output.num_rows(),
+                                                        );
+                                                    }
+                                                }
+                                            };
+                                            match &result {
+                                                Ok(()) => {
+                                                    actual.unwrap();
+                                                    assert_eq!(got.column(0),expected_raw.column(0),"{name}/mask{mask}/{deferred}/{strict}/{enabled}/{rows}/unsigned{no_unsigned}/{workers}");
+                                                }
+                                                Err(EvaluatorError::Eval(expected)) => {
+                                                    let Err(ExecError::Eval(got)) = actual else {
+                                                        panic!("lost arithmetic error: {actual:?}")
+                                                    };
+                                                    assert_eq!(&got, expected);
+                                                }
+                                                other => {
+                                                    panic!("unexpected original result {other:?}")
+                                                }
+                                            }
+                                            assert_eq!(context.take_warnings(),warnings,"warnings {name}/mask{mask}/{deferred}/{strict}/{enabled}/{rows}/unsigned{no_unsigned}/{workers}");
+                                            assert_eq!(
+                                                tidb_expr::Columns::get_uservar(
+                                                    &context,
+                                                    "reserved-prefix-left"
+                                                ),
+                                                tidb_expr::Columns::get_uservar(
+                                                    &reference,
+                                                    "reserved-prefix-left"
+                                                )
+                                            );
+                                            if workers == 0 && rows > 0 {
+                                                let route = projection
+                                                    .evaluator_suite
+                                                    .batch_route_snapshot();
+                                                assert!(route.prepared > 0);
+                                                assert_eq!(
+                                                    (route.refusals, route.fallback),
+                                                    (0, 0),
+                                                    "{route:?}"
+                                                );
+                                            }
+                                            projection.close().unwrap();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

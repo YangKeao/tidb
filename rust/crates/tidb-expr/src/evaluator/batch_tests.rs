@@ -15440,12 +15440,13 @@ fn native_date_arithmetic_capabilities_budget_cancel_and_exclusive_callbacks() {
                     string_ty()
                 },
                 string_ty(),
-            ],
+            ]
+            .map(Some),
             unit: if temporal { "HOUR_MINUTE" } else { "DAY" }.into(),
             sign: 1,
             result_fsp: temporal.then_some(6),
             output,
-            result_type,
+            result_type: Some(result_type),
             output_node: 2,
             output_role: (output == SqlTemporalOutput::Value).then_some(NativeValueRole::Output),
         }];

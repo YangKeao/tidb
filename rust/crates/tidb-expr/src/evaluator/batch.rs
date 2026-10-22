@@ -545,6 +545,9 @@ fn root_source_view(root: &Expression, limits: CompileLimits) -> NativeView {
                 || native_optional_wildcard_call(function)
                 || native_optional_arithmetic_call(function)
                 || native_optional_ordered_comparison_call(function)
+                || native_optional_date_arithmetic_call(function)
+                || crate::scalar_function::prefix_value::PrefixKind::for_function(function)
+                    .is_some()
                 || native_no_argument_header_call(function) =>
         {
             NativeView::RootValue
@@ -1306,6 +1309,21 @@ fn budget_value_call_metadata(
         }
         return Ok(());
     }
+    if native_optional_date_arithmetic_call(function) {
+        if let Some(result) = result {
+            budget.field(result, 1)?;
+        }
+        let (unit, _) =
+            native_date_arithmetic_call(function).expect("checked optional date prefix");
+        budget.add(unit.len())?;
+        budget.add(unit.len())?;
+        for arg in &function.args {
+            if let Some(field) = arg.static_type() {
+                budget.field(field, 1)?;
+            }
+        }
+        return Ok(());
+    }
     if native_optional_ordered_comparison_call(function) {
         if let Some(result) = result {
             budget.field(result, 1)?;
@@ -1768,25 +1786,9 @@ fn check_batch_call(function: &ScalarFunction, view: NativeView) -> Result<()> {
 // in the descriptor-driven host, rather than using an untyped cast shortcut.
 fn native_cast_name(function: &ScalarFunction) -> Option<&str> {
     let target = function.func_name.lowercase().strip_prefix("cast_")?;
-    matches!(
-        target,
-        "signed"
-            | "unsigned"
-            | "unsigned_in_union"
-            | "char"
-            | "binary"
-            | "decimal"
-            | "date"
-            | "datetime"
-            | "time"
-            | "year"
-            | "double"
-            | "float"
-            | "vector"
-            | "json"
-    )
-    .then_some(target)
+    crate::scalar_function::prefix_value::ordinary_cast_target(target).then_some(target)
 }
+
 fn native_arithmetic_operation(name: &str) -> Option<SqlBatchHostOperation> {
     Some(match name {
         "plus" => SqlBatchHostOperation::AddNative,
@@ -2127,6 +2129,14 @@ fn native_date_arithmetic_call(function: &ScalarFunction) -> Option<(&str, i64)>
         .map(|unit| (unit, 1))
         .or_else(|| name.strip_prefix("date_sub_").map(|unit| (unit, -1)))
 }
+fn native_optional_date_arithmetic_call(function: &ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && function.pb_origin().is_none()
+        && native_date_arithmetic_call(function).is_some()
+        && (function.get_static_type().is_none()
+            || function.args.iter().any(|arg| arg.static_type().is_none()))
+}
+
 fn native_charset_operation(name: &str) -> Option<tidb_query_expr::NativeCharsetOperation> {
     use tidb_query_expr::NativeCharsetOperation as Op;
     Some(match name {
@@ -2193,6 +2203,7 @@ fn native_optional_value_call(function: &ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && function.pb_origin().is_none()
         && (crate::scalar_function::eager_values::supports(function)
+            || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some()
             || native_stateful_call(function)
             || native_final_state_call(function)
             || native_json_schema_call(function)
@@ -2319,6 +2330,7 @@ fn native_optional_declarations_call(function: &ScalarFunction) -> bool {
         || native_concat_value_call(function)
         || native_optional_arithmetic_call(function)
         || native_optional_ordered_comparison_call(function)
+        || native_optional_date_arithmetic_call(function)
         || native_no_argument_header_call(function)
 }
 fn native_value_call(function: &ScalarFunction) -> bool {
@@ -2329,6 +2341,7 @@ fn native_value_call(function: &ScalarFunction) -> bool {
         || native_stateful_call(function)
         || native_cached_list_call(function)
         || crate::scalar_function::eager_values::supports(function)
+        || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some()
         || matches!(
             function.func_name.lowercase(),
             "json_sum_crc32"
@@ -2398,7 +2411,10 @@ fn resolve_call_in_view(
             0,
         ));
     }
-    if view.value_role().is_some() && native_optional_value_call(function) {
+    if view.value_role().is_some()
+        && (native_optional_value_call(function)
+            || crate::scalar_function::prefix_value::PrefixKind::for_function(function).is_some())
+    {
         return Ok((
             CallTarget::Host(SqlBatchHostOperation::EagerValuesNative),
             function.args.len(),
@@ -2711,17 +2727,20 @@ fn resolve_specific_call_in_view(
     }
     if native_date_arithmetic_call(function).is_some() {
         use tidb_query_expr::local::SqlTemporalOutput as Output;
-        if function.args.iter().any(|arg| arg.static_type().is_none()) {
+        if view.value_role().is_none()
+            && function.args.iter().any(|arg| arg.static_type().is_none())
+        {
             return Err(BatchFailure::admission(
-                "date arithmetic source declarations absent",
+                "typed date arithmetic source declarations absent",
             ));
         }
-        let result = function
-            .get_static_type()
-            .ok_or_else(|| BatchFailure::admission("date arithmetic result declaration absent"))?;
+        let result = function.get_static_type();
         let output = if view.value_role().is_some() {
             Output::Value
         } else {
+            let result = result.ok_or_else(|| {
+                BatchFailure::admission("typed date arithmetic result declaration absent")
+            })?;
             match result.code() {
                 FieldTypeCode::Date | FieldTypeCode::Datetime => Output::DateTime,
                 FieldTypeCode::Duration => Output::Duration,
@@ -4071,6 +4090,7 @@ fn preflight_view<'a>(
                         || native_optional_wildcard_call(function)
                         || native_optional_arithmetic_call(function)
                         || native_optional_ordered_comparison_call(function)
+                        || native_optional_date_arithmetic_call(function)
                         || (native_concat_value_call(function) && view.value_role().is_some())
                     {
                         budget_value_call_metadata(&mut budget, function, Some(sql))?;
@@ -5799,17 +5819,11 @@ fn lower_view_policy(
                                 )?;
                                 NativeHostMetadata::DateArithmetic {
                                     arguments: [first, second],
-                                    argument_types: std::array::from_fn(|i| {
-                                        snapshot_field_type(
-                                            sql.args[i]
-                                                .static_type()
-                                                .expect("checked date arithmetic source"),
-                                        )
-                                    }),
+                                    argument_types: std::array::from_fn(|i|sql.args[i].static_type().map(snapshot_field_type)),
                                     unit: unit.into(),
                                     sign,
                                     result_fsp,
-                                    result_type: snapshot_field_type(item.declared_sql()),
+                                    result_type: item.sql.map(snapshot_field_type),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                     output,

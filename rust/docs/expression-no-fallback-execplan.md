@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-22 N36 validated) All3669080 strict original observations retain seven independently captured/rerun/pinned hashes without fallback or exceptions. Original UNION/non-JSON CAST value helpers are shared; a consuming Fresh unary phase uses the existing eager SDK frame, and existing DateArithmetic carries genuine optional fields with typed completeness guards. No new driver/value algorithm/Ready worker/SQL field is introduced. Common supports/prefers and original argument policy remain byte-equivalent, preserving old1713/657792/A94C463994D2D98D after correcting an initial eligibility-layer mistake.17 new checks,300 long flag/reuse cases, five same-cap recoveries and callback/typed-contract checks pass. Frontend2087/exact inherited3/95ignored/all546batch/346warnings,Projection39,Expand6,lint,dual10fmt and ownership reconstruction pass; SDKad73b11 unchanged clean. Inventory83088/344refusals/8names. See evidence/no-fallback-n36.md; continue remaining contracts and global entry/fallback/service/performance work.
+
+
 - [x] (2026-10-22 N35 validated) IN/INTERVAL/GREATEST/LEAST preserve genuine optional fields in existing owners and original typed/generic/cache/search/scale phases. Original1312360 observations were captured/rerun and fixed before production:138240/6D23E22B6F5BBE49,1144320/0926C1DF1FCFFBE1,29800/0BBCF87024DEBD9F. All1309561 strict pairs pass without fallback;2799 exact huge-malformed-Decimal cases retain explicit finite resource refusal and are not counted as successful execution. Eight source checks,240 long reuse/late-error/flag cases and same-cap32KiB-to-NULL recovery pass. Frontend2070/exact inherited3/95ignored/all529batch/346warnings,Projection38,Expand6,lint,dual8fmt and ownership reconstruction pass; SDKad73b11 unchanged clean. Fixed inventory83088/512refusals/13names. See evidence/no-fallback-n35.md and continue global entry/fallback/service/performance work.
 
 
@@ -172,6 +175,9 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N36 found two existing unsigned-UNION discrepancies: passing actual source metadata to an ordinary CAST worker changed its intrinsic absent-source warning and sentinel behavior. Sharing the original UNION value dispatcher preserves both. A new protocol registered in common supports also expanded an old dynamically chosen witness; eligibility is now separate and the entire original selector/digest remains unchanged. Actual Projection additionally requires a valid caller storage layout when an erased return declaration preserves a passthrough kind; raw-range copying avoids test-side decoding changes.
+
 
 N35's expanded domain corpus exposed pre-existing finite work refusals for one exact huge malformed Decimal. They remain separate resource outcomes, with original observations/digests preserved; no limit was raised. A direct host test initially omitted the real suite's promoted source profile and constant-prefix probes. Correcting that test harness restored the real entry contract without changing production computations or original recordings.
 
@@ -476,6 +482,9 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+- Decision: keep prefix protocol eligibility separate from original common-body classification, share only original pure UNION/CAST value boundaries, and demand the original unary operand afresh after fallthrough. Carry real optional date fields through the existing temporal host rather than creating a new date error owner. Rationale: original recordings distinguish repeated reads, intrinsic source absence, optional return behavior and date operand order. Date/Author: 2026-10-22 ExpressionReuseEngineer.
+
+
 - Decision: retain optional source/result metadata in the original IN/INTERVAL/extremum hosts, while preserving typed IN's full source barrier, exhaustive generic comparison, prepared-cache ownership, original interval search and real extrema signature/scale rules. Record finite resource refusals separately from strict execution comparisons. Rationale: field absence changes original demand/type decisions and cannot be replaced by caller schema or default types. Date/Author: 2026-10-22 ExpressionReuseEngineer.
 
 
@@ -770,6 +779,9 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N36 reduces the bounded refusal inventory from512/13 to344/8 and preserves the independent original source/common witnesses. Actual prefix execution retains both first and fresh fallback demands with finite authenticated ownership; optional dates preserve their old computations. The new raw witness and valid Projection caller layouts distinguish value identity from column reinterpretation. Full gate evidence is in evidence/no-fallback-n36.md; overall public-entry migration and performance validation remain incomplete.
+
 
 N35 removes four more names from the bounded optional-declaration refusal inventory, reducing1172/17 to512/13. The existing value adapters and SDK remain unchanged; optional fields are consumed at their original phases. Exact strict/resource evidence and final gates are in evidence/no-fallback-n35.md. This does not complete public entry migration, generic fallback removal or final service/performance validation.
 
@@ -4705,3 +4717,14 @@ Continue from local5290bc65 and clean SDKad73b11. Add independent original/actua
 
 
 Revision2026-10-22: validated N35's genuine optional metadata with fixed original records, separately bounded resource outcomes, actual Projection and all final gates. Continue remaining alias, regular-expression, WEIGHT_STRING and whole-parameter contracts before global entry/fallback/service/performance completion.
+
+
+## N36: reserved-name prefix phases
+
+Continue from localf0ba0eea and clean SDKad73b11. scalar_function.rs2497..2575 owns source-specific UNION, CAST and date-prefix branches after the original constant-name probe. Unknown UNION can fall through and demand an argument again; CAST reads its argument before checking the result field and target parser; date units read original field facts before evaluating both children and then call the existing date value owner. Do not assume zero child demand or replace a live second evaluation with a cached first value. New PrefixContext profiles8/9 distinguish changing NULL values between genuine reads. Capture original scalar results/errors, warnings/effects and output prefixes across optional declarations, all149 actual values and source/result families before implementing the selected owner. Run original/actual optional_reserved_prefix_ tests from the TiDB root using the existing cargo-tidb command and full final gates defined above.
+
+
+Revision2026-10-22: expanded N36 before implementation to seven real UNION aliases, other unknown spellings, five valid date units and a direct actual-Datum witness. Fixed all seven hashes before production. The source reproduction found cast_unsigned_in_union incorrectly using source-aware ordinary CAST behavior, changing warnings and sentinel panic; its original func::eval_func_values_in path remains the authoritative shared primitive. Added only a consuming prefix demand state to the existing native eager frame, and genuine optional date metadata to the original date host. First verification is in progress.
+
+
+Revision2026-10-22: closed N36 after preserving original common eligibility and its657792 witness, correcting the new Projection fixture's raw column handling, and passing all final gates. All original expected data/digests and SDK source remain unchanged; remaining eight-name fixture gaps and global entry/fallback/service/performance work continue.
