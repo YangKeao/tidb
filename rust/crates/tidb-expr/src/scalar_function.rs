@@ -39,6 +39,7 @@ mod json_preparation_tests;
 
 pub(crate) use pb_builtin::{
     interpret_integer_result, PbBinaryValues, PbBooleanValues, PbBuiltin, PbEagerValues,
+    PbLazyPhase, PbLazyValues,
 };
 
 use std::collections::BTreeSet;
@@ -1084,6 +1085,10 @@ impl ScalarFunction {
         self.pb_builtin
             .expect("actual selected PB owner")
             .eval(self, ctx, row)
+    }
+
+    pub(crate) fn pb_lazy_values(&self) -> Option<PbLazyValues> {
+        self.pb_builtin.and_then(PbBuiltin::lazy_values)
     }
 
     pub(crate) fn pb_boolean_values(&self) -> Option<PbBooleanValues> {

@@ -9273,4 +9273,271 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn protobuf_lazy_values_keep_mixed_projection_results_and_warnings() {
+        use tidb_proto::tipb::{self as wire, ScalarFuncSig as Sig};
+        // Some original raw values leave a malformed fixed column. Preserve
+        // the original consumer's panic as a separate observable outcome.
+        fn outcome(result: std::thread::Result<Result<(), String>>) -> (bool, Result<(), String>) {
+            match result {
+                Ok(result) => (false, result),
+                Err(payload) => {
+                    let message = if let Some(message) = payload.downcast_ref::<String>() {
+                        message.clone()
+                    } else if let Some(message) = payload.downcast_ref::<&str>() {
+                        (*message).to_owned()
+                    } else {
+                        std::panic::resume_unwind(payload)
+                    };
+                    (true, Err(message))
+                }
+            }
+        }
+
+        let cases = [
+            (
+                Sig::CaseWhenInt,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::CaseWhenReal,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::CaseWhenDecimal,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::CaseWhenTime,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::CaseWhenDuration,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::CaseWhenJson,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::IfInt,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::IfReal,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::IfDecimal,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::IfTime,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::IfDuration,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (
+                Sig::IfJson,
+                vec![Datum::Int(1), Datum::Int(4), Datum::Int(2)],
+            ),
+            (Sig::IfNullInt, vec![Datum::Int(4), Datum::Int(2)]),
+            (Sig::IfNullReal, vec![Datum::Int(4), Datum::Int(2)]),
+            (Sig::IfNullDecimal, vec![Datum::Int(4), Datum::Int(2)]),
+            (Sig::IfNullString, vec![Datum::Int(4), Datum::Int(2)]),
+            (Sig::IfNullTime, vec![Datum::Int(4), Datum::Int(2)]),
+            (Sig::IfNullDuration, vec![Datum::Int(4), Datum::Int(2)]),
+            (Sig::IfNullJson, vec![Datum::Int(4), Datum::Int(2)]),
+        ];
+        for (sig, base_values) in cases {
+            for sample in 0..5 {
+                let mut values = base_values.clone();
+                if sample == 1 {
+                    values[0] = Datum::Null;
+                }
+                if sample == 2 {
+                    let last = values.len() - 1;
+                    values[last] = Datum::Bytes(vec![255]);
+                }
+                if sample == 3 {
+                    values[0] = Datum::Int(0);
+                    let last = values.len() - 1;
+                    values[last] = Datum::Bytes(vec![255]);
+                }
+                if sample == 4 {
+                    values.fill(Datum::Null);
+                }
+                for result_code in [8, 253, 245] {
+                    let field = |code| wire::FieldType {
+                        tp: Some(code),
+                        flag: Some(0),
+                        flen: Some(if code == 8 { 20 } else { 128 }),
+                        decimal: Some(if code == 8 { 0 } else { -1 }),
+                        charset: Some("utf8mb4".into()),
+                        collate: Some(-46),
+                        ..Default::default()
+                    };
+                    let result_type = field(result_code);
+                    let target = tidb_expr::distsql_builtin::pb_type_to_field_type(&result_type);
+                    let pb = wire::Expr {
+                        tp: Some(wire::ExprType::ScalarFunc as i32),
+                        sig: Some(sig as i32),
+                        children: values
+                            .iter()
+                            .map(|_| wire::Expr {
+                                tp: Some(wire::ExprType::Bytes as i32),
+                                val: Some(b"stored".to_vec()),
+                                field_type: Some(field(253)),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        field_type: Some(result_type),
+                        ..Default::default()
+                    };
+                    let mut root = tidb_expr::distsql_builtin::pb_to_expr(&pb, &[]).unwrap();
+                    let Expression::ScalarFunction(f) = &mut root else {
+                        panic!()
+                    };
+                    for (i, arg) in f.args.iter_mut().enumerate() {
+                        let Expression::Constant(c) = arg else {
+                            panic!()
+                        };
+                        c.param_marker = Some(tidb_expr::constant::ParamMarker { order: i as i64 });
+                    }
+                    let types = vec![target.clone(), longlong()];
+                    let expressions = vec![root.clone(), {
+                        let mut column = Column::new(90, longlong());
+                        column.index = 0;
+                        Expression::Column(column)
+                    }];
+                    for enabled in [false, true] {
+                        for rows in [0usize, 3, 2051] {
+                            let context = || {
+                                crate::StmtContext::for_query()
+                                    .with_enable_vectorized_expression(enabled)
+                                    .with_prepared_params(values.clone().into())
+                            };
+                            let reference = context();
+                            let original = EvaluatorSuite::new(expressions.clone(), false);
+                            let mut expected = Chunk::new_with_capacity(&types, rows.max(1));
+                            let (expected_panic, result) = outcome(std::panic::catch_unwind(
+                                std::panic::AssertUnwindSafe(|| {
+                                    for offset in (0..rows).step_by(137) {
+                                        let count = (rows - offset).min(137);
+                                        let mut input = Chunk::new_with_capacity(
+                                            &[longlong(), longlong()],
+                                            count.max(1),
+                                        );
+                                        for i in offset..offset + count {
+                                            input.append_int64(0, i as i64);
+                                            input.append_int64(1, (i * 2) as i64);
+                                        }
+                                        let mut output =
+                                            Chunk::new_with_capacity(&types, count.max(1));
+                                        match original.run(&reference, &mut input, &mut output) {
+                                            Ok(()) => expected.append_range_from(
+                                                &output,
+                                                0,
+                                                output.num_rows(),
+                                            ),
+                                            Err(EvaluatorError::Eval(e)) => {
+                                                return Err(format!("{e:?}"));
+                                            }
+                                            Err(other) => panic!("reference {other:?}"),
+                                        };
+                                    }
+                                    Ok(())
+                                }),
+                            ));
+                            let warnings = reference.take_warnings();
+                            for workers in [0, 2] {
+                                let context = context();
+                                let (source, _) = NumberSource::new(rows as i64, 137);
+                                let schema = Schema::new(vec![
+                                    Column::new(1, target.clone()),
+                                    Column::new(2, longlong()),
+                                ]);
+                                let mut projection = ProjectionExec::new(
+                                    ExecutorMeta::new(schema, 1, 137, 1024),
+                                    expressions.clone(),
+                                    source,
+                                    context.clone(),
+                                )
+                                .with_workers(workers);
+                                projection.open().unwrap();
+                                let mut got = Chunk::new_with_capacity(&types, rows.max(1));
+                                let mut output = projection.new_chunk();
+                                let mut copying = false;
+                                let (actual_panic, actual) = outcome(std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| loop {
+                                        match projection.next(&mut output) {
+                                            Ok(()) => (),
+                                            Err(ExecError::Eval(e)) => break Err(format!("{e:?}")),
+                                            Err(other) => panic!("executor {other:?}"),
+                                        };
+                                        if output.num_rows() == 0 {
+                                            break Ok(());
+                                        }
+                                        copying = true;
+                                        got.append_range_from(&output, 0, output.num_rows());
+                                        copying = false;
+                                    }),
+                                ));
+                                assert_eq!(
+                                    (actual_panic, &actual),
+                                    (expected_panic, &result),
+                                    "{sig:?}/{sample}/{result_code}/{enabled}/{rows}/{workers}"
+                                );
+                                // Serial next returns the raw worker column; parallel next
+                                // may copy it into its request first. Compare the exact
+                                // partial consumer at the observed panic stage.
+                                let published = if actual_panic && !copying {
+                                    &output
+                                } else {
+                                    &got
+                                };
+                                for i in 0..2 {
+                                    assert_eq!(published.column(i),expected.column(i),"{sig:?}/{sample}/{result_code}/{enabled}/{rows}/{workers}/{i}");
+                                }
+                                let actual_warnings = context.take_warnings();
+                                if workers == 0 {
+                                    assert!(actual_warnings == warnings,
+                                        "serial warning order {sig:?}/{sample}/{result_code}/{enabled}/{rows}");
+                                } else {
+                                    // The original workers share StmtContext's warning mutex.
+                                    // Each append is atomic, while whole row sequences can
+                                    // interleave across workers. Preserve every warning;
+                                    // serial and source tests separately check exact order.
+                                    let mut actual: Vec<_> = actual_warnings
+                                        .iter()
+                                        .map(|warning| format!("{warning:?}"))
+                                        .collect();
+                                    let mut expected: Vec<_> = warnings
+                                        .iter()
+                                        .map(|warning| format!("{warning:?}"))
+                                        .collect();
+                                    actual.sort();
+                                    expected.sort();
+                                    assert!(actual == expected,
+                                        "parallel warnings {sig:?}/{sample}/{result_code}/{enabled}/{rows}/{workers}: actual_count={} expected_count={}",actual.len(),expected.len());
+                                }
+                                if workers == 0 && rows > 0 {
+                                    let route = projection.evaluator_suite.batch_route_snapshot();
+                                    assert!(route.prepared > 0);
+                                    assert_eq!(
+                                        (route.refusals, route.fallback),
+                                        (0, 0),
+                                        "{sig:?}/{route:?}"
+                                    );
+                                }
+                                projection.close().unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

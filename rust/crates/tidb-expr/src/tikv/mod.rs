@@ -642,7 +642,10 @@ pub(crate) use epoch_value::{
 
 pub(crate) use epoch_value::finish_epoch_result_bounded;
 
-pub(crate) use control_value::coerce_result_bounded;
+pub(crate) use case_control::{case_after_truth, case_start, CaseDemand};
+pub(crate) use control_value::{
+    coerce_result_bounded, exhausted_case_value, selected_control_value,
+};
 
 #[cfg(test)]
 pub(crate) mod tso_value_tests;

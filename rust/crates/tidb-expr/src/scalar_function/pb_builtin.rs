@@ -103,6 +103,111 @@ impl PbEagerValues {
     }
 }
 
+/// Actual selected lazy PB owner; children and SQL declarations stay with callers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PbLazyValues {
+    builtin: PbBuiltin,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PbLazyPhase {
+    Condition(usize),
+    Value(usize),
+    NullableFirst,
+    Exhausted,
+    Missing,
+}
+impl PbLazyPhase {
+    pub(crate) fn argument(self) -> Option<usize> {
+        match self {
+            Self::Condition(i) | Self::Value(i) => Some(i),
+            Self::NullableFirst => Some(0),
+            Self::Exhausted | Self::Missing => None,
+        }
+    }
+}
+impl PbLazyValues {
+    pub(crate) fn signature(self) -> ScalarFuncSig {
+        self.builtin.signature
+    }
+    pub(crate) fn data_arity(self, logical: usize) -> usize {
+        match self.builtin.kernel {
+            Kernel::Case => logical,
+            Kernel::If => logical.min(3),
+            Kernel::IfNull => logical.min(2),
+            _ => unreachable!("actual lazy owner"),
+        }
+    }
+    fn case_phase(logical: usize, demand: crate::tikv::CaseDemand) -> PbLazyPhase {
+        match demand {
+            crate::tikv::CaseDemand::Condition(pair) => PbLazyPhase::Condition(pair * 2),
+            crate::tikv::CaseDemand::Value(pair) => PbLazyPhase::Value(if pair == logical / 2 {
+                pair * 2
+            } else {
+                pair * 2 + 1
+            }),
+            crate::tikv::CaseDemand::Exhausted => PbLazyPhase::Exhausted,
+        }
+    }
+    pub(crate) fn initial(self, logical: usize) -> PbLazyPhase {
+        match self.builtin.kernel {
+            Kernel::Case => Self::case_phase(
+                logical,
+                crate::tikv::case_start(logical / 2, logical % 2 != 0),
+            ),
+            Kernel::If if logical != 0 => PbLazyPhase::Condition(0),
+            Kernel::IfNull if logical != 0 => PbLazyPhase::NullableFirst,
+            Kernel::If | Kernel::IfNull => PbLazyPhase::Missing,
+            _ => unreachable!("actual lazy owner"),
+        }
+    }
+    pub(crate) fn truth(self, value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalError> {
+        debug_assert!(matches!(self.builtin.kernel, Kernel::Case | Kernel::If));
+        logic_truthy(value, ctx)
+    }
+    pub(crate) fn after_truth(
+        self,
+        logical: usize,
+        index: usize,
+        truth: Option<bool>,
+    ) -> PbLazyPhase {
+        match self.builtin.kernel {
+            Kernel::Case => Self::case_phase(
+                logical,
+                crate::tikv::case_after_truth(logical / 2, logical % 2 != 0, index / 2, truth),
+            ),
+            Kernel::If => {
+                let selected = if tidb_query_expr::native_if_choose_branch(truth)
+                    == tidb_query_expr::NativeIfBranch::Then
+                {
+                    1
+                } else {
+                    2
+                };
+                if selected < logical {
+                    PbLazyPhase::Value(selected)
+                } else {
+                    PbLazyPhase::Missing
+                }
+            }
+            _ => unreachable!("actual conditional owner"),
+        }
+    }
+    pub(crate) fn needs_second(self, is_null: bool) -> bool {
+        debug_assert!(matches!(self.builtin.kernel, Kernel::IfNull));
+        matches!(
+            tidb_query_expr::native_if_null_choose_first((!is_null).then_some(())),
+            tidb_query_expr::NativeIfNullChoice::NeedSecond
+        )
+    }
+    pub(crate) fn selected_value(self, value: Datum) -> Result<Datum, EvalError> {
+        crate::tikv::selected_control_value(value)
+    }
+    pub(crate) fn exhausted_value(self) -> Result<Datum, EvalError> {
+        debug_assert!(matches!(self.builtin.kernel, Kernel::Case));
+        crate::tikv::exhausted_case_value()
+    }
+}
+
 /// Actual selected PB Boolean implementation, with no expression children.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PbBooleanValues {
@@ -284,6 +389,10 @@ impl PbBinaryValues {
 }
 
 impl PbBuiltin {
+    pub(crate) fn lazy_values(self) -> Option<PbLazyValues> {
+        matches!(self.kernel, Kernel::Case | Kernel::If | Kernel::IfNull)
+            .then_some(PbLazyValues { builtin: self })
+    }
     pub(crate) fn boolean_values(self) -> Option<PbBooleanValues> {
         matches!(
             self.kernel,

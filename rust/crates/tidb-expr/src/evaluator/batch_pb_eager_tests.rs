@@ -1169,3 +1169,6 @@ mod binary_tests;
 
 #[path = "batch_pb_boolean_tests.rs"]
 mod boolean_tests;
+
+#[path = "batch_pb_lazy_tests.rs"]
+mod lazy_tests;

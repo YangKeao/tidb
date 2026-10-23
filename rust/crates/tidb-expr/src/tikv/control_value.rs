@@ -156,3 +156,12 @@ pub(crate) fn coerce_result_bounded(
     }
     crate::scalar_function::coerce_function_result(name, Some(field), value)
 }
+
+/// Original selected control value boundary, without expression callbacks.
+pub(crate) fn selected_control_value(value: Datum) -> Result<Datum, EvalError> {
+    owned(value, default_budget())
+}
+/// CASE's original exhausted-list kernel and contract diagnostic.
+pub(crate) fn exhausted_case_value() -> Result<Datum, EvalError> {
+    exhausted("CASE exhaustion returned a non-NULL identity")
+}

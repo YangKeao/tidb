@@ -168,6 +168,9 @@ mod pb_eager_values_source;
 pub(super) use pb_eager_values_source::{NativePbEagerValues, PbValueKernel};
 #[path = "batch_pb_binary_values.rs"]
 mod pb_binary_values_source;
+#[path = "batch_pb_lazy_values.rs"]
+mod pb_lazy_values_source;
+pub(super) use pb_lazy_values_source::NativePbLazy;
 #[path = "batch_pb_boolean_values.rs"]
 mod pb_boolean_values_source;
 pub(super) use pb_binary_values_source::NativePbBinary;
@@ -193,6 +196,7 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    PbLazy(Box<NativePbLazy>),
     PbBoolean(Box<NativePbBoolean>),
     PbBinary(Box<NativePbBinary>),
     PbEagerValues(Box<NativePbEagerValues>),
@@ -551,6 +555,7 @@ impl NativeHostMetadata {
             Self::RegexpValues(metadata) => metadata.result_type.as_ref(),
             Self::PbEagerValues(metadata) => metadata.result_type.as_ref(),
             Self::PbBinary(metadata) => metadata.result_type.as_ref(),
+            Self::PbLazy(metadata) => metadata.result_type.as_ref(),
             Self::PbBoolean(metadata) => metadata.result_type.as_ref(),
             Self::Grouping { result_type, .. } => result_type.as_ref(),
             Self::Like { result_type, .. } => result_type.as_ref(),
@@ -595,6 +600,7 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    PbLazy(Box<pb_lazy_values_source::PbLazyTask>),
     PbBoolean(Box<pb_boolean_values_source::PbBooleanTask>),
     PbIntegerMod(Box<pb_binary_values_source::PbModTask>),
     PbEagerValues {
@@ -773,6 +779,7 @@ impl NativeTask {
             SqlDemand::WeightString(task) => Ok(task.next_argument()),
             SqlDemand::RegexpValues(task) => Ok(task.next_argument()),
             SqlDemand::PbIntegerMod(task) => Ok(Some(task.tokens.len())),
+            SqlDemand::PbLazy(task) => Ok(task.phase.argument()),
             SqlDemand::PbBoolean(task) => Ok(Some(task.tokens.len())),
             SqlDemand::PbEagerValues { tokens } => Ok(Some(tokens.len())),
             SqlDemand::PrefixValues { phase } => Ok((*phase
@@ -848,6 +855,7 @@ impl NativeTask {
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::RegexpValues(_) => Err(binding("regexp values own their actual phases")),
             SqlDemand::PbIntegerMod(_) => Err(binding("PB MOD owns its actual raw prefix")),
+            SqlDemand::PbLazy(_) => Err(binding("PB lazy owns its actual demand phases")),
             SqlDemand::PbBoolean(_) => Err(binding("PB Boolean owns its actual raw prefix")),
             SqlDemand::PbEagerValues { .. } => Err(binding("PB eager values own their raw prefix")),
             SqlDemand::WeightString(_) => Err(binding("weight owns its actual value phases")),
@@ -953,6 +961,11 @@ impl NativeTask {
             return bytes
                 .checked_add(task.retained_bytes()?)
                 .ok_or_else(|| resource("stateful retained extent overflow"));
+        }
+        if let SqlDemand::PbLazy(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("PB lazy task retained extent overflow"));
         }
         if let SqlDemand::PbBoolean(task) = &self.demand {
             return bytes
@@ -1542,6 +1555,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::RegexpValues(_)
                 | NativeHostMetadata::PbEagerValues(_)
                 | NativeHostMetadata::PbBinary(_)
+                | NativeHostMetadata::PbLazy(_)
                 | NativeHostMetadata::PbBoolean(_)
                 | NativeHostMetadata::Selection { .. }
                 | NativeHostMetadata::HeaderOutcome { .. }
@@ -2808,6 +2822,22 @@ impl NativeBatchHosts<'_> {
                         return Err(binding("header outcome declaration differs"));
                     }
                     SqlDemand::HeaderOutcome
+                } else if let Some(NativeHostMetadata::PbLazy(meta)) =
+                    self.metadata.get(invocation.slot.index())
+                {
+                    if self.native_values.is_none()
+                        || meta.arguments.len() != meta.kernel.data_arity(meta.logical_arity)
+                        || meta.arguments.len() != invocation.arg_types.len()
+                        || !matches!(
+                            meta.output_role,
+                            NativeValueRole::CharInput | NativeValueRole::Output
+                        )
+                    {
+                        return Err(binding("PB lazy declaration differs"));
+                    }
+                    SqlDemand::PbLazy(Box::new(pb_lazy_values_source::PbLazyTask::new(
+                        meta.kernel.initial(meta.logical_arity),
+                    )))
                 } else if let Some(NativeHostMetadata::PbBoolean(meta)) =
                     self.metadata.get(invocation.slot.index())
                 {
@@ -3812,7 +3842,8 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let immediate = matches!(demand, SqlDemand::HeaderOutcome)
+        let immediate = matches!(&demand,SqlDemand::PbLazy(state) if state.phase.argument().is_none())
+            || matches!(demand, SqlDemand::HeaderOutcome)
             || matches!(demand, SqlDemand::PbIntegerMod(_)) && invocation.arg_types.is_empty()
             || matches!(demand, SqlDemand::PbBoolean(_)) && invocation.arg_types.is_empty()
             || matches!(demand, SqlDemand::PbEagerValues { .. }) && invocation.arg_types.is_empty()
@@ -3869,6 +3900,11 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::HeaderOutcome
             ) {
                 guard.provider.finish_header_outcome(&guard.task)
+            } else if matches!(
+                guard.provider.task(&guard.task)?.demand,
+                SqlDemand::PbLazy(_)
+            ) {
+                guard.provider.resume_pb_lazy(&guard.task, None)
             } else if matches!(
                 guard.provider.task(&guard.task)?.demand,
                 SqlDemand::PbBoolean(_)
@@ -4029,6 +4065,12 @@ impl NativeBatchHosts<'_> {
                 return Err(binding("PB eager reply is not a capability"));
             };
             return self.resume_pb_eager_values(id, Some(token));
+        }
+        if matches!(task.demand, SqlDemand::PbLazy(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("PB lazy reply is not a capability"));
+            };
+            return self.resume_pb_lazy(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PbBoolean(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {

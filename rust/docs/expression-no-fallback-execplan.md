@@ -18,6 +18,11 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N48 original lazy contracts: baseline08ea69f5/21files archived, all19 selected CASE/IF/IFNULL signatures captured and independently rerun. All31,552,896 observations retain seven identical counts/hashes in original capture, rerun and actual Source admission/fallback failures, with no semantic differences or exceptions. Seven immutable assertions were formatted and archived before production extraction.
+- [x] N48 pure extraction and initial source integration: original CASE cursor/value boundaries are shared; all31,552,896/seven original assertions pass both pure extraction and actual source integration without fallback/exemptions. Existing eight control witnesses pass. CASE consumed capabilities retain real argument indices rather than consecutive-prefix indices.
+- [x] N48 final validation: four direct consumer/authentication/callback/cancel/resource checks pass. Complete frontend2214/exact inherited3/95/all673batch/346warnings, Projection51, Expand6+unchanged64/B42, fixed inventory83088/0/0, lint, dual11fmt and reviewed ownership/SHA audit pass. The new Projection fixture preserves original malformed-column panic outcomes and partial consumer output; no production change or old observer rewrite.
+- [ ] Continue overall closure: independently capture remaining43 selected PB cast contracts, including actual typed source phases and missing declarations, before any candidate edit. Public scalar/AST/filter/join/Unistore, generic fallback deletion and full service/final performance remain required.
+
 - [x] N47 original Boolean contracts: baseline df469f81 archived before observers. Captured and independently reran9,751,200 observations, reproduced actual admission/fallback with the same seven hashes, and pinned all seven assertions before production. Pure extraction preserves all seven. Source18/18 and all9,751,200 strict observations pass. Whole frontend2196/exact inherited3/95ignored/all655batch/346warnings; Projection50, Expand6+unchanged64/B42, inventory83088/0/0, freshlint, dual8fmt and reviewed ownership/SHA audits pass. Callback/capability/fixed-cap/stale-origin/large-presence/ignored-unsupported-suffix checks pass. Original operator and ordinary truth/logical controllers stay unchanged.
 
 - [x] N46 actual binary integration: all11,113,152/six original assertions and16 source/protocol checks pass, no strict exceptions. Whole frontend2178/exact inherited3/95ignored/all637batch/346warnings; Projection49, Expand6+unchanged64/B42, inventory83088/0/0, freshlint, dual13fmt and exact ownership/SHA audit pass. The same64KiB policy has independent original raw-return controls. Continue remaining PB/metadata/public callers/fallback/service/performance; overall task stays open.
@@ -203,6 +208,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N48: CASE can demand arguments0,2,3; capability positions must store these actual argument indices instead of authenticating them as consecutive0,1,2. The existing IF/CASE/IFNULL helpers forward the same context despite callback parameter names such as scoped_ctx. Selected values pass their original payload-owned boundary; exhausted CASE computes NULL through the existing empty coalesce kernel. CASE1 is an ELSE-only value, and IF/IFNULL have demand-time missing arguments rather than a general arity header.
 
 N47: an actual absent-return Boolean owner displayed as ABS exposed the optional-declaration branch attaching an unrelated math diagnostic plan by name. Its fixed differential witness now gates preparation by actual owner/consumer. Boolean PB bodies have no general arity header. IsNull/Truth read only argument0, and LogicalAnd/Or read argument1 only when original left truth requires it. IsNull checks the raw NULL carrier without truth conversion; absent declarations must remain absent rather than receiving a guessed type.
 
@@ -532,6 +539,8 @@ is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
 
+N48: preserve actual selected-owner lazy facts, raw context-sensitive truth conversion, original selected-value ownership and exhausted-CASE NULL computation within the same SDK driver. Do not introduce guessed scope behavior, field types, display names or expression callbacks. Record original raw-return resource/panic behavior before implementation; do not retroactively change observers or caps.
+
 N47: derive an actual selected Boolean-owner fact and reuse the existing truth/logical continuation only after pinning independent original behavior. Keep logical arity separate from the real consumed prefix, and capture any legacy bulk profile from its actual selector. Raw optional declarations are observed inside a real, declared JSON coalesce consumer rather than assigning a type to the untyped child.
 
 N46: reuse the existing numeric continuation and diagnostic plans with actual selected-domain and argument-owner facts. Keep the original operator algorithms unchanged. The separate integer MOD controller preserves baked signedness, missing-argument timing and ignored suffixes; neither controller invokes expression evaluators. Captured binary facts exclude IntDiv, whose existing controller owns its declaration and diagnostic subject.
@@ -859,6 +868,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N48 original capture, independent rerun and actual admission/fallback failures are complete, and seven assertions are fixed before production extraction. Pure boundary extraction and actual lazy-source integration both pass all seven original assertions without fallback. All four protocol/consumer checks and final broad validation now pass. The real Projection fixture preserves exact original consumer panics and partial output rather than assuming every original column is well formed. Complete frontend2214/exact3/95/all673/346, Projection51, Expand6+64/B42, fixed inventory83088/0/0, lint, dual11fmt and ownership pass. Remaining43 selected casts and global caller/fallback/service/performance work continue. The verified N47 checkpoint is08ea69f5; overall public-caller/fallback/service/performance work continues after lazy/cast owners.
 
 N47 Boolean checkpoint is verified: selected-owner facts and raw capability continuations preserve all seven before-production original assertions, including genuine optional constant/parameter/deferred metadata. The same driver and unchanged ordinary controllers serve the new family. All final gates retain their inherited baselines. Continue the remaining selected PB lazy/cast owners, malformed metadata, actual public callers, fallback removal, service and performance; overall task remains open.
 
@@ -4901,3 +4912,7 @@ Run from the TiDB repository: RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tid
 Cover JsonMemberOfSig, JsonReplaceSig, JsonArrayAppendSig and JsonMergePatchSig together. Capture actual argument declarations and the original odd-position constant-path eligibility without evaluating any expression. Share the original owner cache via share_for_invocation; cloning an owner would reset it and change repeated calls. Use the existing PB raw-capability controller and EagerValuesNative frame, with an actual body variant distinguishing NULL-short-circuiting non-JSON values from JSON values that demand every raw argument. Call the existing builtin_ext/json/mod.rs::eval_pb value algorithms without changing the original Kernel::Json facade or any ordinary eager behavior. Retain actual display name solely for original result conversion, unsigned carriers, special row collection and genuine legacy batch consumer profiles.
 
 Run from the TiDB checkout: RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib pb_json_source_ -- --nocapture. All eight initial original/source wrappers must pass their four fixed counts/hashes without refusals, fallback or exemptions. Add real cache-identity/prewarm/context-rotation/clone and callback-epoch/cancellation/fixed-cap recovery checks, then actual mixed Projection and full expression/lint/format/original-ownership gates before signing locally. Global task closure is not implied by this group.
+
+Revision2026-10-23: N48 original evidence is pinned before extraction; do not replay generation scripts. Preserve the exact19-owner selection, demanded argument indices, missing/error timing, actual optional declarations and unchanged caps.
+
+Revision2026-10-23: N48 is verified through complete frontend and actual Projection, preserving all31,552,896 original observations and malformed consumer outcomes. Only new test harness expectations changed after their failures; all production/frontend hashes retain the validated behavior. Continue overall work, beginning with independent original selected-cast evidence.
