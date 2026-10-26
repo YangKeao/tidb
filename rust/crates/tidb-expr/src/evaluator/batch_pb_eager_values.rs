@@ -12,19 +12,62 @@ pub(in super::super) struct NativePbEagerValues {
     pub output_node: usize,
     pub output_role: NativeValueRole,
 }
+pub(in super::super) struct PbCastKernel {
+    pub kernel: crate::scalar_function::PbCastValues,
+    pub source_type: Option<FieldType>,
+    pub input: NativeValuePreparation,
+}
+impl PbCastKernel {
+    fn eval_value(
+        &self,
+        value: Datum,
+        result: Option<&FieldType>,
+        context: &dyn Columns,
+    ) -> std::result::Result<Datum, EvalError> {
+        let target = self.kernel.source();
+        let value = match self.input {
+            NativeValuePreparation::Literal => crate::constant::typed_constant_value(
+                self.source_type
+                    .as_ref()
+                    .ok_or(EvalError::Unsupported("constant has no result type"))?,
+                context,
+                target,
+                value,
+            )?,
+            NativeValuePreparation::Computed => {
+                crate::scalar_function::normalize_numeric_row_value(
+                    value,
+                    self.source_type.as_ref(),
+                    target,
+                    context,
+                )?
+            }
+            NativeValuePreparation::TypedReady => value,
+        };
+        let value = match (target, value) {
+            (NativeEvalType::Int, Datum::UInt(v)) => Datum::Int(v as i64),
+            (NativeEvalType::Real, Datum::Float32(v)) => Datum::Real(v),
+            (_, v) => v,
+        };
+        self.kernel
+            .eval_value(value, self.source_type.as_ref(), result, context)
+    }
+}
 pub(in super::super) enum PbValueKernel {
     Eager(crate::scalar_function::PbEagerValues),
+    Cast(Box<PbCastKernel>),
     Json(Box<crate::scalar_function::PbJsonValues>),
 }
 impl PbValueKernel {
     pub(in super::super) fn signature(&self) -> tidb_proto::tipb::ScalarFuncSig {
         match self {
             Self::Eager(kernel) => kernel.signature(),
+            Self::Cast(meta) => meta.kernel.signature(),
             Self::Json(kernel) => kernel.signature(),
         }
     }
     fn stops_on_null(&self) -> bool {
-        matches!(self, Self::Eager(_))
+        matches!(self, Self::Eager(_) | Self::Cast(_))
     }
     fn null_result(
         &self,
@@ -32,9 +75,14 @@ impl PbValueKernel {
         arity: usize,
         index: usize,
         context: &dyn Columns,
+        result: Option<&FieldType>,
     ) -> std::result::Result<Datum, EvalError> {
         match self {
             Self::Eager(kernel) => kernel.null_result(observed, arity, index, context),
+            Self::Cast(meta) => {
+                meta.kernel
+                    .eval_value(observed.clone(), meta.source_type.as_ref(), result, context)
+            }
             Self::Json(_) => unreachable!("JSON demands every raw argument"),
         }
     }
@@ -42,9 +90,16 @@ impl PbValueKernel {
         &self,
         values: &mut [Datum],
         context: &dyn Columns,
+        result: Option<&FieldType>,
     ) -> std::result::Result<Datum, EvalError> {
         match self {
             Self::Eager(kernel) => kernel.eval_values(values, context),
+            Self::Cast(meta) => {
+                if values.len() != 1 {
+                    return Err(crate::scalar_function::PbCastValues::arity_error());
+                }
+                meta.eval_value(std::mem::take(&mut values[0]), result, context)
+            }
             Self::Json(kernel) => kernel.eval_values(values, context),
         }
     }
@@ -188,10 +243,16 @@ impl NativeBatchHosts<'_> {
         let maximum = self.max_retained_bytes - live;
         let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
             crate::scalar_function::eager_values::audit_work_result(if is_null {
-                meta.kernel
-                    .null_result(&ready[0], arity, next, self.context)
+                meta.kernel.null_result(
+                    &ready[0],
+                    arity,
+                    next,
+                    self.context,
+                    meta.result_type.as_ref(),
+                )
             } else {
-                meta.kernel.eval_values(&mut ready, self.context)
+                meta.kernel
+                    .eval_values(&mut ready, self.context, meta.result_type.as_ref())
             })
         });
         check_tokens()?;

@@ -1172,3 +1172,6 @@ mod boolean_tests;
 
 #[path = "batch_pb_lazy_tests.rs"]
 mod lazy_tests;
+
+#[path = "batch_pb_cast_tests.rs"]
+mod cast_tests;

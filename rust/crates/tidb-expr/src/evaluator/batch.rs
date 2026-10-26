@@ -1044,17 +1044,24 @@ enum SourceKind {
         target: NativeEvalType,
     },
 }
-fn column_source_failure(
+fn source_value_failure(
     node: &Expression,
     view: NativeView,
     columns: usize,
 ) -> Option<&'static str> {
-    let Expression::Column(column) = node else {
-        return None;
-    };
     if view.value_role().is_none() || view.bulk_target().is_some() {
         return None;
     }
+    if matches!(
+        view,
+        NativeView::RowTyped(_) | NativeView::DiagnosticTyped(_) | NativeView::EmptyRowTyped(_)
+    ) && matches!(node,Expression::Constant(c) if c.literal_value().is_some() && c.ret_type.is_none())
+    {
+        return Some("constant has no result type");
+    }
+    let Expression::Column(column) = node else {
+        return None;
+    };
     let columns = if view.semantic_empty_row() {
         0
     } else {
@@ -1092,7 +1099,7 @@ impl SourceKind {
                 ),
             });
         }
-        if column_source_failure(node, view, columns).is_some() {
+        if source_value_failure(node, view, columns).is_some() {
             return Ok(Self::ContextValue { arity: 0 });
         }
         if matches!(node, Expression::CorrelatedColumn(_))
@@ -1346,6 +1353,12 @@ fn budget_value_call_metadata(
     }
     if native_pb_eager_values(function) {
         budget.array::<hosts::NativePbEagerValues>(1)?;
+        if function.pb_cast_values().is_some() {
+            budget.array::<hosts::PbCastKernel>(1)?;
+            if let Some(field) = function.args.first().and_then(Expression::static_type) {
+                budget.field(field, 1)?;
+            }
+        }
         if function.pb_json_signature().is_some() {
             budget.array::<crate::scalar_function::PbJsonValues>(1)?;
             budget.array::<Option<FieldType>>(arity)?;
@@ -1683,6 +1696,12 @@ fn argument_view_inner(function: &ScalarFunction, view: NativeView, index: usize
             crate::scalar_function::NativeArithmeticInputMode::Numeric(domain),
             view.diagnostic(),
         );
+    }
+    if let Some(kernel) = function
+        .pb_cast_values()
+        .filter(|_| function.args.len() == 1)
+    {
+        return NativeView::RowTyped(kernel.source());
     }
     if pb_value_owner(function) {
         return NativeView::ValueToken;
@@ -2316,10 +2335,13 @@ fn pb_scalar_binary_domain(function: &ScalarFunction, view: NativeView) -> Optio
         .filter(|_| function.args.len() == 2)
 }
 fn native_pb_eager_values(function: &ScalarFunction) -> bool {
-    function.pb_eager_values().is_some() || function.pb_json_signature().is_some()
+    function.pb_eager_values().is_some()
+        || function.pb_json_signature().is_some()
+        || function.pb_cast_values().is_some()
 }
 fn pb_value_owner(function: &ScalarFunction) -> bool {
     pb_regexp_owner(function)
+        || function.pb_cast_values().is_some()
         || function.pb_lazy_values().is_some()
         || function.pb_boolean_values().is_some()
         || function.pb_binary_values().is_some()
@@ -3903,10 +3925,12 @@ fn preflight_view<'a>(
         // and attributes in its descriptor; unused row-value bindings are not
         // part of this data program. The real tree is still shape-bounded.
         if let Expression::ScalarFunction(function) = node {
-            if let Some(kind) =
-                crate::scalar_function::header_value::HeaderKind::for_function(function)
-                    .filter(|_| !pb_value_unary_view(function, view))
-            {
+            if let Some(kind) = crate::scalar_function::header_value::HeaderKind::for_function(
+                function,
+            )
+            .filter(|_| {
+                !pb_value_unary_view(function, view) && !pb_value_arithmetic_view(function, view)
+            }) {
                 if view.value_role().is_none() {
                     return Err(BatchFailure::admission(
                         "metadata outcome needs its native value ABI",
@@ -4106,6 +4130,11 @@ fn preflight_view<'a>(
                         ));
                     }
                 }
+                Expression::Constant(_)
+                    if source_value_failure(node, view, row_schema.len()).is_some() =>
+                {
+                    budget_context_source(&mut budget, None)?
+                }
                 Expression::Constant(c) if c.literal_value().is_some() => {
                     if row_typed_context_target(node, view).is_some() {
                         budget_context_source(&mut budget, None)?;
@@ -4140,7 +4169,7 @@ fn preflight_view<'a>(
                 Expression::CorrelatedColumn(_) => budget_context_source(&mut budget, None)?,
                 Expression::Column(_)
                     if row_typed_context_target(node, view).is_some()
-                        || column_source_failure(node, view, row_schema.len()).is_some() =>
+                        || source_value_failure(node, view, row_schema.len()).is_some() =>
                 {
                     budget_context_source(&mut budget, None)?
                 }
@@ -4151,7 +4180,8 @@ fn preflight_view<'a>(
                 }
             }
             if view.diagnostic()
-                && !matches!(node,Expression::Constant(c) if c.literal_value().is_some())
+                && (!matches!(node,Expression::Constant(c) if c.literal_value().is_some())
+                    || source_value_failure(node, view, row_schema.len()).is_some())
             {
                 budget.array::<usize>(1)?;
                 diagnostic_slots += 1;
@@ -4256,7 +4286,7 @@ fn preflight_view<'a>(
             }
             Expression::Column(column) => {
                 if row_typed_context_target(node, view).is_some()
-                    || column_source_failure(node, view, row_schema.len()).is_some()
+                    || source_value_failure(node, view, row_schema.len()).is_some()
                 {
                     budget_context_source(&mut budget, Some(sql))?;
                 } else {
@@ -4774,7 +4804,7 @@ fn preflight_view<'a>(
                 node,
                 Expression::ScalarFunction(_) | Expression::CorrelatedColumn(_)
             ) || matches!(node,Expression::Constant(c) if c.literal_value().is_none())
-                || column_source_failure(node, view, row_schema.len()).is_some())
+                || source_value_failure(node, view, row_schema.len()).is_some())
         {
             budget.array::<usize>(1)?;
             diagnostic_slots += 1;
@@ -4818,7 +4848,8 @@ fn preflight_view<'a>(
                 function.args.len(),
             );
             let header = native_no_argument_header_call(function)
-                && !pb_value_unary_view(function, checked[index].view);
+                && !pb_value_unary_view(function, checked[index].view)
+                && !pb_value_arithmetic_view(function, checked[index].view);
             if header {
                 folds_to_constant = crate::constant_fold::folds_to_constant(checked[index].node);
                 if !function.args.is_empty() {
@@ -4965,7 +4996,8 @@ fn preflight_view<'a>(
             || native_arithmetic_operation(function.func_name.lowercase()).is_none()
             || ((function.pb_binary_values().is_some()
                 || function.pb_boolean_values().is_some()
-                || function.pb_lazy_values().is_some())
+                || function.pb_lazy_values().is_some()
+                || function.pb_cast_values().is_some())
                 && !pb_value_arithmetic_view(function, item.view))
         {
             continue;
@@ -5037,7 +5069,7 @@ fn preflight_view<'a>(
         }
         if let Expression::Column(column) = item.node {
             if row_typed_context_target(item.node, item.view).is_some()
-                || column_source_failure(item.node, item.view, row_schema.len()).is_some()
+                || source_value_failure(item.node, item.view, row_schema.len()).is_some()
             {
                 continue;
             }
@@ -5578,7 +5610,7 @@ fn lower_view_policy(
                 host_metadata.push(NativeHostMetadata::ContextValue {
                     descriptor: Box::new(
                         if let Some(message) =
-                            column_source_failure(item.node, item.view, row_schema.len())
+                            source_value_failure(item.node, item.view, row_schema.len())
                         {
                             crate::context_value::ContextValue {
                                 read: crate::context_value::ContextRead::Failure(message),
@@ -5926,10 +5958,13 @@ fn lower_view_policy(
                                     integer_batch_result:item.view==NativeView::BulkRoot(NativeEvalType::Int),output_node:ordinal,output_role:item.view.value_role().ok_or_else(||binding("PB binary output view absent"))?,
                                 }))
                             }
-                            SqlBatchHostOperation::EagerValuesNative if native_pb_eager_values(sql) => {
+                            SqlBatchHostOperation::EagerValuesNative if native_pb_eager_values(sql) && !native_no_argument_header_call(sql) => {
                                 let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
                                 for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB eager child absent"))?.subtree_end;}
-                                let kernel=if let Some(kernel)=sql.pb_eager_values(){hosts::PbValueKernel::Eager(kernel)}else{hosts::PbValueKernel::Json(Box::new(sql.pb_json_values().expect("actual selected JSON owner")))};
+                                let kernel=if let Some(kernel)=sql.pb_cast_values(){
+    let child=checked.get(ordinal+1).ok_or_else(||binding("PB cast child absent"))?;
+    hosts::PbValueKernel::Cast(Box::new(hosts::PbCastKernel{kernel,source_type:sql.args[0].static_type().map(snapshot_field_type),input:numeric_source::preparation(child)}))
+}else if let Some(kernel)=sql.pb_eager_values(){hosts::PbValueKernel::Eager(kernel)}else{hosts::PbValueKernel::Json(Box::new(sql.pb_json_values().expect("actual selected JSON owner")))};
                                 debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
                                 NativeHostMetadata::PbEagerValues(Box::new(hosts::NativePbEagerValues {
                                     arguments:arguments.into_boxed_slice(), kernel,
@@ -8865,7 +8900,7 @@ impl PreparedBatchSuite {
                             ) || matches!(
                         meta,
                         NativeHostMetadata::HeaderOutcome {
-                            kind: crate::scalar_function::header_value::HeaderKind::PbRegexpArity | crate::scalar_function::header_value::HeaderKind::PbBinaryArity,
+                            kind: crate::scalar_function::header_value::HeaderKind::PbRegexpArity | crate::scalar_function::header_value::HeaderKind::PbBinaryArity | crate::scalar_function::header_value::HeaderKind::PbCastArity,
                             ..
                         }
                     )

@@ -38,8 +38,8 @@ pub(crate) use pb_json_values::PbJsonValues;
 mod json_preparation_tests;
 
 pub(crate) use pb_builtin::{
-    interpret_integer_result, PbBinaryValues, PbBooleanValues, PbBuiltin, PbEagerValues,
-    PbLazyPhase, PbLazyValues,
+    interpret_integer_result, PbBinaryValues, PbBooleanValues, PbBuiltin, PbCastValues,
+    PbEagerValues, PbLazyPhase, PbLazyValues,
 };
 
 use std::collections::BTreeSet;
@@ -1085,6 +1085,23 @@ impl ScalarFunction {
         self.pb_builtin
             .expect("actual selected PB owner")
             .eval(self, ctx, row)
+    }
+
+    /// Independent finite-policy tests observe the original pre-return cast body.
+    #[cfg(test)]
+    pub(crate) fn original_pb_cast_value_for_test(
+        &self,
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        assert!(self.pb_cast_values().is_some());
+        self.pb_builtin
+            .expect("actual selected cast owner")
+            .eval(self, ctx, row)
+    }
+
+    pub(crate) fn pb_cast_values(&self) -> Option<PbCastValues> {
+        self.pb_builtin.and_then(PbBuiltin::cast_values)
     }
 
     pub(crate) fn pb_lazy_values(&self) -> Option<PbLazyValues> {

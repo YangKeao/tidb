@@ -15,10 +15,7 @@
 //! Go `getSignatureByPB`: select an implementation from the wire enum.
 //! SQL function names are diagnostic metadata, never an overload selector here.
 
-use super::{
-    cast_json_argument_value, eval_numeric_operand_row, eval_numeric_row, logic_truthy,
-    ScalarFunction,
-};
+use super::{eval_numeric_operand_row, eval_numeric_row, logic_truthy, ScalarFunction};
 use crate::context::{Columns, EvalError};
 use crate::expression::ConstLevel;
 use tidb_ast::BinaryOp;
@@ -100,6 +97,81 @@ impl PbEagerValues {
     ) -> Result<Datum, EvalError> {
         self.builtin
             .eager_value_result(self.result_decimal, values, ctx)
+    }
+}
+
+/// Actual selected PB cast owner; declarations remain the caller's real facts.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PbCastValues {
+    builtin: PbBuiltin,
+}
+impl PbCastValues {
+    pub(crate) fn signature(self) -> ScalarFuncSig {
+        self.builtin.signature()
+    }
+    pub(crate) fn source(self) -> EvalType {
+        let Kernel::Cast { source, .. } = self.builtin.kernel else {
+            unreachable!("selected cast")
+        };
+        source
+    }
+    pub(crate) fn arity_error() -> EvalError {
+        EvalError::Unsupported("protobuf cast arity")
+    }
+    pub(crate) fn eval_value(
+        self,
+        value: Datum,
+        source: Option<&FieldType>,
+        result: Option<&FieldType>,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        let Kernel::Cast { target, .. } = self.builtin.kernel else {
+            unreachable!("selected cast")
+        };
+        if value.is_null() {
+            return Ok(Datum::Null);
+        }
+        if target == EvalType::Json {
+            return crate::builtin_ext::json::cast_json_prepared(&value, source, result);
+        }
+        let field = result.ok_or(EvalError::Unsupported("protobuf cast result type"))?;
+        use tidb_ast::CastType;
+        let len = u32::try_from(field.flen()).ok();
+        let fsp = u32::try_from(field.decimal()).ok();
+        let cast = match target {
+            EvalType::Int if field.is_unsigned() => CastType::Unsigned,
+            EvalType::Int => CastType::Signed,
+            EvalType::Real => CastType::Double,
+            EvalType::Decimal => CastType::Decimal {
+                flen: len.unwrap_or(0),
+                scale: if field.decimal() == UNSPECIFIED_LENGTH {
+                    crate::cast::UNSPECIFIED_CAST_SCALE
+                } else {
+                    fsp.unwrap_or(0)
+                },
+            },
+            EvalType::String if field.is_binary_string() => CastType::Binary {
+                len: if field.code() == tidb_datatype::FieldTypeCode::String {
+                    len
+                } else {
+                    None
+                },
+            },
+            EvalType::String => CastType::Char {
+                len,
+                charset: Some(field.charset_name().to_owned()),
+            },
+            EvalType::Datetime | EvalType::Timestamp
+                if field.code() == tidb_datatype::FieldTypeCode::Date =>
+            {
+                CastType::Date
+            }
+            EvalType::Datetime | EvalType::Timestamp => CastType::DateTime { fsp },
+            EvalType::Duration => CastType::Time { fsp },
+            EvalType::VectorFloat32 => CastType::Vector { dimensions: len },
+            _ => return Err(EvalError::Unsupported("protobuf cast target")),
+        };
+        crate::cast::eval_cast(&cast, value, source, ctx)
     }
 }
 
@@ -389,6 +461,10 @@ impl PbBinaryValues {
 }
 
 impl PbBuiltin {
+    pub(crate) fn cast_values(self) -> Option<PbCastValues> {
+        matches!(self.kernel, Kernel::Cast { .. }).then_some(PbCastValues { builtin: self })
+    }
+
     pub(crate) fn lazy_values(self) -> Option<PbLazyValues> {
         matches!(self.kernel, Kernel::Case | Kernel::If | Kernel::IfNull)
             .then_some(PbLazyValues { builtin: self })
@@ -670,57 +746,19 @@ impl PbBuiltin {
                 let right = eval_numeric_operand_row(&args[1], ctx, row, domain)?;
                 function.eval_binary_values(op, left, right, ctx)
             }
-            Kernel::Cast { source, target } => {
+            Kernel::Cast { source, .. } => {
                 if args.len() != 1 {
-                    return Err(EvalError::Unsupported("protobuf cast arity"));
+                    return Err(PbCastValues::arity_error());
                 }
                 let value = eval_numeric_row(&args[0], ctx, row, source)?;
-                if value.is_null() {
-                    return Ok(Datum::Null);
-                }
-                if target == EvalType::Json {
-                    return cast_json_argument_value(function, value);
-                }
-                let field = function
-                    .get_static_type()
-                    .ok_or(EvalError::Unsupported("protobuf cast result type"))?;
-                use tidb_ast::CastType;
-                let len = u32::try_from(field.flen()).ok();
-                let fsp = u32::try_from(field.decimal()).ok();
-                let cast = match target {
-                    EvalType::Int if field.is_unsigned() => CastType::Unsigned,
-                    EvalType::Int => CastType::Signed,
-                    EvalType::Real => CastType::Double,
-                    EvalType::Decimal => CastType::Decimal {
-                        flen: len.unwrap_or(0),
-                        scale: if field.decimal() == UNSPECIFIED_LENGTH {
-                            crate::cast::UNSPECIFIED_CAST_SCALE
-                        } else {
-                            fsp.unwrap_or(0)
-                        },
-                    },
-                    EvalType::String if field.is_binary_string() => CastType::Binary {
-                        len: if field.code() == tidb_datatype::FieldTypeCode::String {
-                            len
-                        } else {
-                            None
-                        },
-                    },
-                    EvalType::String => CastType::Char {
-                        len,
-                        charset: Some(field.charset_name().to_owned()),
-                    },
-                    EvalType::Datetime | EvalType::Timestamp
-                        if field.code() == tidb_datatype::FieldTypeCode::Date =>
-                    {
-                        CastType::Date
-                    }
-                    EvalType::Datetime | EvalType::Timestamp => CastType::DateTime { fsp },
-                    EvalType::Duration => CastType::Time { fsp },
-                    EvalType::VectorFloat32 => CastType::Vector { dimensions: len },
-                    _ => return Err(EvalError::Unsupported("protobuf cast target")),
-                };
-                crate::cast::eval_cast(&cast, value, args[0].static_type(), ctx)
+                self.cast_values()
+                    .expect("actual selected cast owner")
+                    .eval_value(
+                        value,
+                        args[0].static_type(),
+                        function.get_static_type(),
+                        ctx,
+                    )
             }
             Kernel::Regexp => function.eval_regexp_like(ctx, row),
             kernel => {

@@ -11,6 +11,8 @@ pub(crate) enum HeaderKind {
     PbRegexpArity,
     /// The actual selected PB binary body rejects arity before any child.
     PbBinaryArity,
+    /// The selected PB cast rejects arity before any child value.
+    PbCastArity,
     /// The truth predicate reports its original invalid parameter count.
     TruthArity,
     /// GROUPING rejects invalid logical arity before reading any value.
@@ -35,6 +37,9 @@ impl HeaderKind {
             && function.args.len() != 2
         {
             return Some(Self::PbBinaryArity);
+        }
+        if function.pb_cast_values().is_some() && function.args.len() != 1 {
+            return Some(Self::PbCastArity);
         }
         if function.pb_signature().is_some() || function.pb_origin().is_some() {
             return None;
@@ -61,6 +66,7 @@ impl HeaderKind {
         match self {
             Self::PbRegexpArity => !super::regexp_value::accepts_arity(arity),
             Self::PbBinaryArity => arity != 2,
+            Self::PbCastArity => arity != 1,
             Self::TruthArity | Self::GroupingArity => arity != 1,
             Self::EmptyCase | Self::EmptyCoalesce => arity == 0,
             Self::Property(_) => arity == 1,
@@ -79,6 +85,7 @@ impl HeaderKind {
         match self {
             Self::PbRegexpArity => "regexp_like",
             Self::PbBinaryArity => "protobuf binary builtin",
+            Self::PbCastArity => "protobuf cast",
             Self::TruthArity => "istrue",
             Self::GroupingArity => "grouping",
             Self::EmptyCase => "case",
@@ -103,6 +110,7 @@ impl HeaderKind {
         match self {
             Self::PbRegexpArity => Err(super::regexp_value::arity_error()),
             Self::PbBinaryArity => Err(super::PbBinaryValues::arity_error()),
+            Self::PbCastArity => Err(super::PbCastValues::arity_error()),
             Self::TruthArity => Err(truth_arity_error()),
             Self::GroupingArity => Err(grouping_arity_error()),
             Self::EmptyCase => crate::tikv::eval_case_in(
