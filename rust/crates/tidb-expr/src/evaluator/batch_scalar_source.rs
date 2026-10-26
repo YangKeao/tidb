@@ -7,7 +7,7 @@ use tidb_chunk::row::Row;
 pub(super) struct BorrowedExpression<'a> {
     // The lifetime pins the genuine root; no context or live argument value is
     // retained in its detached source plan.
-    root: &'a Expression,
+    root: SourceNodeRef<'a>,
     width: usize,
     source: SourcePlan,
     program: LocalBatchProgram,
@@ -53,13 +53,50 @@ impl<'a> BorrowedExpression<'a> {
         execution: ExecutionLimits,
         maximum: usize,
     ) -> Result<Self> {
+        Self::compile_root(
+            root.into(),
+            NativeView::RootValue,
+            width,
+            new_collation,
+            limits,
+            execution,
+            maximum,
+        )
+    }
+    pub(super) fn compile_function(
+        root: &'a ScalarFunction,
+        width: usize,
+        new_collation: bool,
+        limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        maximum: usize,
+    ) -> Result<Self> {
+        Self::compile_root(
+            root.into(),
+            NativeView::FunctionRoot,
+            width,
+            new_collation,
+            limits,
+            execution,
+            maximum,
+        )
+    }
+    fn compile_root(
+        root: SourceNodeRef<'a>,
+        view: NativeView,
+        width: usize,
+        new_collation: bool,
+        limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        maximum: usize,
+    ) -> Result<Self> {
         let source = lower_source_plan(
             root,
             SourceInputs::PhysicalRow { width },
             new_collation,
             1,
             limits,
-            Some(NativeView::RootValue),
+            Some(view),
             SourceConsumer::Scalar,
         )?;
         let program = compile_batch(
@@ -97,8 +134,8 @@ impl<'a> BorrowedExpression<'a> {
                 // The genuine Constant owner supplies its cached planning
                 // value after a failed read/child. This is data inspection,
                 // with no new evaluation or replacement expression.
-                let value = match self.root {
-                    Expression::Constant(constant) => {
+                let value = match self.root.kind() {
+                    BorrowedNodeKind::Constant(constant) => {
                         match crate::tikv::identity_actual::copy_bounded(
                             &constant.value,
                             self.maximum,
@@ -207,7 +244,10 @@ impl<'a> BorrowedExpression<'a> {
             .borrow()
             .get(
                 token,
-                NativeValueRole::Output,
+                self.source.nodes[0]
+                    .view
+                    .value_role()
+                    .ok_or_else(|| binding("scalar root result role missing"))?,
                 NativeValueOrigin {
                     node: 0,
                     row: InputRow {

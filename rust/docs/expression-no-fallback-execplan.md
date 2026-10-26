@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N52 genuine function root:87 original files archived; four independent original cohorts plus prior direct-function pin give82060 unchanged observations. Real function ownership and output role pass28 public tests. Repaired16-byte temporary-reference inflation using one generic compiler and original8-byte Expression storage; original limits preserved. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, lint/dual-ten-file fmt and ownership checks pass. Public API promotion remains separate and unfinished.
+
 - [x] N51 error-Datum channel: thirteen files archived at5a30922d56 before observers;3240/FB8415D6D51EBFBD original records independently reproduced and pinned before the real lost-Datum RED. Explicit root capture now preserves actual failed-conversion values; the genuine borrowed Constant supplies its actual cached value after read/child failure. The existing6720/9DB38EEAA92DDE88 error-pair pin also matches the shared frame. Public15, focused original/context43, Projection52, Expand6+64/B42, inventory83088/0/0, freshlint/dual5fmt/provenance checks pass. N50 fullfrontend is retained as prior baseline only. Continue genuine ScalarFunction root compilation; public entries remain unchanged.
 
 
@@ -219,6 +221,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N52 first global validation found a genuine prepare-resource regression in the existing mixed Projection configuration7: storing a16-byte sum reference widened every formerly8-byte Expression reference. The1MiB cap and test inputs remain fixed; use a generic borrowed reference type so ordinary Expression arrays keep their original storage and actual function callers pay their real sum-reference size. N52 direct ScalarFunction returns a real enum/set Datum after its own return-family normalization; the enclosing Expression alone applies the ENUM_SET_AS_INT view. A fabricated Expression wrapper would change the direct public contract and may change RAND/cache owner identity. The new original observers use actual function instances and real protobuf ingestion, including genuine arity/header failures.
 
 N51 original errors return distinct Datums: cached planning state after parameter-read/deferred-child failures, actual unconverted data after conversion failures. The old shared ordinary result interface dropped those Datums to NULL; the first fixed new record reproduces that loss without changing original behavior. Error data must move atomically with its original native cause: foreign origin reads cannot consume the captured pair, and an unconsumed failure blocks new callbacks. Ordinary consumers intentionally discard the Datum and retain their existing SQL failure even when the unused error payload is large.
 
@@ -559,6 +563,8 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+N52 borrows the actual Expression or ScalarFunction root through a source-node reference and retains original identities. Both use one common compiler; specialize only borrowed reference storage so ordinary Projection does not pay an unrelated function-root tag. Children remain real Expression nodes. Function-root output needs a distinct authenticated role to skip only the enclosing expression view, while keeping all real argument demand and function result coercion. Charge actual reference scaffolding without raising old limits or rebasing observations; capture and independently pin all original cohorts before production metadata changes.
 
 N51 keeps error capture explicitly opt-in and currently enables it only in the cfg(test) genuine scalar consumer. The common production host defaults to disabled capture. Retain actual root conversion data after existing argument-token validation, check actual task metadata/root/output-role/row, and move native cause plus optional Datum together. Preserve opaque error identity, use bounded actual Constant.value copy only after an original read/child failure, and bound additional conversion/error-value copies before cloning a large unconverted payload. Never re-evaluate a child or invent a SQL result type.
 
@@ -901,6 +907,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N52 fixed original return75600, selected-PB540, RAND/clone30 and cache10 observations before changing the compiler. All82060 function observations, including the earlier5880 pin, match through the actual SDK frame. The mixed Projection memory regression was reproduced and repaired without raising limits. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings and Projection52 pass; receipt rust/docs/evidence/no-fallback-n52.md preserves original hashes, the failed attempt and final validation. Public row metadata/cursor contracts and independent old test oracle are next; public entries remain unchanged. Public entries, AST/filter/join/Unistore and global fallback/service/performance work remain unfinished; task4 continues.
 
 N51 targeted verification passes:9960 previously pinned error-pair observations (new3240 plus prior6720), ordinary and direct-function original pins unchanged, opaque cause identity, foreign origin rejection, callback unwind recovery, finite64KiB policy and default-consumer controls. Public15 and focused43 tests plus actual Projection52/Expand/inventory/lint/dual5fmt pass. The N50 whole-frontend2246/exactold3/95 baseline was not rerun for this opt-in channel; the new delta is covered by its focused context/default-mode and actual executor gates. Full global validation remains required at public entry retirement. Actual direct ScalarFunction roots, AST/filter/join/Unistore, fallback deletion and final service/performance work remain unfinished.
 

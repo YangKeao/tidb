@@ -1612,7 +1612,11 @@ impl<'a> NativeBatchHosts<'a> {
             .metadata
             .get(self.task(id)?.slot.index())
             .ok_or_else(|| binding("native SQL result lacks its metadata"))?;
-        let result = if matches!(
+        let result = if !output_role.expression_view() {
+            // A genuine ScalarFunction caller has already received its own
+            // result-family coercion, without an enclosing Expression view.
+            result
+        } else if matches!(
             metadata,
             NativeHostMetadata::ContextValue { .. } | NativeHostMetadata::TypedContext(_)
         ) {
@@ -2955,10 +2959,7 @@ impl NativeBatchHosts<'_> {
                         || !invocation.arg_types.is_empty()
                         || !kind.accepts_arity(*logical_arity)
                         || !kind.accepts_snapshot(property_value.as_ref())
-                        || !matches!(
-                            output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !output_role.sql_value()
                     {
                         return Err(binding("header outcome declaration differs"));
                     }
@@ -2969,10 +2970,7 @@ impl NativeBatchHosts<'_> {
                     if self.native_values.is_none()
                         || meta.arguments.len() != meta.kernel.data_arity(meta.logical_arity)
                         || meta.arguments.len() != invocation.arg_types.len()
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                     {
                         return Err(binding("PB lazy declaration differs"));
                     }
@@ -2985,10 +2983,7 @@ impl NativeBatchHosts<'_> {
                     if self.native_values.is_none()
                         || meta.arguments.len() != meta.kernel.data_arity(meta.logical_arity)
                         || meta.arguments.len() != invocation.arg_types.len()
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                     {
                         return Err(binding("PB Boolean declaration differs"));
                     }
@@ -3000,10 +2995,7 @@ impl NativeBatchHosts<'_> {
                         || self.native_values.is_none()
                         || meta.arguments.len() != meta.logical_arity.min(2)
                         || meta.arguments.len() != invocation.arg_types.len()
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                     {
                         return Err(binding("PB raw MOD declaration differs"));
                     }
@@ -3013,10 +3005,7 @@ impl NativeBatchHosts<'_> {
                 {
                     if self.native_values.is_none()
                         || meta.arguments.len() != invocation.arg_types.len()
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                         || (meta.integer_batch_result
                             && (meta.output_role != NativeValueRole::Output
                                 || !meta
@@ -3046,10 +3035,7 @@ impl NativeBatchHosts<'_> {
                         } else {
                             !matches!(meta.arguments.len(), 2 | 3)
                         }
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                     {
                         return Err(binding("regexp value declaration differs"));
                     }
@@ -3069,10 +3055,7 @@ impl NativeBatchHosts<'_> {
                                 meta.logical_arity,
                                 meta.source_type.as_ref(),
                             )
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                     {
                         return Err(binding("weight declaration differs"));
                     }
@@ -3124,10 +3107,7 @@ impl NativeBatchHosts<'_> {
                 {
                     if self.native_values.is_none()
                         || invocation.arg_types.len() != 2
-                        || !matches!(
-                            meta.output_role,
-                            NativeValueRole::CharInput | NativeValueRole::Output
-                        )
+                        || !meta.output_role.sql_value()
                     {
                         return Err(binding("cached list declaration differs"));
                     }

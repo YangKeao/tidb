@@ -682,16 +682,27 @@ pub(crate) fn numeric_diagnostic_format_failure(
             let bits = <[u8; 8]>::try_from(value.value()).ok()?;
             (!f64::from_bits(u64::from_le_bytes(bits)).is_finite()).then_some(bits)
         }
-        Expression::ScalarFunction(function)
-            if (function.func_name.lowercase() == "cast_json" && function.args.len() == 1)
-                || (function.args.len() == 2
-                    && binary_op_for_name(function.func_name.lowercase())
-                        .and_then(native_arithmetic_operator)
-                        .is_some()) =>
-        {
-            children
+        Expression::ScalarFunction(function) => {
+            numeric_diagnostic_function_format_failure(function, children)
         }
         _ => None,
+    }
+}
+
+/// Actual function metadata propagation, independent of an enclosing Expr.
+pub(crate) fn numeric_diagnostic_function_format_failure(
+    function: &ScalarFunction,
+    children: Option<[u8; 8]>,
+) -> Option<[u8; 8]> {
+    if (function.func_name.lowercase() == "cast_json" && function.args.len() == 1)
+        || (function.args.len() == 2
+            && binary_op_for_name(function.func_name.lowercase())
+                .and_then(native_arithmetic_operator)
+                .is_some())
+    {
+        children
+    } else {
+        None
     }
 }
 
@@ -703,6 +714,38 @@ pub(crate) fn render_numeric_format_failure(bits: [u8; 8]) -> String {
 
 /// Borrowed bound includes diagnostic formatting work buffers, not just the
 /// truncated final text. No source value is cloned or formatted in this pass.
+/// The same borrowed metadata bound for an actual ScalarFunction root.
+pub(crate) fn numeric_diagnostic_function_bound(
+    function: &ScalarFunction,
+    children: Option<usize>,
+) -> Result<Option<usize>, &'static str> {
+    let overflow = "numeric diagnostic byte size overflow";
+    Ok({
+        let Some(children) = children else {
+            return Ok(None);
+        };
+        if function.func_name.lowercase() == "cast_json" && function.args.len() == 1 {
+            let Some(field) = function.get_static_type() else {
+                return Ok(None);
+            };
+            let extra = field
+                .checked_snapshot_payload_bytes()
+                .and_then(|n| n.checked_mul(6))
+                .and_then(|n| n.checked_add(512))
+                .ok_or(overflow)?;
+            Some(children.checked_add(extra).ok_or(overflow)?)
+        } else if function.args.len() == 2
+            && binary_op_for_name(function.func_name.lowercase())
+                .and_then(native_arithmetic_operator)
+                .is_some()
+        {
+            Some(children.checked_add(8).ok_or(overflow)?)
+        } else {
+            None
+        }
+    })
+}
+
 pub(crate) fn numeric_diagnostic_node_bound(
     node: &Expression,
     children: Option<usize>,
@@ -731,28 +774,7 @@ pub(crate) fn numeric_diagnostic_node_bound(
         Expression::Column(column) => Some(column.orig_name.len().max(40)),
         Expression::CorrelatedColumn(column) => Some(column.column.orig_name.len().max(40)),
         Expression::ScalarFunction(function) => {
-            let Some(children) = children else {
-                return Ok(None);
-            };
-            if function.func_name.lowercase() == "cast_json" && function.args.len() == 1 {
-                let Some(field) = function.get_static_type() else {
-                    return Ok(None);
-                };
-                let extra = field
-                    .checked_snapshot_payload_bytes()
-                    .and_then(|n| n.checked_mul(6))
-                    .and_then(|n| n.checked_add(512))
-                    .ok_or(overflow)?;
-                Some(children.checked_add(extra).ok_or(overflow)?)
-            } else if function.args.len() == 2
-                && binary_op_for_name(function.func_name.lowercase())
-                    .and_then(native_arithmetic_operator)
-                    .is_some()
-            {
-                Some(children.checked_add(8).ok_or(overflow)?)
-            } else {
-                None
-            }
+            numeric_diagnostic_function_bound(function, children)?
         }
     })
 }
@@ -861,6 +883,48 @@ fn math_diagnostic_literal(value: &Datum) -> Option<String> {
 
 /// Borrowed conservative text allowance. This observes storage metadata only;
 /// it never formats a value or evaluates a constant.
+/// The same borrowed metadata bound for an actual ScalarFunction root.
+pub(crate) fn math_diagnostic_function_bound(
+    function: &ScalarFunction,
+    child_bytes: Option<usize>,
+) -> Result<Option<usize>, &'static str> {
+    let overflow = "math diagnostic byte size overflow";
+    Ok({
+        let Some(children) = child_bytes else {
+            return Ok(None);
+        };
+        if let Some(op) = binary_op_for_name(function.func_name.lowercase()) {
+            let Some(op) = native_arithmetic_operator(op) else {
+                return Ok(None);
+            };
+            if function.args.len() != 2 {
+                return Ok(None);
+            }
+            Some(
+                children
+                    .checked_add(native_arithmetic_symbol(op).len())
+                    .and_then(|bytes| bytes.checked_add(4))
+                    .ok_or(overflow)?,
+            )
+        } else {
+            Some(
+                children
+                    .checked_add(function.func_name.lowercase().len())
+                    .and_then(|bytes| bytes.checked_add(2))
+                    .and_then(|bytes| {
+                        function
+                            .args
+                            .len()
+                            .saturating_sub(1)
+                            .checked_mul(2)
+                            .and_then(|separators| bytes.checked_add(separators))
+                    })
+                    .ok_or(overflow)?,
+            )
+        }
+    })
+}
+
 pub(crate) fn math_diagnostic_node_bound(
     node: &Expression,
     child_bytes: Option<usize>,
@@ -889,38 +953,7 @@ pub(crate) fn math_diagnostic_node_bound(
             (!column.column.orig_name.is_empty()).then_some(column.column.orig_name.len())
         }
         Expression::ScalarFunction(function) => {
-            let Some(children) = child_bytes else {
-                return Ok(None);
-            };
-            if let Some(op) = binary_op_for_name(function.func_name.lowercase()) {
-                let Some(op) = native_arithmetic_operator(op) else {
-                    return Ok(None);
-                };
-                if function.args.len() != 2 {
-                    return Ok(None);
-                }
-                Some(
-                    children
-                        .checked_add(native_arithmetic_symbol(op).len())
-                        .and_then(|bytes| bytes.checked_add(4))
-                        .ok_or(overflow)?,
-                )
-            } else {
-                Some(
-                    children
-                        .checked_add(function.func_name.lowercase().len())
-                        .and_then(|bytes| bytes.checked_add(2))
-                        .and_then(|bytes| {
-                            function
-                                .args
-                                .len()
-                                .saturating_sub(1)
-                                .checked_mul(2)
-                                .and_then(|separators| bytes.checked_add(separators))
-                        })
-                        .ok_or(overflow)?,
-                )
-            }
+            math_diagnostic_function_bound(function, child_bytes)?
         }
     })
 }

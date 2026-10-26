@@ -35,6 +35,15 @@ pub(super) enum NativeValueRole {
     CharInput = 1,
     Output = 2,
     DecimalFast = 3,
+    FunctionOutput = 4,
+}
+impl NativeValueRole {
+    pub(super) fn sql_value(self) -> bool {
+        matches!(self, Self::CharInput | Self::Output | Self::FunctionOutput)
+    }
+    pub(super) fn expression_view(self) -> bool {
+        self != Self::FunctionOutput
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NativeValueOrigin {

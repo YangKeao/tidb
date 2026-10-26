@@ -85,7 +85,7 @@ pub(super) fn mode_view(
         value
     }
 }
-pub(super) fn survey<'a>(
+pub(super) fn survey<'a, N: SourceReference<'a>>(
     function: &'a ScalarFunction,
     view: NativeView,
     ordinal: usize,
@@ -154,7 +154,7 @@ pub(super) fn survey<'a>(
         }
     }
     budget.array::<(&Expression, NativeView)>(extras.len())?;
-    budget.array::<(&Expression, usize, NativeView, bool)>(extras.len())?;
+    budget.array::<(N, usize, NativeView, bool)>(extras.len())?;
     budget.array::<tipb::FieldType>(extras.len())?;
     budget.array::<usize>(extras.len() + 2)?;
     budget.field(&native_bytes_type(), extras.len())?;
@@ -166,10 +166,12 @@ pub(super) fn survey<'a>(
         alternates,
     })
 }
-pub(super) fn preparation(node: &CheckedNode<'_>) -> NativeValuePreparation {
+pub(super) fn preparation<'a, N: SourceReference<'a>>(
+    node: &CheckedNode<'a, N>,
+) -> NativeValuePreparation {
     if row_typed_context_target(node.node, node.view).is_some() {
         NativeValuePreparation::TypedReady
-    } else if matches!(node.node, Expression::Constant(_)) {
+    } else if matches!(node.node.kind(), BorrowedNodeKind::Constant(_)) {
         NativeValuePreparation::Literal
     } else {
         NativeValuePreparation::Computed

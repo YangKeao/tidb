@@ -466,3 +466,6 @@ fn borrowed_scalar_does_not_validate_an_undemanded_empty_chunk_row() {
 
 #[path = "batch_public_error_tests.rs"]
 mod error_value_tests;
+
+#[path = "batch_public_function_tests.rs"]
+mod function_root_tests;

@@ -62,6 +62,9 @@ mod hosts;
 #[path = "batch_numeric_source.rs"]
 mod numeric_source;
 use numeric_source::PendingNumeric;
+#[path = "batch_node_ref.rs"]
+mod node_ref;
+use node_ref::{BorrowedNodeKind, SourceNodeRef, SourceReference};
 #[path = "batch_values.rs"]
 mod native_values;
 use hosts::{
@@ -231,6 +234,7 @@ enum NativeView {
     DiagnosticTyped(NativeEvalType),
     DiagnosticConstantRoot(crate::scalar_function::dynamic_diagnostic::LiteralPolicy),
     RootValue,
+    FunctionRoot,
     BulkValue(NativeEvalType),
     BulkPrepared(NativeEvalType),
     BulkRoot(NativeEvalType),
@@ -249,6 +253,7 @@ impl NativeView {
             | Self::BulkValue(_)
             | Self::BulkPrepared(_) => Some(NativeValueRole::CharInput),
             Self::RootValue | Self::BulkRoot(_) => Some(NativeValueRole::Output),
+            Self::FunctionRoot => Some(NativeValueRole::FunctionOutput),
             Self::DecimalFast => Some(NativeValueRole::DecimalFast),
             Self::Typed | Self::JsonBytes => None,
         }
@@ -272,7 +277,11 @@ impl NativeView {
     }
 }
 
-fn row_typed_context_target(node: &Expression, view: NativeView) -> Option<NativeEvalType> {
+fn row_typed_context_target<'a>(
+    node: impl Into<SourceNodeRef<'a>>,
+    view: NativeView,
+) -> Option<NativeEvalType> {
+    let node = node.into();
     let target = match view {
         NativeView::RowTyped(target)
         | NativeView::DiagnosticTyped(target)
@@ -281,7 +290,10 @@ fn row_typed_context_target(node: &Expression, view: NativeView) -> Option<Nativ
         | NativeView::BulkPrepared(target)
         | NativeView::BulkRoot(target) => {
             if matches!(view, NativeView::BulkPrepared(_))
-                && matches!(node, Expression::Column(_) | Expression::Constant(_))
+                && matches!(
+                    node.kind(),
+                    BorrowedNodeKind::Column(_) | BorrowedNodeKind::Constant(_)
+                )
             {
                 return Some(target);
             }
@@ -289,18 +301,20 @@ fn row_typed_context_target(node: &Expression, view: NativeView) -> Option<Nativ
         }
         _ => return None,
     };
-    (matches!(node, Expression::CorrelatedColumn(_))
-        || matches!(node, Expression::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some())).then_some(target)
+    (matches!(node.kind(), BorrowedNodeKind::CorrelatedColumn(_))
+        || matches!(node.kind(), BorrowedNodeKind::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some())).then_some(target)
 }
-fn typed_bulk_forward(node: &Expression, view: NativeView) -> bool {
+fn typed_bulk_forward<'a>(node: impl Into<SourceNodeRef<'a>>, view: NativeView) -> bool {
+    let node = node.into();
     view.bulk_target().is_some()
-        && matches!(node, Expression::Constant(c) if c.deferred_expr.is_some())
+        && matches!(node.kind(), BorrowedNodeKind::Constant(c) if c.deferred_expr.is_some())
 }
-fn typed_cache_source(node: &Expression, view: NativeView) -> bool {
+fn typed_cache_source<'a>(node: impl Into<SourceNodeRef<'a>>, view: NativeView) -> bool {
+    let node = node.into();
     view.bulk_target().is_some()
         && row_typed_context_target(node, view).is_some()
         && !typed_bulk_forward(node, view)
-        && !matches!(node, Expression::Column(_))
+        && !matches!(node.kind(), BorrowedNodeKind::Column(_))
 }
 fn context_child_view(view: NativeView) -> NativeView {
     if let Some(target) = view.bulk_target() {
@@ -398,13 +412,16 @@ fn bulk_value_tree_complete(
         )
     })
 }
-fn profile_shape(root: &Expression, limits: BatchSourceLimits) -> LocalResult<()> {
+fn profile_shape<'a, N: SourceReference<'a>>(
+    root: N,
+    limits: BatchSourceLimits,
+) -> LocalResult<()> {
     let mut pending = Vec::new();
     let mut budget = Budget {
         used: 0,
         max: limits.max_metadata_bytes,
     };
-    budget.array::<(&Expression, usize)>(1)?;
+    budget.array::<(N, usize)>(1)?;
     reserve(&mut pending, 1)?;
     pending.push((root, 1usize));
     let mut scheduled = 1usize;
@@ -412,9 +429,9 @@ fn profile_shape(root: &Expression, limits: BatchSourceLimits) -> LocalResult<()
         if depth > limits.tree.max_depth || scheduled > limits.tree.max_nodes {
             return Err(resource("native profile source node/depth policy exceeded"));
         }
-        let children: &[Expression] = match node {
-            Expression::ScalarFunction(function) => &function.args,
-            Expression::Constant(constant) => match constant.deferred_expr.as_deref() {
+        let children: &[Expression] = match node.kind() {
+            BorrowedNodeKind::ScalarFunction(function) => &function.args,
+            BorrowedNodeKind::Constant(constant) => match constant.deferred_expr.as_deref() {
                 Some(child) => std::slice::from_ref(child),
                 None => &[],
             },
@@ -424,12 +441,12 @@ fn profile_shape(root: &Expression, limits: BatchSourceLimits) -> LocalResult<()
             .checked_add(children.len())
             .filter(|count| *count <= limits.tree.max_nodes)
             .ok_or_else(|| resource("native profile source node policy exceeded"))?;
-        budget.array::<(&Expression, usize)>(children.len())?;
+        budget.array::<(N, usize)>(children.len())?;
         reserve(&mut pending, children.len())?;
         let next = depth
             .checked_add(1)
             .ok_or_else(|| resource("native profile source depth overflow"))?;
-        pending.extend(children.iter().rev().map(|child| (child, next)));
+        pending.extend(children.iter().rev().map(|child| (child.into(), next)));
     }
     Ok(())
 }
@@ -1056,22 +1073,23 @@ enum SourceKind {
         target: NativeEvalType,
     },
 }
-fn source_value_failure(
-    node: &Expression,
+fn source_value_failure<'a>(
+    node: impl Into<SourceNodeRef<'a>>,
     view: NativeView,
     columns: usize,
 ) -> Option<&'static str> {
+    let node = node.into();
     if view.value_role().is_none() || view.bulk_target().is_some() {
         return None;
     }
     if matches!(
         view,
         NativeView::RowTyped(_) | NativeView::DiagnosticTyped(_) | NativeView::EmptyRowTyped(_)
-    ) && matches!(node,Expression::Constant(c) if c.literal_value().is_some() && c.ret_type.is_none())
+    ) && matches!(node.kind(),BorrowedNodeKind::Constant(c) if c.literal_value().is_some() && c.ret_type.is_none())
     {
         return Some("constant has no result type");
     }
-    let Expression::Column(column) = node else {
+    let BorrowedNodeKind::Column(column) = node.kind() else {
         return None;
     };
     let columns = if view.semantic_empty_row() {
@@ -1096,26 +1114,27 @@ fn budget_context_source(budget: &mut Budget, sql: Option<&FieldType>) -> LocalR
     budget.field(&native_bytes_type(), 2)
 }
 impl SourceKind {
-    fn capture(
-        node: &Expression,
+    fn capture<'a>(
+        node: impl Into<SourceNodeRef<'a>>,
         sql: Option<&FieldType>,
         view: NativeView,
         columns: usize,
     ) -> Result<Self> {
+        let node = node.into();
         if let Some(target) = row_typed_context_target(node, view) {
             return Ok(Self::TypedContext {
                 target,
                 arity: usize::from(
                     typed_bulk_forward(node, view)
-                        || matches!(node, Expression::Constant(c) if c.param_marker.is_none() && c.deferred_expr.is_some()),
+                        || matches!(node.kind(), BorrowedNodeKind::Constant(c) if c.param_marker.is_none() && c.deferred_expr.is_some()),
                 ),
             });
         }
         if source_value_failure(node, view, columns).is_some() {
             return Ok(Self::ContextValue { arity: 0 });
         }
-        if matches!(node, Expression::CorrelatedColumn(_))
-            || matches!(node, Expression::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some())
+        if matches!(node.kind(), BorrowedNodeKind::CorrelatedColumn(_))
+            || matches!(node.kind(), BorrowedNodeKind::Constant(c) if c.param_marker.is_some() || c.deferred_expr.is_some())
         {
             if view.value_role().is_none() {
                 return Err(BatchFailure::admission(
@@ -1124,11 +1143,11 @@ impl SourceKind {
             }
             return Ok(Self::ContextValue {
                 arity: usize::from(
-                    matches!(node, Expression::Constant(c) if c.param_marker.is_none() && c.deferred_expr.is_some()),
+                    matches!(node.kind(), BorrowedNodeKind::Constant(c) if c.param_marker.is_none() && c.deferred_expr.is_some()),
                 ),
             });
         }
-        if let Expression::Constant(value) = node {
+        if let BorrowedNodeKind::Constant(value) = node.kind() {
             if view.value_role().is_some() {
                 return Ok(Self::NativeConstant {
                     value: value
@@ -1138,15 +1157,15 @@ impl SourceKind {
                 });
             }
         }
-        if let Expression::ScalarFunction(function) = node {
+        if let BorrowedNodeKind::ScalarFunction(function) = node.kind() {
             let (target, arity) = resolve_call_in_view(function, view)?;
             return Ok(Self::Call { target, arity });
         }
         let sql = sql.ok_or_else(|| {
             BatchFailure::admission("SQL consumer requires its original declaration")
         })?;
-        Ok(match node {
-            Expression::Constant(value) => Self::Constant {
+        Ok(match node.kind() {
+            BorrowedNodeKind::Constant(value) => Self::Constant {
                 value: source_literal(
                     value
                         .literal_value()
@@ -1155,13 +1174,13 @@ impl SourceKind {
                     view,
                 )?,
             },
-            Expression::Column(column) => Self::Column {
+            BorrowedNodeKind::Column(column) => Self::Column {
                 index: column.index as usize,
             },
-            Expression::ScalarFunction(_) => {
+            BorrowedNodeKind::ScalarFunction(_) => {
                 unreachable!("scalar call captured without inventing SQL metadata")
             }
-            Expression::CorrelatedColumn(_) => {
+            BorrowedNodeKind::CorrelatedColumn(_) => {
                 return Err(BatchFailure::admission("correlated source"))
             }
         })
@@ -1234,13 +1253,13 @@ struct PendingDiagnostic<'a> {
     main_arity: usize,
     bindings: usize,
 }
-struct CheckedSource<'a> {
-    nodes: Vec<CheckedNode<'a>>,
+struct CheckedSource<'a, N = &'a Expression> {
+    nodes: Vec<CheckedNode<'a, N>>,
     diagnostics: Vec<PendingDiagnostic<'a>>,
     numerics: Vec<PendingNumeric<'a>>,
 }
-impl<'a> std::ops::Deref for CheckedSource<'a> {
-    type Target = [CheckedNode<'a>];
+impl<'a, N> std::ops::Deref for CheckedSource<'a, N> {
+    type Target = [CheckedNode<'a, N>];
     fn deref(&self) -> &Self::Target {
         &self.nodes
     }
@@ -1254,8 +1273,8 @@ impl std::fmt::Debug for BatchSource {
     }
 }
 
-struct CheckedNode<'a> {
-    node: &'a Expression,
+struct CheckedNode<'a, N = &'a Expression> {
+    node: N,
     sql: Option<&'a FieldType>,
     view: NativeView,
     subtree_end: usize,
@@ -1264,7 +1283,7 @@ struct CheckedNode<'a> {
     numeric_render_bound: Option<usize>,
     numeric_format_failure: Option<[u8; 8]>,
 }
-impl<'a> CheckedNode<'a> {
+impl<'a, N> CheckedNode<'a, N> {
     fn declared_sql(&self) -> &'a FieldType {
         self.sql
             .expect("admitted SQL consumer requires its original declaration")
@@ -1878,27 +1897,28 @@ fn parts(node: &Expression, allow_pb: bool) -> Result<(&FieldType, &CollationInf
         collation,
     ))
 }
-fn parts_optional(
-    node: &Expression,
+fn parts_optional<'a>(
+    node: impl Into<SourceNodeRef<'a>>,
     allow_pb: bool,
-) -> Result<(Option<&FieldType>, &CollationInfo)> {
-    let (field, collation, pb) = match node {
-        Expression::Constant(value) => (
+) -> Result<(Option<&'a FieldType>, &'a CollationInfo)> {
+    let node = node.into();
+    let (field, collation, pb) = match node.kind() {
+        BorrowedNodeKind::Constant(value) => (
             value.ret_type.as_ref(),
             &value.collation,
             value.pb_origin().is_some(),
         ),
-        Expression::Column(value) => (
+        BorrowedNodeKind::Column(value) => (
             value.ret_type.as_ref(),
             &value.collation,
             value.pb_origin().is_some(),
         ),
-        Expression::ScalarFunction(value) => (
+        BorrowedNodeKind::ScalarFunction(value) => (
             value.ret_type.as_ref(),
             &value.collation,
             value.pb_origin().is_some(),
         ),
-        Expression::CorrelatedColumn(value) => (
+        BorrowedNodeKind::CorrelatedColumn(value) => (
             value.column.ret_type.as_ref(),
             &value.column.collation,
             value.column.pb_origin().is_some(),
@@ -3784,7 +3804,7 @@ fn projected(sql: &FieldType, new_collation: bool) -> Result<tipb::FieldType> {
 }
 
 // Use the same demand recipe for declared and genuinely absent result types.
-fn survey_common_math_diagnostic<'a>(
+fn survey_common_math_diagnostic<'a, N: SourceReference<'a>>(
     function: &'a ScalarFunction,
     ordinal: usize,
     depth: usize,
@@ -3792,7 +3812,7 @@ fn survey_common_math_diagnostic<'a>(
     limits: BatchSourceLimits,
     budget: &mut Budget,
     scheduled: &mut usize,
-    pending: &mut Vec<(&'a Expression, usize, NativeView, bool)>,
+    pending: &mut Vec<(N, usize, NativeView, bool)>,
     diagnostics: &mut Vec<PendingDiagnostic<'a>>,
 ) -> Result<()> {
     let recipe = crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic::survey_math(
@@ -3806,7 +3826,7 @@ fn survey_common_math_diagnostic<'a>(
     budget.array::<Option<crate::scalar_function::dynamic_diagnostic::DynamicDiagnostic>>(1)?;
     budget.array::<usize>(recipe.bindings().len())?;
     budget.array::<tipb::FieldType>(recipe.bindings().len())?;
-    budget.array::<(&Expression, usize, NativeView, bool)>(recipe.bindings().len())?;
+    budget.array::<(N, usize, NativeView, bool)>(recipe.bindings().len())?;
     budget.field(&native_bytes_type(), recipe.bindings().len())?;
     *scheduled = (*scheduled)
         .checked_add(recipe.bindings().len())
@@ -3819,7 +3839,7 @@ fn survey_common_math_diagnostic<'a>(
     reserve(pending, recipe.bindings().len())?;
     for &child in recipe.bindings().iter().rev() {
         pending.push((
-            child,
+            child.into(),
             child_depth,
             NativeView::DiagnosticConstantRoot(recipe.policy()),
             allow_pb,
@@ -3837,7 +3857,7 @@ fn survey_common_math_diagnostic<'a>(
 
 // The detached numeric recipes preserve the same diagnostic re-demands for
 // genuinely present and absent result declarations.
-fn survey_arithmetic_diagnostic<'a>(
+fn survey_arithmetic_diagnostic<'a, N: SourceReference<'a>>(
     function: &'a ScalarFunction,
     view: NativeView,
     ordinal: usize,
@@ -3846,10 +3866,10 @@ fn survey_arithmetic_diagnostic<'a>(
     limits: BatchSourceLimits,
     budget: &mut Budget,
     scheduled: &mut usize,
-    pending: &mut Vec<(&'a Expression, usize, NativeView, bool)>,
+    pending: &mut Vec<(N, usize, NativeView, bool)>,
     numerics: &mut Vec<PendingNumeric<'a>>,
 ) -> Result<()> {
-    let numeric = numeric_source::survey(function, view, ordinal, limits, budget)?;
+    let numeric = numeric_source::survey::<N>(function, view, ordinal, limits, budget)?;
     *scheduled = (*scheduled)
         .checked_add(numeric.extras.len())
         .filter(|n| *n <= limits.tree.max_nodes)
@@ -3860,7 +3880,7 @@ fn survey_arithmetic_diagnostic<'a>(
         .ok_or_else(|| resource("numeric extra source depth policy exceeded"))?;
     reserve(pending, numeric.extras.len())?;
     for &(child, child_view) in numeric.extras.iter().rev() {
-        pending.push((child, child_depth, child_view, allow_pb));
+        pending.push((child.into(), child_depth, child_view, allow_pb));
     }
     reserve(numerics, 1)?;
     numerics.push(numeric);
@@ -3923,13 +3943,13 @@ impl<'a> SourceInputs<'a> {
     }
 }
 
-fn preflight_source<'a>(
-    root: &'a Expression,
+fn preflight_source<'a, N: SourceReference<'a>>(
+    root: N,
     inputs: SourceInputs<'_>,
     limits: BatchSourceLimits,
     view: Option<NativeView>,
     root_probe: bool,
-) -> Result<CheckedSource<'a>> {
+) -> Result<CheckedSource<'a, N>> {
     if limits.tree.max_nodes == 0 || limits.tree.max_depth == 0 {
         return Err(resource("batch source node/depth policy is zero").into());
     }
@@ -3945,26 +3965,26 @@ fn preflight_source<'a>(
     let mut diagnostics = Vec::new();
     let mut numerics = Vec::new();
     let mut diagnostic_slots = 0usize;
-    budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
+    budget.array::<(N, usize, NativeView, bool)>(1)?;
     reserve(&mut pending, 1)?;
     pending.push((
         root,
         1usize,
-        view.unwrap_or_else(|| root_source_view(root, limits.tree)),
-        matches!(root, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_value_owner(function)),
+        view.unwrap_or_else(|| root.default_view(limits.tree)),
+        matches!(root.kind(), BorrowedNodeKind::ScalarFunction(function) if pb_timestamp_diff(function) || pb_value_owner(function)),
     ));
     let mut scheduled = 1usize;
     while let Some((node, depth, view, allow_pb)) = pending.pop() {
         let allow_pb = allow_pb
-            || matches!(node, Expression::ScalarFunction(function) if pb_timestamp_diff(function) || pb_value_owner(function));
+            || matches!(node.kind(), BorrowedNodeKind::ScalarFunction(function) if pb_timestamp_diff(function) || pb_value_owner(function));
         let (declaration, collation) = parts_optional(node, allow_pb)?;
         // Authenticate the original declaration before the optional-type arm.
         // A removed declaration is stale metadata, not a new untyped source.
         if allow_pb {
-            let origin = match node {
-                Expression::Constant(value) => value.pb_origin(),
-                Expression::Column(value) => value.pb_origin(),
-                Expression::ScalarFunction(value) => value.pb_origin(),
+            let origin = match node.kind() {
+                BorrowedNodeKind::Constant(value) => value.pb_origin(),
+                BorrowedNodeKind::Column(value) => value.pb_origin(),
+                BorrowedNodeKind::ScalarFunction(value) => value.pb_origin(),
                 _ => None,
             };
             if let Some(origin) = origin {
@@ -3975,7 +3995,7 @@ fn preflight_source<'a>(
                 }
             }
         }
-        if let Expression::ScalarFunction(function) = node {
+        if let BorrowedNodeKind::ScalarFunction(function) = node.kind() {
             if pb_value_owner(function) {
                 if let Some(origin) = function.pb_origin() {
                     if origin.expr_type != Some(tidb_proto::tipb::ExprType::ScalarFunc as i32)
@@ -3993,7 +4013,7 @@ fn preflight_source<'a>(
         // Header metadata has no value operands. Keep original logical arity
         // and attributes in its descriptor; unused row-value bindings are not
         // part of this data program. The real tree is still shape-bounded.
-        if let Expression::ScalarFunction(function) = node {
+        if let BorrowedNodeKind::ScalarFunction(function) = node.kind() {
             if let Some(kind) = crate::scalar_function::header_value::HeaderKind::for_function(
                 function,
             )
@@ -4022,7 +4042,7 @@ fn preflight_source<'a>(
                         }
                     }
                 }
-                budget.array::<CheckedNode<'_>>(1)?;
+                budget.array::<CheckedNode<'_, N>>(1)?;
                 budget.array::<NodeRecord>(1)?;
                 budget.array::<BuildNode>(1)?;
                 budget.array::<LocalExpr>(1)?;
@@ -4074,26 +4094,26 @@ fn preflight_source<'a>(
         let Some(sql) = declaration else {
             if view.value_role().is_none()
                 || !matches!(
-                    node,
-                    Expression::Constant(_)
-                        | Expression::CorrelatedColumn(_)
-                        | Expression::Column(_)
-                ) && !matches!(node,Expression::ScalarFunction(f) if native_optional_declarations_call(f))
+                    node.kind(),
+                    BorrowedNodeKind::Constant(_)
+                        | BorrowedNodeKind::CorrelatedColumn(_)
+                        | BorrowedNodeKind::Column(_)
+                ) && !matches!(node.kind(),BorrowedNodeKind::ScalarFunction(f) if native_optional_declarations_call(f))
             {
                 return Err(BatchFailure::admission(
                     "optional SQL consumer needs its explicit profile",
                 ));
             }
             budget.field(&native_bytes_type(), 3)?;
-            budget.array::<CheckedNode<'_>>(1)?;
+            budget.array::<CheckedNode<'_, N>>(1)?;
             budget.array::<NodeRecord>(1)?;
             budget.array::<BuildNode>(1)?;
             budget.array::<LocalExpr>(1)?;
             let (charset, collate) = collation.charset_and_collation();
             budget.add(charset.len())?;
             budget.add(collate.len())?;
-            match node {
-                Expression::ScalarFunction(function)
+            match node.kind() {
+                BorrowedNodeKind::ScalarFunction(function)
                     if native_optional_declarations_call(function) =>
                 {
                     check_batch_call(function, view)?;
@@ -4188,23 +4208,23 @@ fn preflight_source<'a>(
                         .checked_add(1)
                         .filter(|d| *d <= limits.tree.max_depth)
                         .ok_or_else(|| resource("optional scalar depth policy exceeded"))?;
-                    budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
+                    budget.array::<(N, usize, NativeView, bool)>(arity)?;
                     reserve(&mut pending, arity)?;
                     for (index, child) in function.args.iter().take(arity).enumerate().rev() {
                         pending.push((
-                            child,
+                            child.into(),
                             child_depth,
                             argument_view(function, view, index),
                             allow_pb,
                         ));
                     }
                 }
-                Expression::Constant(_)
+                BorrowedNodeKind::Constant(_)
                     if source_value_failure(node, view, inputs.width()).is_some() =>
                 {
                     budget_context_source(&mut budget, None)?
                 }
-                Expression::Constant(c) if c.literal_value().is_some() => {
+                BorrowedNodeKind::Constant(c) if c.literal_value().is_some() => {
                     if row_typed_context_target(node, view).is_some() {
                         budget_context_source(&mut budget, None)?;
                     }
@@ -4216,7 +4236,7 @@ fn preflight_source<'a>(
                     budget.array::<usize>(1)?;
                     budget.field(&native_bytes_type(), 2)?;
                 }
-                Expression::Constant(c) => {
+                BorrowedNodeKind::Constant(c) => {
                     budget_context_source(&mut budget, None)?;
                     if c.param_marker.is_none() || typed_bulk_forward(node, view) {
                         if let Some(child) = c.deferred_expr.as_deref() {
@@ -4228,15 +4248,20 @@ fn preflight_source<'a>(
                                 .checked_add(1)
                                 .filter(|d| *d <= limits.tree.max_depth)
                                 .ok_or_else(|| resource("deferred source depth policy exceeded"))?;
-                            budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
+                            budget.array::<(N, usize, NativeView, bool)>(1)?;
                             budget.array::<tipb::FieldType>(1)?;
                             reserve(&mut pending, 1)?;
-                            pending.push((child, child_depth, context_child_view(view), allow_pb));
+                            pending.push((
+                                child.into(),
+                                child_depth,
+                                context_child_view(view),
+                                allow_pb,
+                            ));
                         }
                     }
                 }
-                Expression::CorrelatedColumn(_) => budget_context_source(&mut budget, None)?,
-                Expression::Column(_)
+                BorrowedNodeKind::CorrelatedColumn(_) => budget_context_source(&mut budget, None)?,
+                BorrowedNodeKind::Column(_)
                     if row_typed_context_target(node, view).is_some()
                         || source_value_failure(node, view, inputs.width()).is_some() =>
                 {
@@ -4249,7 +4274,7 @@ fn preflight_source<'a>(
                 }
             }
             if view.diagnostic()
-                && (!matches!(node,Expression::Constant(c) if c.literal_value().is_some())
+                && (!matches!(node.kind(),BorrowedNodeKind::Constant(c) if c.literal_value().is_some())
                     || source_value_failure(node, view, inputs.width()).is_some())
             {
                 budget.array::<usize>(1)?;
@@ -4261,7 +4286,7 @@ fn preflight_source<'a>(
                 sql: None,
                 view,
                 subtree_end: 0,
-                folds_to_constant: matches!(node, Expression::Constant(_)),
+                folds_to_constant: matches!(node.kind(), BorrowedNodeKind::Constant(_)),
                 math_render_bound: None,
                 numeric_render_bound: None,
                 numeric_format_failure: None,
@@ -4271,9 +4296,11 @@ fn preflight_source<'a>(
         if view.value_role().is_none() {
             check_type(sql)?;
         } else if !matches!(
-            node,
-            Expression::Constant(_) | Expression::Column(_) | Expression::CorrelatedColumn(_)
-        ) && !matches!(node, Expression::ScalarFunction(function) if native_value_call(function))
+            node.kind(),
+            BorrowedNodeKind::Constant(_)
+                | BorrowedNodeKind::Column(_)
+                | BorrowedNodeKind::CorrelatedColumn(_)
+        ) && !matches!(node.kind(), BorrowedNodeKind::ScalarFunction(function) if native_value_call(function))
         {
             // The source is valid SQL but this producer does not yet have a
             // native-value recipe. It is a migration capability gap, not a
@@ -4285,10 +4312,10 @@ fn preflight_source<'a>(
         }
         budget.field(sql, 3)?; // native source, projected declaration, C snapshot
         if allow_pb {
-            let origin = match node {
-                Expression::Constant(v) => v.pb_origin(),
-                Expression::Column(v) => v.pb_origin(),
-                Expression::ScalarFunction(v) => v.pb_origin(),
+            let origin = match node.kind() {
+                BorrowedNodeKind::Constant(v) => v.pb_origin(),
+                BorrowedNodeKind::Column(v) => v.pb_origin(),
+                BorrowedNodeKind::ScalarFunction(v) => v.pb_origin(),
                 _ => None,
             };
             if let Some(origin) = origin {
@@ -4305,15 +4332,15 @@ fn preflight_source<'a>(
         if view != NativeView::Typed {
             budget.field(&native_bytes_type(), 3)?;
         }
-        budget.array::<CheckedNode<'_>>(1)?;
+        budget.array::<CheckedNode<'_, N>>(1)?;
         budget.array::<NodeRecord>(1)?;
         budget.array::<BuildNode>(1)?;
         budget.array::<LocalExpr>(1)?;
         let (charset, collate) = collation.charset_and_collation();
         budget.add(charset.len())?;
         budget.add(collate.len())?;
-        match node {
-            Expression::Constant(value) => {
+        match node.kind() {
+            BorrowedNodeKind::Constant(value) => {
                 if value.param_marker.is_some() || value.deferred_expr.is_some() {
                     if view.value_role().is_none() {
                         return Err(BatchFailure::admission(
@@ -4331,10 +4358,15 @@ fn preflight_source<'a>(
                                 .checked_add(1)
                                 .filter(|d| *d <= limits.tree.max_depth)
                                 .ok_or_else(|| resource("deferred source depth policy exceeded"))?;
-                            budget.array::<(&Expression, usize, NativeView, bool)>(1)?;
+                            budget.array::<(N, usize, NativeView, bool)>(1)?;
                             budget.array::<tipb::FieldType>(1)?;
                             reserve(&mut pending, 1)?;
-                            pending.push((child, child_depth, context_child_view(view), allow_pb));
+                            pending.push((
+                                child.into(),
+                                child_depth,
+                                context_child_view(view),
+                                allow_pb,
+                            ));
                         }
                     }
                 } else {
@@ -4353,7 +4385,7 @@ fn preflight_source<'a>(
                     }
                 }
             }
-            Expression::Column(column) => {
+            BorrowedNodeKind::Column(column) => {
                 if row_typed_context_target(node, view).is_some()
                     || source_value_failure(node, view, inputs.width()).is_some()
                 {
@@ -4372,7 +4404,7 @@ fn preflight_source<'a>(
                     budget.field(sql, 1)?; // projected binding declaration copy
                 }
             }
-            Expression::ScalarFunction(function) => {
+            BorrowedNodeKind::ScalarFunction(function) => {
                 if function
                     .args
                     .iter()
@@ -4399,7 +4431,7 @@ fn preflight_source<'a>(
                     .checked_add(arity.saturating_add(policy_nodes))
                     .filter(|nodes| *nodes <= limits.tree.max_nodes)
                     .ok_or_else(|| resource("batch source node policy exceeded"))?;
-                budget.array::<(&Expression, usize, NativeView, bool)>(arity)?;
+                budget.array::<(N, usize, NativeView, bool)>(arity)?;
 
                 let selected_pb_numeric = pb_scalar_binary_domain(function, view).is_some();
                 let contextual_numeric =
@@ -4852,14 +4884,14 @@ fn preflight_source<'a>(
                 reserve(&mut pending, arity)?;
                 for (index, child) in function.args.iter().take(arity).enumerate().rev() {
                     pending.push((
-                        child,
+                        child.into(),
                         child_depth,
                         argument_view(function, view, index),
                         allow_pb,
                     ));
                 }
             }
-            Expression::CorrelatedColumn(_) => {
+            BorrowedNodeKind::CorrelatedColumn(_) => {
                 if view.value_role().is_none() {
                     return Err(BatchFailure::admission(
                         "correlated source requires its generic view",
@@ -4870,9 +4902,9 @@ fn preflight_source<'a>(
         }
         if view.diagnostic()
             && (matches!(
-                node,
-                Expression::ScalarFunction(_) | Expression::CorrelatedColumn(_)
-            ) || matches!(node,Expression::Constant(c) if c.literal_value().is_none())
+                node.kind(),
+                BorrowedNodeKind::ScalarFunction(_) | BorrowedNodeKind::CorrelatedColumn(_)
+            ) || matches!(node.kind(),BorrowedNodeKind::Constant(c) if c.literal_value().is_none())
                 || source_value_failure(node, view, inputs.width()).is_some())
         {
             budget.array::<usize>(1)?;
@@ -4897,8 +4929,9 @@ fn preflight_source<'a>(
         let mut math_children = Some(0usize);
         let mut numeric_children = Some(0usize);
         let mut numeric_child_failure = None;
-        let mut folds_to_constant = matches!(checked[index].node, Expression::Constant(_));
-        if let Expression::Constant(c) = checked[index].node {
+        let mut folds_to_constant =
+            matches!(checked[index].node.kind(), BorrowedNodeKind::Constant(_));
+        if let BorrowedNodeKind::Constant(c) = checked[index].node.kind() {
             if (c.param_marker.is_none()
                 || typed_bulk_forward(checked[index].node, checked[index].view))
                 && c.deferred_expr.is_some()
@@ -4911,7 +4944,7 @@ fn preflight_source<'a>(
                 numeric_children = None;
             }
         }
-        if let Expression::ScalarFunction(function) = checked[index].node {
+        if let BorrowedNodeKind::ScalarFunction(function) = checked[index].node.kind() {
             folds_to_constant = !crate::constant_fold::is_unfoldable_call(
                 function.func_name.lowercase(),
                 function.args.len(),
@@ -4920,7 +4953,7 @@ fn preflight_source<'a>(
                 && !pb_value_unary_view(function, checked[index].view)
                 && !pb_value_arithmetic_view(function, checked[index].view);
             if header {
-                folds_to_constant = crate::constant_fold::folds_to_constant(checked[index].node);
+                folds_to_constant = checked[index].node.folds_to_constant();
                 if !function.args.is_empty() {
                     math_children = None;
                     numeric_children = None;
@@ -4992,26 +5025,22 @@ fn preflight_source<'a>(
         }
         checked[index].subtree_end = end;
         checked[index].folds_to_constant = folds_to_constant;
-        checked[index].math_render_bound =
-            crate::scalar_function::math_diagnostic_node_bound(checked[index].node, math_children)
-                .map_err(resource)?;
+        checked[index].math_render_bound = checked[index]
+            .node
+            .math_bound(math_children)
+            .map_err(resource)?;
         checked[index].numeric_format_failure =
-            crate::scalar_function::numeric_diagnostic_format_failure(
-                checked[index].node,
-                numeric_child_failure,
-            );
-        checked[index].numeric_render_bound =
-            crate::scalar_function::numeric_diagnostic_node_bound(
-                checked[index].node,
-                numeric_children,
-            )
+            checked[index].node.numeric_failure(numeric_child_failure);
+        checked[index].numeric_render_bound = checked[index]
+            .node
+            .numeric_bound(numeric_children)
             .map_err(resource)?;
     }
     // Charge every owned diagnostic copy group before any temporary literal
     // conversion, source capture, formatting or immutable metadata snapshot.
     for item in &checked {
         if item.view.value_role().is_some()
-            && matches!(item.node, Expression::ScalarFunction(function) if matches!(resolve_call_in_view(function,item.view)?.0,CallTarget::Host(SqlBatchHostOperation::AbsNative)))
+            && matches!(item.node.kind(), BorrowedNodeKind::ScalarFunction(function) if matches!(resolve_call_in_view(function,item.view)?.0,CallTarget::Host(SqlBatchHostOperation::AbsNative)))
         {
             if let Some(bytes) = item.math_render_bound {
                 budget.add(
@@ -5025,7 +5054,7 @@ fn preflight_source<'a>(
     // Common math owns only raw diagnostic facts at preparation. Visible
     // Decimal scale is charged only if an actual error demands its rendering.
     for (index, item) in checked.iter().enumerate() {
-        let Expression::ScalarFunction(f) = item.node else {
+        let BorrowedNodeKind::ScalarFunction(f) = item.node.kind() else {
             continue;
         };
         if !matches!(
@@ -5043,22 +5072,22 @@ fn preflight_source<'a>(
             item.subtree_end - index,
         )?;
         for source in &checked[index..item.subtree_end] {
-            let bytes = match source.node {
-                Expression::Constant(c) => c
+            let bytes = match source.node.kind() {
+                BorrowedNodeKind::Constant(c) => c
                     .literal_value()
                     .map(crate::tikv::identity_actual::copy_extent)
                     .transpose()
                     .map_err(|_| resource("diagnostic literal copy overflow"))?
                     .unwrap_or(0),
-                Expression::Column(c) => c.orig_name.len(),
-                Expression::CorrelatedColumn(c) => c.column.orig_name.len(),
-                Expression::ScalarFunction(f) => f.func_name.lowercase().len(),
+                BorrowedNodeKind::Column(c) => c.orig_name.len(),
+                BorrowedNodeKind::CorrelatedColumn(c) => c.column.orig_name.len(),
+                BorrowedNodeKind::ScalarFunction(f) => f.func_name.lowercase().len(),
             };
             budget.add(bytes)?;
         }
     }
     for (index, item) in checked.iter().enumerate() {
-        let Expression::ScalarFunction(function) = item.node else {
+        let BorrowedNodeKind::ScalarFunction(function) = item.node.kind() else {
             continue;
         };
         if item.view.value_role().is_none()
@@ -5126,7 +5155,7 @@ fn preflight_source<'a>(
     // Even a temporary representability conversion must wait for the complete
     // source/schema/payload byte gate, including literals later in the graph.
     for item in &checked {
-        if let Expression::Constant(value) = item.node {
+        if let BorrowedNodeKind::Constant(value) = item.node.kind() {
             if item.view.value_role().is_some() {
                 continue;
             }
@@ -5136,7 +5165,7 @@ fn preflight_source<'a>(
                 item.view,
             )?;
         }
-        if let Expression::Column(column) = item.node {
+        if let BorrowedNodeKind::Column(column) = item.node.kind() {
             if row_typed_context_target(item.node, item.view).is_some()
                 || source_value_failure(item.node, item.view, inputs.width()).is_some()
             {
@@ -5259,12 +5288,12 @@ fn lowered_call_sites(
     Ok(sites)
 }
 
-fn arithmetic_host_metadata(
+fn arithmetic_host_metadata<'a, N: SourceReference<'a>>(
     operation: SqlBatchHostOperation,
     sql: &ScalarFunction,
-    item: &CheckedNode<'_>,
+    item: &CheckedNode<'a, N>,
     ordinal: usize,
-    checked: &[CheckedNode<'_>],
+    checked: &[CheckedNode<'a, N>],
 ) -> Result<NativeHostMetadata> {
     let left = ordinal
         .checked_add(1)
@@ -5301,7 +5330,13 @@ fn arithmetic_host_metadata(
         if !owned_missing_sources && arithmetic_subject_required(sql, &sql.args[index]) {
             subject_format_failures[index] = child.numeric_format_failure;
             if let Some(bound) = child.numeric_render_bound {
-                let text = crate::scalar_function::static_numeric_expression_text(child.node, true);
+                let text = crate::scalar_function::static_numeric_expression_text(
+                    child
+                        .node
+                        .expression()
+                        .ok_or_else(|| binding("numeric argument lost its expression owner"))?,
+                    true,
+                );
                 if text.as_ref().is_some_and(|text| text.len() > bound) {
                     return Err(binding("numeric subject exceeds its admitted bound").into());
                 }
@@ -5498,23 +5533,31 @@ impl SourceConsumer {
     }
     fn root_policy(
         self,
-        root: &Expression,
+        root: SourceNodeRef<'_>,
         limits: BatchSourceLimits,
     ) -> Result<(bool, bool, Option<ContextTypeProbe>)> {
+        if matches!(self, Self::Projection { .. }) && root.expression().is_none() {
+            return Err(binding("Projection requires its actual expression root").into());
+        }
         match self {
             Self::Projection {
                 deferred_closed: true,
                 ..
             } => Ok((false, true, None)),
-            Self::Projection { unordered, .. } => context_root_policy(root, unordered, limits),
+            Self::Projection { unordered, .. } => context_root_policy(
+                root.expression()
+                    .ok_or_else(|| binding("Projection requires an expression root"))?,
+                unordered,
+                limits,
+            ),
             #[cfg(test)]
             Self::Scalar => Ok((false, true, None)),
         }
     }
 }
 
-fn lower_source_plan(
-    root: &Expression,
+fn lower_source_plan<'a, N: SourceReference<'a>>(
+    root: N,
     inputs: SourceInputs<'_>,
     new_collation: bool,
     unit: u64,
@@ -5522,9 +5565,24 @@ fn lower_source_plan(
     view: Option<NativeView>,
     consumer: SourceConsumer,
 ) -> Result<SourcePlan> {
+    let view = if root.function_root() {
+        match view {
+            None | Some(NativeView::FunctionRoot) => Some(NativeView::FunctionRoot),
+            _ => return Err(binding("function root requires its own result view").into()),
+        }
+    } else {
+        if view == Some(NativeView::FunctionRoot) {
+            return Err(binding("expression root requires its enclosing result view").into());
+        }
+        view
+    };
+
     if consumer.unordered()
-        && matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
+        && matches!(root.kind(),BorrowedNodeKind::ScalarFunction(function) if pb_value_owner(function))
     {
+        let root = root
+            .expression()
+            .ok_or_else(|| binding("Projection PB root lost its expression owner"))?;
         profile_shape(root, limits)?;
         if pb_value_legacy_bulk(root)
             && pb_value_unary_batch(root).is_none()
@@ -5536,17 +5594,19 @@ fn lower_source_plan(
         }
     }
     let (constant_root_shortcut, context_row_only, root_type_probe) =
-        consumer.root_policy(root, limits)?;
+        consumer.root_policy(root.into(), limits)?;
     let mut checked = preflight_source(root, inputs, limits, view, root_type_probe.is_some())?;
     // These original batch entries collect ordinary row results before
     // publishing. Their argument demand and atomic output are separate policies.
-    let row_value_batch = matches!(root, Expression::ScalarFunction(function)
+    let row_value_batch = root.expression().is_some_and(|root| {
+        matches!(root, Expression::ScalarFunction(function)
         if (function.func_name.lowercase() == "cast_char"
             && crate::scalar_function::static_batch_target(root).is_some())
             || native_concat_row_batch(function)
             || native_string_row_batch(root)
             || native_regexp_row_batch(root) || pb_value_row_batch(root)
-            || native_integer_comparison_row_batch(root));
+            || native_integer_comparison_row_batch(root))
+    });
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
@@ -5608,7 +5668,7 @@ fn lower_source_plan(
                     OrdinarySourceId::new(
                         unit,
                         if mirrored {
-                            item.node as *const Expression as usize as u64
+                            item.node.identity() as u64
                         } else {
                             u64::try_from(ordinal)
                                 .map_err(|_| resource("typed source ID overflow"))?
@@ -5626,7 +5686,7 @@ fn lower_source_plan(
                 }
                 host_metadata.push(NativeHostMetadata::TypedContext(NativeTypedContext {
                     descriptor: if typed_bulk_forward(item.node, item.view) {
-                        let Expression::Constant(c) = item.node else {
+                        let BorrowedNodeKind::Constant(c) = item.node.kind() else {
                             unreachable!()
                         };
                         match c.deferred_expr.as_deref().expect("real deferred child") {
@@ -5659,20 +5719,24 @@ fn lower_source_plan(
                             _ => None,
                         }
                     } else {
-                        Some(Box::new(match item.node {
-                            Expression::Constant(c) if c.literal_value().is_some() => {
+                        Some(Box::new(match item.node.kind() {
+                            BorrowedNodeKind::Constant(c) if c.literal_value().is_some() => {
                                 NativeTypedDescriptor::Literal {
                                     value: c.literal_value().unwrap().clone(),
                                     field: item.sql.map(snapshot_field_type),
                                 }
                             }
-                            Expression::Column(column) => NativeTypedDescriptor::Column {
+                            BorrowedNodeKind::Column(column) => NativeTypedDescriptor::Column {
                                 index: column.index,
                                 field: item.sql.map(snapshot_field_type),
                             },
                             _ => NativeTypedDescriptor::Context(
-                                crate::typed_context_value::TypedContextValue::capture(item.node)
-                                    .ok_or_else(|| binding("typed context descriptor absent"))?,
+                                crate::typed_context_value::TypedContextValue::capture(
+                                    item.node.expression().ok_or_else(|| {
+                                        binding("typed leaf lost its expression owner")
+                                    })?,
+                                )
+                                .ok_or_else(|| binding("typed context descriptor absent"))?,
                             ),
                         }))
                     },
@@ -5726,7 +5790,7 @@ fn lower_source_plan(
                     OrdinarySourceId::new(
                         unit,
                         if mirrored {
-                            item.node as *const Expression as usize as u64
+                            item.node.identity() as u64
                         } else {
                             u64::try_from(ordinal)
                                 .map_err(|_| resource("context source ID overflow"))?
@@ -5761,8 +5825,12 @@ fn lower_source_plan(
                                 root_broadcast: false,
                             }
                         } else {
-                            crate::context_value::ContextValue::capture(item.node)
-                                .ok_or_else(|| binding("context descriptor absent"))?
+                            crate::context_value::ContextValue::capture(
+                                item.node.expression().ok_or_else(|| {
+                                    binding("context leaf lost its expression owner")
+                                })?,
+                            )
+                            .ok_or_else(|| binding("context descriptor absent"))?
                         },
                     ),
                     diagnostic: match item.view {
@@ -5789,7 +5857,7 @@ fn lower_source_plan(
             SourceKind::Call { target, arity } => {
                 reserve(&mut sites, 1)?;
                 let node = if mirrored {
-                    item.node as *const Expression as usize as u64
+                    item.node.identity() as u64
                 } else {
                     u64::try_from(ordinal).map_err(|_| resource("batch source ID overflow"))?
                 };
@@ -5801,13 +5869,13 @@ fn lower_source_plan(
                     CallTarget::Kernel(function) => BuildKind::Call {
                         function,
                         arity: *arity,
-                        policy: match item.node {
-                            Expression::ScalarFunction(sql) => native_batch_policy(sql),
+                        policy: match item.node.kind() {
+                            BorrowedNodeKind::ScalarFunction(sql) => native_batch_policy(sql),
                             _ => None,
                         },
                     },
                     CallTarget::Host(operation) => {
-                        let Expression::ScalarFunction(sql) = item.node else {
+                        let BorrowedNodeKind::ScalarFunction(sql) = item.node.kind() else {
                             return Err(binding("host call lost its SQL source").into());
                         };
                         let mut arguments = Vec::new();
@@ -6672,8 +6740,8 @@ fn lower_source_plan(
                                             unsigned: source.sql.is_some_and(FieldType::is_unsigned),
                                             constant: source.folds_to_constant,
                                             duration_column: matches!(
-                                                source.node,
-                                                Expression::Column(_)
+                                                source.node.kind(),
+                                                BorrowedNodeKind::Column(_)
                                             ) && source.sql.is_some_and(|field| field.code()==FieldTypeCode::Duration),
                                         },
                                     });
@@ -6920,8 +6988,8 @@ fn lower_source_plan(
                                             unsigned: child.sql.is_some_and(FieldType::is_unsigned),
                                             constant: child.folds_to_constant,
                                             duration_column: matches!(
-                                                child.node,
-                                                Expression::Column(_)
+                                                child.node.kind(),
+                                                BorrowedNodeKind::Column(_)
                                             ) && child.sql.is_some_and(|field| field.code() == FieldTypeCode::Duration),
                                         })
                                     };

@@ -362,11 +362,14 @@ pub(crate) fn folds_to_constant(expr: &Expression) -> bool {
     match expr {
         Expression::Constant(_) => true,
         Expression::Column(_) | Expression::CorrelatedColumn(_) => false,
-        Expression::ScalarFunction(func) => {
-            !is_unfoldable_call(func.func_name.lowercase(), func.args.len())
-                && func.args.iter().all(folds_to_constant)
-        }
+        Expression::ScalarFunction(func) => function_folds_to_constant(func),
     }
+}
+
+/// The original constant-fold metadata for a genuine function root.
+pub(crate) fn function_folds_to_constant(func: &crate::scalar_function::ScalarFunction) -> bool {
+    !is_unfoldable_call(func.func_name.lowercase(), func.args.len())
+        && func.args.iter().all(folds_to_constant)
 }
 
 /// The `*Constant`'s VALUE that Go's dispatch reads off a folded subtree --
