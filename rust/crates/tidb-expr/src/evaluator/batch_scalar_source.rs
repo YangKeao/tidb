@@ -197,19 +197,13 @@ impl<'a> BorrowedExpression<'a> {
             hosts: hosts.as_mut().map(|h| h as &mut dyn LocalHostServices),
         };
         let mut sdk_context = EvalContext::default();
-        // Authenticate this actual cursor, including a cursor into an empty
-        // Chunk whose column branch is never demanded. The scalar frame's
-        // coordinate extent does not assert that the Chunk contains a cell;
-        // demanded leaves still use the original physical row primitive.
-        let extent = row
-            .idx()
-            .checked_add(1)
-            .ok_or_else(|| resource("scalar cursor coordinate overflow"))?;
-        let result = self.program.eval_with_bindings(
+        // A cursor is not a declared physical universe. The SDK validates
+        // one actual coordinate without computing idx+1 or remapping it; the
+        // demanded leaf still reads this genuine Row and its original index.
+        let result = self.program.eval_cursor_with_bindings(
             self.execution,
             &mut sdk_context,
-            extent,
-            &[row.idx()],
+            row.idx(),
             &mut bindings,
         );
         drop(bindings);

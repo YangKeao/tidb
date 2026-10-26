@@ -19,6 +19,7 @@ previous user contract; demand and side-effect ordering do not.
 ## Progress
 
 - [x] N52 genuine function root:87 original files archived; four independent original cohorts plus prior direct-function pin give82060 unchanged observations. Real function ownership and output role pass28 public tests. Repaired16-byte temporary-reference inflation using one generic compiler and original8-byte Expression storage; original limits preserved. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, lint/dual-ten-file fmt and ownership checks pass. Public API promotion remains separate and unfinished.
+- [x] N53 public-row closure:89 TiDB/two SDK originals archived and independent404 observations pinned. Reproduced virtual-marker admission and MAX-cursor Resource differences, then preserved actual public Column behavior and genuine coordinates through the same SDK frame. Fresh public32/context43/Projection52/Expand/inventory/lint/dual-six-file fmt, SDK1150/exact inherited1/1ignore/17warnings and clippy171/89 pass unchanged. SDK local3ee7511; receipt no-fallback-n53.md. Public entry promotion remains next.
 
 - [x] N51 error-Datum channel: thirteen files archived at5a30922d56 before observers;3240/FB8415D6D51EBFBD original records independently reproduced and pinned before the real lost-Datum RED. Explicit root capture now preserves actual failed-conversion values; the genuine borrowed Constant supplies its actual cached value after read/child failure. The existing6720/9DB38EEAA92DDE88 error-pair pin also matches the shared frame. Public15, focused original/context43, Projection52, Expand6+64/B42, inventory83088/0/0, freshlint/dual5fmt/provenance checks pass. N50 fullfrontend is retained as prior baseline only. Continue genuine ScalarFunction root compilation; public entries remain unchanged.
 
@@ -221,6 +222,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N53 public Column.eval ignores planner virtual/correlation markers, unlike the existing Projection source admission. A real Row cursor can also contain usizeMAX while a constant/dead column branch succeeds; deriving idx+1 invented an extent and caused Resource. The actual pre-fix source reproduced both errors, while arbitrary unregistered function names already passed through CommonEager.
 
 N52 first global validation found a genuine prepare-resource regression in the existing mixed Projection configuration7: storing a16-byte sum reference widened every formerly8-byte Expression reference. The1MiB cap and test inputs remain fixed; use a generic borrowed reference type so ordinary Expression arrays keep their original storage and actual function callers pay their real sum-reference size. N52 direct ScalarFunction returns a real enum/set Datum after its own return-family normalization; the enclosing Expression alone applies the ENUM_SET_AS_INT view. A fabricated Expression wrapper would change the direct public contract and may change RAND/cache owner identity. The new original observers use actual function instances and real protobuf ingestion, including genuine arity/header failures.
 
@@ -563,6 +566,8 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+N53 adds a genuine scalar-cursor facade to LocalBatchProgram, validating schema and the same SQL entry/catalog/budget/frame without declaring a physical row universe. Existing bounded selection keeps its original row-bound checks, and only PhysicalRow skips unused planner markers. No coordinates are remapped and no second driver or function dispatcher is introduced. Date/Author:2026-10-26 ExpressionReuseEngineer.
 
 N52 borrows the actual Expression or ScalarFunction root through a source-node reference and retains original identities. Both use one common compiler; specialize only borrowed reference storage so ordinary Projection does not pay an unrelated function-root tag. Children remain real Expression nodes. Function-root output needs a distinct authenticated role to skip only the enclosing expression view, while keeping all real argument demand and function result coercion. Charge actual reference scaffolding without raising old limits or rebasing observations; capture and independently pin all original cohorts before production metadata changes.
 
@@ -907,6 +912,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N53 all404 independently pinned original observations now match the actual shared consumer. Fresh public32/context43/Projection52 and full SDK1150/exact inherited1/1ignore plus exact17/171 warning Counters pass. Source reconstruction proves original SDK frame algorithms unchanged; whole frontend N52 remains prior evidence only. Public entries still need promotion with an independent cfg(test) oracle, followed by actual AST/filter/join/Unistore, generic fallback deletion, service and performance work.
 
 N52 fixed original return75600, selected-PB540, RAND/clone30 and cache10 observations before changing the compiler. All82060 function observations, including the earlier5880 pin, match through the actual SDK frame. The mixed Projection memory regression was reproduced and repaired without raising limits. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings and Projection52 pass; receipt rust/docs/evidence/no-fallback-n52.md preserves original hashes, the failed attempt and final validation. Public row metadata/cursor contracts and independent old test oracle are next; public entries remain unchanged. Public entries, AST/filter/join/Unistore and global fallback/service/performance work remain unfinished; task4 continues.
 

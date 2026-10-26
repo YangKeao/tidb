@@ -469,3 +469,6 @@ mod error_value_tests;
 
 #[path = "batch_public_function_tests.rs"]
 mod function_root_tests;
+
+#[path = "batch_public_row_tests.rs"]
+mod physical_row_tests;

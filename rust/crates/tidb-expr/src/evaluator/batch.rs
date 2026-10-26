@@ -4391,7 +4391,12 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 {
                     budget_context_source(&mut budget, Some(sql))?;
                 } else {
-                    if column.virtual_expr.is_some() || column.correlated_col_unique_id != 0 {
+                    // A genuine public Row follows Column.Eval: these are
+                    // planner-only facts and are not evaluated or substituted.
+                    // Projection still authenticates its declared batch input.
+                    if matches!(inputs, SourceInputs::Projection(_))
+                        && (column.virtual_expr.is_some() || column.correlated_col_unique_id != 0)
+                    {
                         return Err(BatchFailure::admission("virtual/correlated batch column"));
                     }
                     let index = usize::try_from(column.index)
