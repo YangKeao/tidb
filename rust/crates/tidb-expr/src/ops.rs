@@ -483,7 +483,9 @@ pub(crate) fn prepare_in_comparison(
     )
 }
 
-pub(crate) fn prepare_native_comparison(
+/// The scalar owner already ran its integer probe. Fresh generic values must
+/// enter the ordinary comparison ladder without probing their types again.
+pub(crate) fn prepare_native_comparison_after_probe(
     op: tidb_query_expr::ComparisonOp,
     left: Datum,
     right: Datum,
@@ -491,20 +493,6 @@ pub(crate) fn prepare_native_comparison(
     facts: [OperandFacts; 2],
     ctx: &dyn crate::Columns,
 ) -> Result<comparison::PreparedComparison, EvalError> {
-    // The original scalar owner tries its typed integer policy first. It
-    // gives real NULL priority and retains integer-specific coercion errors.
-    if facts
-        .iter()
-        .all(|fact| fact.eval_type == Some(tidb_datatype::EvalType::Int))
-    {
-        match prepare_typed_integer_values(&left, &right, facts.map(|fact| !fact.unsigned))? {
-            TypedIntegerValues::Null => return Ok(comparison::PreparedComparison::Null),
-            TypedIntegerValues::Pair(left, right) => {
-                return Ok(comparison::prepare_int(op, left, right))
-            }
-            TypedIntegerValues::Outside => {}
-        }
-    }
     comparison::prepare(
         op,
         left,

@@ -715,6 +715,17 @@ impl ContextTypeProbe {
         }
     }
 }
+// These actual generic integer-result comparisons collect scalar row
+// results in native VecEvalInt. Their operands keep raw scalar demand,
+// including a declined integer fast probe; they are not typed broadcasts.
+fn native_integer_comparison_row_batch(root: &Expression) -> bool {
+    matches!(root, Expression::ScalarFunction(function)
+        if function.pb_signature().is_none() && function.pb_origin().is_none()
+            && function.args.len() == 2
+            && function.ret_type.as_ref().is_some_and(|field| field.code() == FieldTypeCode::LongLong)
+            && function.args.iter().all(|argument| argument.static_type().is_some_and(|field| field.eval_type() == NativeEvalType::Int))
+            && matches!(native_comparison_operation(function.func_name.lowercase()), Some(SqlBatchHostOperation::CompareNative(_))))
+}
 fn context_root_policy(
     root: &Expression,
     unordered: bool,
@@ -746,6 +757,7 @@ fn context_root_policy(
             && !native_string_row_batch(root)
             && !native_regexp_row_batch(root)
             && !pb_value_row_batch(root)
+            && !native_integer_comparison_row_batch(root)
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -1181,10 +1193,22 @@ struct BatchSource {
     root_identity: usize,
     calculated_slot: usize,
     output_index: usize,
+    row_schema: Box<[FieldType]>,
+    plan: SourcePlan,
+}
+impl std::ops::Deref for BatchSource {
+    type Target = SourcePlan;
+    fn deref(&self) -> &Self::Target {
+        &self.plan
+    }
+}
+
+// Detached source metadata and the shared expression program do not own a
+// Projection suite. Caller-specific seals stay in their actual consumer.
+struct SourcePlan {
     unit: u64,
     nodes: Box<[NodeRecord]>,
     bindings: Box<[usize]>, // slot -> all-node source ordinal
-    row_schema: Box<[FieldType]>,
     expr: LocalExpr,
     schema: Box<[tipb::FieldType]>,
     facts: BatchFacts,
@@ -3854,9 +3878,54 @@ fn preflight<'a>(
 ) -> Result<Vec<CheckedNode<'a>>> {
     preflight_view(root, row_schema, limits, None, false).map(|checked| checked.nodes)
 }
+#[cfg(test)]
 fn preflight_view<'a>(
     root: &'a Expression,
     row_schema: &[FieldType],
+    limits: BatchSourceLimits,
+    view: Option<NativeView>,
+    root_probe: bool,
+) -> Result<CheckedSource<'a>> {
+    preflight_source(
+        root,
+        SourceInputs::Projection(row_schema),
+        limits,
+        view,
+        root_probe,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum SourceInputs<'a> {
+    Projection(&'a [FieldType]),
+    #[cfg(test)]
+    PhysicalRow {
+        width: usize,
+    },
+}
+impl<'a> SourceInputs<'a> {
+    fn width(self) -> usize {
+        match self {
+            Self::Projection(fields) => fields.len(),
+            #[cfg(test)]
+            Self::PhysicalRow { width } => width,
+        }
+    }
+    fn declarations(self) -> &'a [FieldType] {
+        match self {
+            Self::Projection(fields) => fields,
+            #[cfg(test)]
+            Self::PhysicalRow { .. } => &[],
+        }
+    }
+    fn declaration(self, index: usize) -> Option<&'a FieldType> {
+        self.declarations().get(index)
+    }
+}
+
+fn preflight_source<'a>(
+    root: &'a Expression,
+    inputs: SourceInputs<'_>,
     limits: BatchSourceLimits,
     view: Option<NativeView>,
     root_probe: bool,
@@ -3868,7 +3937,7 @@ fn preflight_view<'a>(
         used: 0,
         max: limits.max_metadata_bytes,
     };
-    for field in row_schema {
+    for field in inputs.declarations() {
         budget.field(field, 1)?;
     }
     let mut pending = Vec::new();
@@ -4131,7 +4200,7 @@ fn preflight_view<'a>(
                     }
                 }
                 Expression::Constant(_)
-                    if source_value_failure(node, view, row_schema.len()).is_some() =>
+                    if source_value_failure(node, view, inputs.width()).is_some() =>
                 {
                     budget_context_source(&mut budget, None)?
                 }
@@ -4169,7 +4238,7 @@ fn preflight_view<'a>(
                 Expression::CorrelatedColumn(_) => budget_context_source(&mut budget, None)?,
                 Expression::Column(_)
                     if row_typed_context_target(node, view).is_some()
-                        || source_value_failure(node, view, row_schema.len()).is_some() =>
+                        || source_value_failure(node, view, inputs.width()).is_some() =>
                 {
                     budget_context_source(&mut budget, None)?
                 }
@@ -4181,7 +4250,7 @@ fn preflight_view<'a>(
             }
             if view.diagnostic()
                 && (!matches!(node,Expression::Constant(c) if c.literal_value().is_some())
-                    || source_value_failure(node, view, row_schema.len()).is_some())
+                    || source_value_failure(node, view, inputs.width()).is_some())
             {
                 budget.array::<usize>(1)?;
                 diagnostic_slots += 1;
@@ -4286,7 +4355,7 @@ fn preflight_view<'a>(
             }
             Expression::Column(column) => {
                 if row_typed_context_target(node, view).is_some()
-                    || source_value_failure(node, view, row_schema.len()).is_some()
+                    || source_value_failure(node, view, inputs.width()).is_some()
                 {
                     budget_context_source(&mut budget, Some(sql))?;
                 } else {
@@ -4295,7 +4364,7 @@ fn preflight_view<'a>(
                     }
                     let index = usize::try_from(column.index)
                         .map_err(|_| BatchFailure::admission("negative batch column index"))?;
-                    if index >= row_schema.len() {
+                    if index >= inputs.width() {
                         return Err(BatchFailure::admission("batch column outside row schema"));
                     }
                     budget.add(column.orig_name.len())?;
@@ -4804,7 +4873,7 @@ fn preflight_view<'a>(
                 node,
                 Expression::ScalarFunction(_) | Expression::CorrelatedColumn(_)
             ) || matches!(node,Expression::Constant(c) if c.literal_value().is_none())
-                || source_value_failure(node, view, row_schema.len()).is_some())
+                || source_value_failure(node, view, inputs.width()).is_some())
         {
             budget.array::<usize>(1)?;
             diagnostic_slots += 1;
@@ -5069,12 +5138,17 @@ fn preflight_view<'a>(
         }
         if let Expression::Column(column) = item.node {
             if row_typed_context_target(item.node, item.view).is_some()
-                || source_value_failure(item.node, item.view, row_schema.len()).is_some()
+                || source_value_failure(item.node, item.view, inputs.width()).is_some()
             {
                 continue;
             }
 
-            let field = &row_schema[column.index as usize];
+            let Some(field) = inputs.declaration(column.index as usize) else {
+                // A public Row carries storage and a physical index, not a
+                // complete SQL schema. Its actual expression declaration is
+                // the original Column.Eval decoding contract.
+                continue;
+            };
             // A native Datum producer decodes using its sealed expression
             // declaration, including a COLLATE overlay. Authenticate the actual
             // storage code/width independently; typed imports still require the
@@ -5378,7 +5452,77 @@ fn lower_view_policy(
         .calculated
         .get(calculated_slot)
         .ok_or_else(|| BatchFailure::admission("batch calculation slot is missing"))?;
-    if suite.program.vectorizable
+    let plan = lower_source_plan(
+        root,
+        SourceInputs::Projection(row_schema),
+        new_collation,
+        unit,
+        limits,
+        view,
+        SourceConsumer::Projection {
+            unordered: suite.program.vectorizable,
+            deferred_closed,
+        },
+    )?;
+    let mut detached = Vec::new();
+    reserve(&mut detached, row_schema.len())?;
+    detached.extend(row_schema.iter().map(snapshot_field_type));
+    Ok(Arc::new(BatchSource {
+        owner: Arc::clone(&suite.program),
+        root_identity: root as *const Expression as usize,
+        calculated_slot,
+        output_index: suite.program.calculated_output_indexes[calculated_slot],
+        row_schema: detached.into_boxed_slice(),
+        plan,
+    }))
+}
+
+#[derive(Clone, Copy)]
+enum SourceConsumer {
+    Projection {
+        unordered: bool,
+        deferred_closed: bool,
+    },
+    #[cfg(test)]
+    Scalar,
+}
+impl SourceConsumer {
+    fn unordered(self) -> bool {
+        matches!(
+            self,
+            Self::Projection {
+                unordered: true,
+                ..
+            }
+        )
+    }
+    fn root_policy(
+        self,
+        root: &Expression,
+        limits: BatchSourceLimits,
+    ) -> Result<(bool, bool, Option<ContextTypeProbe>)> {
+        match self {
+            Self::Projection {
+                deferred_closed: true,
+                ..
+            } => Ok((false, true, None)),
+            Self::Projection { unordered, .. } => context_root_policy(root, unordered, limits),
+            #[cfg(test)]
+            Self::Scalar => Ok((false, true, None)),
+        }
+    }
+}
+
+fn lower_source_plan(
+    root: &Expression,
+    inputs: SourceInputs<'_>,
+    new_collation: bool,
+    unit: u64,
+    limits: BatchSourceLimits,
+    view: Option<NativeView>,
+    consumer: SourceConsumer,
+) -> Result<SourcePlan> {
+    if consumer.unordered()
         && matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
     {
         profile_shape(root, limits)?;
@@ -5391,12 +5535,9 @@ fn lower_view_policy(
             ));
         }
     }
-    let (constant_root_shortcut, context_row_only, root_type_probe) = if deferred_closed {
-        (false, true, None)
-    } else {
-        context_root_policy(root, suite.program.vectorizable, limits)?
-    };
-    let mut checked = preflight_view(root, row_schema, limits, view, root_type_probe.is_some())?;
+    let (constant_root_shortcut, context_row_only, root_type_probe) =
+        consumer.root_policy(root, limits)?;
+    let mut checked = preflight_source(root, inputs, limits, view, root_type_probe.is_some())?;
     // These original batch entries collect ordinary row results before
     // publishing. Their argument demand and atomic output are separate policies.
     let row_value_batch = matches!(root, Expression::ScalarFunction(function)
@@ -5404,7 +5545,8 @@ fn lower_view_policy(
             && crate::scalar_function::static_batch_target(root).is_some())
             || native_concat_row_batch(function)
             || native_string_row_batch(root)
-            || native_regexp_row_batch(root) || pb_value_row_batch(root));
+            || native_regexp_row_batch(root) || pb_value_row_batch(root)
+            || native_integer_comparison_row_batch(root));
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
     let mut typed_cache_slots = 0usize;
@@ -5445,7 +5587,7 @@ fn lower_view_policy(
         } else {
             projected(item.declared_sql(), new_collation)?
         };
-        let kind = SourceKind::capture(item.node, item.sql, item.view, row_schema.len())?;
+        let kind = SourceKind::capture(item.node, item.sql, item.view, inputs.width())?;
         let construction = match &kind {
             SourceKind::DecimalFastInput(_) => {
                 return Err(binding("fast source entered the ordinary source factory").into())
@@ -5610,7 +5752,7 @@ fn lower_view_policy(
                 host_metadata.push(NativeHostMetadata::ContextValue {
                     descriptor: Box::new(
                         if let Some(message) =
-                            source_value_failure(item.node, item.view, row_schema.len())
+                            source_value_failure(item.node, item.view, inputs.width())
                         {
                             crate::context_value::ContextValue {
                                 read: crate::context_value::ContextRead::Failure(message),
@@ -6987,19 +7129,11 @@ fn lower_view_policy(
         }
         None => BatchFacts::sql_native_batch(&expr, &schema, sites, limits.tree)?,
     };
-    let mut detached = Vec::new();
-    reserve(&mut detached, row_schema.len())?;
-    detached.extend(row_schema.iter().map(snapshot_field_type));
     let needs_native_values = nodes.iter().any(|node| node.view.value_role().is_some());
-    Ok(Arc::new(BatchSource {
-        owner: Arc::clone(&suite.program),
-        root_identity: root as *const Expression as usize,
-        calculated_slot,
-        output_index: suite.program.calculated_output_indexes[calculated_slot],
+    Ok(SourcePlan {
         unit,
         nodes: nodes.into_boxed_slice(),
         bindings: bindings.into_boxed_slice(),
-        row_schema: detached.into_boxed_slice(),
         expr,
         schema: schema.into_boxed_slice(),
         facts,
@@ -7026,7 +7160,7 @@ fn lower_view_policy(
             None
         },
         limits,
-    }))
+    })
 }
 
 /// Independent compiled batch owner. No raw evaluation method accepts
@@ -7915,8 +8049,95 @@ trait NativeDatumSource {
         Ok(None)
     }
 }
+// One leaf primitive for real Chunk and real scalar-row consumers. It never
+// calls an expression evaluator or derives a SQL type from physical storage.
+fn read_source_row(
+    source: &SourcePlan,
+    native_values: Option<&RefCell<NativeValueStore>>,
+    native_row: tidb_chunk::row::Row<'_>,
+    ordinal: usize,
+    row: InputRow,
+) -> LocalResult<Datum> {
+    let node = &source.nodes[ordinal];
+    if let SourceKind::DecimalFastInput(value) = &node.kind {
+        let store = native_values.ok_or_else(|| binding("fast source store missing"))?;
+        let value = value.read(
+            native_row
+                .chunk()
+                .ok_or_else(|| binding("fast source has no physical owner"))?,
+            row.input_row,
+        )?;
+        let token = store
+            .borrow_mut()
+            .insert_decimal_fast(value, NativeValueOrigin { node: ordinal, row })?;
+        return Ok(Datum::Bytes(token));
+    }
+    if node.view.value_role().is_some() {
+        let store = native_values.ok_or_else(|| binding("native source has no value store"))?;
+        let token = match &node.kind {
+            SourceKind::NativeConstant { value } => {
+                // Exactly the public Expression.Eval result view. Borrow
+                // unchanged values until insert_clone's pre-copy gate.
+                let integer = (!(ordinal == 0 && source.constant_root_shortcut)
+                    && node.view.bulk_target().is_none()
+                    && !matches!(
+                        node.view,
+                        NativeView::RowTyped(_)
+                            | NativeView::DiagnosticTyped(_)
+                            | NativeView::EmptyRowTyped(_)
+                    ))
+                .then(|| crate::expression::enum_set_integer_view(value, node.sql.as_ref()))
+                .flatten()
+                .map(Datum::UInt);
+                store.borrow_mut().insert_clone(
+                    integer.as_ref().unwrap_or(value),
+                    node.view.value_role().expect("checked native view"),
+                    NativeValueOrigin { node: ordinal, row },
+                )?
+            }
+            SourceKind::Column { index } => {
+                let column = native_row
+                    .chunk()
+                    .ok_or_else(|| binding("column source has no physical owner"))?
+                    .column(*index);
+                let cells = column.raw_cells();
+                store
+                    .borrow()
+                    .precheck_import(if cells.is_null(row.input_row) {
+                        0
+                    } else {
+                        cells.get(row.input_row).len()
+                    })?;
+                let value = native_row.get_datum(*index, node.declared_sql());
+                let value =
+                    crate::expression::apply_enum_set_integer_view(value, node.sql.as_ref());
+                store.borrow_mut().insert_clone(
+                    &value,
+                    node.view.value_role().expect("checked native view"),
+                    NativeValueOrigin { node: ordinal, row },
+                )?
+            }
+            _ => return Err(binding("native value binding has no native source")),
+        };
+        return Ok(Datum::Bytes(token));
+    }
+    let SourceKind::Column { index, .. } = &node.kind else {
+        return Err(binding("batch slot has no native column"));
+    };
+    // Physical already: get_row would apply the actual Chunk Sel twice.
+    let value = native_row.get_datum(*index, node.declared_sql());
+    if node.view == NativeView::JsonBytes {
+        return match value {
+            Datum::Null => Ok(Datum::Null),
+            Datum::Json(value) => Ok(Datum::Bytes(value.encoded())),
+            _ => Err(binding("native JSON view read a non-JSON source")),
+        };
+    }
+    Ok(value)
+}
+
 struct NativeChunk<'a> {
-    source: &'a BatchSource,
+    source: &'a SourcePlan,
     native_values: Option<&'a RefCell<NativeValueStore>>,
     input: &'a Chunk,
     selection: &'a [usize],
@@ -7943,84 +8164,13 @@ impl NativeDatumSource for NativeChunk<'_> {
         {
             return Err(binding("batch demanded occurrence/type differs"));
         }
-        let node = &self.source.nodes[ordinal];
-        if let SourceKind::DecimalFastInput(value) = &node.kind {
-            let store = self
-                .native_values
-                .ok_or_else(|| binding("fast source store missing"))?;
-            let value = value.read(self.input, row.input_row)?;
-            let token = store
-                .borrow_mut()
-                .insert_decimal_fast(value, NativeValueOrigin { node: ordinal, row })?;
-            return Ok(Datum::Bytes(token));
-        }
-        if node.view.value_role().is_some() {
-            let store = self
-                .native_values
-                .ok_or_else(|| binding("native source has no value store"))?;
-            let token = match &node.kind {
-                SourceKind::NativeConstant { value } => {
-                    // Exactly the public Expression.Eval result view. Borrow
-                    // unchanged values until insert_clone's pre-copy gate.
-                    let integer = (!(ordinal == 0 && self.source.constant_root_shortcut)
-                        && node.view.bulk_target().is_none()
-                        && !matches!(
-                            node.view,
-                            NativeView::RowTyped(_)
-                                | NativeView::DiagnosticTyped(_)
-                                | NativeView::EmptyRowTyped(_)
-                        ))
-                    .then(|| crate::expression::enum_set_integer_view(value, node.sql.as_ref()))
-                    .flatten()
-                    .map(Datum::UInt);
-                    store.borrow_mut().insert_clone(
-                        integer.as_ref().unwrap_or(value),
-                        node.view.value_role().expect("checked native view"),
-                        NativeValueOrigin { node: ordinal, row },
-                    )?
-                }
-                SourceKind::Column { index } => {
-                    let column = self.input.column(*index);
-                    let cells = column.raw_cells();
-                    store
-                        .borrow()
-                        .precheck_import(if cells.is_null(row.input_row) {
-                            0
-                        } else {
-                            cells.get(row.input_row).len()
-                        })?;
-                    let value = self
-                        .input
-                        .physical_row(row.input_row)
-                        .get_datum(*index, node.declared_sql());
-                    let value =
-                        crate::expression::apply_enum_set_integer_view(value, node.sql.as_ref());
-                    store.borrow_mut().insert_clone(
-                        &value,
-                        node.view.value_role().expect("checked native view"),
-                        NativeValueOrigin { node: ordinal, row },
-                    )?
-                }
-                _ => return Err(binding("native value binding has no native source")),
-            };
-            return Ok(Datum::Bytes(token));
-        }
-        let SourceKind::Column { index, .. } = &node.kind else {
-            return Err(binding("batch slot has no native column"));
-        };
-        // Physical already: get_row would apply the actual Chunk Sel twice.
-        let value = self
-            .input
-            .physical_row(row.input_row)
-            .get_datum(*index, node.declared_sql());
-        if node.view == NativeView::JsonBytes {
-            return match value {
-                Datum::Null => Ok(Datum::Null),
-                Datum::Json(value) => Ok(Datum::Bytes(value.encoded())),
-                _ => Err(binding("native JSON view read a non-JSON source")),
-            };
-        }
-        Ok(value)
+        read_source_row(
+            self.source,
+            self.native_values,
+            self.input.physical_row(row.input_row),
+            ordinal,
+            row,
+        )
     }
 
     fn read_batch(
@@ -8496,6 +8646,10 @@ impl EvaluatorSuite {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "batch_scalar_source.rs"]
+mod scalar_source;
 
 #[cfg(test)]
 #[path = "batch_tests.rs"]

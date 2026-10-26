@@ -738,6 +738,7 @@ enum SqlDemand {
     Math,
     Comparison {
         left_token: Option<[u8; native_values::HANDLE_BYTES]>,
+        integer_probe: bool,
     },
     Truth,
     Logical {
@@ -833,7 +834,7 @@ impl NativeTask {
             SqlDemand::WindowDecimalFast { next, .. }
             | SqlDemand::WindowArithmetic { next, .. }
             | SqlDemand::Arithmetic { next, .. } => Ok(Some(*next)),
-            SqlDemand::RawValues { left_token } | SqlDemand::Comparison { left_token } => {
+            SqlDemand::RawValues { left_token } | SqlDemand::Comparison { left_token, .. } => {
                 Ok(Some(usize::from(left_token.is_some())))
             }
             SqlDemand::Extremum { next, .. }
@@ -2052,18 +2053,20 @@ impl<'a> NativeBatchHosts<'a> {
 
     fn resume_comparison(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
         let task = self.task(id)?;
-        let SqlDemand::Comparison { left_token } = task.demand else {
+        let SqlDemand::Comparison {
+            left_token,
+            integer_probe,
+        } = task.demand
+        else {
             return Err(binding("comparison resume has another task kind"));
         };
         let Some(NativeHostMetadata::Comparison {
             operation,
             name,
-            result_type,
             argument_nodes,
             operands,
             collation,
-            output_node,
-            output_role,
+            ..
         }) = self.metadata.get(task.slot.index())
         else {
             return Err(binding("comparison descriptor missing"));
@@ -2086,7 +2089,7 @@ impl<'a> NativeBatchHosts<'a> {
             let left: [u8; native_values::HANDLE_BYTES] = token
                 .try_into()
                 .map_err(|_| binding("comparison token width differs"))?;
-            let SqlDemand::Comparison { left_token } = &mut self.slots[id.slot]
+            let SqlDemand::Comparison { left_token, .. } = &mut self.slots[id.slot]
                 .task
                 .as_mut()
                 .expect("validated comparison task")
@@ -2139,6 +2142,46 @@ impl<'a> NativeBatchHosts<'a> {
                 store.clone_for_kernel(token, NativeValueRole::CharInput, right_origin)?,
             )
         };
+        if integer_probe {
+            // ScalarFunction.Eval first reads both raw integer-declared
+            // arguments. A runtime-domain refusal then re-demands both in its
+            // ordinary ladder; reusing the first values would skip effects.
+            let op = crate::scalar_function::binary_op_for_name(name)
+                .ok_or_else(|| binding("integer comparison operator name missing"))?;
+            match crate::ops::integer_binary_typed(
+                op,
+                left,
+                right,
+                operands.map(|operand| !operand.unsigned),
+                self.context,
+            ) {
+                Ok(Some(result)) => {
+                    return self
+                        .finish_comparison(id, result, base)
+                        .map(HostStep::Ready)
+                }
+                Ok(None) => {
+                    let SqlDemand::Comparison {
+                        left_token,
+                        integer_probe,
+                    } = &mut self.slots[id.slot]
+                        .task
+                        .as_mut()
+                        .expect("validated comparison task")
+                        .demand
+                    else {
+                        unreachable!()
+                    };
+                    *left_token = None;
+                    *integer_probe = false;
+                    return Ok(HostStep::NeedArg(HostArgRequest {
+                        index: 0,
+                        mode: ArgMode::Fresh,
+                    }));
+                }
+                Err(error) => return self.native_failure(error),
+            }
+        }
         // The plain conversion may publish diagnostics through the real context;
         // neither source handle nor store borrow crosses that boundary.
         // NULLIF is a value-only builtin, not the binary operator entry.
@@ -2161,7 +2204,7 @@ impl<'a> NativeBatchHosts<'a> {
             .ok_or_else(|| resource("comparison value allowance exhausted"))?;
         let result = match *operation {
             SqlBatchHostOperation::CompareNative(op) => {
-                let prepared = match crate::ops::prepare_native_comparison(
+                let prepared = match crate::ops::prepare_native_comparison_after_probe(
                     op,
                     left,
                     right,
@@ -2221,6 +2264,28 @@ impl<'a> NativeBatchHosts<'a> {
             }
             _ => return Err(binding("comparison descriptor has another operation")),
         };
+        self.finish_comparison(id, result, base)
+            .map(HostStep::Ready)
+    }
+
+    fn finish_comparison(
+        &mut self,
+        id: &HostTaskId,
+        result: Datum,
+        base: usize,
+    ) -> LocalResult<VectorValue> {
+        let task = self.task(id)?;
+        let row = task.row;
+        let Some(NativeHostMetadata::Comparison {
+            name,
+            result_type,
+            output_node,
+            output_role,
+            ..
+        }) = self.metadata.get(task.slot.index())
+        else {
+            return Err(binding("comparison finish descriptor missing"));
+        };
         let result = match crate::scalar_function::coerce_function_result(
             name,
             result_type.as_ref(),
@@ -2230,7 +2295,6 @@ impl<'a> NativeBatchHosts<'a> {
             Err(error) => return self.native_failure(error),
         };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
-            .map(HostStep::Ready)
     }
 
     fn finish_truth(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
@@ -3658,7 +3722,13 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("comparison descriptor differs"));
                 }
-                SqlDemand::Comparison { left_token: None }
+                SqlDemand::Comparison {
+                    left_token: None,
+                    integer_probe: matches!(operation, SqlBatchHostOperation::CompareNative(_))
+                        && operands
+                            .iter()
+                            .all(|operand| operand.eval_type == Some(NativeEvalType::Int)),
+                }
             }
             operation @ (SqlBatchHostOperation::IsTrueWithNullNative
             | SqlBatchHostOperation::UnaryNotNative

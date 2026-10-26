@@ -18,6 +18,10 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N50 shared source plan and comparison phases: thirteen baseline files archived at8536971ff7; three before-production public contracts independently reproduced and pinned (error-pair6720/9DB38EEAA92DDE88, direct function5880/2550BA35CB389B63, ordinary6720/E96DA50FA24BFFC5). Common SourcePlan/leaf now serve production Projection; the genuine borrowed-row scalar adapter remains cfg(test). Actual Suite comparison re-demand and generic errors fixed without another evaluator. Eight targeted, full2246/exactold3/95/all705batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, freshlint, dual7fmt and provenance checks pass. Continue public error-Datum/direct-function-root work; no public interpreter entry has switched.
+
+
+
 - [x] N49 original evidence: baseline0ffc03df/30 files archived before observers; all43 selected CAST owners, actual typed/optional/literal/parameter/deferred/correlated/nested/physical sources. All22,962,860/ten original count/hash pairs independently rerun and actual admission/fallback RED reproduced, then ten immutable assertions formatted and archived before production extraction. Pure extraction preserves all ten. First actual source integration passes nine; the phase cohort exposed a scalar-header/genuine-arithmetic-bulk profile mismatch. Both preflight profile decisions now preserve the actual original bulk entry, and the unchanged2465792/1F3CA1870CD1D5FB phase assertion passes.
 - [x] N49 final gates: all22962860/ten original and actual assertions pass unchanged, with zero strict exemptions. Four boundary checks pass; same64KiB selection recovery and independent original mismatched-return guard are separate finite-policy evidence. Full frontend2238/exact old3/95/all697batch/346warnings; actual43-owner Projection52; Expand6+64/B42, inventory83088/0/0, freshlint, dual9fmt and ownership/hash reconstruction pass. SDKad73b11 remains clean with its documented unchanged baseline. Save local signed checkpoint and continue overall closure.
 
@@ -212,6 +216,10 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N50 found two comparison phases missing from the former host. With actual Int declarations and a runtime Real, the original integer probe reads both raw arguments, declines, and then reads both afresh. Reusing the first values can change both callback counts and the result (Real1.5 then Int7 makes equality to7 true). The subsequent generic ladder must not try the integer probe again: a fresh MinNotNull otherwise changes the original expression-operand error to an integer-coercion error. The direct Suite test also exposed its former admission fallback. A separate scalar prototype regression showed that a literal or unselected column branch may use a cursor into an empty Chunk; the batch physical-row gate is not that public contract.
+
+
 
 N49 source audit: parameter inference controls the typed argument read, while the final cast receives the original static source declaration, including None. Strict literals require a declaration before NULL; correlated NULL precedes missing declaration errors; physical columns validate the declaration before reading the row. These are distinct contracts and must remain distinct.
 
@@ -545,6 +553,10 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+N50 separates SourcePlan from the existing actual Projection Arc/root/slot/output/schema seal and keeps its exact declaration checks. A distinct physical-row input supplies width and actual node declarations without inventing a SQL schema. The cfg(test) scalar adapter borrows the real root/Row and drains an authenticated Output Datum from the same SDK frame. Only the ordinary two-Int/LongLong-result comparison context profile is newly admitted; preserve raw per-row operand demand and original atomic or prefix publication. Public error pairs and direct ScalarFunction roots remain separate contracts and must be proved before replacing their entries. Do not add an immutable plan cache while args/ret_type/collation remain publicly mutable.
+
+
 
 N49 keeps all production limits and strict records unchanged. The new fixed-cap recovery caller uses a return declaration matching the selected cast target. A separate independent raw original return plus the old guard proves the mismatched Duration-to-Int refusal at the same64KiB; it is finite-policy evidence, not native uncapped equivalence. The missing-type metadata fixture uses64KiB after its NULL control showed16KiB cannot hold the genuine program; the2MiB value remains unused. Temporary diagnostic code is removed.
 
@@ -880,6 +892,10 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N50 final checks pass: original before-production contracts remain unchanged, ordinary borrowed-row source matches all6720records, comparison fresh-value/error/selection/window/publication regressions pass, and the whole frontend has2246pass with exactly the inherited3 failures and346warnings. Projection52, Expand6+64/B42, inventory83088/0/0, lint and both formatters pass. SDKad73b11 is unchanged and its prior baseline is reused honestly. Public entry replacement, direct function roots, Constant error Datums, AST/filter/join/Unistore callers, generic fallback deletion, full service validation and final performance are still required. No overall completion or performance claim.
+
+
 
 N49 completes only the43 actually mapped PB cast owners through the shared frame. All22962860/ten before-production assertions, four boundary checks and final frontend/executor/lint/format/ownership gates pass, retaining the three inherited frontend failures. Public scalar/AST/filter/join/Unistore callers, generic fallback deletion, full service validation and final performance remain required; task4 stays active.
 
@@ -4933,3 +4949,12 @@ Run from the TiDB checkout: RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb 
 Revision2026-10-23: N48 original evidence is pinned before extraction; do not replay generation scripts. Preserve the exact19-owner selection, demanded argument indices, missing/error timing, actual optional declarations and unchanged caps.
 
 Revision2026-10-23: N48 is verified through complete frontend and actual Projection, preserving all31,552,896 original observations and malformed consumer outcomes. Only new test harness expectations changed after their failures; all production/frontend hashes retain the validated behavior. Continue overall work, beginning with independent original selected-cast evidence.
+
+## N50: share source compilation with genuine borrowed-row callers
+
+
+The production source compiler now returns a detached SourcePlan; BatchSource separately retains its existing actual EvaluatorProgram Arc, root address, output and calculation slots, and complete row schema. NativeChunk still authenticates selection/physical bounds before the common read_source_row primitive. SourceInputs::PhysicalRow and SourceConsumer::Scalar are test-only proofs borrowing the actual root and Row, never constructing a replacement expression, Suite, Chunk or SQL result type. The native Bytes field is the existing handle transport ABI.
+
+Actual ordinary integer-declared comparisons now represent the original first integer probe and, if it declines, fresh raw demands in the same SDK host task. The generic comparison preparation has only its redundant integer probe removed. The precise contextual root profile preserves scalar operand demand and vector-enabled atomic publication; late errors cross driver-window boundaries with unchanged selection and output prefix.
+
+Run the targeted public_source_tests and full frontend with the standard locked offline release command above, Projection tests with tidb-executor, then the unchanged Expand and admission inventory. Expect8 targeted passes; full2246pass/exactold3/95ignore/all705batch/346aggregatewarnings; Projection52; Expand6 plus64/B42FB8BE316E6C79; inventory83088/0/0. Run make lint and both pinned formatters for the seven Rust files. Evidence and exact commands are in rust/docs/evidence/no-fallback-n50.md. The next increment must preserve actual Constant error Datums and accept a genuine borrowed ScalarFunction root, followed by public entry and remaining caller retirement; this checkpoint does not end task4.
