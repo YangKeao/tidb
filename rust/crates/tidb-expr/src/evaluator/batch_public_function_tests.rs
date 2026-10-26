@@ -698,3 +698,19 @@ fn expression_preflight_keeps_original_reference_storage_budget() {
         std::mem::size_of::<&Expression>()
     );
 }
+
+#[test]
+fn explicit_original_public_function_contracts_are_independent() {
+    use crate::test_original_eval::compare_records;
+    let returns = compare_records(|| function_records(|f, c, r| f.eval(c, r)));
+    assert_eq!(
+        (returns.len(), digest(&returns)),
+        (75600, 0x9D7254FFD2481AF5)
+    );
+    let pb = compare_records(|| selected_records(|f, c, r| f.eval(c, r)));
+    assert_eq!((pb.len(), digest(&pb)), (540, 0x4CDD027B2A300F8D));
+    let owner = compare_records(|| owner_records(|f, c, r| f.eval(c, r)));
+    assert_eq!((owner.len(), digest(&owner)), (30, 0xE5DCB211D42975EC));
+    let cache = compare_records(|| cache_records(|f, c, r| f.eval(c, r)));
+    assert_eq!((cache.len(), digest(&cache)), (10, 0x05308B90353B745C));
+}

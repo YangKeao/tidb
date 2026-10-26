@@ -559,7 +559,7 @@ fn final_state_actual_datums_and_return_types_match_original_before_retirement()
                                 let (mut left, mut right) = (output_for(field), output_for(field));
                                 left.append_null(0);
                                 right.append_null(0);
-                                let expected = session_read_outcome(|| {
+                                let expected = original_session_read_outcome(|| {
                                     original.run(&old, &mut left_input, &mut left)
                                 });
                                 let got = session_read_outcome(|| {
@@ -911,7 +911,7 @@ fn final_state_shared_value_phases_match_preserved_original_controls() {
                         values[index] = value.clone();
                         let old = C::new(values.clone(), 0, false, *mode);
                         let new = C::new(values, 0, false, *mode);
-                        let expected = session_read_outcome(|| {
+                        let expected = original_session_read_outcome(|| {
                             old.ready.with_columns(&old, |ctx| {
                                 function.eval_original_final_state(ctx, input.get_row(0))
                             })
@@ -966,7 +966,8 @@ fn final_state_owner_all_return_types_keep_late_callbacks_and_prefixes() {
                     let (mut left, mut right) = (output_for(&field), output_for(&field));
                     left.append_null(0);
                     right.append_null(0);
-                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let expected =
+                        original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                     let got = session_read_outcome(|| {
                         actual.run_with_tikv_batch(&new, &mut b, &mut right, &[string_ty()])
                     });
@@ -1071,8 +1072,9 @@ fn final_state_long_selections_and_nested_fresh_keep_original_state_and_prefixes
                                 let (mut left, mut right) = (output_for(&out), output_for(&out));
                                 left.append_null(0);
                                 right.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let got = session_read_outcome(|| {
                                     if cycle == 1 {
                                         actual.run(&new, &mut b, &mut right)
@@ -1144,7 +1146,8 @@ fn final_state_unused_large_values_and_real_null_recovery_do_not_clone_extra_pay
                 let input = || chunk(&[string_ty()], &vec![vec![Datum::new_string("unused")]; 3]);
                 let (mut a, mut b) = (input(), input());
                 let (mut left, mut right) = (output_for(&field), output_for(&field));
-                let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                let expected =
+                    original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                 let got = session_read_outcome(|| {
                     actual.run_with_tikv_batch(&new, &mut b, &mut right, &[string_ty()])
                 });
@@ -1225,7 +1228,8 @@ fn final_state_niladic_services_use_actual_context_over_virtual_rows_without_col
                     let (mut left, mut right) = (output_for(&field), output_for(&field));
                     left.append_null(0);
                     right.append_null(0);
-                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let expected =
+                        original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                     let got = session_read_outcome(|| {
                         actual.run_with_tikv_batch(&new, &mut b, &mut right, &[])
                     });

@@ -934,7 +934,7 @@ fn stateful_sleep_unused_vector_payload_keeps_original_error_without_copy() {
     let mut b = chunk(&[ty()], &[vec![Datum::Int(1)]]);
     let mut left = output_for(&ty());
     let mut right = output_for(&ty());
-    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+    let expected = original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
     assert!(expected.contains("numeric argument conversion"));
     let got =
         session_read_outcome(|| actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()]));
@@ -1018,7 +1018,7 @@ fn stateful_integer_cast_rejections_do_not_clone_unused_vector_payload() {
         let mut b = chunk(&[ty()], &[vec![Datum::Int(1)]]);
         let mut left = output_for(&ty());
         let mut right = output_for(&ty());
-        let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
         assert!(expected.contains("a vector can only be cast to string or vector"));
         let got =
             session_read_outcome(|| actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()]));
@@ -1108,8 +1108,9 @@ fn stateful_other_services_full_values_and_return_types_keep_original_outputs() 
                                 let mut right = output_for(&field);
                                 left.append_null(0);
                                 right.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let got = session_read_outcome(|| {
                                     actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
                                 });
@@ -1203,8 +1204,9 @@ fn stateful_long_selections_reuse_sources_across_public_and_frame_invocations() 
                             left.append_null(0);
                             right.append_null(0);
                             let reference = suite(expression.clone());
-                            let expected =
-                                session_read_outcome(|| reference.run(&old, &mut a, &mut left));
+                            let expected = original_session_read_outcome(|| {
+                                reference.run(&old, &mut a, &mut left)
+                            });
                             let got = session_read_outcome(|| {
                                 if cycle % 2 == 0 {
                                     actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
@@ -1413,8 +1415,9 @@ fn remaining_optional_admission_inventory_keeps_original_behavior() {
                         let input = || chunk(&[string_ty()], &[vec![Datum::Null]]);
                         let mut left = output_for(&string_ty());
                         let mut right = output_for(&string_ty());
-                        let expected =
-                            session_read_outcome(|| original.run(&old, &mut input(), &mut left));
+                        let expected = original_session_read_outcome(|| {
+                            original.run(&old, &mut input(), &mut left)
+                        });
                         let got = session_read_outcome(|| {
                             actual.run_with_tikv_batch(
                                 &new,
@@ -1544,8 +1547,9 @@ fn run_common_invalid_numeric_arity_matrix(compare: bool) {
                                 let mut a = input();
                                 let mut left = output_for(&string_ty());
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let label=format!("invalid-numeric/{name}/{arity}/{kind}/{vi}/{enabled}/{selection:?}/{reuse}");
                                 if compare {
                                     let mut b = input();
@@ -1828,7 +1832,7 @@ fn run_optional_control_matrix(
                                         let mut a = input();
                                         let mut left = output_for(&field);
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let label=format!("{prefix}/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -1955,8 +1959,9 @@ fn optional_operator_full_actual_values_keep_raw_domains_and_facts() {
                             let mut a = input();
                             let mut left = output_for(&ty());
                             left.append_null(0);
-                            let expected =
-                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let expected = original_session_read_outcome(|| {
+                                original.run(&old, &mut a, &mut left)
+                            });
                             let mut b = input();
                             let mut right = output_for(&ty());
                             right.append_null(0);
@@ -2108,7 +2113,7 @@ fn run_no_argument_header_matrix(compare: bool) {
                                         let mut a = input();
                                         let mut left = output_for(&field);
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let label=format!("no-argument-header/{name}/{arity}/{shape}/{mask}/{fi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -2240,8 +2245,9 @@ fn no_argument_header_nested_consumers_keep_skips_and_prefixes() {
                                 let mut a = input();
                                 let mut left = output_for(&ty());
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let mut b = input();
                                 let mut right = output_for(&ty());
                                 right.append_null(0);
@@ -2456,7 +2462,7 @@ fn run_metadata_property_stored(compare: bool) {
                                     let mut a = input();
                                     let mut left = output_for(&result);
                                     left.append_null(0);
-                                    let expected = session_read_outcome(|| {
+                                    let expected = original_session_read_outcome(|| {
                                         original.run(&old, &mut a, &mut left)
                                     });
                                     let label=format!("property-stored/{name}/{fi}/{shape}/{stored}/{mask}/{enabled}/{selection:?}/{reuse}");
@@ -2576,8 +2582,9 @@ fn metadata_property_nested_consumers_keep_original_domains_and_diagnostics() {
                                 let mut a = input();
                                 let mut left = output_for(&field);
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let mut b = input();
                                 let mut right = output_for(&field);
                                 right.append_null(0);
@@ -2764,7 +2771,7 @@ fn run_optional_grouping_matrix(compare: bool, full: bool) {
                                         let mut a = input();
                                         let mut left = output_for(&field);
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let label=format!("optional-grouping/{mi}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -2916,7 +2923,7 @@ fn run_grouping_header_matrix(compare: bool) {
                                     let mut a = input();
                                     let mut left = output_for(&field);
                                     left.append_null(0);
-                                    let expected = session_read_outcome(|| {
+                                    let expected = original_session_read_outcome(|| {
                                         original.run(&old, &mut a, &mut left)
                                     });
                                     let label=format!("grouping-header/{arity}/{shape}/{mask}/{fi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -3134,7 +3141,7 @@ fn run_optional_wildcard_matrix(compare: bool) {
                                         let mut a = input();
                                         let mut left = output_for(&field);
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let label = format!("optional-wildcard/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -3263,8 +3270,9 @@ fn optional_wildcard_full_actual_values_in_each_operand() {
                                 let mut right = output_for(&ty());
                                 left.append_null(0);
                                 right.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let got = session_read_outcome(|| {
                                     actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
                                 });
@@ -3518,7 +3526,7 @@ fn run_optional_concat_matrix(compare: bool) {
                                             let mut a = input();
                                             let mut left = output_for(&field);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 original.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("optional-concat/{name}/{shape}/{mask}/{fi}/{vi}/{limit}/{failure}/{enabled}/{selection:?}/{reuse}");
@@ -3675,7 +3683,7 @@ fn optional_concat_full_actual_values_in_each_operand() {
                                     let mut right = output_for(&string_ty());
                                     left.append_null(0);
                                     right.append_null(0);
-                                    let expected = session_read_outcome(|| {
+                                    let expected = original_session_read_outcome(|| {
                                         original.run(&old, &mut a, &mut left)
                                     });
                                     let got = session_read_outcome(|| {
@@ -3817,7 +3825,7 @@ fn optional_concat_actual_arities_keep_raw_values_and_packet_demand() {
                                     let mut right = output_for(&string_ty());
                                     left.append_null(0);
                                     right.append_null(0);
-                                    let expected = session_read_outcome(|| {
+                                    let expected = original_session_read_outcome(|| {
                                         original.run(&old, &mut a, &mut left)
                                     });
                                     let got = session_read_outcome(|| {
@@ -4082,7 +4090,7 @@ fn run_concat_whole_matrix(compare: bool, full: bool, arity: Option<usize>) {
                                         let mut a = input();
                                         let mut left = output_for(&string_ty());
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let mut label=format!("concat-whole/{full}/{name}/{shape}/{position}/{vi}/{profile}/{limit}/{enabled}/{selection:?}/{reuse}");
@@ -4228,7 +4236,7 @@ fn run_concat_row_batch_long(compare: bool) {
                         let mut left = output_for(&string_ty());
                         left.append_null(0);
                         let expected =
-                            session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                         let label=format!("concat-row-batch-long/{name}/{profile}/{rows}/{first}/{round}/{enabled}");
                         if compare {
                             let mut b = input();
@@ -4516,7 +4524,7 @@ fn run_arithmetic_absent_result(compare: bool, full: bool) {
                                         let mut a = input();
                                         let mut left = output_for(&storage);
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let label=format!("arithmetic-absent/{full}/{name}/{fi}/{vi}/{shape}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -4639,7 +4647,7 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
                         let mut input = Chunk::new_with_capacity(&[], 1);
                         input.set_num_virtual_rows(1);
                         let old = ArithmeticAbsentContext::new(0, false, values.clone());
-                        let expected = session_read_outcome(|| {
+                        let expected = original_session_read_outcome(|| {
                             function
                                 .eval(&old, input.get_row(0))
                                 .map(|v| leaf::frame(&v))
@@ -5192,7 +5200,7 @@ fn run_arithmetic_missing_argument(compare: bool, full: bool) {
                                                 &storage
                                             });
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 original.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("arithmetic-missing/{full}/{name}/{fi}/mask{mask}/{vi}/{shape}/{profile}/{enabled}/{selection:?}/{reuse}/target{target:?}");
@@ -5345,7 +5353,7 @@ fn run_arithmetic_missing_raw_datums(compare: bool) {
                             let mut input = Chunk::new_with_capacity(&[], 1);
                             input.set_num_virtual_rows(1);
                             let old = ArithmeticMissingContext::new(0, false, values.clone());
-                            let expected = session_read_outcome(|| {
+                            let expected = original_session_read_outcome(|| {
                                 function
                                     .eval(&old, input.get_row(0))
                                     .map(|v| leaf::frame(&v))
@@ -5699,7 +5707,8 @@ fn arithmetic_missing_argument_late_real_div_type_failure_keeps_long_reuse_and_f
                     let mut a = input();
                     let mut left = output_for(field);
                     left.append_null(0);
-                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let expected =
+                        original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                     let mut b = input();
                     let mut right = output_for(field);
                     right.append_null(0);
@@ -5864,7 +5873,7 @@ fn run_optional_membership_all_actual_values(compare: bool) {
                                             let mut a = input();
                                             let mut left = output_for(field);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 old_owner.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("membership-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
@@ -6023,7 +6032,7 @@ fn run_optional_membership_raw_datums(compare: bool) {
                             let mut input = Chunk::new_with_capacity(&[], 1);
                             input.set_num_virtual_rows(1);
                             let old = C::new(0, false, values.clone());
-                            let expected = session_read_outcome(|| {
+                            let expected = original_session_read_outcome(|| {
                                 function
                                     .eval(&old, input.get_row(0))
                                     .map(|v| leaf::frame(&v))
@@ -6373,7 +6382,8 @@ fn optional_membership_long_late_errors_recover_across_flags() {
                     let mut a = input();
                     let mut left = output_for(&ty());
                     left.append_null(0);
-                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let expected =
+                        original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                     let mut b = input();
                     let mut right = output_for(&ty());
                     right.append_null(0);
@@ -6610,7 +6620,7 @@ fn reserved_prefix_phase_observer(
                                         let mut a = input();
                                         let mut left = output_for(&field);
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             original.run(&old, &mut a, &mut left)
                                         });
                                         let label=format!("{prefix}/{name}/{shape}/{mask}/{fi}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -6788,7 +6798,7 @@ fn run_optional_reserved_prefix_all_actual_values(compare: bool) {
                                             let mut a = input();
                                             let mut left = output_for(field);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 old_owner.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("reserved-prefix-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
@@ -7003,7 +7013,7 @@ fn run_optional_reserved_prefix_extended_all_actual_values(compare: bool) {
                                             let mut a = input();
                                             let mut left = output_for(field);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 old_owner.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("reserved-prefix-extended-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
@@ -7215,7 +7225,7 @@ fn run_optional_reserved_prefix_dates_all_actual_values(compare: bool) {
                                             let mut a = input();
                                             let mut left = output_for(field);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 old_owner.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("reserved-prefix-dates-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
@@ -7366,7 +7376,7 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                             let mut input = Chunk::new_with_capacity(&[], 1);
                             input.set_num_virtual_rows(1);
                             let old = C::new(0, false, values.clone());
-                            let expected = session_read_outcome(|| {
+                            let expected = original_session_read_outcome(|| {
                                 function
                                     .eval(&old, input.get_row(0))
                                     .map(|v| leaf::frame(&v))
@@ -7941,7 +7951,7 @@ fn optional_reserved_prefix_resources_long_reuse_and_flags() {
         let mut a = input();
         let mut left = output_for(&string_ty());
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = input();
         let mut right = output_for(&string_ty());
         right.append_null(0);
@@ -7983,7 +7993,8 @@ fn optional_reserved_prefix_resources_long_reuse_and_flags() {
                     let mut a = input();
                     let mut left = output_for(&string_ty());
                     left.append_null(0);
-                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let expected =
+                        original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                     let mut b = input();
                     let mut right = output_for(&string_ty());
                     right.append_null(0);
@@ -8358,7 +8369,7 @@ fn run_weight_source(compare: bool, full: bool) {
                                             let mut a = input();
                                             let mut left = output_for(&result);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 original.run(&old, &mut a, &mut left)
                                             });
                                             let label=format!("weight/{full}/{fi}/{arity}/{mask}/{shape}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
@@ -8780,7 +8791,7 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
         let mut a = input();
         let mut left = output_for(&native_bytes_type());
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = input();
         let mut right = output_for(&native_bytes_type());
         right.append_null(0);
@@ -8831,7 +8842,8 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
                     let mut a = input();
                     let mut left = output_for(&native_bytes_type());
                     left.append_null(0);
-                    let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                    let expected =
+                        original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                     let mut b = input();
                     let mut right = output_for(&native_bytes_type());
                     right.append_null(0);
@@ -9082,9 +9094,10 @@ fn run_string_row_matrix(compare: bool, full: bool) {
                                                 let mut a = input();
                                                 let mut left = output_for(&field);
                                                 left.append_null(0);
-                                                let expected = session_read_outcome(|| {
-                                                    original.run(&old, &mut a, &mut left)
-                                                });
+                                                let expected =
+                                                    original_session_read_outcome(|| {
+                                                        original.run(&old, &mut a, &mut left)
+                                                    });
                                                 let label=format!("string-row/{full}/{name}/{arity}/{fi}/{shape}/{position}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
                                                 if compare {
                                                     let mut b = input();
@@ -9216,8 +9229,9 @@ fn run_string_row_long(compare: bool) {
                             let mut a = input();
                             let mut left = output_for(&string_ty());
                             left.append_null(0);
-                            let expected =
-                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let expected = original_session_read_outcome(|| {
+                                original.run(&old, &mut a, &mut left)
+                            });
                             let label=format!("string-row-long/{name}/{arity}/{profile}/{rows}/{first}/{round}/{enabled}");
                             if compare {
                                 let mut b = input();
@@ -9364,7 +9378,7 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
         let mut a = input();
         let mut left = output_for(&string_ty());
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = input();
         let mut right = output_for(&string_ty());
         right.append_null(0);
@@ -9746,9 +9760,10 @@ fn run_regexp_source_matrix(compare: bool, full: bool) {
                                                 let mut a = input();
                                                 let mut left = output_for(result);
                                                 left.append_null(0);
-                                                let expected = session_read_outcome(|| {
-                                                    original.run(&old, &mut a, &mut left)
-                                                });
+                                                let expected =
+                                                    original_session_read_outcome(|| {
+                                                        original.run(&old, &mut a, &mut left)
+                                                    });
                                                 let label=format!("regexp-source/{full}/{name}/{arity}/{fi}/{ri}/{mask}/{shape}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
                                                 if compare {
                                                     let mut b = input();
@@ -9884,7 +9899,7 @@ fn run_regexp_source_long(compare: bool) {
                         let mut left = output_for(&ty());
                         left.append_null(0);
                         let expected =
-                            session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                         let label=format!("regexp-source-long/{name}/{arity}/{profile}/{rows}/{first}/{round}/{enabled}");
                         if compare {
                             let mut b = input();
@@ -10306,7 +10321,7 @@ fn regexp_source_same_cap_resource_then_null_recovery() {
         let mut a = input();
         let mut left = output_for(&ty());
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = input();
         let mut right = output_for(&ty());
         right.append_null(0);

@@ -327,9 +327,11 @@ fn matrix(compare: bool, full: bool) {
                                                         let mut a = input(&selection);
                                                         let mut left = output_for(&ty);
                                                         left.append_null(0);
-                                                        let expected = session_read_outcome(|| {
-                                                            original.run(&old, &mut a, &mut left)
-                                                        });
+                                                        let expected =
+                                                            original_session_read_outcome(|| {
+                                                                original
+                                                                    .run(&old, &mut a, &mut left)
+                                                            });
                                                         let label=format!("pb-regexp/{full}/{arity}/{source}/{result}/{collate}/{mask}/{display}/{shape}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
                                                         if compare {
                                                             let mut b = input(&selection);
@@ -453,8 +455,9 @@ fn long(compare: bool) {
                             let mut a = input(&selection);
                             let mut left = output_for(&ty());
                             left.append_null(0);
-                            let expected =
-                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let expected = original_session_read_outcome(|| {
+                                original.run(&old, &mut a, &mut left)
+                            });
                             let label = format!(
                                 "pb-long/{arity}/{display}/{profile}/{rows}/{first}/{round}"
                             );
@@ -581,7 +584,7 @@ fn pb_regexp_source_wire_attributes_keep_effective_declarations() {
                                     let mut a = input(&selection);
                                     let mut left = output_for(&ty);
                                     left.append_null(0);
-                                    let expected = session_read_outcome(|| {
+                                    let expected = original_session_read_outcome(|| {
                                         original.run(&old, &mut a, &mut left)
                                     });
                                     let mut b = input(&selection);
@@ -738,7 +741,7 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
             let new = RegexpSourceContext::new(enabled, values.clone(), 0);
             let mut a = input(&None);
             let mut left = output_for(&ty);
-            let expected = session_read_outcome(|| original.run(&old, &mut a, &mut left));
+            let expected = original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
             let mut b = input(&None);
             let mut right = output_for(&ty);
             let got = session_read_outcome(|| {
@@ -800,7 +803,7 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
         let mut a = input(&None);
         let mut left = output_for(&ty());
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = input(&None);
         let mut right = output_for(&ty());
         right.append_null(0);
@@ -874,7 +877,7 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
         let mut a = input(&None);
         let mut left = output_for(&ty());
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = input(&None);
         let mut right = output_for(&ty());
         right.append_null(0);

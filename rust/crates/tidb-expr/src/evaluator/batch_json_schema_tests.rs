@@ -735,8 +735,9 @@ fn json_schema_full_actual_values_and_return_declarations_keep_original_errors_a
                             let mut right = output_for(&field);
                             left.append_null(0);
                             right.append_null(0);
-                            let expected =
-                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let expected = original_session_read_outcome(|| {
+                                original.run(&old, &mut a, &mut left)
+                            });
                             let got = session_read_outcome(|| {
                                 actual.run_with_tikv_batch(
                                     &new,
@@ -1147,7 +1148,7 @@ fn json_schema_long_selected_sources_share_the_original_cache_with_public_calls(
                         left.append_null(0);
                         right.append_null(0);
                         let expected =
-                            session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                         let got = session_read_outcome(|| {
                             if cycle % 2 == 0 {
                                 actual.run_with_tikv_batch(
@@ -1252,7 +1253,7 @@ fn json_schema_nested_fresh_bodies_keep_schema_reads_and_cache_history() {
                         left.append_null(0);
                         right.append_null(0);
                         let expected =
-                            session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            original_session_read_outcome(|| original.run(&old, &mut a, &mut left));
                         let got = session_read_outcome(|| {
                             actual.run_with_tikv_batch(
                                 &new,

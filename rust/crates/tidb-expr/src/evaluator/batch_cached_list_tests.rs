@@ -1346,7 +1346,7 @@ fn run_optional_cached_list_matrix(compare: bool) {
                                         let mut a = input(selection.clone());
                                         let mut left = output_for(&ty());
                                         left.append_null(0);
-                                        let expected = session_read_outcome(|| {
+                                        let expected = original_session_read_outcome(|| {
                                             owner.run(&old, &mut a, &mut left)
                                         });
                                         let label=format!("optional-list/{shape}/{mask}/{ci}/{ni}/{li}/{enabled}/{selection:?}/{round}/{reuse}");

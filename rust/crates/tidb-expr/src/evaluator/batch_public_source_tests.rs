@@ -472,3 +472,35 @@ mod function_root_tests;
 
 #[path = "batch_public_row_tests.rs"]
 mod physical_row_tests;
+
+#[test]
+fn explicit_original_public_expression_contracts_are_independent() {
+    use crate::test_original_eval::compare_records;
+    let ordinary = compare_records(|| {
+        records(
+            |e, c, r| e.eval(c, r).map_err(|error| (Datum::Null, error)),
+            false,
+        )
+    });
+    assert_eq!(
+        (ordinary.len(), digest(&ordinary)),
+        (6720, 0xE96DA50FA24BFFC5)
+    );
+    let pairs = compare_records(|| records(|e, c, r| e.eval_with_error_value(c, r), false));
+    assert_eq!((pairs.len(), digest(&pairs)), (6720, 0x9DB38EEAA92DDE88));
+    let functions = compare_records(|| {
+        records(
+            |e, c, r| {
+                let Expression::ScalarFunction(f) = e else {
+                    unreachable!()
+                };
+                f.eval(c, r).map_err(|error| (Datum::Null, error))
+            },
+            true,
+        )
+    });
+    assert_eq!(
+        (functions.len(), digest(&functions)),
+        (5880, 0x2550BA35CB389B63)
+    );
+}

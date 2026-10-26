@@ -163,7 +163,7 @@ fn matrix(compare: bool, full: bool) {
                                             let mut a = input(&selection);
                                             let mut left = output_for(&ty);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 original.run(&old, &mut a, &mut left)
                                             });
                                             if compare {
@@ -301,8 +301,9 @@ fn long(compare: bool) {
                                 a.set_sel(selection.clone());
                                 let mut left = output_for(&ty);
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 if compare {
                                     let mut b = chunk(&[string_ty()], &data);
                                     b.set_sel(selection.clone());
@@ -388,7 +389,7 @@ fn pb_unary_source_direct_profiles_and_same_cap_recovery() {
             let mut a = input(&Some(vec![2, 0, 2]));
             let mut left = output_for(&ty);
             left.append_null(0);
-            let expected = session_read_outcome(|| {
+            let expected = original_session_read_outcome(|| {
                 owner.run_with_consumer(
                     &old,
                     &mut a,
@@ -475,7 +476,7 @@ fn pb_unary_source_direct_profiles_and_same_cap_recovery() {
             let mut a = input(&None);
             let mut left = output_for(&ty);
             left.append_null(0);
-            let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+            let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
             let mut b = input(&None);
             let mut right = output_for(&ty);
             right.append_null(0);

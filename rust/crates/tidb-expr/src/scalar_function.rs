@@ -1665,6 +1665,20 @@ impl ScalarFunction {
     /// type -- see [`Self::coerce_to_ret_type`] for why that is the whole
     /// point of Go's `Eval` and not an afterthought.
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
+        #[cfg(test)]
+        if crate::test_original_eval::requested() {
+            crate::test_original_eval::note_original();
+            return self.eval_original(ctx, row);
+        }
+        crate::evaluator::batch::eval_public_function(self, ctx, row)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn eval_original(
+        &self,
+        ctx: &dyn Columns,
+        row: Row<'_>,
+    ) -> Result<Datum, EvalError> {
         if let Some(builtin) = self.pb_builtin {
             let value = builtin.eval(self, ctx, row)?;
             let value = interpret_integer_result(value, self.get_static_type());
@@ -1931,6 +1945,7 @@ impl ScalarFunction {
     /// Returns `Ok(None)` for every shape the gate does not cover, including
     /// runtime values no ETInt signature can produce; those keep the ordinary
     /// ladder as their behavior contract.
+    #[cfg(test)]
     fn eval_fast_integer_binary(
         &self,
         ctx: &dyn Columns,
@@ -2134,6 +2149,7 @@ impl ScalarFunction {
     /// Datum-level implementations. Each returns whatever its operand kinds
     /// produced; reconciling that with the declared result type is
     /// [`Self::eval`]'s job, done once for all of them.
+    #[cfg(test)]
     fn eval_by_signature(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         let name = self.func_name.lowercase();
         // Go `builtinValues*Sig` reads the statement's current insert row,

@@ -158,7 +158,11 @@ fn eager_scalar_original_observations() {
                             let ctx = super::calendar_value_tests::context(profile, 2, level);
                             let before = crate::scalar_function::eager_value_phases_for_test();
                             let value = super::misc_identity_value_tests::observe(
-                                || f.eval(&ctx, input.get_row(0)),
+                                || {
+                                    crate::test_original_eval::with_original(|| {
+                                        f.eval(&ctx, input.get_row(0))
+                                    })
+                                },
                                 &ctx,
                             );
                             fold(&mut hash, &value);
@@ -189,7 +193,10 @@ fn eager_scalar_registered_shapes_really_enter_original_eager_phase() {
         );
         let ctx = super::calendar_value_tests::context(1, 2, 0);
         let before = crate::scalar_function::eager_value_phases_for_test();
-        let _ = super::misc_identity_value_tests::observe(|| f.eval(&ctx, input.get_row(0)), &ctx);
+        let _ = super::misc_identity_value_tests::observe(
+            || crate::test_original_eval::with_original(|| f.eval(&ctx, input.get_row(0))),
+            &ctx,
+        );
         assert_eq!(
             crate::scalar_function::eager_value_phases_for_test() - before,
             1,

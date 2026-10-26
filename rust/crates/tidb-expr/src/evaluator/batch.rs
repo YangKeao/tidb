@@ -3918,23 +3918,18 @@ fn preflight_view<'a>(
 #[derive(Clone, Copy)]
 enum SourceInputs<'a> {
     Projection(&'a [FieldType]),
-    #[cfg(test)]
-    PhysicalRow {
-        width: usize,
-    },
+    PhysicalRow { width: usize },
 }
 impl<'a> SourceInputs<'a> {
     fn width(self) -> usize {
         match self {
             Self::Projection(fields) => fields.len(),
-            #[cfg(test)]
             Self::PhysicalRow { width } => width,
         }
     }
     fn declarations(self) -> &'a [FieldType] {
         match self {
             Self::Projection(fields) => fields,
-            #[cfg(test)]
             Self::PhysicalRow { .. } => &[],
         }
     }
@@ -5523,7 +5518,6 @@ enum SourceConsumer {
         unordered: bool,
         deferred_closed: bool,
     },
-    #[cfg(test)]
     Scalar,
 }
 impl SourceConsumer {
@@ -5555,7 +5549,6 @@ impl SourceConsumer {
                 unordered,
                 limits,
             ),
-            #[cfg(test)]
             Self::Scalar => Ok((false, true, None)),
         }
     }
@@ -8720,7 +8713,6 @@ impl EvaluatorSuite {
     }
 }
 
-#[cfg(test)]
 #[path = "batch_scalar_source.rs"]
 mod scalar_source;
 
@@ -9322,4 +9314,101 @@ impl PreparedBatchSuite {
         }
         Ok(())
     }
+}
+
+// A standalone public caller supplies a genuine immutable root and Row, not a
+// Projection Suite/schema. Keep the existing SDK execution defaults and charge
+// its native-source metadata against that same finite byte allowance. Existing
+// Projection and explicit caller policies remain unchanged.
+fn public_scalar_limits() -> (BatchSourceLimits, ExecutionLimits, usize) {
+    let execution = ExecutionLimits::default();
+    let maximum = execution.max_retained_bytes;
+    (
+        BatchSourceLimits {
+            tree: CompileLimits::default(),
+            max_metadata_bytes: maximum,
+        },
+        execution,
+        maximum,
+    )
+}
+impl BatchFailure {
+    fn into_public_error(self, phase: crate::ExpressionRuntimeFailurePhase) -> EvalError {
+        match self.into_error_at(phase) {
+            EvaluatorError::Eval(error) => error,
+            EvaluatorError::Chunk(message) => EvalError::ExpressionRuntimeFailure(
+                crate::ExpressionRuntimeFailure::from_local_eval(binding(message), Some(phase)),
+            ),
+        }
+    }
+}
+pub(crate) fn eval_public_expression(
+    root: &Expression,
+    context: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> std::result::Result<Datum, EvalError> {
+    #[cfg(test)]
+    crate::test_original_eval::note_shared();
+    let (source, execution, maximum) = public_scalar_limits();
+    let mut plan = scalar_source::BorrowedExpression::compile(
+        root,
+        row.len(),
+        true,
+        source,
+        execution,
+        maximum,
+    )
+    .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))?;
+    plan.eval(context, row)
+        .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
+}
+pub(crate) fn eval_public_expression_with_error_value(
+    root: &Expression,
+    context: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> std::result::Result<Datum, (Datum, EvalError)> {
+    #[cfg(test)]
+    crate::test_original_eval::note_shared();
+    let (source, execution, maximum) = public_scalar_limits();
+    let mut plan = scalar_source::BorrowedExpression::compile(
+        root,
+        row.len(),
+        true,
+        source,
+        execution,
+        maximum,
+    )
+    .map_err(|error| {
+        (
+            Datum::Null,
+            error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare),
+        )
+    })?;
+    plan.eval_with_error_value(context, row)
+        .map_err(|(value, error)| {
+            (
+                value,
+                error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke),
+            )
+        })
+}
+pub(crate) fn eval_public_function(
+    root: &ScalarFunction,
+    context: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> std::result::Result<Datum, EvalError> {
+    #[cfg(test)]
+    crate::test_original_eval::note_shared();
+    let (source, execution, maximum) = public_scalar_limits();
+    let mut plan = scalar_source::BorrowedExpression::compile_function(
+        root,
+        row.len(),
+        true,
+        source,
+        execution,
+        maximum,
+    )
+    .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))?;
+    plan.eval(context, row)
+        .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
 }

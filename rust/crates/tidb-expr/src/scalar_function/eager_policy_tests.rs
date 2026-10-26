@@ -91,7 +91,9 @@ pub(crate) fn original_common(name: &str, n: usize) -> bool {
     let f = function(name, n);
     let before = eager_value_phases_for_test();
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f.eval(&crate::NoColumns, Row::empty())
+        // This counter describes the retired original dispatcher, not the
+        // default public route whose candidate classification is checked below.
+        crate::test_original_eval::with_original(|| f.eval(&crate::NoColumns, Row::empty()))
     }));
     let count = eager_value_phases_for_test() - before;
     assert!(

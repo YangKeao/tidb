@@ -1,5 +1,5 @@
 // Copyright 2026 PingCAP, Inc. Licensed under Apache-2.0.
-//! Borrowed public-source proof, before retiring the original public oracle.
+//! Genuine borrowed public scalar callers in the existing SDK frame.
 //! No expression, Suite, SQL declaration or physical Chunk is manufactured.
 use super::*;
 use tidb_chunk::row::Row;

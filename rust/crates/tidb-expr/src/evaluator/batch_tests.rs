@@ -19587,7 +19587,9 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                             )
                         })
                     }
-                    _ => root.eval(&context, input.get_row(0)),
+                    _ => crate::test_original_eval::with_original(|| {
+                        root.eval(&context, input.get_row(0))
+                    }),
                 };
                 assert_eq!(format!("{actual:?}"), format!("{expected:?}"), "{op:?}");
                 assert_eq!(events, *context.events.borrow(), "{op:?}");
@@ -26983,7 +26985,8 @@ fn observe_optional_phase_case<C: Columns>(
         let mut a = input();
         let mut left = output_for(fields.0);
         left.append_null(0);
-        let expected = session_read_outcome(|| owners[0].run(contexts[0], &mut a, &mut left));
+        let expected =
+            original_session_read_outcome(|| owners[0].run(contexts[0], &mut a, &mut left));
         let label = format!("{label}/reuse{reuse}");
         {
             let mut b = input();
@@ -27175,6 +27178,21 @@ fn session_read_actual_sources_do_not_fallback() {
         }
     }
     assert!(failures.is_empty(), "session read source {failures:?}");
+}
+
+// These captures are the independently frozen original reference, including
+// uncapped outcomes outside a candidate's finite native budget. Only the
+// reference callback enters the test-only old interpreter; actual candidates
+// and default public-entry tests retain the shared production route.
+fn original_session_read_outcome<T: std::fmt::Debug>(f: impl FnOnce() -> T) -> String {
+    let before = crate::test_original_eval::entries();
+    let outcome = crate::test_original_eval::with_original(|| session_read_outcome(f));
+    assert_eq!(
+        crate::test_original_eval::entries().1,
+        before.1,
+        "original reference reached the new public scalar driver"
+    );
+    outcome
 }
 
 fn session_read_outcome<T: std::fmt::Debug>(f: impl FnOnce() -> T) -> String {

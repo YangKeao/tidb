@@ -465,3 +465,11 @@ fn failure_datum_copy_limits_are_opt_in_and_do_not_copy_unused_cached_values() {
     assert_eq!(error.refusal(), BatchRefusal::Resource);
     assert_eq!(captured.calls.get(), 1);
 }
+
+#[test]
+fn explicit_original_public_error_datum_contracts_are_independent() {
+    let actual = crate::test_original_eval::compare_records(|| {
+        error_records(|e, c, r| e.eval_with_error_value(c, r))
+    });
+    assert_eq!((actual.len(), digest(&actual)), (3240, 0xFB8415D6D51EBFBD));
+}

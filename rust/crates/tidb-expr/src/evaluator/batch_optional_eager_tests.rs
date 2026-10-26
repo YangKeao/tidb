@@ -99,8 +99,9 @@ fn optional_eager_original_metadata_demands_and_prefixes() {
                                 let mut a = input();
                                 let mut left = output_for(&output_field(name));
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| owner.run(&context, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    owner.run(&context, &mut a, &mut left)
+                                });
                                 let label = format!(
                                     "{name}/{mask}/{kind}/{vi}/{profile}/{enabled}/{selection:?}"
                                 );
@@ -269,8 +270,9 @@ fn optional_eager_preferred_registry_arity_and_original_metadata_match() {
                             let (mut left, mut right) = (output_for(&field), output_for(&field));
                             left.append_null(0);
                             right.append_null(0);
-                            let expected =
-                                session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                            let expected = original_session_read_outcome(|| {
+                                original.run(&old, &mut a, &mut left)
+                            });
                             let got = session_read_outcome(|| {
                                 actual.run_with_tikv_batch(&new, &mut b, &mut right, &[ty()])
                             });
@@ -403,7 +405,7 @@ fn optional_common_profiles_record_original_and_actual_admission() {
                                 let (owner, old, field) = make();
                                 let mut left = output_for(&field);
                                 left.append_null(0);
-                                let expected = session_read_outcome(|| {
+                                let expected = original_session_read_outcome(|| {
                                     owner.run(&old, &mut input(), &mut left)
                                 });
                                 let label = format!(

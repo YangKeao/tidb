@@ -1215,12 +1215,10 @@ impl<'a> NativeBatchHosts<'a> {
         self.root_error_value = None;
         self.native_error.take()
     }
-    #[cfg(test)]
     pub(super) fn with_root_error_values(mut self, enabled: bool) -> Self {
         self.capture_root_error_value = enabled;
         self
     }
-    #[cfg(test)]
     pub(super) fn take_native_failure_with_value(
         &mut self,
         expected: NativeValueOrigin,

@@ -435,7 +435,9 @@ fn typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits() {
                     let ctx = Context::new(profile, script.clone());
                     let result =
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            crate::scalar_function::numeric_expression_text(&expr, float, &ctx)
+                            crate::test_original_eval::with_original(|| {
+                                crate::scalar_function::numeric_expression_text(&expr, float, &ctx)
+                            })
                         })) {
                             Ok(v) => format!("{v:?}"),
                             Err(p) => format!(
@@ -464,7 +466,14 @@ fn typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits() {
                     let root = proof::call(name, field, vec![expr]);
                     let ctx = Context::new(profile, script.clone());
                     let input = proof::input(false);
-                    let result = outcome(|| root.eval(&ctx, input.get_row(0)), &ctx);
+                    let result = outcome(
+                        || {
+                            crate::test_original_eval::with_original(|| {
+                                root.eval(&ctx, input.get_row(0))
+                            })
+                        },
+                        &ctx,
+                    );
                     fold(
                         &mut hash,
                         &format!("math|{which}|{profile}|{si}|{name}|{result}"),

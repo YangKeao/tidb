@@ -208,7 +208,7 @@ fn case(
     let mut a = input(selection);
     let mut left = output_for(&ty);
     left.append_null(0);
-    let expected = session_read_outcome(|| owner.run(old, &mut a, &mut left));
+    let expected = original_session_read_outcome(|| owner.run(old, &mut a, &mut left));
     if compare {
         let mut b = input(selection);
         let mut right = output_for(&ty);
@@ -471,7 +471,7 @@ fn long(compare: bool) {
                                             let mut a = build();
                                             let mut left = output_for(&ty);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 owner.run(&old, &mut a, &mut left)
                                             });
                                             if compare {
@@ -696,9 +696,10 @@ fn physical(compare: bool) {
                                                 let mut a = build();
                                                 let mut left = output_for(&ty);
                                                 left.append_null(0);
-                                                let expected = session_read_outcome(|| {
-                                                    owner.run(&old, &mut a, &mut left)
-                                                });
+                                                let expected =
+                                                    original_session_read_outcome(|| {
+                                                        owner.run(&old, &mut a, &mut left)
+                                                    });
                                                 if compare {
                                                     let mut b = build();
                                                     let mut right = output_for(&ty);
@@ -1078,7 +1079,7 @@ fn pb_lazy_source_direct_consumers_and_fixed_cap_recovery() {
                 let mut a = input(&Some(vec![2, 0, 2]));
                 let mut left = output_for(&ty);
                 left.append_null(0);
-                let expected = session_read_outcome(|| {
+                let expected = original_session_read_outcome(|| {
                     owner.run_with_consumer(
                         &old,
                         &mut a,
@@ -1155,7 +1156,7 @@ fn pb_lazy_source_direct_consumers_and_fixed_cap_recovery() {
             let mut a = input(&None);
             let mut left = output_for(&ty);
             left.append_null(0);
-            let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+            let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
             let mut b = input(&None);
             let mut right = output_for(&ty);
             right.append_null(0);

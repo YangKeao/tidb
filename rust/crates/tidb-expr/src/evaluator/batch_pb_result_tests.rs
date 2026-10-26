@@ -264,9 +264,10 @@ fn matrix(compare: bool, full: bool) {
                                                     let mut a = input(&selection);
                                                     let mut left = output_for(&ty);
                                                     left.append_null(0);
-                                                    let expected = session_read_outcome(|| {
-                                                        original.run(&old, &mut a, &mut left)
-                                                    });
+                                                    let expected =
+                                                        original_session_read_outcome(|| {
+                                                            original.run(&old, &mut a, &mut left)
+                                                        });
                                                     let label=format!("pb-result/{full}/{arity}/{source}/{result}/{flags:?}/{display}/{shape}/{vi}/{profile}/{enabled}/{selection:?}/{reuse}");
                                                     if compare {
                                                         let mut b = input(&selection);
@@ -394,8 +395,9 @@ fn long(compare: bool) {
                                 let mut a = input(&selection);
                                 let mut left = output_for(&ty);
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let label=format!("pb-result-long/{arity}/{result}/{flags:?}/{profile}/{rows}/{first}/{round}");
                                 if compare {
                                     let mut b = input(&selection);
@@ -520,8 +522,9 @@ fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
                                 let mut a = input(&selection);
                                 let mut left = output_for(&field);
                                 left.append_null(0);
-                                let expected =
-                                    session_read_outcome(|| original.run(&old, &mut a, &mut left));
+                                let expected = original_session_read_outcome(|| {
+                                    original.run(&old, &mut a, &mut left)
+                                });
                                 let mut b = input(&selection);
                                 let mut right = output_for(&field);
                                 right.append_null(0);
@@ -621,7 +624,7 @@ fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
             let mut a = input(&None);
             let mut left = output_for(&field);
             left.append_null(0);
-            let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+            let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
             let mut b = input(&None);
             let mut right = output_for(&field);
             right.append_null(0);

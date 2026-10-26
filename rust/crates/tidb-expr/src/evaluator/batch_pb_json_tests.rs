@@ -104,7 +104,7 @@ fn case(
     let mut a = input(selection);
     let mut left = output_for(&ty);
     left.append_null(0);
-    let expected = session_read_outcome(|| owner.run(old, &mut a, &mut left));
+    let expected = original_session_read_outcome(|| owner.run(old, &mut a, &mut left));
     if compare {
         let mut b = input(selection);
         let mut right = output_for(&ty);
@@ -392,7 +392,7 @@ fn long(compare: bool) {
                                             let mut a = build();
                                             let mut left = output_for(&ty);
                                             left.append_null(0);
-                                            let expected = session_read_outcome(|| {
+                                            let expected = original_session_read_outcome(|| {
                                                 owner.run(&old, &mut a, &mut left)
                                             });
                                             if compare {
@@ -613,9 +613,10 @@ fn physical(compare: bool) {
                                                 let mut a = build();
                                                 let mut left = output_for(&ty);
                                                 left.append_null(0);
-                                                let expected = session_read_outcome(|| {
-                                                    owner.run(&old, &mut a, &mut left)
-                                                });
+                                                let expected =
+                                                    original_session_read_outcome(|| {
+                                                        owner.run(&old, &mut a, &mut left)
+                                                    });
                                                 if compare {
                                                     let mut b = build();
                                                     let mut right = output_for(&ty);
@@ -731,7 +732,7 @@ fn pb_json_source_live_cache_identity_and_fixed_cap_recovery() {
         new.values[2] = Datum::Int(9);
         let mut a = single();
         let mut left = output_for(&ty);
-        let expected = session_read_outcome(|| old_owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| old_owner.run(&old, &mut a, &mut left));
         let mut b = single();
         let mut right = output_for(&ty);
         let got = session_read_outcome(|| {
@@ -822,7 +823,7 @@ fn pb_json_source_live_cache_identity_and_fixed_cap_recovery() {
         let mut a = single();
         let mut left = output_for(&ty);
         left.append_null(0);
-        let expected = session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+        let expected = original_session_read_outcome(|| owner.run(&old, &mut a, &mut left));
         let mut b = single();
         let mut right = output_for(&ty);
         right.append_null(0);
@@ -873,7 +874,7 @@ fn pb_json_source_actual_legacy_consumers_and_stale_origins() {
                     let mut a = input(&Some(vec![2, 0, 2]));
                     let mut left = output_for(&ty);
                     left.append_null(0);
-                    let expected = session_read_outcome(|| {
+                    let expected = original_session_read_outcome(|| {
                         owner.run_with_consumer(
                             &old,
                             &mut a,
@@ -1351,8 +1352,9 @@ fn pb_json_source_keeps_actual_binary_value_field_attributes() {
                                     let mut a = input(&selection);
                                     let mut left = output_for(&ty);
                                     left.append_null(0);
-                                    let expected =
-                                        session_read_outcome(|| owner.run(&old, &mut a, &mut left));
+                                    let expected = original_session_read_outcome(|| {
+                                        owner.run(&old, &mut a, &mut left)
+                                    });
                                     let mut b = input(&selection);
                                     let mut right = output_for(&ty);
                                     right.append_null(0);

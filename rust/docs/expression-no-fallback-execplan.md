@@ -20,6 +20,7 @@ previous user contract; demand and side-effect ordering do not.
 
 - [x] N52 genuine function root:87 original files archived; four independent original cohorts plus prior direct-function pin give82060 unchanged observations. Real function ownership and output role pass28 public tests. Repaired16-byte temporary-reference inflation using one generic compiler and original8-byte Expression storage; original limits preserved. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, lint/dual-ten-file fmt and ownership checks pass. Public API promotion remains separate and unfinished.
 - [x] N53 public-row closure:89 TiDB/two SDK originals archived and independent404 observations pinned. Reproduced virtual-marker admission and MAX-cursor Resource differences, then preserved actual public Column behavior and genuine coordinates through the same SDK frame. Fresh public32/context43/Projection52/Expand/inventory/lint/dual-six-file fmt, SDK1150/exact inherited1/1ignore/17warnings and clippy171/89 pass unchanged. SDK local3ee7511; receipt no-fallback-n53.md. Public entry promotion remains next.
+- [x] N54 public scalar promotion:the three default public entries now use the genuine shared SDK frame, with the exact old recursion available only through an explicit default-off cfg(test) oracle. Independent99144-record comparisons and routing/budget controls pass; all733 batch tests pass in the last full run. Five remaining legacy controls were corrected at reference call sites and rerun separately; full-plus-focused evidence is documented without claiming a later clean full sweep. Production check/Projection52/context43/Expand/inventory/lint/dual30fmt and ownership/reconstruction pass. Actual caller reuse, remaining fallback/driver paths and final service/performance work remain.
 
 - [x] N51 error-Datum channel: thirteen files archived at5a30922d56 before observers;3240/FB8415D6D51EBFBD original records independently reproduced and pinned before the real lost-Datum RED. Explicit root capture now preserves actual failed-conversion values; the genuine borrowed Constant supplies its actual cached value after read/child failure. The existing6720/9DB38EEAA92DDE88 error-pair pin also matches the shared frame. Public15, focused original/context43, Projection52, Expand6+64/B42, inventory83088/0/0, freshlint/dual5fmt/provenance checks pass. N50 fullfrontend is retained as prior baseline only. Continue genuine ScalarFunction root compilation; public entries remain unchanged.
 
@@ -222,6 +223,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N54 public routing changed the meaning of historical tests that called the public API to capture an original phase counter or uncapped reference. Keep those reference callbacks explicitly on the test-only old bodies, while default functional tests and actual candidates stay on the shared driver. Resource policies can make an oversized graph terminal even when old lazy evaluation could skip most of it; do not bypass limits or rebase original golden records.
 
 N53 public Column.eval ignores planner virtual/correlation markers, unlike the existing Projection source admission. A real Row cursor can also contain usizeMAX while a constant/dead column branch succeeds; deriving idx+1 invented an extent and caused Resource. The actual pre-fix source reproduced both errors, while arbitrary unregistered function names already passed through CommonEager.
 
@@ -566,6 +569,8 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+N54 promotes the already validated genuine scalar consumer and preserves three exact original entry bodies only under cfg(test). Default-off scope and per-entry controls distinguish independent original observations from new public calls. Test reference callbacks alone opt into the oracle; production has no old-evaluator switch. Use existing SDK default limits without changing Projection or explicit caller policies. Date/Author:2026-10-26 ExpressionReuseEngineer.
 
 N53 adds a genuine scalar-cursor facade to LocalBatchProgram, validating schema and the same SQL entry/catalog/budget/frame without declaring a physical row universe. Existing bounded selection keeps its original row-bound checks, and only PhysicalRow skips unused planner markers. No coordinates are remapped and no second driver or function dispatcher is introduced. Date/Author:2026-10-26 ExpressionReuseEngineer.
 
@@ -912,6 +917,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N54 default public scalar routing is unified. The last complete run on the current production code gives2272pass/8fail/95ignore/all733batch/346warnings; five legacy test-only oracle controls were then corrected and passed separately, leaving the three inherited failures in combined evidence. Do not label that as a later clean full sweep. Production check and actual Projection52 plus focused context43 and all current gates pass. Receipt no-fallback-n54.md records exact scope and the historical N53 raw-context artifact loss. Remaining caller integration, prepared reuse, generic fallback/old driver retirement, service verification and final performance continue.
 
 N53 all404 independently pinned original observations now match the actual shared consumer. Fresh public32/context43/Projection52 and full SDK1150/exact inherited1/1ignore plus exact17/171 warning Counters pass. Source reconstruction proves original SDK frame algorithms unchanged; whole frontend N52 remains prior evidence only. Public entries still need promotion with an independent cfg(test) oracle, followed by actual AST/filter/join/Unistore, generic fallback deletion, service and performance work.
 
