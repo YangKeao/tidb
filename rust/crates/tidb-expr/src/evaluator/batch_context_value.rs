@@ -111,6 +111,18 @@ impl NativeBatchHosts<'_> {
                 .emit_diagnostic_result(text, node, row)
                 .map(HostStep::Ready);
         }
+        let capture_error_value = self.capture_root_error_value;
+        if capture_error_value {
+            // The callback has supplied its owned value. Bound any additional
+            // conversion/error-Datum copies before the original converter can
+            // clone an unconverted payload into its failure pair.
+            let bytes = native_payload_bytes(&value)?
+                .checked_mul(3)
+                .and_then(|bytes| base.checked_add(bytes))
+                .ok_or_else(|| resource("context failure copy allowance overflow"))?;
+            self.check_bytes(bytes)?;
+        }
+        let mut error_value = None;
         let value = if shortcut {
             Ok(value)
         } else {
@@ -118,7 +130,12 @@ impl NativeBatchHosts<'_> {
                 crate::scalar_function::eager_values::audit_work_result(
                     descriptor
                         .finish_expression(value, self.context)
-                        .map_err(|(_, error)| error),
+                        .map_err(|(value, error)| {
+                            if capture_error_value {
+                                error_value = Some(value);
+                            }
+                            error
+                        }),
                 )
             })
         };
@@ -129,7 +146,12 @@ impl NativeBatchHosts<'_> {
         }
         let value = match value {
             Ok(value) => value,
-            Err(error) => return self.native_failure(error),
+            Err(error) => {
+                if let Some(value) = error_value {
+                    self.retain_root_error_value(id, value)?;
+                }
+                return self.native_failure(error);
+            }
         };
         let held = base
             .checked_add(

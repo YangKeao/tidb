@@ -463,3 +463,6 @@ fn borrowed_scalar_does_not_validate_an_undemanded_empty_chunk_row() {
         assert_eq!(plan.eval(&crate::NoColumns, row).unwrap(), Datum::Int(9));
     }
 }
+
+#[path = "batch_public_error_tests.rs"]
+mod error_value_tests;

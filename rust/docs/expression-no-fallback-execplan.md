@@ -18,6 +18,9 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] N51 error-Datum channel: thirteen files archived at5a30922d56 before observers;3240/FB8415D6D51EBFBD original records independently reproduced and pinned before the real lost-Datum RED. Explicit root capture now preserves actual failed-conversion values; the genuine borrowed Constant supplies its actual cached value after read/child failure. The existing6720/9DB38EEAA92DDE88 error-pair pin also matches the shared frame. Public15, focused original/context43, Projection52, Expand6+64/B42, inventory83088/0/0, freshlint/dual5fmt/provenance checks pass. N50 fullfrontend is retained as prior baseline only. Continue genuine ScalarFunction root compilation; public entries remain unchanged.
+
+
 - [x] N50 shared source plan and comparison phases: thirteen baseline files archived at8536971ff7; three before-production public contracts independently reproduced and pinned (error-pair6720/9DB38EEAA92DDE88, direct function5880/2550BA35CB389B63, ordinary6720/E96DA50FA24BFFC5). Common SourcePlan/leaf now serve production Projection; the genuine borrowed-row scalar adapter remains cfg(test). Actual Suite comparison re-demand and generic errors fixed without another evaluator. Eight targeted, full2246/exactold3/95/all705batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, freshlint, dual7fmt and provenance checks pass. Continue public error-Datum/direct-function-root work; no public interpreter entry has switched.
 
 
@@ -216,6 +219,9 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+N51 original errors return distinct Datums: cached planning state after parameter-read/deferred-child failures, actual unconverted data after conversion failures. The old shared ordinary result interface dropped those Datums to NULL; the first fixed new record reproduces that loss without changing original behavior. Error data must move atomically with its original native cause: foreign origin reads cannot consume the captured pair, and an unconsumed failure blocks new callbacks. Ordinary consumers intentionally discard the Datum and retain their existing SQL failure even when the unused error payload is large.
+
 
 N50 found two comparison phases missing from the former host. With actual Int declarations and a runtime Real, the original integer probe reads both raw arguments, declines, and then reads both afresh. Reusing the first values can change both callback counts and the result (Real1.5 then Int7 makes equality to7 true). The subsequent generic ladder must not try the integer probe again: a fresh MinNotNull otherwise changes the original expression-operand error to an integer-coercion error. The direct Suite test also exposed its former admission fallback. A separate scalar prototype regression showed that a literal or unselected column branch may use a cursor into an empty Chunk; the batch physical-row gate is not that public contract.
 
@@ -553,6 +559,9 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+N51 keeps error capture explicitly opt-in and currently enables it only in the cfg(test) genuine scalar consumer. The common production host defaults to disabled capture. Retain actual root conversion data after existing argument-token validation, check actual task metadata/root/output-role/row, and move native cause plus optional Datum together. Preserve opaque error identity, use bounded actual Constant.value copy only after an original read/child failure, and bound additional conversion/error-value copies before cloning a large unconverted payload. Never re-evaluate a child or invent a SQL result type.
+
 
 N50 separates SourcePlan from the existing actual Projection Arc/root/slot/output/schema seal and keeps its exact declaration checks. A distinct physical-row input supplies width and actual node declarations without inventing a SQL schema. The cfg(test) scalar adapter borrows the real root/Row and drains an authenticated Output Datum from the same SDK frame. Only the ordinary two-Int/LongLong-result comparison context profile is newly admitted; preserve raw per-row operand demand and original atomic or prefix publication. Public error pairs and direct ScalarFunction roots remain separate contracts and must be proved before replacing their entries. Do not add an immutable plan cache while args/ret_type/collation remain publicly mutable.
 
@@ -892,6 +901,9 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N51 targeted verification passes:9960 previously pinned error-pair observations (new3240 plus prior6720), ordinary and direct-function original pins unchanged, opaque cause identity, foreign origin rejection, callback unwind recovery, finite64KiB policy and default-consumer controls. Public15 and focused43 tests plus actual Projection52/Expand/inventory/lint/dual5fmt pass. The N50 whole-frontend2246/exactold3/95 baseline was not rerun for this opt-in channel; the new delta is covered by its focused context/default-mode and actual executor gates. Full global validation remains required at public entry retirement. Actual direct ScalarFunction roots, AST/filter/join/Unistore, fallback deletion and final service/performance work remain unfinished.
+
 
 N50 final checks pass: original before-production contracts remain unchanged, ordinary borrowed-row source matches all6720records, comparison fresh-value/error/selection/window/publication regressions pass, and the whole frontend has2246pass with exactly the inherited3 failures and346warnings. Projection52, Expand6+64/B42, inventory83088/0/0, lint and both formatters pass. SDKad73b11 is unchanged and its prior baseline is reused honestly. Public entry replacement, direct function roots, Constant error Datums, AST/filter/join/Unistore callers, generic fallback deletion, full service validation and final performance are still required. No overall completion or performance claim.
 
@@ -4958,3 +4970,12 @@ The production source compiler now returns a detached SourcePlan; BatchSource se
 Actual ordinary integer-declared comparisons now represent the original first integer probe and, if it declines, fresh raw demands in the same SDK host task. The generic comparison preparation has only its redundant integer probe removed. The precise contextual root profile preserves scalar operand demand and vector-enabled atomic publication; late errors cross driver-window boundaries with unchanged selection and output prefix.
 
 Run the targeted public_source_tests and full frontend with the standard locked offline release command above, Projection tests with tidb-executor, then the unchanged Expand and admission inventory. Expect8 targeted passes; full2246pass/exactold3/95ignore/all705batch/346aggregatewarnings; Projection52; Expand6 plus64/B42FB8BE316E6C79; inventory83088/0/0. Run make lint and both pinned formatters for the seven Rust files. Evidence and exact commands are in rust/docs/evidence/no-fallback-n50.md. The next increment must preserve actual Constant error Datums and accept a genuine borrowed ScalarFunction root, followed by public entry and remaining caller retirement; this checkpoint does not end task4.
+
+## N51: preserve the actual Constant error Datum in the existing frame
+
+
+The real ContextValue conversion already returns a Datum alongside its error. NativeBatchHosts now optionally retains that owned root Datum after the original token validation, together with its actual root/row identity, and the explicit scalar consumer takes it atomically with the original native error. Failed parameter reads and child evaluation instead return a bounded copy of the genuine borrowed Constant.value; no expression callback or replacement tree is involved. Production Projection keeps capture disabled. The requesting scalar consumer and opt-in methods remain cfg(test) pending all public caller contracts.
+
+Before changing that channel, archive5a30922d56 and capture/rerun/pin3240/FB8415D6D51EBFBD. The original first record returns the outer cached planning string whereas the prior ordinary source returned NULL. The completed shared frame matches that corpus and the earlier6720/9DB38EEAA92DDE88 public error-pair pin unchanged. Root error payload copies use the existing64KiB test policy; large-payload refusals are finite-policy tests, not uncapped native equivalence. Callback panic/resource/error recovery reuses the actual compiled plan without retries.
+
+Run public_source_tests (15), the43 exact existing dynamic-leaf/typed-context/deferred/diagnostic tests selected in workspace n51-context-focused.json, actual Projection52, current Expand6+64/B42 and inventory83088/0/0, make lint and both pinned formatters for the five Rust files. The previous N50 whole-frontend baseline is explicitly retained rather than reported as a fresh N51 full run. Receipt rust/docs/evidence/no-fallback-n51.md lists exact commands and limitations. Continue with a genuine borrowed ScalarFunction root and its distinct enclosing-expression result view before switching public entries; task4 remains active.

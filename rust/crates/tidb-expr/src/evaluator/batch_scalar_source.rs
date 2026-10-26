@@ -7,7 +7,7 @@ use tidb_chunk::row::Row;
 pub(super) struct BorrowedExpression<'a> {
     // The lifetime pins the genuine root; no context or live argument value is
     // retained in its detached source plan.
-    _root: &'a Expression,
+    root: &'a Expression,
     width: usize,
     source: SourcePlan,
     program: LocalBatchProgram,
@@ -71,7 +71,7 @@ impl<'a> BorrowedExpression<'a> {
             &source.facts,
         )?;
         Ok(Self {
-            _root: root,
+            root,
             width,
             source,
             program,
@@ -80,6 +80,46 @@ impl<'a> BorrowedExpression<'a> {
         })
     }
     pub(super) fn eval(&mut self, context: &dyn Columns, row: Row<'_>) -> Result<Datum> {
+        self.execute(context, row, false, &mut None)
+    }
+    pub(super) fn eval_with_error_value(
+        &mut self,
+        context: &dyn Columns,
+        row: Row<'_>,
+    ) -> std::result::Result<Datum, (Datum, BatchFailure)> {
+        let mut failed = None;
+        match self.execute(context, row, true, &mut failed) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if let Some(value) = failed {
+                    return Err((value, error));
+                }
+                // The genuine Constant owner supplies its cached planning
+                // value after a failed read/child. This is data inspection,
+                // with no new evaluation or replacement expression.
+                let value = match self.root {
+                    Expression::Constant(constant) => {
+                        match crate::tikv::identity_actual::copy_bounded(
+                            &constant.value,
+                            self.maximum,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return Err((Datum::Null, error.into())),
+                        }
+                    }
+                    _ => Datum::Null,
+                };
+                Err((value, error))
+            }
+        }
+    }
+    fn execute(
+        &mut self,
+        context: &dyn Columns,
+        row: Row<'_>,
+        capture_error_value: bool,
+        failed: &mut Option<Datum>,
+    ) -> Result<Datum> {
         if self.width != row.len() {
             return Err(binding("scalar physical row width differs from preparation").into());
         }
@@ -93,6 +133,7 @@ impl<'a> BorrowedExpression<'a> {
             .map(|catalog| {
                 let mut hosts =
                     NativeBatchHosts::new(catalog, &source.host_metadata, context, self.maximum)
+                        .with_root_error_values(capture_error_value)
                         .with_native_values(Some(&store))
                         .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
                         .with_constant_probes(&source.host_probes)
@@ -135,8 +176,22 @@ impl<'a> BorrowedExpression<'a> {
             &mut bindings,
         );
         drop(bindings);
-        if let Some(error) = hosts.as_mut().and_then(NativeBatchHosts::take_native_error) {
-            return Err(error.into());
+        if let Some(hosts) = hosts.as_mut() {
+            let native = if capture_error_value {
+                hosts.take_native_failure_with_value(NativeValueOrigin {
+                    node: 0,
+                    row: InputRow {
+                        occurrence: 0,
+                        input_row: row.idx(),
+                    },
+                })?
+            } else {
+                hosts.take_native_error().map(|error| (error, None))
+            };
+            if let Some((error, value)) = native {
+                *failed = value;
+                return Err(error.into());
+            }
         }
         let output = result?;
         let VectorValue::Bytes(values) = output else {

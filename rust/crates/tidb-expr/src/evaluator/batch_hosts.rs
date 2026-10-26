@@ -1156,6 +1156,8 @@ pub(super) struct NativeBatchHosts<'a> {
     generation: u64,
     max_retained_bytes: usize,
     native_error: Option<EvalError>,
+    capture_root_error_value: bool,
+    root_error_value: Option<(NativeValueOrigin, Datum)>,
     constant_root_shortcut: bool,
     root_value: Option<Datum>,
     typed_values: Box<[Option<Datum>]>,
@@ -1185,6 +1187,8 @@ impl<'a> NativeBatchHosts<'a> {
             generation: 0,
             max_retained_bytes,
             native_error: None,
+            capture_root_error_value: false,
+            root_error_value: None,
             constant_root_shortcut: false,
             root_value: None,
             typed_values: Box::new([]),
@@ -1207,7 +1211,65 @@ impl<'a> NativeBatchHosts<'a> {
         self
     }
     pub(super) fn take_native_error(&mut self) -> Option<EvalError> {
+        // The ordinary consumer deliberately drops the accompanying Datum.
+        self.root_error_value = None;
         self.native_error.take()
+    }
+    #[cfg(test)]
+    pub(super) fn with_root_error_values(mut self, enabled: bool) -> Self {
+        self.capture_root_error_value = enabled;
+        self
+    }
+    #[cfg(test)]
+    pub(super) fn take_native_failure_with_value(
+        &mut self,
+        expected: NativeValueOrigin,
+    ) -> LocalResult<Option<(EvalError, Option<Datum>)>> {
+        if !self.capture_root_error_value
+            || self
+                .root_error_value
+                .as_ref()
+                .is_some_and(|(origin, _)| *origin != expected)
+        {
+            return Err(binding("root failure value belongs to another invocation"));
+        }
+        Ok(self
+            .native_error
+            .take()
+            .map(|error| (error, self.root_error_value.take().map(|(_, value)| value))))
+    }
+    fn retain_root_error_value(&mut self, id: &HostTaskId, value: Datum) -> LocalResult<()> {
+        if !self.capture_root_error_value {
+            return Ok(());
+        }
+        let task = self.task(id)?;
+        let Some(NativeHostMetadata::ContextValue {
+            output_node: 0,
+            output_role: NativeValueRole::Output,
+            ..
+        }) = self.metadata.get(task.slot.index())
+        else {
+            // A parent Constant returns its own cached Datum when its
+            // child fails, rather than leaking that child's error Datum.
+            return Ok(());
+        };
+        if self.root_error_value.is_some() {
+            return Err(binding("root failure value is already retained"));
+        }
+        let origin = NativeValueOrigin {
+            node: 0,
+            row: task.row,
+        };
+        let bytes = native_payload_bytes(&value)?
+            .checked_mul(3)
+            .ok_or_else(|| resource("root failure value retained extent overflow"))?;
+        self.check_bytes(
+            self.retained_bytes()?
+                .checked_add(bytes)
+                .ok_or_else(|| resource("root failure value retained extent overflow"))?,
+        )?;
+        self.root_error_value = Some((origin, value));
+        Ok(())
     }
     fn install_task(
         &mut self,
@@ -1285,6 +1347,16 @@ impl<'a> NativeBatchHosts<'a> {
                 .ok_or_else(|| resource("typed cache retained size overflow"))
             },
         )?;
+        let failed = self
+            .root_error_value
+            .as_ref()
+            .map(|(_, value)| {
+                native_payload_bytes(value)?
+                    .checked_mul(3)
+                    .ok_or_else(|| resource("root failure value retained extent overflow"))
+            })
+            .transpose()?
+            .unwrap_or(0);
         self.slots
             .iter()
             .filter_map(|slot| slot.task.as_ref())
@@ -1292,6 +1364,8 @@ impl<'a> NativeBatchHosts<'a> {
                 array_bytes::<TaskSlot>(self.slots.capacity())?
                     .checked_add(typed)
                     .ok_or_else(|| resource("typed cache and task layout overflow"))?
+                    .checked_add(failed)
+                    .ok_or_else(|| resource("root failure value and tasks extent overflow"))?
                     .checked_add(
                         self.root_value
                             .as_ref()
@@ -2836,6 +2910,9 @@ impl NativeBatchHosts<'_> {
         _ctx: &mut EvalContext,
         invocation: HostInvocation<'_>,
     ) -> LocalResult<HostStart> {
+        if self.capture_root_error_value && self.native_error.is_some() {
+            return Err(binding("previous scalar failure has not been consumed"));
+        }
         let signature = self.catalog.signature(invocation.slot)?;
         if signature.arg_types.as_ref() != invocation.arg_types
             || &signature.return_type != invocation.return_type
