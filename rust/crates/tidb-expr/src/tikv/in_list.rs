@@ -81,12 +81,123 @@ fn legacy_result<E: From<EvalError>>(
     match result {
         Ok(value) => Ok(value.map(i128::from)),
         Err(tidb_query_expr::NativeInLegacyError::Source(error)) => Err(error),
-        Err(tidb_query_expr::NativeInLegacyError::ResourceLimit(reason)) => Err(E::from(
-            EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
-                LocalError::ResourceLimit(reason.into()),
-                None,
-            )),
-        )),
+        Err(tidb_query_expr::NativeInLegacyError::InvalidResponse) => {
+            Err(E::from(invalid_report()))
+        }
+        Err(tidb_query_expr::NativeInLegacyError::ResourceLimit(reason)) => {
+            Err(E::from(legacy_resource(reason)))
+        }
+    }
+}
+fn legacy_resource(reason: &'static str) -> EvalError {
+    EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
+        LocalError::ResourceLimit(reason.into()),
+        None,
+    ))
+}
+
+/// One original legacy membership demand or completed nullable integer result.
+pub enum LegacyInDemand {
+    /// The next actual source position; zero is requested even for an empty list.
+    Source {
+        /// Original operand position requested by the existing SDK IN state.
+        index: usize,
+    },
+    /// The existing SDK comparison/NULL policy, projected without narrowing.
+    Ready(Option<i128>),
+}
+enum LegacyInState {
+    Int(tidb_query_expr::NativeInLegacyIntValues),
+    Bytes {
+        state: tidb_query_expr::NativeInLegacyBytesValues,
+        collation: i32,
+    },
+}
+/// Owned value continuation, without expression, context or source callbacks.
+pub struct LegacyInMachine {
+    state: LegacyInState,
+}
+impl LegacyInMachine {
+    /// Keep the original full-i128 source channel.
+    pub fn integer(count: usize) -> Self {
+        Self {
+            state: LegacyInState::Int(tidb_query_expr::NativeInLegacyIntValues::new(count)),
+        }
+    }
+    /// Preserve the original collation identity and finite byte work allowance.
+    pub fn bytes(count: usize, collation: i32) -> Result<Self, EvalError> {
+        Ok(Self {
+            state: LegacyInState::Bytes {
+                state: tidb_query_expr::NativeInLegacyBytesValues::new(
+                    count,
+                    super::control_value::default_budget(),
+                )
+                .map_err(machine_error)?,
+                collation,
+            },
+        })
+    }
+    /// Actual retained source-vector capacities; inline state is caller charged.
+    pub fn retained_bytes(&self) -> usize {
+        match &self.state {
+            LegacyInState::Int(_) => 0,
+            LegacyInState::Bytes { state, .. } => state.retained_bytes(),
+        }
+    }
+    /// Ask for the actual first source value, without evaluating it.
+    pub fn begin(&mut self) -> Result<LegacyInDemand, EvalError> {
+        let result = match &mut self.state {
+            LegacyInState::Int(state) => state.begin(),
+            LegacyInState::Bytes { state, .. } => state.begin(),
+        };
+        result.map(in_demand).map_err(machine_error)
+    }
+    /// Supply one genuine nullable full-width integer result.
+    pub fn resume_integer(&mut self, value: Option<i128>) -> Result<LegacyInDemand, EvalError> {
+        let LegacyInState::Int(state) = &mut self.state else {
+            return Err(invalid_report());
+        };
+        state
+            .resume_source(value)
+            .map(in_demand)
+            .map_err(machine_error)
+    }
+    /// Supply the actual byte vector. Resolve current collation mode only after
+    /// this source read and only when the SDK has a real non-NULL pair.
+    pub fn resume_bytes(&mut self, value: Option<Vec<u8>>) -> Result<LegacyInDemand, EvalError> {
+        let LegacyInState::Bytes { state, collation } = &mut self.state else {
+            return Err(invalid_report());
+        };
+        state
+            .resume_source(value, || {
+                tidb_datatype::get_collator_by_id(*collation)
+                    .new_collation()
+                    .map_or(
+                        super::NativeCollation::Binary,
+                        tidb_datatype::Collation::native_policy,
+                    )
+            })
+            .map(in_demand)
+            .map_err(machine_error)
+    }
+}
+fn in_demand(step: tidb_query_expr::NativeInLegacyValueStep) -> LegacyInDemand {
+    match step {
+        tidb_query_expr::NativeInLegacyValueStep::Source { index } => {
+            LegacyInDemand::Source { index }
+        }
+        tidb_query_expr::NativeInLegacyValueStep::Ready(value) => {
+            LegacyInDemand::Ready(value.map(i128::from))
+        }
+    }
+}
+fn machine_error(
+    error: tidb_query_expr::NativeInLegacyError<std::convert::Infallible>,
+) -> EvalError {
+    match error {
+        tidb_query_expr::NativeInLegacyError::Source(never) => match never {},
+        tidb_query_expr::NativeInLegacyError::ResourceLimit(reason) => legacy_resource(reason),
+        tidb_query_expr::NativeInLegacyError::InvalidResponse => invalid_report(),
     }
 }
 

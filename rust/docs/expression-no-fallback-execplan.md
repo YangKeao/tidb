@@ -18,6 +18,74 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-28 N65 verified) Both scan filters, TopN keys and aggregate arguments now retain genuine borrowed plans outside physical-row loops. Parameter callback reentry and reuse pass. Final full frontend2363/exactold3/95ignore, Unistore209/exactold3/13, Projection52/Expand6/SHOW31/exactold2, SDK1164/exactold1/1 and exact171 clippy warnings pass their contracts. A narrowly proven final field doc and3 already-unused private functions made test-only are covered by fresh fragment/full-Unistore/production/lint/dual-format gates; frontend warning Counter returns to346. Source audit checks13 retained originals, unchanged executed observers/record hashes and unchanged canonical SDK driver. Receipt evidence/no-fallback-n65.md. Real-service correctness/performance work continues.
+
+- [x] (2026-10-28 N65 default) Complete every actual legacy signature/view in one SDK program with genuine native fragments. Candidate comparisons pass831060 records across9views with0 unimplemented cells, plus all66048 fixed scope cases. Retire all seven typed walkers and Datum into explicit cfg(test) originals, including every recursive helper call. Default Unistore tests now pass208 with only the exact inherited3 failures; default zero-old-tree assertion and both frozen digests pass. Independently retained old bodies also reproduce both immutable digests. Production check and caller plan retention are in progress; final services/performance remain open.
+
+- [x] (2026-10-28 N65 originals) Before changing actual legacy production bodies,
+  close the original-observation gap for absent/retired Ready caches and complex
+  genuine Shared children. Archive660 current files with mainN63 and signed
+  SDKdaa0b49. Add only a test observer: cache present/absent/retired, SQL/NULL/
+  panic, explicit negative/zero/normal precision,8 views and reuse. Include real
+  native deferred/conditional/arithmetic trees, invalid columns and bounded
+  preparation failure under actual eager/short-circuit legacy consumers.
+  Keep940248/B02C0B8B9BDDD00C unchanged; freeze this separate scope contract before
+  selecting real source composition/context capability interfaces. Four sweeps
+  now agree66048/3F895141D852AA15; complete records and executed observer are
+  independently pinned before the new hard digest assertion.
+
+- [x] (2026-10-28 N65 composition) Keep genuine SimpleExpr in Unistore. Add
+  an Arc-owned native source-fragment boundary in tidb-expr that relocates only
+  existing SDK graph/catalog/input coordinates and call ordinals. Preserve actual
+  owners, SQL declarations, native value namespaces, row coordinates and errors;
+  expose native services rather than an evaluator callback. Validate composed
+  parameter/conditional/arithmetic children and hostile bindings in ONE SDK
+  program. Then implement every legacy consumer using actual child demands,
+  compare both immutable cohorts, and retire the old default trees.
+
+  The additive native fragment prototype now contributes original graph,
+  catalog signatures, call IDs and native bindings without an executable
+  program or eval method. First two integration tests pass against independent
+  original values/events, with zero public/original subtree calls and zero
+  hidden scalar preparation during invocation. Expanded panic/cancellation/
+  opaque-cause/stale-value tests are running. A real selected-cache capability
+  extends the existing unwind guard across SDK demands. Legacy defaults remain
+  unchanged until complete consumer validation. Actual candidate source/compiler
+  and owned host services now pass two differential suites for leaf views,
+  integer profiles and genuine Shared subgraphs, including absent/retired cache,
+  errors, panic reuse and late native preparation failure. Every candidate call
+  asserts zero old typed-tree entries. Other recipes still refuse candidate
+  preparation explicitly; no fallback or default promotion occurs. Typed and
+  date continuation expansion now passes732564 admitted original records with
+  identical event traces;3078 preparation cells remain explicit gaps. The SDK
+  legacy IN value control is being factored into owned staged state, reusing
+  its original equality and resource checks; focused SDK and full Unistore
+  validation are running before completing the remaining dynamic consumers.
+
+- [ ] (2026-10-27 N64 active) Retire genuine public Unistore SimpleExpr typed
+  traversals through the same SDK execution model. Before observers, archive
+  signed N63 expression/SDK and all Unistore source/test/build inputs:657files.
+  Capture original eight consumer views, complete SimpleSig metadata, actual
+  rows, missing/NULL/extra/nested children, Shared owners, error/panic demand,
+  zones and precision. The observer is test-only; production is unchanged.
+  Four independent940248/B02C0B8B9BDDD00C originals are now fixed. Protocol
+  controls prove opaque errors, full i128 and panic-poisoning; actual old-tree
+  entry RED is [3,1,3,1,1,4,4]. The218 wire-match variants include100 that still
+  reach legacy admission. Prototype explicit Result demand in the existing SDK
+  HostFrame so actual child failures can remain owned values for their consumer,
+  cancel descendant tasks once and resume RHS without replay or another driver.
+  The isolated SDK foundation now passes9 protocol tests and complete SDK1162/
+  exact inherited1/1ignore, with unchanged clippy81lib/89lib-test Counters. Exact
+  normal HostFrame layout/constructor/storage is retained by an opt-in TaskGuard
+  ledger. Full frontend2358/exactold3/95/902.63s, Projection52/Expand6/SHOW31old2,
+  production149warnings/lint/dual8fmt/source657 audit pass. Unistore198 passes,
+  inherited3 plus the explicitly open new default-tree entry RED,13ignored.
+  Receipt evidence/no-fallback-n64-result-demand.md records only the foundation;
+  actual source integration and subsequent services/performance remain open.
+  Actual PB ingestion already selects supported catalog signatures first; this
+  does not retire public Func. No old evaluator callback or second driver is
+  acceptable. Follow with full local services and final unified performance.
+
 - [x] (2026-10-27 N63 validated) Close remaining genuine contextual native profiles.
   A read-only linked public API probe confirms CHAR_LENGTH(?) with a Varchar
   parameter succeeds in native Suite but Projection still refuses Admission.
@@ -326,6 +394,65 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- JSON REPLACE stages every prepared pair before one kernel; APPEND must execute each pair before demanding another. A literal NULL value operand has a separate actual consumer recipe. FROM_UNIXTIME converts its actual Decimal before requesting the format child. These phases now use owned continuation values and preserve old failure/read order.
+
+- The full admitted signature matrix now matches732564 records, leaving3078
+  explicit unimplemented preparation cells. Date arithmetic can request unit2
+  before date0; mapping actual source indices directly preserves that order.
+- Legacy IN's synchronous callback loop had no owned value continuation. Its
+  existing control is factored into one state shared by synchronous and staged
+  entries, retaining full i128, nullable demand, late collation and byte quotas.
+
+- The first actual SimpleExpr candidate passes independent original value and
+  event checks without an old tree call. Keeping outcomes in the charged value
+  store while tasks retain only tokens preserves eager failure/RHS behavior.
+- The SDK protobuf crate must be aliased sdk_tipb in Unistore; its existing tipb
+  module is the actual prost request model. Direct crate naming caused ambiguous
+  old-test imports, resolved by a dependency alias with no old-test edits.
+
+- Actual signed SDK `types/expr_eval.rs::eval_with_ready_args` already dispatches
+  the closed ready-value recipe directly through `eval_prepared_kernel`, without
+  entering the expression scheduler. Existing legacy value helpers therefore
+  remain reusable; no new kernel algorithm or second driver is necessary.
+- Fresh source inspection corrects earlier exploratory scope assumptions:
+  legacy IN, legacy date arithmetic and FROM_UNIXTIME forward their actual ctx
+  unchanged. IN/date arithmetic already use explicit SDK value-demand states.
+  The real Int wrapper and Shared boundary still select their original caches.
+- Native Plus reads its parameter twice for the original type probe. The
+  composition test compares independent original events, preserving both reads.
+  Cache poisoning remains an actual lane property, not a blanket refusal for
+  pure value entries that never request that capability.
+
+The additional original scope cohort is66048/3F895141D852AA15 after four
+independent sweeps. Retired-cache panic and absent-cache nested binding differ
+from the always-present primary context; the fixed cohorts remain separate.
+
+- The primary legacy observer always supplied a Ready cache. Actual eval_expr
+  queries the raw context on every integer call; if absent it queries again to
+  bind the lane, then nested integer calls see the bound capability. Typed leaf
+  methods may require no capability. Shared children bind their own actual
+  request/override context. Record these domains separately before source edits.
+
+- The first Result-demand prototype enlarged every HostFrame. Even normal modes
+  would then consume more of the same byte cap. Move opt-in state to TaskGuard
+  storage allocated only by FreshResult; source reconstruction confirms the
+  original normal layout and byte accounting. All9 protocol controls and the
+  complete SDK/frontend preserve existing failures and warning counters.
+
+- N64 fixed originals now cover940248 records and285 real signature/metadata
+  choices across9 actual views. Original MIN/-1 panic leaves the effective lane
+  poisoned; fresh lanes retain full-width ROUND. A missing physical column is
+  an actual SQL Unsupported error, so the infrastructure witness instead comes
+  from a real poisoned public Ready scope. These setup corrections precede any
+  source change and do not rebase the frozen original digest.
+
+- N64 source inspection confirms different typed consumers have different
+  demand/error contracts. Integer add/subtract/multiply evaluate both child
+  Results before SQL folding; division returns on a left failure; Decimal NULL
+  skips the right. i128 intermediate values do not fit a generic SQL Datum.
+  Legacy date arithmetic and FROM_UNIXTIME select context lifecycles before
+  demanding some children. SDK host tasks must retain owned state only.
 
 - N63 ordinary context registry capture covers76 real function/type specs and
   16416 observations, including direct/deferred parameters, flags, NULL, errors,
@@ -756,6 +883,66 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Promote all actual legacy typed consumers together after0 unimplemented cells and the complete fixed scope comparison pass. Preserve test-only recursive originals with all internal calls explicitly redirected to originals, while existing frozen observers exercise the new default. This provides independent original/current evidence without any production retry.
+
+- Decision: Expose bounded owned date/IN value transitions for host suspension,
+  retaining original producer error factories and existing comparison kernels.
+  Rationale: Source callbacks cannot invoke child evaluators inside the unified
+  frame. Actual state transitions preserve original demand without replay or
+  fabricated expression/type metadata.
+  Date/Author: 2026-10-28, ExpressionReuseEngineer.
+
+- Decision: Use a distinct SDK LegacyNative host operation for genuine fieldless
+  Unistore outcomes, rather than describing them as AST or eager scalar bodies.
+  Rationale: Consumer-specific demand and full-i128/error owners belong to the
+  actual legacy source provider. NativeBatchHosts explicitly refuses misrouting.
+  Date/Author: 2026-10-28, ExpressionReuseEngineer.
+
+- Decision: Reuse the signed closed ready-value kernel seam and explicit IN/date
+  demand states; implement owned legacy host continuations around actual ports.
+  Rationale: Fresh code shows no nested expression scheduler at those value
+  entries. Inventing a second kernel API or extra selected scopes would alter
+  the fixed original demand and capability traces.
+  Date/Author: 2026-10-28, ExpressionReuseEngineer.
+
+- Decision: Keep SimpleExpr at its actual Unistore owner and expose genuine
+  Arc-owned native source fragments for graph composition.
+  Rationale: A Shared child must contribute its existing SDK graph and native
+  services to the parent driver. Moving public source types or calling public
+  evaluation from a host adds an unnecessary boundary or another traversal.
+  Native catalogue/input relocation must verify signatures and retain original
+  call identities; preparation failures stay at actual demanded legacy phase.
+  Date/Author: 2026-10-28, ExpressionReuseEngineer.
+
+- Decision: Add a separate raw-scope/complex-Shared original cohort while the
+  legacy bodies remain unchanged; preserve the original primary digest.
+  Rationale: a context-routing source adapter must preserve absent versus present
+  cache queries, selected scopes, late child preparation errors and eager RHS.
+  Date/Author: 2026-10-28 / ExpressionReuseEngineer.
+
+- Decision: Validate the SDK Result-demand foundation independently and keep
+  the actual Unistore migration explicitly open; continue genuine source graph
+  integration without a milestone stop.
+  Rationale: the protocol now preserves eager error demand and exact owned
+  causes, but old default typed entries still execute. Retain that actual RED
+  instead of classifying it as inherited or claiming tree retirement.
+  Date/Author: 2026-10-28 / ExpressionReuseEngineer.
+
+- Decision: Prototype opt-in fresh Result demand and owned failure replies in
+  the existing SDK HostFrame before migrating genuine legacy typed sources.
+  Rationale: original integer arithmetic executes RHS even after a left
+  Infrastructure failure, while default host demand aborts the whole frame.
+  Catch only at the actual opted-in consumer, preserve the original cause,
+  cancel descendants once and retain global resource budgets and default modes.
+  Date/Author: 2026-10-28 / ExpressionReuseEngineer.
+
+- Decision: Capture genuine typed Unistore APIs independently before changing
+  their source or choosing a continuation interface.
+  Rationale: actual SimpleExpr has no SQL declaration, and each consumer retains
+  different value kinds, error folding and child phases. Generic PB conversion
+  or a nested legacy evaluator callback would conceal these contracts.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
 
 - Decision: Validate and sign the N63 context checkpoint, then immediately capture
   genuine public Unistore typed originals before changing its remaining walkers.
@@ -1202,6 +1389,37 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N65 now routes actual SimpleExpr and Shared children through one SDK graph. All original/current fixed digests and the explicit default zero-old-tree check pass in the full Unistore run208/exactold3/13ignore/5.67s. The candidate has no unimplemented signature/view cells. Separate retained originals remain independently executable and match the frozen digests. This closes the typed-tree routing gap; actual caller preparation reuse, final broader gates and overall service/performance proof remain in progress. The preceding N65 prototype notes below are historical detail.
+
+N65 has archived660 current files before observer changes. The actual legacy
+bodies are still original and the default-entry assertion remains open. The
+separate absent/retired-cache and complex Shared capture is fixed after four
+sweeps:66048/3F895141D852AA15,4780336 bytes, SHAde45da57779964623dda16cb2164a1245f5cfbe53b188f75d6aeb038bb64c190.
+The native source-fragment prototype now exists and its initial two composition
+checks pass. Expanded checks are in progress. It preserves original metadata and
+services in one SDK program and exposes no child evaluator. The actual legacy
+candidate now passes its initial two differential suites and never enters old
+walkers; remaining typed recipes are explicitly unimplemented in that candidate,
+and the production default remains original until complete validation. Expanded
+admitted coverage is732564 records with identical events; the remaining3078
+cells are explicit gaps before the IN stage extension now under validation.
+The selected-cache
+scope uses the existing unwind guard; actual legacy defaults have not migrated.
+
+The Result-demand foundation is validated with9 new protocols, complete SDK1162/
+exactold1/1ignore, frontend2358/exactold3/95, Projection52/Expand6/SHOW31old2,
+production/lint/dual8fmt/source audits and unchanged warning counters. Legacy
+original940248 observations remain fixed after the SDK change. Unistore's
+additional zero-old-tree assertion remains an explicit unfinished migration RED;
+its other198 tests pass beside the inherited3 failures. Actual SimpleExpr source
+integration, all remaining services and final performance continue.
+
+N64 has fixed940248/B02C0B8B9BDDD00C independent originals after four sweeps,
+with657 archived files and unchanged production. Protocol controls pass; genuine
+old-tree entry tests remain RED. Actual wire inventory218/remaining100 is pinned.
+The next source change is an isolated SDK Result-demand prototype; real legacy
+source integration and full service/performance gates remain incomplete.
 
 N63 checkpoint validation is complete. Independent native16416/8A4471067FCF4CED
 and actual old Projection16416/58F7ED7180273A11 remain fixed; all4032 reproduced

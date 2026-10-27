@@ -1314,6 +1314,7 @@ impl std::ops::Deref for BatchSource {
 // Projection suite. Caller-specific seals stay in their actual consumer.
 struct SourcePlan {
     unit: u64,
+    logical_metadata_bytes: usize,
     nodes: Box<[NodeRecord]>,
     bindings: Box<[usize]>, // slot -> all-node source ordinal
     expr: LocalExpr,
@@ -1342,6 +1343,7 @@ struct PendingDiagnostic<'a> {
     bindings: usize,
 }
 struct CheckedSource<'a, N = &'a Expression> {
+    logical_metadata_bytes: usize,
     nodes: Vec<CheckedNode<'a, N>>,
     diagnostics: Vec<PendingDiagnostic<'a>>,
     numerics: Vec<PendingNumeric<'a>>,
@@ -5289,6 +5291,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
         }
     }
     Ok(CheckedSource {
+        logical_metadata_bytes: budget.used,
         nodes: checked,
         diagnostics,
         numerics,
@@ -7269,6 +7272,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
     let needs_native_values = nodes.iter().any(|node| node.view.value_role().is_some());
     Ok(SourcePlan {
         unit,
+        logical_metadata_bytes: checked.logical_metadata_bytes,
         nodes: nodes.into_boxed_slice(),
         bindings: bindings.into_boxed_slice(),
         expr,
@@ -8760,6 +8764,8 @@ impl EvaluatorSuite {
 
 #[path = "batch_scalar_source.rs"]
 mod scalar_source;
+#[path = "batch_source_fragment.rs"]
+pub(crate) mod source_fragment;
 
 #[path = "batch_native_source.rs"]
 mod native_source;

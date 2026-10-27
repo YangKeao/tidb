@@ -598,6 +598,7 @@ fn compile_plan<'a, N: SourceReference<'a>>(
     Ok(DetachedFast {
         source: SourcePlan {
             unit,
+            logical_metadata_bytes: budget.used,
             nodes: nodes.into_boxed_slice(),
             bindings: bindings.into_boxed_slice(),
             expr,

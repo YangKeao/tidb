@@ -112,6 +112,20 @@ pub(super) struct NativeValueStore {
     lease_charge: Option<Arc<AtomicUsize>>,
 }
 impl NativeValueStore {
+    /// A finished fragment releases its temporary owners before the next
+    /// sibling demand. No allocation or namespace reservation occurs during
+    /// cleanup. Generation exhaustion makes subsequent use refuse safely.
+    pub(super) fn release_window(&mut self) {
+        self.entries = Vec::new();
+        self.free = Vec::new();
+        self.payload_charge = 0;
+        self.lease_charge = None;
+        match self.generation.checked_add(1) {
+            Some(next) => self.generation = next,
+            None => self.poisoned = true,
+        }
+    }
+
     pub(super) fn new(max_logical_bytes: usize) -> LocalResult<Self> {
         Ok(Self {
             namespace: allocate_namespace(&NEXT_NAMESPACE)?,

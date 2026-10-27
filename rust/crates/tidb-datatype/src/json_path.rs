@@ -36,6 +36,22 @@ const CONTAINS_DOUBLE_ASTERISK: u8 = 0x02;
 const CONTAINS_RANGE: u8 = 0x04;
 
 impl JSONPathExpression {
+    /// Storage owned by the parsed path, excluding the inline path itself.
+    pub fn retained_bytes(&self) -> usize {
+        self.legs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<JSONPathLeg>())
+            .saturating_add(
+                self.legs
+                    .iter()
+                    .map(|leg| match leg {
+                        JSONPathLeg::Key(key) => key.capacity(),
+                        _ => 0,
+                    })
+                    .fold(0usize, usize::saturating_add),
+            )
+    }
+
     /// Returns the path legs after the root `$`.
     pub fn legs(&self) -> &[JSONPathLeg] {
         &self.legs

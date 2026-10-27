@@ -347,6 +347,10 @@ pub use constant_fold::{
 mod context;
 pub mod convert_charset;
 pub mod evaluator;
+pub use evaluator::batch::source_fragment::{
+    ComposedExpressionProgram, NativeFragmentBindings, NativeFragmentMount, NativeFragmentState,
+    NativeSourceFragment,
+};
 pub mod expr_collation;
 pub mod expr_util;
 pub mod exprctx;
@@ -426,9 +430,11 @@ pub use tikv::{
     ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin, ExpressionRuntimeFailure,
     ExpressionRuntimeFailureClass, ExpressionRuntimeFailurePhase, LegacyBinaryArgs,
     LegacyCastIntegerResult, LegacyDateArithmeticChannel, LegacyDateArithmeticDateKind,
-    LegacyDateArithmeticIntervalKind, LegacyDateArithmeticMetadata, LegacyDateArithmeticResult,
-    LegacyDateArithmeticValue, LegacyIntegerArithmetic, LegacyLikeArgs, LegacyTimestampDiffArgs,
-    ReadyValueCache, RegexpLegacyInput, ScopedReadyValueColumns,
+    LegacyDateArithmeticDemand, LegacyDateArithmeticIntervalKind, LegacyDateArithmeticMachine,
+    LegacyDateArithmeticMetadata, LegacyDateArithmeticOutputKind, LegacyDateArithmeticResult,
+    LegacyDateArithmeticValue, LegacyInDemand, LegacyInMachine, LegacyIntegerArithmetic,
+    LegacyLikeArgs, LegacyTimestampDiffArgs, ReadyValueCache, RegexpLegacyInput,
+    ScopedReadyValueColumns, SelectedReadyValueScope,
 };
 
 use tidb_ast::Expr;

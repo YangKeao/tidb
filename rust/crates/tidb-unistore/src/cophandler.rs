@@ -34,6 +34,8 @@ mod analyze;
 mod eval_context;
 
 use eval_context::{RequestEvalContext, SharedExpression};
+use legacy_frame::PreparedRoot;
+use legacy_frame_value::View;
 use std::sync::Arc;
 
 use prost::Message;
@@ -342,19 +344,33 @@ fn exec_index_scan(
         tidb_tablecodec::HandleStatus::NotNeeded
     };
 
+    let condition_plans = conditions
+        .iter()
+        .map(|source| PreparedRoot::new(source, View::Int))
+        .collect::<Vec<_>>();
+    let topn_plans = topn
+        .map(|spec| {
+            spec.keys
+                .iter()
+                .map(|(source, _, _)| PreparedRoot::new(source, View::Datum))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let ready_values = std::rc::Rc::new(tidb_expr::ReadyValueCache::new());
-    let mut aggregator = match aggregation {
-        Some(aggregation) => match RegionAggregator::build(
+    let aggregation_sources = match aggregation {
+        Some(aggregation) => match RegionAggregationSources::build(
             aggregation,
             &idx_scan.columns,
             &context.expression_context,
-            std::rc::Rc::clone(&ready_values),
         ) {
-            Ok(aggregator) => Some(aggregator),
+            Ok(sources) => Some(sources),
             Err(message) => return other_error(&message),
         },
         None => None,
     };
+    let mut aggregator = aggregation_sources
+        .as_ref()
+        .map(|sources| RegionAggregator::new(sources, std::rc::Rc::clone(&ready_values)));
     let mut rows = Vec::new();
     let mut eval_warnings = Vec::new();
     let mut emitted = 0_usize;
@@ -424,16 +440,15 @@ fn exec_index_scan(
             if row.len() != idx_scan.columns.len() {
                 return other_error("decoded index entry does not match its executor schema");
             }
-            match conditions
+            match condition_plans
                 .iter()
                 .map(|condition| {
-                    LegacyEvaluator::with_ready_values(
+                    condition.integer(&LegacyEvaluator::with_ready_values(
                         &row,
                         context.div_precision_increment,
                         &timezone,
                         std::rc::Rc::clone(&ready_values),
-                    )
-                    .eval_expr(condition)
+                    ))
                 })
                 .collect::<LegacyResult<Vec<_>>>()
             {
@@ -459,7 +474,8 @@ fn exec_index_scan(
             // in key order. Buffering the whole set and sorting is that same
             // answer without the heap.
             if let Some(spec) = topn {
-                let keys = match spec.evaluate(&row, std::rc::Rc::clone(&ready_values)) {
+                let keys = match spec.evaluate(&row, std::rc::Rc::clone(&ready_values), &topn_plans)
+                {
                     Ok(keys) => keys,
                     Err(message) => return other_error(&message),
                 };
@@ -621,19 +637,33 @@ fn exec_table_scan(
         Ok(timezone) => timezone,
         Err(error) => return other_error(&error),
     };
+    let condition_plans = conditions
+        .iter()
+        .map(|source| PreparedRoot::new(source, View::Int))
+        .collect::<Vec<_>>();
+    let topn_plans = topn
+        .map(|spec| {
+            spec.keys
+                .iter()
+                .map(|(source, _, _)| PreparedRoot::new(source, View::Datum))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let ready_values = std::rc::Rc::new(tidb_expr::ReadyValueCache::new());
-    let mut aggregator = match aggregation {
-        Some(aggregation) => match RegionAggregator::build(
+    let aggregation_sources = match aggregation {
+        Some(aggregation) => match RegionAggregationSources::build(
             aggregation,
             &tbl_scan.columns,
             &context.expression_context,
-            std::rc::Rc::clone(&ready_values),
         ) {
-            Ok(aggregator) => Some(aggregator),
+            Ok(sources) => Some(sources),
             Err(message) => return other_error(&message),
         },
         None => None,
     };
+    let mut aggregator = aggregation_sources
+        .as_ref()
+        .map(|sources| RegionAggregator::new(sources, std::rc::Rc::clone(&ready_values)));
     use tidb_datatype::Datum;
     let mut column_types = std::collections::BTreeMap::new();
     for column in &tbl_scan.columns {
@@ -743,17 +773,17 @@ fn exec_table_scan(
             }
             // Go `selectionProcessor`: a row survives only when EVERY
             // condition evaluates non-null and non-zero.
-            match conditions
+            match condition_plans
                 .iter()
                 .map(|condition| {
-                    LegacyEvaluator::with_ready_values(
-                        &row_datums,
-                        context.div_precision_increment,
-                        &timezone,
-                        std::rc::Rc::clone(&ready_values),
-                    )
-                    .eval_expr(condition)
-                    .map_err(LegacyEvalError::into_message)
+                    condition
+                        .integer(&LegacyEvaluator::with_ready_values(
+                            &row_datums,
+                            context.div_precision_increment,
+                            &timezone,
+                            std::rc::Rc::clone(&ready_values),
+                        ))
+                        .map_err(LegacyEvalError::into_message)
                 })
                 .collect::<Result<Vec<_>, String>>()
             {
@@ -793,7 +823,11 @@ fn exec_table_scan(
             // in key order. Buffering the whole set and sorting is that same
             // answer without the heap.
             if let Some(spec) = topn {
-                let keys = match spec.evaluate(&row_datums, std::rc::Rc::clone(&ready_values)) {
+                let keys = match spec.evaluate(
+                    &row_datums,
+                    std::rc::Rc::clone(&ready_values),
+                    &topn_plans,
+                ) {
                     Ok(keys) => keys,
                     Err(message) => return other_error(&message),
                 };
@@ -912,11 +946,16 @@ fn exec_table_scan(
 /// `SUM` as `DECIMAL` (MySQL's sum type for integer input), extremes as
 /// the input datum. Hash groups leave in group-key order; a streamed
 /// aggregation emits each group as the ordered scan leaves it.
-struct RegionAggregator {
-    ready_values: std::rc::Rc<tidb_expr::ReadyValueCache>,
+struct RegionAggregationSources {
     group_by: Vec<(SimpleExpr, tidb_datatype::Collation)>,
     functions: Vec<(RegionAggKind, SimpleExpr, tidb_datatype::Collation)>,
     streamed: bool,
+}
+struct RegionAggregator<'a> {
+    sources: &'a RegionAggregationSources,
+    group_plans: Vec<PreparedRoot<'a>>,
+    function_plans: Vec<PreparedRoot<'a>>,
+    ready_values: std::rc::Rc<tidb_expr::ReadyValueCache>,
     hash: std::collections::BTreeMap<Vec<u8>, (Vec<tidb_datatype::Datum>, Vec<RegionAggValue>)>,
     current: Option<(Vec<u8>, Vec<tidb_datatype::Datum>, Vec<RegionAggValue>)>,
     ordered: Vec<Vec<tidb_datatype::Datum>>,
@@ -993,12 +1032,11 @@ enum RegionAggValue {
     Extreme(Option<tidb_datatype::Datum>),
 }
 
-impl RegionAggregator {
+impl RegionAggregationSources {
     fn build(
         aggregation: &tipb::Aggregation,
         columns: &[tipb::ColumnInfo],
         context: &Arc<RequestEvalContext>,
-        ready_values: std::rc::Rc<tidb_expr::ReadyValueCache>,
     ) -> Result<Self, String> {
         let collation_of_column = |expr: &SimpleExpr| -> tidb_datatype::Collation {
             let id = match expr {
@@ -1050,18 +1088,39 @@ impl RegionAggregator {
             return Err("an aggregation names a group key or a function".to_owned());
         }
         Ok(Self {
-            ready_values,
             group_by,
             functions,
             streamed: aggregation.streamed == Some(true),
+        })
+    }
+}
+impl<'a> RegionAggregator<'a> {
+    fn new(
+        sources: &'a RegionAggregationSources,
+        ready_values: std::rc::Rc<tidb_expr::ReadyValueCache>,
+    ) -> Self {
+        Self {
+            sources,
+            group_plans: sources
+                .group_by
+                .iter()
+                .map(|(source, _)| PreparedRoot::new(source, View::Datum))
+                .collect(),
+            function_plans: sources
+                .functions
+                .iter()
+                .map(|(_, source, _)| PreparedRoot::new(source, View::Datum))
+                .collect(),
+            ready_values,
             hash: std::collections::BTreeMap::new(),
             current: None,
             ordered: Vec::new(),
-        })
+        }
     }
 
     fn new_values(&self) -> Vec<RegionAggValue> {
-        self.functions
+        self.sources
+            .functions
             .iter()
             .map(|(kind, _, _)| match kind {
                 RegionAggKind::Count => RegionAggValue::Count(0),
@@ -1080,10 +1139,10 @@ impl RegionAggregator {
             std::rc::Rc::clone(&self.ready_values),
         );
         let mut key = Vec::new();
-        let mut groups = Vec::with_capacity(self.group_by.len());
-        for (expr, collation) in &self.group_by {
-            let value = evaluator
-                .eval_datum(expr)
+        let mut groups = Vec::with_capacity(self.sources.group_by.len());
+        for ((_, collation), plan) in self.sources.group_by.iter().zip(&self.group_plans) {
+            let value = plan
+                .datum(&evaluator)
                 .map_err(LegacyEvalError::into_message)?;
             // The fallback cursor's own key rule: collation sort key for
             // byte values, the codec hash for everything else, one 0xff
@@ -1098,7 +1157,7 @@ impl RegionAggregator {
             groups.push(value);
         }
 
-        if self.streamed {
+        if self.sources.streamed {
             if self
                 .current
                 .as_ref()
@@ -1111,29 +1170,32 @@ impl RegionAggregator {
                 let values = self.new_values();
                 self.current = Some((key, groups, values));
             }
-            let functions = &self.functions;
+            let functions = &self.sources.functions;
             let (_, _, values) = self.current.as_mut().expect("just ensured");
-            return Self::accumulate(functions, values, &evaluator);
+            return Self::accumulate(functions, &self.function_plans, values, &evaluator);
         }
 
         if !self.hash.contains_key(&key) {
             let values = self.new_values();
             self.hash.insert(key.clone(), (groups, values));
         }
-        let functions = &self.functions;
+        let functions = &self.sources.functions;
         let (_, values) = self.hash.get_mut(&key).expect("just ensured");
-        Self::accumulate(functions, values, &evaluator)
+        Self::accumulate(functions, &self.function_plans, values, &evaluator)
     }
 
     fn accumulate(
         functions: &[(RegionAggKind, SimpleExpr, tidb_datatype::Collation)],
+        plans: &[PreparedRoot<'_>],
         values: &mut [RegionAggValue],
         evaluator: &LegacyEvaluator<'_>,
     ) -> Result<(), String> {
         use tidb_datatype::Datum;
-        for ((kind, argument, collation), value) in functions.iter().zip(values.iter_mut()) {
-            let input = evaluator
-                .eval_datum(argument)
+        for (((kind, _, collation), plan), value) in
+            functions.iter().zip(plans).zip(values.iter_mut())
+        {
+            let input = plan
+                .datum(evaluator)
                 .map_err(LegacyEvalError::into_message)?;
             match (kind, value) {
                 (RegionAggKind::Count, RegionAggValue::Count(count)) => {
@@ -1185,7 +1247,7 @@ impl RegionAggregator {
     }
 
     fn finish(mut self) -> Vec<Vec<tidb_datatype::Datum>> {
-        if self.streamed {
+        if self.sources.streamed {
             if let Some((_, groups, values)) = self.current.take() {
                 self.ordered.push(Self::finish_group(groups, values));
             }
@@ -1286,6 +1348,7 @@ fn fold_legacy_sql<T>(value: LegacyResult<T>) -> LegacyResult<Option<T>> {
 }
 
 // Preserve the old Option `?` demand without folding an evaluation error.
+#[cfg(test)]
 macro_rules! legacy_some {
     ($value:expr) => {
         match $value {
@@ -1336,12 +1399,14 @@ impl<'a> LegacyEvaluator<'a> {
         }
     }
 
-    fn folded_int(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<i128>> {
+    #[cfg(test)]
+    fn folded_int_original(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<i128>> {
         let expr = legacy_some!(expr);
-        Ok(fold_legacy_sql(self.eval_expr(expr))?.flatten())
+        Ok(fold_legacy_sql(self.eval_expr_original(expr))?.flatten())
     }
 
-    fn inverse_trig(
+    #[cfg(test)]
+    fn inverse_trig_original(
         &self,
         function: tidb_expr::RawInverseTrigFunction,
         ready: Option<f64>,
@@ -1357,6 +1422,7 @@ impl<'a> LegacyEvaluator<'a> {
 }
 
 /// The datum a leaf answers for one row: the column value, or the literal.
+#[cfg(test)]
 fn eval_datum(
     expr: &SimpleExpr,
     row: &[tidb_datatype::Datum],
@@ -1367,7 +1433,8 @@ fn eval_datum(
 }
 
 impl LegacyEvaluator<'_> {
-    fn eval_datum(&self, expr: &SimpleExpr) -> LegacyResult<tidb_datatype::Datum> {
+    #[cfg(test)]
+    fn eval_datum_original(&self, expr: &SimpleExpr) -> LegacyResult<tidb_datatype::Datum> {
         use tidb_datatype::Datum;
         match expr {
             SimpleExpr::Column(offset) => self.row.get(*offset).cloned().ok_or_else(|| {
@@ -1464,19 +1531,21 @@ impl TopNSpec {
         &self,
         row: &[tidb_datatype::Datum],
         ready_values: std::rc::Rc<tidb_expr::ReadyValueCache>,
+        plans: &[PreparedRoot<'_>],
     ) -> Result<Vec<tidb_datatype::Datum>, String> {
         use tidb_datatype::Datum;
         let time_zone = tidb_datatype::SessionTimeZone::utc();
         let evaluator = LegacyEvaluator::with_ready_values(row, 4, &time_zone, ready_values);
         self.keys
             .iter()
-            .map(|(expr, _, _)| {
+            .zip(plans)
+            .map(|((expr, _, _), plan)| {
                 let datum = match expr {
                     SimpleExpr::Func(..) => {
                         return Err("a computed sort key is a later course".to_owned())
                     }
-                    other => evaluator
-                        .eval_datum(other)
+                    _ => plan
+                        .datum(&evaluator)
                         .map_err(LegacyEvalError::into_message)?,
                 };
                 match datum {
@@ -2177,6 +2246,7 @@ fn convert_shared(
 
 /// Evaluates a [`SimpleExpr::Shared`] node over one scanned row.
 impl LegacyEvaluator<'_> {
+    #[cfg(test)]
     fn eval_shared(&self, expr: &SharedExpression) -> LegacyResult<tidb_datatype::Datum> {
         let row = tidb_chunk::mutrow::MutRow::from_datums(self.row);
         let columns: &dyn tidb_expr::Columns = expr.context.as_ref();
@@ -2829,10 +2899,13 @@ fn convert_expr_with_context(
 /// `CastIntAsDecimal`; the `AS DECIMAL` cast family composes below, so
 /// cast operands reach here alongside the exact ones.
 impl LegacyEvaluator<'_> {
-    fn eval_decimal(
+    #[cfg(test)]
+    fn eval_decimal_original(
         &self,
         expr: Option<&SimpleExpr>,
     ) -> LegacyResult<Option<tidb_datatype::Decimal>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(0);
         use tidb_datatype::Datum;
         let row = self.row;
         let div_precision_increment = self.div_precision_increment;
@@ -2861,11 +2934,11 @@ impl LegacyEvaluator<'_> {
                 // The old legacy_some! sequence never demanded the right child
                 // after a missing/NULL left. Keep that order, but let the worker
                 // own both genuine absence and nullable results.
-                let left = self.eval_decimal(children.first())?;
+                let left = self.eval_decimal_original(children.first())?;
                 let args = if children.is_empty() {
                     LegacyBinaryArgs::Missing
                 } else if let Some(left) = left {
-                    let right = self.eval_decimal(children.get(1))?;
+                    let right = self.eval_decimal_original(children.get(1))?;
                     if children.len() < 2 {
                         LegacyBinaryArgs::Missing
                     } else {
@@ -2889,11 +2962,11 @@ impl LegacyEvaluator<'_> {
             }
             SimpleExpr::Func(SimpleSig::DivideDecimal, children) => {
                 use tidb_expr::LegacyBinaryArgs;
-                let left = self.eval_decimal(children.first())?;
+                let left = self.eval_decimal_original(children.first())?;
                 let args = if children.is_empty() {
                     LegacyBinaryArgs::Missing
                 } else if let Some(left) = left {
-                    let right = self.eval_decimal(children.get(1))?;
+                    let right = self.eval_decimal_original(children.get(1))?;
                     if children.len() < 2 {
                         LegacyBinaryArgs::Missing
                     } else {
@@ -2918,7 +2991,7 @@ impl LegacyEvaluator<'_> {
             // clock in the session zone, divided by 1e6 exactly (an out-of-
             // range source answers the zero decimal, not NULL).
             SimpleExpr::Func(SimpleSig::UnixTimestampDec, children) => {
-                let value = self.eval_time(children.first())?;
+                let value = self.eval_time_original(children.first())?;
                 tidb_expr::unix_timestamp_dec_legacy_in(value, self.time_zone, self.raw_columns)?
             }
             // The `AS DECIMAL` casts answer exact decimals: Go's per-source
@@ -2935,31 +3008,31 @@ impl LegacyEvaluator<'_> {
                 children,
             ) => match sig {
                 SimpleSig::CastIntAsDecimal => {
-                    let value = legacy_some!(self.folded_int(children.first())?);
+                    let value = legacy_some!(self.folded_int_original(children.first())?);
                     tidb_expr::eval_legacy_cast_decimal_integer(value)
                 }
                 SimpleSig::CastRealAsDecimal => {
-                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let value = legacy_some!(self.eval_real_original(children.first())?);
                     let datum = Datum::Real(value);
                     tidb_expr::eval_legacy_cast_decimal_datum(&datum)
                 }
                 SimpleSig::CastDecimalAsDecimal => {
-                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let value = legacy_some!(self.eval_decimal_original(children.first())?);
                     let datum = Datum::Decimal(value);
                     tidb_expr::eval_legacy_cast_decimal_datum(&datum)
                 }
                 SimpleSig::CastStringAsDecimal => {
-                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let value = legacy_some!(self.eval_bytes_original(children.first())?);
                     let datum = Datum::Bytes(value);
                     tidb_expr::eval_legacy_cast_decimal_datum(&datum)
                 }
                 SimpleSig::CastTimeAsDecimal => {
-                    let value = legacy_some!(self.eval_time(children.first())?);
+                    let value = legacy_some!(self.eval_time_original(children.first())?);
                     let datum = Datum::Time(value);
                     tidb_expr::eval_legacy_cast_decimal_datum(&datum)
                 }
                 SimpleSig::CastDurationAsDecimal => {
-                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let value = legacy_some!(self.eval_duration_original(children.first())?);
                     let datum = Datum::Duration(value);
                     tidb_expr::eval_legacy_cast_decimal_datum(&datum)
                 }
@@ -2992,10 +3065,13 @@ fn datum_to_json_value(datum: &tidb_datatype::Datum) -> Option<tidb_datatype::Bi
 /// The binary JSON of one operand of a JSON operation; see [`eval_decimal`]
 /// for why only exact operands reach here.
 impl LegacyEvaluator<'_> {
-    fn eval_json(
+    #[cfg(test)]
+    fn eval_json_original(
         &self,
         expr: Option<&SimpleExpr>,
     ) -> LegacyResult<Option<tidb_datatype::BinaryJSON>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(1);
         use tidb_datatype::Datum;
         let row = self.row;
         let to_json = |value: tidb_datatype::BinaryJSONValue| {
@@ -3027,39 +3103,39 @@ impl LegacyEvaluator<'_> {
                 children,
             ) => match sig {
                 SimpleSig::CastIntAsJson => self
-                    .folded_int(children.first())?
+                    .folded_int_original(children.first())?
                     .and_then(|value| i64::try_from(value).ok())
                     .and_then(|value| {
                         let datum = Datum::Int(value);
                         tidb_expr::eval_legacy_cast_json_datum(&datum)
                     }),
                 SimpleSig::CastRealAsJson => {
-                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let value = legacy_some!(self.eval_real_original(children.first())?);
                     let datum = Datum::Real(value);
                     tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
                 SimpleSig::CastDecimalAsJson => {
-                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let value = legacy_some!(self.eval_decimal_original(children.first())?);
                     let datum = Datum::Decimal(value);
                     tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
                 SimpleSig::CastStringAsJson => {
-                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let value = legacy_some!(self.eval_bytes_original(children.first())?);
                     let datum = Datum::Bytes(value);
                     tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
                 SimpleSig::CastTimeAsJson => {
-                    let value = legacy_some!(self.eval_time(children.first())?);
+                    let value = legacy_some!(self.eval_time_original(children.first())?);
                     let datum = Datum::Time(value);
                     tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
                 SimpleSig::CastDurationAsJson => {
-                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let value = legacy_some!(self.eval_duration_original(children.first())?);
                     let datum = Datum::Duration(value);
                     tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
                 SimpleSig::CastJsonAsJson => {
-                    let value = legacy_some!(self.eval_json(children.first())?);
+                    let value = legacy_some!(self.eval_json_original(children.first())?);
                     let datum = Datum::Json(value);
                     tidb_expr::eval_legacy_cast_json_datum(&datum)
                 }
@@ -3082,13 +3158,13 @@ impl LegacyEvaluator<'_> {
                             &tidb_datatype::BinaryJSONValue::Null,
                         )
                         .ok(),
-                        _ => self.eval_json(children.get(index))?,
+                        _ => self.eval_json_original(children.get(index))?,
                     })
                 };
                 let pair = |index: usize| -> LegacyResult<
                     Option<(tidb_datatype::JSONPathExpression, tidb_datatype::BinaryJSON)>,
                 > {
-                    let raw = legacy_some!(self.eval_bytes(children.get(index))?);
+                    let raw = legacy_some!(self.eval_bytes_original(children.get(index))?);
                     let path = legacy_some!(tidb_datatype::parse_json_path_expr(
                         &String::from_utf8_lossy(&raw)
                     )
@@ -3098,7 +3174,7 @@ impl LegacyEvaluator<'_> {
                 };
                 match sig {
                     SimpleSig::JsonReplaceSig => {
-                        let Some(doc) = self.eval_json(children.first())? else {
+                        let Some(doc) = self.eval_json_original(children.first())? else {
                             return Ok(tidb_expr::eval_legacy_json_output_none_in(
                                 self.raw_columns,
                             )?);
@@ -3128,7 +3204,7 @@ impl LegacyEvaluator<'_> {
                         )?
                     }
                     SimpleSig::JsonArrayAppendSig => {
-                        let Some(mut doc) = self.eval_json(children.first())? else {
+                        let Some(mut doc) = self.eval_json_original(children.first())? else {
                             return Ok(tidb_expr::eval_legacy_json_output_none_in(
                                 self.raw_columns,
                             )?);
@@ -3165,7 +3241,7 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::JsonMergePatchSig => {
                         let mut values = Vec::with_capacity(children.len());
                         for index in 0..children.len() {
-                            let Some(value) = self.eval_json(children.get(index))? else {
+                            let Some(value) = self.eval_json_original(children.get(index))? else {
                                 return Ok(tidb_expr::eval_legacy_json_output_none_in(
                                     self.raw_columns,
                                 )?);
@@ -3188,7 +3264,10 @@ impl LegacyEvaluator<'_> {
 /// The binary64 value of one operand of a real comparison or arithmetic;
 /// see [`eval_decimal`] for why only exact operands reach here.
 impl LegacyEvaluator<'_> {
-    fn eval_real(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<f64>> {
+    #[cfg(test)]
+    fn eval_real_original(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<f64>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(2);
         use tidb_datatype::Datum;
         let row = self.row;
         let expr = legacy_some!(expr);
@@ -3205,7 +3284,7 @@ impl LegacyEvaluator<'_> {
                 _ => None,
             },
             SimpleExpr::Func(SimpleSig::CastJsonAsReal, children) => {
-                let value = legacy_some!(self.eval_json(children.first())?);
+                let value = legacy_some!(self.eval_json_original(children.first())?);
                 Some(tidb_expr::eval_legacy_cast_json_real(&value))
             }
             SimpleExpr::Func(
@@ -3217,13 +3296,13 @@ impl LegacyEvaluator<'_> {
                 children,
             ) => {
                 use tidb_expr::{BinaryArithmeticOperation as Operation, LegacyBinaryArgs};
-                let left = self.eval_real(children.first())?;
+                let left = self.eval_real_original(children.first())?;
                 let args = if children.is_empty() {
                     LegacyBinaryArgs::Missing
                 } else if let Some(left) = left {
                     // Unlike the integer channel, a NULL left never demands
                     // the right child. Preserve the original legacy_some! order.
-                    let right = self.eval_real(children.get(1))?;
+                    let right = self.eval_real_original(children.get(1))?;
                     if children.len() < 2 {
                         LegacyBinaryArgs::Missing
                     } else {
@@ -3269,42 +3348,42 @@ impl LegacyEvaluator<'_> {
                 // itself is exact for the admitted source kinds.
                 return Ok(match sig {
                     SimpleSig::CastIntAsReal => self
-                        .folded_int(children.first())?
+                        .folded_int_original(children.first())?
                         .map(tidb_expr::eval_legacy_cast_real_integer),
                     SimpleSig::CastDecimalAsReal => {
-                        let value = legacy_some!(self.eval_decimal(children.first())?);
+                        let value = legacy_some!(self.eval_decimal_original(children.first())?);
                         let datum = Datum::Decimal(value);
                         tidb_expr::eval_legacy_cast_real_datum(&datum)
                     }
                     SimpleSig::CastRealAsReal => {
-                        let value = legacy_some!(self.eval_real(children.first())?);
+                        let value = legacy_some!(self.eval_real_original(children.first())?);
                         let datum = Datum::Real(value);
                         tidb_expr::eval_legacy_cast_real_datum(&datum)
                     }
                     SimpleSig::CastStringAsReal => {
-                        let value = legacy_some!(self.eval_bytes(children.first())?);
+                        let value = legacy_some!(self.eval_bytes_original(children.first())?);
                         let datum = Datum::Bytes(value);
                         tidb_expr::eval_legacy_cast_real_datum(&datum)
                     }
                     SimpleSig::RoundReal => tidb_expr::eval_legacy_round_real_in(
-                        self.eval_real(children.first())?,
+                        self.eval_real_original(children.first())?,
                         self.raw_columns,
                     )?,
                     SimpleSig::RoundInt => tidb_expr::eval_legacy_round_int_in(
-                        self.folded_int(children.first())?,
+                        self.folded_int_original(children.first())?,
                         self.raw_columns,
                     )?
                     .map(|value| value as f64),
                     SimpleSig::RoundDec => tidb_expr::eval_legacy_round_decimal_in(
-                        self.eval_decimal(children.first())?.as_ref(),
+                        self.eval_decimal_original(children.first())?.as_ref(),
                         self.raw_columns,
                     )?,
                     SimpleSig::Pow => {
-                        let arguments = match self.eval_real(children.first())? {
+                        let arguments = match self.eval_real_original(children.first())? {
                             None => tidb_expr::RawPowReadyArgs::LeftNull,
                             Some(base) => tidb_expr::RawPowReadyArgs::Values {
                                 base,
-                                exponent: self.eval_real(children.get(1))?,
+                                exponent: self.eval_real_original(children.get(1))?,
                             },
                         };
                         match tidb_expr::eval_raw_pow_ready_in(arguments, self.raw_columns)? {
@@ -3318,9 +3397,9 @@ impl LegacyEvaluator<'_> {
                         }
                     }
                     SimpleSig::Atan2Args => {
-                        let arguments = match self.eval_real(children.first())? {
+                        let arguments = match self.eval_real_original(children.first())? {
                             None => None,
-                            Some(left) => Some((left, self.eval_real(children.get(1))?)),
+                            Some(left) => Some((left, self.eval_real_original(children.get(1))?)),
                         };
                         tidb_expr::eval_legacy_atan2_in(arguments, self.raw_columns)?
                     }
@@ -3338,10 +3417,13 @@ impl LegacyEvaluator<'_> {
                         } else {
                             tidb_expr::RawInverseTrigFunction::Asin
                         };
-                        self.inverse_trig(function, self.eval_real(children.first())?)?
+                        self.inverse_trig_original(
+                            function,
+                            self.eval_real_original(children.first())?,
+                        )?
                     }
                     other => {
-                        let value = self.eval_real(children.first())?;
+                        let value = self.eval_real_original(children.first())?;
                         let function = match other {
                             SimpleSig::Atan1Arg => tidb_expr::LegacyTrigFunction::Atan,
                             SimpleSig::Cos => tidb_expr::LegacyTrigFunction::Cos,
@@ -3389,7 +3471,8 @@ fn legacy_date_arithmetic_metadata(
 impl LegacyEvaluator<'_> {
     /// Actuate only the requested original child channel. The selected scope
     /// supplies authority; eval_shared retains each child's request semantics.
-    fn read_date_arithmetic(
+    #[cfg(test)]
+    fn read_date_arithmetic_original(
         &self,
         children: &[SimpleExpr],
         index: usize,
@@ -3406,19 +3489,22 @@ impl LegacyEvaluator<'_> {
         };
         let child = children.get(index);
         Ok(match channel {
-            Channel::Bytes => Value::Bytes(evaluator.eval_bytes(child)?),
-            Channel::FoldedInt => Value::Int(evaluator.folded_int(child)?),
-            Channel::Real => Value::Real(evaluator.eval_real(child)?),
-            Channel::Decimal => Value::Decimal(evaluator.eval_decimal(child)?),
-            Channel::Time => Value::Time(evaluator.eval_time(child)?),
-            Channel::Duration => Value::Duration(evaluator.eval_duration(child)?),
+            Channel::Bytes => Value::Bytes(evaluator.eval_bytes_original(child)?),
+            Channel::FoldedInt => Value::Int(evaluator.folded_int_original(child)?),
+            Channel::Real => Value::Real(evaluator.eval_real_original(child)?),
+            Channel::Decimal => Value::Decimal(evaluator.eval_decimal_original(child)?),
+            Channel::Time => Value::Time(evaluator.eval_time_original(child)?),
+            Channel::Duration => Value::Duration(evaluator.eval_duration_original(child)?),
         })
     }
 
-    fn eval_duration(
+    #[cfg(test)]
+    fn eval_duration_original(
         &self,
         expr: Option<&SimpleExpr>,
     ) -> LegacyResult<Option<tidb_datatype::MySqlDuration>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(3);
         use tidb_datatype::Datum;
         let row = self.row;
         let expr = legacy_some!(expr);
@@ -3435,7 +3521,7 @@ impl LegacyEvaluator<'_> {
                 _ => None,
             },
             SimpleExpr::Func(SimpleSig::CastTimeAsDuration, children) => {
-                let value = legacy_some!(self.eval_time(children.first())?);
+                let value = legacy_some!(self.eval_time_original(children.first())?);
                 let datum = Datum::Time(value);
                 tidb_expr::eval_legacy_cast_duration_datum(&datum)
             }
@@ -3460,7 +3546,7 @@ impl LegacyEvaluator<'_> {
                     ),
                     self.time_zone,
                     |index, channel, selected| {
-                        self.read_date_arithmetic(children, index, channel, selected)
+                        self.read_date_arithmetic_original(children, index, channel, selected)
                     },
                 )?
                 .value
@@ -3477,34 +3563,34 @@ impl LegacyEvaluator<'_> {
                 children,
             ) => match sig {
                 SimpleSig::CastIntAsDuration => self
-                    .folded_int(children.first())?
+                    .folded_int_original(children.first())?
                     .and_then(|value| i64::try_from(value).ok())
                     .and_then(|value| {
                         let datum = Datum::Int(value);
                         tidb_expr::eval_legacy_cast_duration_datum(&datum)
                     }),
                 SimpleSig::CastRealAsDuration => {
-                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let value = legacy_some!(self.eval_real_original(children.first())?);
                     let datum = Datum::Real(value);
                     tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
                 SimpleSig::CastDecimalAsDuration => {
-                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let value = legacy_some!(self.eval_decimal_original(children.first())?);
                     let datum = Datum::Decimal(value);
                     tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
                 SimpleSig::CastStringAsDuration => {
-                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let value = legacy_some!(self.eval_bytes_original(children.first())?);
                     let datum = Datum::Bytes(value);
                     tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
                 SimpleSig::CastDurationAsDuration => {
-                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let value = legacy_some!(self.eval_duration_original(children.first())?);
                     let datum = Datum::Duration(value);
                     tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
                 SimpleSig::CastJsonAsDuration => {
-                    let value = legacy_some!(self.eval_json(children.first())?);
+                    let value = legacy_some!(self.eval_json_original(children.first())?);
                     let datum = Datum::Json(value);
                     tidb_expr::eval_legacy_cast_duration_datum(&datum)
                 }
@@ -3518,7 +3604,13 @@ impl LegacyEvaluator<'_> {
 /// The TIME value of one operand of a temporal comparison; see
 /// [`eval_decimal`] for why only exact operands reach here.
 impl LegacyEvaluator<'_> {
-    fn eval_time(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<tidb_datatype::Time>> {
+    #[cfg(test)]
+    fn eval_time_original(
+        &self,
+        expr: Option<&SimpleExpr>,
+    ) -> LegacyResult<Option<tidb_datatype::Time>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(4);
         use tidb_datatype::Datum;
         let row = self.row;
         let time_zone = self.time_zone;
@@ -3557,7 +3649,7 @@ impl LegacyEvaluator<'_> {
                     ),
                     self.time_zone,
                     |index, channel, selected| {
-                        self.read_date_arithmetic(children, index, channel, selected)
+                        self.read_date_arithmetic_original(children, index, channel, selected)
                     },
                 )?
                 .value
@@ -3589,28 +3681,28 @@ impl LegacyEvaluator<'_> {
                 let datum = match sig {
                     SimpleSig::CastIntAsTime => {
                         let value = legacy_some!(self
-                            .folded_int(children.first())?
+                            .folded_int_original(children.first())?
                             .and_then(|value| i64::try_from(value).ok()));
                         Datum::Int(value)
                     }
                     SimpleSig::CastRealAsTime => {
-                        let value = legacy_some!(self.eval_real(children.first())?);
+                        let value = legacy_some!(self.eval_real_original(children.first())?);
                         Datum::Real(value)
                     }
                     SimpleSig::CastDecimalAsTime => {
-                        let value = legacy_some!(self.eval_decimal(children.first())?);
+                        let value = legacy_some!(self.eval_decimal_original(children.first())?);
                         Datum::Decimal(value)
                     }
                     SimpleSig::CastStringAsTime => {
-                        let value = legacy_some!(self.eval_bytes(children.first())?);
+                        let value = legacy_some!(self.eval_bytes_original(children.first())?);
                         Datum::Bytes(value)
                     }
                     SimpleSig::CastTimeAsTime => {
-                        let value = legacy_some!(self.eval_time(children.first())?);
+                        let value = legacy_some!(self.eval_time_original(children.first())?);
                         Datum::Time(value)
                     }
                     SimpleSig::CastJsonAsTime => {
-                        let value = legacy_some!(self.eval_json(children.first())?);
+                        let value = legacy_some!(self.eval_json_original(children.first())?);
                         Datum::Json(value)
                     }
                     _ => return Ok(None),
@@ -3620,7 +3712,7 @@ impl LegacyEvaluator<'_> {
             // Go `evalFromUnixTime`: a negative or too-large epoch answers
             // NULL; the split seconds render through the session zone.
             SimpleExpr::Func(SimpleSig::FromUnixTime1Arg, children) => {
-                let value = self.eval_decimal(children.first())?;
+                let value = self.eval_decimal_original(children.first())?;
                 tidb_expr::eval_from_unixtime_legacy_scoped_in(
                     value,
                     self.time_zone,
@@ -3635,7 +3727,10 @@ impl LegacyEvaluator<'_> {
 }
 
 impl LegacyEvaluator<'_> {
-    fn eval_bytes(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<Vec<u8>>> {
+    #[cfg(test)]
+    fn eval_bytes_original(&self, expr: Option<&SimpleExpr>) -> LegacyResult<Option<Vec<u8>>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(5);
         use tidb_datatype::Datum;
         let row = self.row;
         let expr = legacy_some!(expr);
@@ -3656,10 +3751,10 @@ impl LegacyEvaluator<'_> {
             // DATE_FORMAT: Go `builtinDateFormatSig` answers through
             // `Time.DateFormat` over the format layout.
             SimpleExpr::Func(SimpleSig::DateFormatSig, children) => {
-                match self.eval_time(children.first())? {
+                match self.eval_time_original(children.first())? {
                     None => tidb_expr::eval_legacy_date_format_in(None, self.raw_columns)?,
                     Some(time) => {
-                        let layout = self.eval_bytes(children.get(1))?;
+                        let layout = self.eval_bytes_original(children.get(1))?;
                         let layout = layout.as_deref().map(String::from_utf8_lossy);
                         tidb_expr::eval_legacy_date_format_in(
                             Some((time.core_time(), layout.as_deref())),
@@ -3673,13 +3768,13 @@ impl LegacyEvaluator<'_> {
             // int channel.
             SimpleExpr::Func(SimpleSig::Conv, children) => {
                 use tidb_expr::LegacyConvBase::{Undemanded, Value};
-                let text = self.eval_bytes(children.first())?;
+                let text = self.eval_bytes_original(children.first())?;
                 let (from_base, to_base) = if text.is_some() {
-                    let from_base = self.folded_int(children.get(1))?;
+                    let from_base = self.folded_int_original(children.get(1))?;
                     // Only the existing width check controls child demand;
                     // transport the actual i128, not a fabricated NULL.
                     let to_base = if from_base.is_some_and(|value| i64::try_from(value).is_ok()) {
-                        Value(self.folded_int(children.get(2))?)
+                        Value(self.folded_int_original(children.get(2))?)
                     } else {
                         Undemanded
                     };
@@ -3711,7 +3806,7 @@ impl LegacyEvaluator<'_> {
                     legacy_date_arithmetic_metadata(*date_kind, *interval_kind, *subtract),
                     self.time_zone,
                     |index, channel, selected| {
-                        self.read_date_arithmetic(children, index, channel, selected)
+                        self.read_date_arithmetic_original(children, index, channel, selected)
                     },
                 )?
                 .value
@@ -3730,31 +3825,31 @@ impl LegacyEvaluator<'_> {
                 children,
             ) => match sig {
                 SimpleSig::CastIntAsString => {
-                    let value = legacy_some!(self.folded_int(children.first())?);
+                    let value = legacy_some!(self.folded_int_original(children.first())?);
                     Some(tidb_expr::eval_legacy_cast_string_integer(value))
                 }
                 SimpleSig::CastRealAsString => {
-                    let value = legacy_some!(self.eval_real(children.first())?);
+                    let value = legacy_some!(self.eval_real_original(children.first())?);
                     let datum = Datum::Real(value);
                     tidb_expr::eval_legacy_cast_string_datum(&datum)
                 }
                 SimpleSig::CastDecimalAsString => {
-                    let value = legacy_some!(self.eval_decimal(children.first())?);
+                    let value = legacy_some!(self.eval_decimal_original(children.first())?);
                     let datum = Datum::Decimal(value);
                     tidb_expr::eval_legacy_cast_string_datum(&datum)
                 }
                 SimpleSig::CastStringAsString => {
-                    let value = legacy_some!(self.eval_bytes(children.first())?);
+                    let value = legacy_some!(self.eval_bytes_original(children.first())?);
                     let datum = Datum::Bytes(value);
                     tidb_expr::eval_legacy_cast_string_datum(&datum)
                 }
                 SimpleSig::CastTimeAsString => {
-                    let value = legacy_some!(self.eval_time(children.first())?);
+                    let value = legacy_some!(self.eval_time_original(children.first())?);
                     let datum = Datum::Time(value);
                     tidb_expr::eval_legacy_cast_string_datum(&datum)
                 }
                 SimpleSig::CastDurationAsString => {
-                    let value = legacy_some!(self.eval_duration(children.first())?);
+                    let value = legacy_some!(self.eval_duration_original(children.first())?);
                     let datum = Datum::Duration(value);
                     tidb_expr::eval_legacy_cast_string_datum(&datum)
                 }
@@ -3764,7 +3859,7 @@ impl LegacyEvaluator<'_> {
             // rendered through `DateFormat`'s layout table.
             SimpleExpr::Func(SimpleSig::FromUnixTime2Arg, children) => {
                 let first = children.first().expect("wire shape").clone();
-                let value = self.eval_decimal(Some(&first))?;
+                let value = self.eval_decimal_original(Some(&first))?;
                 tidb_expr::eval_from_unixtime_legacy_scoped_in(
                     value,
                     self.time_zone,
@@ -3785,7 +3880,7 @@ impl LegacyEvaluator<'_> {
                             shared_override: self.shared_override,
                         };
                         let layout = evaluator
-                            .eval_bytes(children.get(1))?
+                            .eval_bytes_original(children.get(1))?
                             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
                         tidb_expr::eval_legacy_date_format_in(
                             Some((time.core_time(), layout.as_deref())),
@@ -3810,7 +3905,7 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::UpperUtf8 => tidb_expr::RawCaseFunction::UpperUtf8,
                     _ => unreachable!("case signature matched above"),
                 };
-                let ready = self.eval_bytes(children.first())?;
+                let ready = self.eval_bytes_original(children.first())?;
                 // Preserve this legacy frontend's grouped Rust replacement,
                 // not the ordinary native Go-per-invalid-byte normalization.
                 let ready = if matches!(sig, SimpleSig::LowerUtf8 | SimpleSig::UpperUtf8) {
@@ -3841,9 +3936,9 @@ impl LegacyEvaluator<'_> {
                     sig,
                     SimpleSig::Substring2ArgsUtf8 | SimpleSig::Substring3ArgsUtf8
                 );
-                let bytes = self.eval_bytes(children.first())?;
+                let bytes = self.eval_bytes_original(children.first())?;
                 let pos = if bytes.is_some() {
-                    tidb_expr::RawSubstringInt::Value(self.folded_int(children.get(1))?)
+                    tidb_expr::RawSubstringInt::Value(self.folded_int_original(children.get(1))?)
                 } else {
                     tidb_expr::RawSubstringInt::Undemanded
                 };
@@ -3858,7 +3953,9 @@ impl LegacyEvaluator<'_> {
                         _ => false,
                     };
                     let len = if needs_len {
-                        tidb_expr::RawSubstringInt::Value(self.folded_int(children.get(2))?)
+                        tidb_expr::RawSubstringInt::Value(
+                            self.folded_int_original(children.get(2))?,
+                        )
                     } else {
                         tidb_expr::RawSubstringInt::Undemanded
                     };
@@ -4014,9 +4111,10 @@ fn legacy_comparison_args<T>(
 }
 
 impl LegacyEvaluator<'_> {
-    fn eval_expr(&self, expr: &SimpleExpr) -> LegacyResult<Option<i128>> {
+    #[cfg(test)]
+    fn eval_expr_original(&self, expr: &SimpleExpr) -> LegacyResult<Option<i128>> {
         if self.raw_columns.ready_value_cache().is_some() {
-            return self.eval_expr_bound(expr);
+            return self.eval_expr_bound_original(expr);
         }
         self.ready_values
             .with_columns(self.raw_columns, |raw_columns| {
@@ -4029,11 +4127,14 @@ impl LegacyEvaluator<'_> {
                     #[cfg(test)]
                     shared_override: self.shared_override,
                 }
-                .eval_expr_bound(expr)
+                .eval_expr_bound_original(expr)
             })
     }
 
-    fn eval_expr_bound(&self, expr: &SimpleExpr) -> LegacyResult<Option<i128>> {
+    #[cfg(test)]
+    fn eval_expr_bound_original(&self, expr: &SimpleExpr) -> LegacyResult<Option<i128>> {
+        #[cfg(test)]
+        legacy_source_tests::note_tree(6);
         use tidb_datatype::Datum;
         let row = self.row;
         let time_zone = self.time_zone;
@@ -4064,7 +4165,11 @@ impl LegacyEvaluator<'_> {
             | SimpleExpr::Real(_)
             | SimpleExpr::Time(_) => None,
             SimpleExpr::Func(sig, children) => {
-                let child = |i: usize| children.get(i).map_or(Ok(None), |c| self.eval_expr(c));
+                let child = |i: usize| {
+                    children
+                        .get(i)
+                        .map_or(Ok(None), |c| self.eval_expr_original(c))
+                };
                 return Ok(match sig {
                     // Go's integer arithmetic family (`types.AddInt`/`SubUint`/
                     // `MulInt`...): a result outside the signature's domain is
@@ -4154,7 +4259,7 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::CastTimeAsDecimal
                     | SimpleSig::CastDurationAsDecimal
                     | SimpleSig::UnixTimestampDec => self
-                        .eval_decimal(Some(expr))?
+                        .eval_decimal_original(Some(expr))?
                         .map(|value| i128::from(!value.is_zero())),
                     SimpleSig::ModIntUnsignedUnsigned
                     | SimpleSig::ModIntUnsignedSigned
@@ -4201,8 +4306,8 @@ impl LegacyEvaluator<'_> {
                         // left NULL. Child SQL folding stays inside eval_decimal;
                         // infrastructure errors still propagate before admission.
                         let (left, right) = (
-                            self.eval_decimal(children.first())?,
-                            self.eval_decimal(children.get(1))?,
+                            self.eval_decimal_original(children.first())?,
+                            self.eval_decimal_original(children.get(1))?,
                         );
                         let args = legacy_comparison_args(children.len(), left, right);
                         // This legacy profile truncates the exact quotient and
@@ -4211,7 +4316,7 @@ impl LegacyEvaluator<'_> {
                         tidb_expr::eval_legacy_decimal_integer_division_in(args, self.raw_columns)?
                     }
                     SimpleSig::CastRealAsInt => {
-                        let Some(value) = self.eval_real(children.first())? else {
+                        let Some(value) = self.eval_real_original(children.first())? else {
                             return Ok(None);
                         };
                         let datum = Datum::Real(value);
@@ -4227,7 +4332,7 @@ impl LegacyEvaluator<'_> {
                         }
                     }
                     SimpleSig::CastDecimalAsInt => {
-                        let Some(value) = self.eval_decimal(children.first())? else {
+                        let Some(value) = self.eval_decimal_original(children.first())? else {
                             return Ok(None);
                         };
                         let datum = Datum::Decimal(value);
@@ -4243,7 +4348,7 @@ impl LegacyEvaluator<'_> {
                         }
                     }
                     SimpleSig::CastStringAsInt => {
-                        let Some(raw) = self.eval_bytes(children.first())? else {
+                        let Some(raw) = self.eval_bytes_original(children.first())? else {
                             return Ok(None);
                         };
                         let datum = Datum::Bytes(raw);
@@ -4261,7 +4366,7 @@ impl LegacyEvaluator<'_> {
                     SimpleSig::CastStringAsReal => {
                         // A bare AS REAL cast answers its own truth; the value
                         // flows through `eval_real`'s composition arm.
-                        self.eval_real(Some(expr))?
+                        self.eval_real_original(Some(expr))?
                             .filter(|value| !value.is_nan())
                             .map(|value| i128::from(value != 0.0))
                     }
@@ -4272,7 +4377,7 @@ impl LegacyEvaluator<'_> {
                         // A bare real cast as a condition answers its own truth
                         // (`ToBool`); the value flows through `eval_real`'s own
                         // composition arms, which early-return on the Result.
-                        self.eval_real(Some(expr))?
+                        self.eval_real_original(Some(expr))?
                             .filter(|value| !value.is_nan())
                             .map(|value| i128::from(value != 0.0))
                     }
@@ -4290,12 +4395,12 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::Cot
                     | SimpleSig::Pi
                     | SimpleSig::Sin => self
-                        .eval_real(Some(expr))?
+                        .eval_real_original(Some(expr))?
                         .filter(|value| !value.is_nan())
                         .map(|value| i128::from(value != 0.0)),
                     SimpleSig::CharLengthUtf8 | SimpleSig::CharLength => {
                         let binary = matches!(sig, SimpleSig::CharLength);
-                        let value = match self.eval_bytes(children.first())? {
+                        let value = match self.eval_bytes_original(children.first())? {
                             None => Datum::Null,
                             Some(raw) if binary => Datum::new_bytes(raw),
                             // This legacy public entry has always grouped malformed
@@ -4346,7 +4451,7 @@ impl LegacyEvaluator<'_> {
                         // A bare string function (or CONV) as a condition
                         // answers its `ToBool` truth: the numeric prefix of
                         // the result, non-zero (Go `StrToFloat` -> `ToBool`).
-                        let Some(raw) = self.eval_bytes(Some(expr))? else {
+                        let Some(raw) = self.eval_bytes_original(Some(expr))? else {
                             return Ok(None);
                         };
                         let text = String::from_utf8_lossy(&raw);
@@ -4364,7 +4469,7 @@ impl LegacyEvaluator<'_> {
                     } => {
                         let metadata = legacy_date_arithmetic_metadata(*date, *interval, *subtract);
                         let read = |index, channel, selected: &dyn tidb_expr::Columns| {
-                            self.read_date_arithmetic(children, index, channel, selected)
+                            self.read_date_arithmetic_original(children, index, channel, selected)
                         };
                         let presence = match date {
                             DateArithArg::Duration if !*datetime_result => {
@@ -4405,7 +4510,7 @@ impl LegacyEvaluator<'_> {
                         // presence, never formatted bytes or the layout child.
                         match children.first() {
                             Some(first) => {
-                                let ready = match self.eval_datum(first)? {
+                                let ready = match self.eval_datum_original(first)? {
                                     Datum::Null => None,
                                     _ => Some(false),
                                 };
@@ -4440,8 +4545,8 @@ impl LegacyEvaluator<'_> {
                         // NULL still demands the RHS; a propagated LHS error
                         // stops it, matching the original tuple's ? ordering.
                         let (left, right) = (
-                            self.eval_real(children.first())?,
-                            self.eval_real(children.get(1))?,
+                            self.eval_real_original(children.first())?,
+                            self.eval_real_original(children.get(1))?,
                         );
                         let op = match sig {
                             SimpleSig::LtReal => ComparisonOp::Lt,
@@ -4468,7 +4573,7 @@ impl LegacyEvaluator<'_> {
                         // A bare real arithmetic as a condition answers its own
                         // truth (`ToBool`): non-zero and not-NaN is true, NULL
                         // is filtered. MySQL's `ToBool` treats NaN as 0.
-                        self.eval_real(Some(expr))?
+                        self.eval_real_original(Some(expr))?
                             .filter(|value| !value.is_nan())
                             .map(|value| i128::from(value != 0.0))
                     }
@@ -4508,8 +4613,8 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::NeString(collation) => {
                         use tidb_expr::ComparisonOp;
                         let (left, right) = (
-                            self.eval_bytes(children.first())?,
-                            self.eval_bytes(children.get(1))?,
+                            self.eval_bytes_original(children.first())?,
+                            self.eval_bytes_original(children.get(1))?,
                         );
                         let op = match sig {
                             SimpleSig::LtString(_) => ComparisonOp::Lt,
@@ -4534,8 +4639,8 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::NeDecimal => {
                         use tidb_expr::ComparisonOp;
                         let (left, right) = (
-                            self.eval_decimal(children.first())?,
-                            self.eval_decimal(children.get(1))?,
+                            self.eval_decimal_original(children.first())?,
+                            self.eval_decimal_original(children.get(1))?,
                         );
                         let op = match sig {
                             SimpleSig::LtDecimal => ComparisonOp::Lt,
@@ -4559,8 +4664,8 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::NeTime => {
                         use tidb_expr::ComparisonOp;
                         let (left, right) = (
-                            self.eval_time(children.first())?,
-                            self.eval_time(children.get(1))?,
+                            self.eval_time_original(children.first())?,
+                            self.eval_time_original(children.get(1))?,
                         );
                         let op = match sig {
                             SimpleSig::LtTime => ComparisonOp::Lt,
@@ -4608,7 +4713,7 @@ impl LegacyEvaluator<'_> {
                     )?,
                     SimpleSig::VectorFloat32IsNull => {
                         // The vector leaf answers NULL only through its datum.
-                        let ready = match children.first().map(|c| self.eval_datum(c)) {
+                        let ready = match children.first().map(|c| self.eval_datum_original(c)) {
                             Some(Ok(Datum::Null)) | None => None,
                             Some(Ok(_)) => Some(false),
                             Some(Err(message)) => return Err(message),
@@ -4629,12 +4734,12 @@ impl LegacyEvaluator<'_> {
                                 ready_values: std::rc::Rc::clone(&self.ready_values),
                                 ..*self
                             };
-                            evaluator.eval_bytes(children.get(index))
+                            evaluator.eval_bytes_original(children.get(index))
                         },
                     )?,
                     SimpleSig::WeekWithoutMode => {
                         let value = self
-                            .eval_time(children.first())?
+                            .eval_time_original(children.first())?
                             .map(|time| time.core_time());
                         match tidb_expr::eval_legacy_week_in(value, self.raw_columns)? {
                             Datum::Null => None,
@@ -4654,7 +4759,7 @@ impl LegacyEvaluator<'_> {
                         // Each family's IS NULL inspects its own leaf's DATUM,
                         // not the int truth channel: a present non-NULL datum
                         // answers FALSE even when that kind is not comparable.
-                        let ready = match children.first().map(|c| self.eval_datum(c)) {
+                        let ready = match children.first().map(|c| self.eval_datum_original(c)) {
                             Some(Ok(Datum::Null)) | None => None,
                             Some(Ok(_)) => Some(false),
                             Some(Err(message)) => return Err(message),
@@ -4671,20 +4776,20 @@ impl LegacyEvaluator<'_> {
                     // column), `Month` reads the calendar month, and `DateDiff`
                     // answers the day difference between two dates.
                     SimpleSig::CastTimeAsDuration => {
-                        let Some(duration) = self.eval_duration(children.first())? else {
+                        let Some(duration) = self.eval_duration_original(children.first())? else {
                             return Ok(None);
                         };
                         Some(i128::from(duration.nanoseconds() != 0))
                     }
                     SimpleSig::Date => {
                         let core = self
-                            .eval_time(children.first())?
+                            .eval_time_original(children.first())?
                             .map(|time| time.core_time().raw());
                         tidb_expr::eval_legacy_date_in(core, self.raw_columns)?.map(i128::from)
                     }
                     SimpleSig::Hour | SimpleSig::Minute | SimpleSig::Second => {
                         let nanos = self
-                            .eval_duration(children.first())?
+                            .eval_duration_original(children.first())?
                             .map(tidb_datatype::MySqlDuration::nanoseconds);
                         let field = match sig {
                             SimpleSig::Hour => tidb_expr::LegacyHmsField::Hour,
@@ -4696,14 +4801,14 @@ impl LegacyEvaluator<'_> {
                     }
                     SimpleSig::MicroSecond => {
                         let nanos = self
-                            .eval_duration(children.first())?
+                            .eval_duration_original(children.first())?
                             .map(tidb_datatype::MySqlDuration::nanoseconds);
                         tidb_expr::eval_legacy_microsecond_in(nanos, self.raw_columns)?
                             .map(i128::from)
                     }
                     SimpleSig::Month => {
                         let value = self
-                            .eval_time(children.first())?
+                            .eval_time_original(children.first())?
                             .map(|time| time.core_time());
                         tidb_expr::eval_legacy_month_in(value, self.raw_columns)?.map(i128::from)
                     }
@@ -4711,16 +4816,16 @@ impl LegacyEvaluator<'_> {
                         // Keep tuple demand: left NULL still observes right;
                         // left error stops there, and extra children stay unread.
                         let (left, right) = (
-                            self.eval_time(children.first())?
+                            self.eval_time_original(children.first())?
                                 .map(|time| time.core_time()),
-                            self.eval_time(children.get(1))?
+                            self.eval_time_original(children.get(1))?
                                 .map(|time| time.core_time()),
                         );
                         tidb_expr::eval_legacy_date_diff_in(left, right, self.raw_columns)?
                             .map(i128::from)
                     }
                     SimpleSig::TimestampDiff => {
-                        let Some(unit) = self.eval_bytes(children.first())? else {
+                        let Some(unit) = self.eval_bytes_original(children.first())? else {
                             return Ok(tidb_expr::eval_legacy_timestamp_diff_in(
                                 tidb_expr::LegacyTimestampDiffArgs::NullWitness(None),
                                 self.raw_columns,
@@ -4728,9 +4833,9 @@ impl LegacyEvaluator<'_> {
                             .map(i128::from));
                         };
                         let (left, right) = (
-                            self.eval_time(children.get(1))?
+                            self.eval_time_original(children.get(1))?
                                 .map(|time| time.core_time()),
-                            self.eval_time(children.get(2))?
+                            self.eval_time_original(children.get(2))?
                                 .map(|time| time.core_time()),
                         );
                         tidb_expr::eval_legacy_timestamp_diff_in(
@@ -4743,7 +4848,7 @@ impl LegacyEvaluator<'_> {
                         use tidb_expr::LegacyBinaryArgs;
                         // Preserve CreateBinaryJSON target conversion and its
                         // early NULL/missing stop BEFORE demanding the document.
-                        let target = match children.first().map(|c| self.eval_datum(c)) {
+                        let target = match children.first().map(|c| self.eval_datum_original(c)) {
                             Some(Ok(datum)) => {
                                 if matches!(datum, tidb_datatype::Datum::Null) {
                                     return Ok(tidb_expr::eval_legacy_json_member_of_in(
@@ -4776,7 +4881,7 @@ impl LegacyEvaluator<'_> {
                                 )?);
                             }
                         };
-                        let document = self.eval_json(children.get(1))?;
+                        let document = self.eval_json_original(children.get(1))?;
                         let args = match document {
                             Some(document) => {
                                 // The original element_count fully decoded the
@@ -4799,8 +4904,8 @@ impl LegacyEvaluator<'_> {
                         // Unlike scalar LIKE, legacy demands all three children,
                         // even after NULL. Preserve their byte/int channels and
                         // distinguish absent children only after those demands.
-                        let target = self.eval_bytes(children.first())?;
-                        let pattern = self.eval_bytes(children.get(1))?;
+                        let target = self.eval_bytes_original(children.first())?;
+                        let pattern = self.eval_bytes_original(children.get(1))?;
                         let escape = child(2)?;
                         let (case_insensitive, args) = if children.len() < 3 {
                             (false, LegacyLikeArgs::Missing)
@@ -4828,8 +4933,8 @@ impl LegacyEvaluator<'_> {
                         // Preserve both byte-channel demands before classifying
                         // missing children versus actual NULLs. The legacy worker
                         // owns UTF-8-to-empty, empty-pattern and bad-syntax policy.
-                        let target = self.eval_bytes(children.first())?;
-                        let pattern = self.eval_bytes(children.get(1))?;
+                        let target = self.eval_bytes_original(children.first())?;
+                        let pattern = self.eval_bytes_original(children.get(1))?;
                         let input = if children.len() < 2 {
                             RegexpLegacyInput::Missing
                         } else {
@@ -4869,11 +4974,11 @@ impl LegacyEvaluator<'_> {
                             };
                             children
                                 .get(index)
-                                .map_or(Ok(None), |child| evaluator.eval_expr(child))
+                                .map_or(Ok(None), |child| evaluator.eval_expr_original(child))
                         },
                     )?,
                     SimpleSig::UnixTimestampInt => {
-                        let value = self.eval_time(children.first())?;
+                        let value = self.eval_time_original(children.first())?;
                         tidb_expr::unix_timestamp_int_legacy_in(
                             value,
                             self.time_zone,
@@ -4881,7 +4986,7 @@ impl LegacyEvaluator<'_> {
                         )?
                     }
                     SimpleSig::CastJsonAsInt => {
-                        let Some(value) = self.eval_json(children.first())? else {
+                        let Some(value) = self.eval_json_original(children.first())? else {
                             return Ok(None);
                         };
                         Some(tidb_expr::eval_legacy_cast_json_integer(&value))
@@ -4898,7 +5003,7 @@ impl LegacyEvaluator<'_> {
                     | SimpleSig::JsonMergePatchSig => {
                         // A bare JSON cast as a condition answers its own
                         // non-NULL truth (Go `ToBool` over the rendering).
-                        let answered = self.eval_json(Some(expr))?.is_some();
+                        let answered = self.eval_json_original(Some(expr))?.is_some();
                         Some(i128::from(answered))
                     }
                     SimpleSig::CastIntAsTime
@@ -4922,8 +5027,10 @@ impl LegacyEvaluator<'_> {
                             | SimpleSig::CastDecimalAsTime
                             | SimpleSig::CastStringAsTime
                             | SimpleSig::CastTimeAsTime
-                            | SimpleSig::CastJsonAsTime => self.eval_time(Some(expr))?.is_some(),
-                            _ => self.eval_duration(Some(expr))?.is_some(),
+                            | SimpleSig::CastJsonAsTime => {
+                                self.eval_time_original(Some(expr))?.is_some()
+                            }
+                            _ => self.eval_duration_original(Some(expr))?.is_some(),
                         };
                         Some(i128::from(answered))
                     }
@@ -9056,3 +9163,24 @@ mod tests {
 #[cfg(test)]
 #[path = "cophandler/owned_scalar_tests.rs"]
 mod owned_scalar_tests;
+
+#[cfg(test)]
+#[path = "cophandler/legacy_source_tests.rs"]
+mod legacy_source_tests;
+
+#[cfg(test)]
+#[path = "cophandler/legacy_scope_tests.rs"]
+mod legacy_scope_tests;
+
+// Genuine legacy and Shared sources contribute to one SDK program.
+mod legacy_frame;
+mod legacy_frame_entry;
+mod legacy_frame_value;
+
+#[cfg(test)]
+#[path = "cophandler/legacy_source_original_controls.rs"]
+mod legacy_source_original_controls;
+
+#[cfg(test)]
+#[path = "cophandler/legacy_scope_original_controls.rs"]
+mod legacy_scope_original_controls;

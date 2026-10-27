@@ -30,6 +30,147 @@ enum Entry {
     Duration,
 }
 
+/// The actual legacy consumer's return channel, independent of SQL metadata.
+#[derive(Clone, Copy)]
+pub enum LegacyDateArithmeticOutputKind {
+    /// Non-temporal date operands render text.
+    Text,
+    /// Datetime date operands keep their time value.
+    Time,
+    /// Duration date operands keep their duration value.
+    Duration,
+}
+
+/// One value-state transition. Only the source's SDK frame evaluates the
+/// requested child; this machine contains no expression/context references.
+pub enum LegacyDateArithmeticDemand {
+    /// Read exactly this original source index and typed channel.
+    Source {
+        /// Original argument position, never a lowered node ordinal.
+        index: usize,
+        /// Its genuine legacy typed consumer.
+        channel: LegacyDateArithmeticChannel,
+    },
+    /// The existing SDK producer's value and separate presence observation.
+    Ready {
+        /// The SDK's actual nullable typed result.
+        value: LegacyDateArithmeticValue,
+        /// The original separate presence observation.
+        presence: i128,
+    },
+}
+
+/// Owned adapter over the same SDK value state used by the synchronous legacy
+/// entry. Pure conversion phases complete before the next source demand.
+pub struct LegacyDateArithmeticMachine {
+    state: tidb_query_expr::NativeLegacyDateArithmeticValues,
+    output: LegacyDateArithmeticOutputKind,
+}
+
+impl LegacyDateArithmeticMachine {
+    /// Validate the actual consumer/metadata pair without reading any child.
+    pub fn new(
+        output: LegacyDateArithmeticOutputKind,
+        metadata: LegacyDateArithmeticMetadata,
+    ) -> Result<Self, EvalError> {
+        let valid = match output {
+            LegacyDateArithmeticOutputKind::Text => !matches!(
+                metadata.date,
+                LegacyDateArithmeticDateKind::Datetime | LegacyDateArithmeticDateKind::Duration
+            ),
+            LegacyDateArithmeticOutputKind::Time => {
+                metadata.date == LegacyDateArithmeticDateKind::Datetime
+            }
+            LegacyDateArithmeticOutputKind::Duration => {
+                metadata.date == LegacyDateArithmeticDateKind::Duration
+            }
+        };
+        if !valid {
+            return Err(invalid_report());
+        }
+        Ok(Self {
+            state: tidb_query_expr::NativeLegacyDateArithmeticValues::new(
+                metadata,
+                super::control_value::default_budget(),
+            )
+            .map_err(actual_error)?,
+            output,
+        })
+    }
+
+    /// Actual known retained state, for the enclosing source service's ledger.
+    pub fn retained_bytes(&self) -> Option<usize> {
+        self.state.retained_bytes()
+    }
+
+    /// Begin at the SDK's original demanded phase.
+    pub fn begin(
+        &mut self,
+        zone: &SessionTimeZone,
+    ) -> Result<LegacyDateArithmeticDemand, EvalError> {
+        let step = self.state.begin().map_err(actual_error)?;
+        self.advance(step, zone)
+    }
+
+    /// Supply one actual nullable typed child value. Its owner is not retained
+    /// by this adapter; the SDK owns its necessary bounded working storage.
+    pub fn resume_source(
+        &mut self,
+        value: LegacyDateArithmeticValue,
+        zone: &SessionTimeZone,
+    ) -> Result<LegacyDateArithmeticDemand, EvalError> {
+        let input = source_input(&value);
+        let step = self.state.resume_source(input).map_err(actual_error)?;
+        self.advance(step, zone)
+    }
+
+    fn advance(
+        &mut self,
+        mut step: tidb_query_expr::NativeLegacyDateArithmeticValueStep,
+        zone: &SessionTimeZone,
+    ) -> Result<LegacyDateArithmeticDemand, EvalError> {
+        use tidb_query_expr::{
+            NativeLegacyDateArithmeticValue as Value, NativeLegacyDateArithmeticValueStep as Step,
+        };
+        loop {
+            step = match step {
+                Step::Source { index, channel } => {
+                    return Ok(LegacyDateArithmeticDemand::Source { index, channel })
+                }
+                Step::ParseDate => self.state.parse_date(zone).map_err(actual_error)?,
+                Step::DecimalText { .. } => self.state.finish_decimal().map_err(actual_error)?,
+                Step::Ready { value, presence } => {
+                    let value = match value {
+                        Value::Null => match self.output {
+                            LegacyDateArithmeticOutputKind::Text => {
+                                LegacyDateArithmeticValue::Bytes(None)
+                            }
+                            LegacyDateArithmeticOutputKind::Time => {
+                                LegacyDateArithmeticValue::Time(None)
+                            }
+                            LegacyDateArithmeticOutputKind::Duration => {
+                                LegacyDateArithmeticValue::Duration(None)
+                            }
+                        },
+                        Value::Text(v) => LegacyDateArithmeticValue::Bytes(Some(v)),
+                        Value::Time(v) => {
+                            LegacyDateArithmeticValue::Time(Some(Time::from_raw_parts(
+                                tidb_datatype::CoreTime::from_raw(v.raw),
+                                v.kind,
+                                v.fsp,
+                            )))
+                        }
+                        Value::Duration { nanos, fsp } => LegacyDateArithmeticValue::Duration(
+                            Some(MySqlDuration::from_raw_parts(nanos, fsp)),
+                        ),
+                    };
+                    return Ok(LegacyDateArithmeticDemand::Ready { value, presence });
+                }
+            };
+        }
+    }
+}
+
 enum Output {
     Null,
     Text(Vec<u8>),
@@ -108,6 +249,32 @@ pub enum LegacyDateArithmeticValue {
     Duration(Option<MySqlDuration>),
 }
 
+fn source_input(
+    value: &LegacyDateArithmeticValue,
+) -> tidb_query_expr::NativeLegacyDateArithmeticInput<'_> {
+    use tidb_query_expr::NativeLegacyDateArithmeticInput as Input;
+    match value {
+        LegacyDateArithmeticValue::Bytes(v) => Input::Bytes(v.as_deref()),
+        LegacyDateArithmeticValue::Int(v) => Input::FoldedInt(*v),
+        LegacyDateArithmeticValue::Real(v) => Input::Real(*v),
+        LegacyDateArithmeticValue::Decimal(v) => {
+            Input::Decimal(v.as_ref().map(Decimal::as_shared_parse))
+        }
+        LegacyDateArithmeticValue::Time(v) => {
+            Input::Time(v.map(
+                |v| tidb_query_datatype::codec::mysql::time::NativeTemporalValue {
+                    raw: v.core_time().raw(),
+                    kind: v.kind(),
+                    fsp: v.fsp(),
+                },
+            ))
+        }
+        LegacyDateArithmeticValue::Duration(v) => {
+            Input::Duration(v.map(|v| (v.nanoseconds(), v.fsp())))
+        }
+    }
+}
+
 /// The SDK's value and separate presence projection, from one evaluation.
 /// Legacy bare conditions use `presence`, not a host-derived value predicate.
 #[derive(Debug, PartialEq)]
@@ -149,8 +316,8 @@ fn evaluate_values<E: From<EvalError>>(
     maximum: usize,
 ) -> Result<(Output, i128), E> {
     use tidb_query_expr::{
-        NativeLegacyDateArithmeticInput as Input, NativeLegacyDateArithmeticValue as Value,
-        NativeLegacyDateArithmeticValueStep as Step, NativeLegacyDateArithmeticValues as State,
+        NativeLegacyDateArithmeticValue as Value, NativeLegacyDateArithmeticValueStep as Step,
+        NativeLegacyDateArithmeticValues as State,
     };
     let valid = match entry {
         Entry::Text => !matches!(
@@ -171,24 +338,7 @@ fn evaluate_values<E: From<EvalError>>(
                 // The source owner alone evaluates this exact original channel;
                 // no alternate evaluator or report program runs in this layer.
                 let value = eval(index, channel, ctx)?;
-                let input = match &value {
-                    LegacyDateArithmeticValue::Bytes(v) => Input::Bytes(v.as_deref()),
-                    LegacyDateArithmeticValue::Int(v) => Input::FoldedInt(*v),
-                    LegacyDateArithmeticValue::Real(v) => Input::Real(*v),
-                    LegacyDateArithmeticValue::Decimal(v) => {
-                        Input::Decimal(v.as_ref().map(Decimal::as_shared_parse))
-                    }
-                    LegacyDateArithmeticValue::Time(v) => Input::Time(v.map(|v| {
-                        tidb_query_datatype::codec::mysql::time::NativeTemporalValue {
-                            raw: v.core_time().raw(),
-                            kind: v.kind(),
-                            fsp: v.fsp(),
-                        }
-                    })),
-                    LegacyDateArithmeticValue::Duration(v) => {
-                        Input::Duration(v.map(|v| (v.nanoseconds(), v.fsp())))
-                    }
-                };
+                let input = source_input(&value);
                 state
                     .resume_source(input)
                     .map_err(|e| E::from(actual_error(e)))?

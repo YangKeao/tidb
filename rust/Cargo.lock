@@ -5878,6 +5878,9 @@ dependencies = [
  "tidb-stats",
  "tidb-tablecodec",
  "tidb-txnkv",
+ "tidb_query_datatype",
+ "tidb_query_expr",
+ "tipb",
 ]
 
 [[package]]

@@ -134,7 +134,9 @@ mod in_value_tests;
 pub(crate) use in_list::{
     eval_in_typed_values_in, in_control_datum, in_eq_observation, in_row_control_error,
 };
-pub use in_list::{eval_legacy_in_bytes_in, eval_legacy_in_int_in};
+pub use in_list::{
+    eval_legacy_in_bytes_in, eval_legacy_in_int_in, LegacyInDemand, LegacyInMachine,
+};
 #[cfg(test)]
 mod charset_value_tests;
 #[cfg(test)]
@@ -154,7 +156,8 @@ mod legacy_date_arithmetic;
 pub use legacy_date_arithmetic::{
     eval_legacy_date_arithmetic_duration_in, eval_legacy_date_arithmetic_text_in,
     eval_legacy_date_arithmetic_time_in, LegacyDateArithmeticChannel, LegacyDateArithmeticDateKind,
-    LegacyDateArithmeticIntervalKind, LegacyDateArithmeticMetadata, LegacyDateArithmeticResult,
+    LegacyDateArithmeticDemand, LegacyDateArithmeticIntervalKind, LegacyDateArithmeticMachine,
+    LegacyDateArithmeticMetadata, LegacyDateArithmeticOutputKind, LegacyDateArithmeticResult,
     LegacyDateArithmeticValue,
 };
 mod null_if;
@@ -193,7 +196,7 @@ pub use ready_value::{
     eval_legacy_microsecond_in, eval_legacy_real_arithmetic_in, eval_legacy_real_comparison_in,
     eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, LegacyBinaryArgs,
     LegacyIntegerArithmetic, LegacyLikeArgs, ReadyValueCache, RegexpLegacyInput,
-    ScopedReadyValueColumns,
+    ScopedReadyValueColumns, SelectedReadyValueScope,
 };
 pub(crate) use ready_value::{
     evaluate_args_in, evaluate_bytes_in, evaluate_closed_args, evaluate_closed_regexp_args,

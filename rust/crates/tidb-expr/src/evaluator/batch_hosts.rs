@@ -2983,6 +2983,11 @@ impl NativeBatchHosts<'_> {
         }
         let mut ready_preparation = None;
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::LegacyNative => {
+                return Err(binding(
+                    "legacy source hosts require their actual source provider",
+                ));
+            }
             SqlBatchHostOperation::AstNative => unreachable!("routed above"),
             SqlBatchHostOperation::EagerValuesNative => {
                 if let Some(NativeHostMetadata::HeaderOutcome {

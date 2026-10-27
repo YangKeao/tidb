@@ -153,6 +153,21 @@ impl Default for ReadyValueCache {
 }
 
 impl ReadyValueCache {
+    /// Select the same effective lane as `with_columns`, for an explicit SDK
+    /// host demand that can suspend. The service owns this scope; tasks retain
+    /// only its identity. Normal return/cancellation keeps the lane reusable,
+    /// while unwinding poisons the selected cache, including callback panics.
+    pub fn select_columns_scope<'a>(
+        &'a self,
+        native: &'a dyn Columns,
+    ) -> SelectedReadyValueScope<'a> {
+        let cache = native.ready_value_cache().unwrap_or(self);
+        SelectedReadyValueScope {
+            cache,
+            _unwind: PreparationUnwindGuard(cache),
+        }
+    }
+
     /// Extends the original preparation unwind policy across broker suspensions.
     /// Normal errors and cancellation leave the lane reusable.
     pub(crate) fn preparation_unwind_guard(&self) -> PreparationUnwindGuard<'_> {
@@ -322,6 +337,34 @@ impl ReadyValueCache {
 }
 
 pub(crate) struct PreparationUnwindGuard<'a>(&'a ReadyValueCache);
+
+/// A genuine selected executor-lane capability across SDK child demands.
+/// It does not retain a Columns, expression, invocation or child value.
+pub struct SelectedReadyValueScope<'a> {
+    cache: &'a ReadyValueCache,
+    _unwind: PreparationUnwindGuard<'a>,
+}
+
+impl<'a> SelectedReadyValueScope<'a> {
+    /// The actual effective cache selected at the original demand phase.
+    pub fn cache(&self) -> &'a ReadyValueCache {
+        self.cache
+    }
+
+    /// Forward the actual native context under this already selected cache.
+    /// This performs no capability query and starts no new scope. A service can
+    /// keep the binding outside its task table while child demands suspend.
+    pub fn bind_columns<'native>(
+        &self,
+        native: &'native dyn Columns,
+    ) -> ScopedReadyValueColumns<'native, 'a> {
+        ScopedReadyValueColumns {
+            native,
+            cache: self.cache,
+            fallback: false,
+        }
+    }
+}
 
 impl PreparationUnwindGuard<'_> {
     pub(crate) fn cache(&self) -> &ReadyValueCache {

@@ -117,6 +117,9 @@ fn direct_result(
     match value {
         Ok(value) => Ok(value.map(i128::from)),
         Err(tidb_query_expr::NativeInLegacyError::Source(error)) => Err(error),
+        Err(tidb_query_expr::NativeInLegacyError::InvalidResponse) => {
+            panic!("synchronous source cannot resume a closed IN state")
+        }
         Err(tidb_query_expr::NativeInLegacyError::ResourceLimit(reason)) => Err(Fault::Adapter(
             EvalError::ExpressionRuntimeFailure(ExpressionRuntimeFailure::from_local_eval(
                 LocalError::ResourceLimit(reason.into()),

@@ -134,7 +134,10 @@ impl Clone for SharedExpression {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{convert_expr_with_context, eval_datum, RegionAggregator, TopNSpec};
+    use super::super::{
+        convert_expr_with_context, eval_datum, PreparedRoot, RegionAggregationSources,
+        RegionAggregator, TopNSpec, View,
+    };
     use super::*;
     use tidb_proto::tipb;
 
@@ -240,11 +243,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            topn.evaluate(&row, std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),)
-                .unwrap(),
+            topn.evaluate(
+                &row,
+                std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
+                &topn
+                    .keys
+                    .iter()
+                    .map(|(source, _, _)| PreparedRoot::new(source, View::Datum))
+                    .collect::<Vec<_>>()
+            )
+            .unwrap(),
             [expected.clone()]
         );
-        let mut agg = RegionAggregator::build(
+        let sources = RegionAggregationSources::build(
             &tipb::Aggregation {
                 agg_func: vec![tipb::Expr {
                     tp: Some(tipb::ExprType::Max as i32),
@@ -255,9 +266,12 @@ mod tests {
             },
             &[],
             &ctx,
-            std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
         )
         .unwrap();
+        let mut agg = RegionAggregator::new(
+            &sources,
+            std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
+        );
         agg.update(&row).unwrap();
         assert_eq!(agg.finish(), [vec![expected]]);
     }

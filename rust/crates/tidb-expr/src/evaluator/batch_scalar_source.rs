@@ -22,10 +22,10 @@ struct ScalarPlan {
     execution: ExecutionLimits,
     maximum: usize,
 }
-struct PhysicalRow<'a> {
-    source: &'a SourcePlan,
-    values: &'a RefCell<NativeValueStore>,
-    native: Row<'a>,
+pub(super) struct PhysicalRow<'a> {
+    pub(super) source: &'a SourcePlan,
+    pub(super) values: &'a RefCell<NativeValueStore>,
+    pub(super) native: Row<'a>,
 }
 impl NativeDatumSource for PhysicalRow<'_> {
     fn schema(&self) -> &[tipb::FieldType] {
