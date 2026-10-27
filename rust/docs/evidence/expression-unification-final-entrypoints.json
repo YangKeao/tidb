@@ -1,0 +1,244 @@
+{
+  "entrypoints": [
+    {
+      "id": "ast",
+      "original_source_path": "rust/crates/tidb-expr/src/lib.rs",
+      "original_symbols": [
+        "eval",
+        "eval_in"
+      ],
+      "current_source_sha256": "5c4d15294ab3bcf8a5636a11d5dc639a7f5a2abeb170590780550610a308b947",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N59",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "typed_row",
+      "original_source_path": "rust/crates/tidb-expr/src/expression.rs",
+      "original_symbols": [
+        "Expression::eval"
+      ],
+      "current_source_sha256": "710dd53a267d67e104da7e6adc640aef31f3a31f19d8d8d2fdb3eeb2651cdaf6",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54-N58",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "pb_typed",
+      "original_source_path": "rust/crates/tidb-expr/src/distsql_builtin.rs",
+      "original_symbols": [
+        "pb_to_expr",
+        "supports_signature"
+      ],
+      "current_source_sha256": "9e85cca36ae886a744e86b8228203d317b379c6aa76520638947875382b83f33",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N49-N58/N63",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "batch",
+      "original_source_path": "rust/crates/tidb-expr/src/evaluator.rs",
+      "original_symbols": [
+        "EvaluatorProgram",
+        "EvaluatorSuite",
+        "ColumnSwapHelper"
+      ],
+      "current_source_sha256": "410a646fb7805f55e7bcd2c85ea1dfa4fa25344f7bddab38f6396990a5993602",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N60-N62",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "filter",
+      "original_source_path": "rust/crates/tidb-executor/src/selection.rs",
+      "original_symbols": [
+        "SelectionExec",
+        "FastSelectionFilter"
+      ],
+      "current_source_sha256": "087c7605be3f4e5af5df3c3247a363acfd253101b7a277d1dc54ffa550434950",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N55",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "helper",
+      "original_source_path": "rust/crates/tidb-expr/src/lib.rs",
+      "original_symbols": [
+        "eval_expression_once",
+        "apply_binary",
+        "apply_binary_with_div_precision",
+        "apply_unary",
+        "date_add_interval",
+        "concat_values",
+        "avg_of",
+        "avg_of_with_div_precision",
+        "fit_decimal_column",
+        "get_time_value"
+      ],
+      "current_source_sha256": "5c4d15294ab3bcf8a5636a11d5dc639a7f5a2abeb170590780550610a308b947",
+      "current_route": "existing caller metadata/scheduling plus shared SDK value primitive; no general evaluator replay",
+      "evidence": "M2/shared SDK value facades",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "fold",
+      "original_source_path": "rust/crates/tidb-expr/src/constant_fold.rs",
+      "original_symbols": [
+        "fold_constant_in_mode"
+      ],
+      "current_source_sha256": "ba78151accb1816dd88c0a78b53482abe8171a67b8bfa29206b307f6f692a902",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N59",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "unistore",
+      "original_source_path": "rust/crates/tidb-unistore/src/cophandler.rs",
+      "original_symbols": [
+        "convert_expr_with_context",
+        "eval_expr",
+        "eval_datum",
+        "SimpleExpr::Shared",
+        "SimpleExpr::Func"
+      ],
+      "current_source_sha256": "7f321ba3c176630271bc83f96054d7e80a467a94e7739a482bc05d062cd5419b",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N56/N65",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "scan_filter",
+      "original_source_path": "rust/crates/tidb-executor/src/predicate_pushdown.rs",
+      "original_symbols": [
+        "FastScanFilter::StringIn",
+        "FastScanFilter::Like",
+        "PushedScanFilter::matches"
+      ],
+      "current_source_sha256": "b425f920596b91491abf511195b120cbb7aad66a7e3b6058bd40918b5b6666ed",
+      "current_route": "existing caller metadata/scheduling plus shared SDK value primitive; no general evaluator replay",
+      "evidence": "shared collation/LIKE value primitives",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "vector_group_checker",
+      "original_source_path": "rust/crates/tidb-executor/src/vec_group_checker.rs",
+      "original_symbols": [
+        "split_into_groups",
+        "eval_group_item"
+      ],
+      "current_source_sha256": "04c1b671aa9f656585e545a046d8ff6a0106702120975b0796c6bb5b4aa42ce5",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N60",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "projection_expand",
+      "original_source_path": "rust/crates/tidb-executor/src/projection.rs",
+      "original_symbols": [
+        "ProjectionExec"
+      ],
+      "current_source_sha256": "6bf85ef85b0c0a0d6ecbd614ef9038eb91c69556791a48a51156535498382a68",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N50-N63",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "default_generated_check_partition",
+      "original_source_path": "rust/crates/tidb-executor/src/column_default.rs",
+      "original_symbols": [
+        "build_in_context",
+        "evaluate"
+      ],
+      "current_source_sha256": "0d4c99c83ea38eab50d455bf712acb46224f767dbe14b78d5f9eaabe6886613d",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N59 public entries",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "dml",
+      "original_source_path": "rust/crates/tidb-executor/src/driver/dml.rs",
+      "original_symbols": [
+        "PreparedInsertValue::Expression",
+        "order_rows_for_dml",
+        "UpdateRowEvaluator::compute"
+      ],
+      "current_source_sha256": "dfca19c2cbc26b372068ba07f26a84c72c1def46f1ed7c1a7610479f49ac5a91",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N59 public entries",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "join",
+      "original_source_path": "rust/crates/tidb-executor/src/joiner.rs",
+      "original_symbols": [
+        "eval_bool",
+        "filter_inner",
+        "filter_and_check_inner"
+      ],
+      "current_source_sha256": "c104576a485dc8f1af0311f2f46593c8b82894597aa9461b218f8bbd714a12f3",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N55 shared comparison primitives",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "aggregate_window_args",
+      "original_source_path": "rust/crates/tidb-executor/src/hash_agg.rs",
+      "original_symbols": [
+        "eval_agg_input"
+      ],
+      "current_source_sha256": "7374c8ad8ffc4d76e704a2292a054e067d0c6eb070322f8dcb090110a47fcc87",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N60 public entries",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "sort_materialization",
+      "original_source_path": "rust/crates/tidb-executor/src/sort.rs",
+      "original_symbols": [
+        "eval_sort_key",
+        "validate_by_items",
+        "compare_rows"
+      ],
+      "current_source_sha256": "696280b5e2aead7631eadf6e47efe9fd1c582cab1cae188e8985cd1fa3eee559",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54 public entries",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "planner_eval",
+      "original_source_path": "rust/crates/tidb-planner/src/plan_builder.rs",
+      "original_symbols": [
+        "fold_constant"
+      ],
+      "current_source_sha256": "7a7685718dd28e4a42e4bdc4a51b63c001eb703133aa3cf57682432edd12f959",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N54/N59 public entries",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "session_ast_and_binding",
+      "original_source_path": "rust/crates/tidb-session/src/show.rs",
+      "original_symbols": [
+        "show_row_matches"
+      ],
+      "current_source_sha256": "015353773448882d61d8163d9dd77b96c1b9984a5bbe524b30d03c68eb04ec6d",
+      "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
+      "evidence": "N59 actual SHOW plan retention",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    },
+    {
+      "id": "helper_consumers",
+      "original_source_path": "rust/crates/tidb-exec/src/multi_statement_transaction.rs",
+      "original_symbols": [
+        "selection_matches_staged_row"
+      ],
+      "current_source_sha256": "16578605860aeaba3fa28e1f0b1364eb1072747cea8aa752eb6d92aab4009eab",
+      "current_route": "existing caller metadata/scheduling plus shared SDK value primitive; no general evaluator replay",
+      "evidence": "shared apply_binary value primitive",
+      "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
+    }
+  ],
+  "default_native_replay": false,
+  "static_uncredited_compatibility_families": 5,
+  "independent_third_party_review": "pending human review; not claimed"
+}

@@ -1,0 +1,3830 @@
+{
+  "frozen_denominator": 245,
+  "minimum_for_90_percent": 221,
+  "credited_families": 240,
+  "percent": 97.95918367346938,
+  "uncredited_compatibility_families": [
+    "json_schema_valid",
+    "tidb_decode_plan",
+    "tidb_decode_binary_plan",
+    "tidb_encode_sql_digest",
+    "validate_password_strength"
+  ],
+  "family_rows_including_original_exclusions": 281,
+  "registry_only_or_syntax_rows": [
+    {
+      "name": "'tidb`.(dateliteral",
+      "arity": {
+        "min": 1,
+        "max": 1,
+        "line": 66
+      },
+      "classification": "syntax_lowered",
+      "evidence": "date_literal family via CastStyle::DateLiteral; no name-dispatch kernel for internal registry spelling.",
+      "in_denominator": false
+    },
+    {
+      "name": "'tidb`.(timeliteral",
+      "arity": {
+        "min": 1,
+        "max": 1,
+        "line": 67
+      },
+      "classification": "syntax_lowered_with_distinct_gap",
+      "evidence": "TimeLiteral rewriter falls through cast_time; direct eval_in rejects it and no dedicated native time-literal validator exists.",
+      "in_denominator": false
+    },
+    {
+      "name": "'tidb`.(timestampliteral",
+      "arity": {
+        "min": 1,
+        "max": 2,
+        "line": 68
+      },
+      "classification": "syntax_lowered",
+      "evidence": "timestamp_literal family via CastStyle::TimestampLiteral.",
+      "in_denominator": false
+    },
+    {
+      "name": "fts_match_word",
+      "arity": {
+        "min": 2,
+        "max": 2,
+        "line": 148
+      },
+      "classification": "no_native_kernel_with_lowering_subset",
+      "evidence": "builtin_registry.rs:491-495 rejects native evaluator; fts.rs builds ILIKE fallback composition.",
+      "in_denominator": false
+    },
+    {
+      "name": "match_against",
+      "arity": {
+        "min": 2,
+        "max": null,
+        "line": 234
+      },
+      "classification": "no_native_kernel_with_lowering_subset",
+      "evidence": "builtin_registry.rs:496-500 rejects native evaluator; gated session/planner fallback has existing tests.",
+      "in_denominator": false
+    },
+    {
+      "name": "row",
+      "arity": {
+        "min": 2,
+        "max": null,
+        "line": 280
+      },
+      "classification": "structural_only",
+      "evidence": "rewriter.rs:2529 constructs row carrier, comparisons expand it; no standalone scalar result.",
+      "in_denominator": false
+    },
+    {
+      "name": "tidb_decode_sql_digests",
+      "arity": {
+        "min": 1,
+        "max": 2,
+        "line": 314
+      },
+      "classification": "never_implemented_at_baseline",
+      "evidence": "Registry-only, no executable dispatch/lowering found in Rust crates; fallback unresolved_error is Unsupported.",
+      "in_denominator": false
+    },
+    {
+      "name": "tidb_encode_index_key",
+      "arity": {
+        "min": 4,
+        "max": null,
+        "line": 315
+      },
+      "classification": "never_implemented_at_baseline",
+      "evidence": "Registry-only, no executable dispatch/lowering found in Rust crates.",
+      "in_denominator": false
+    },
+    {
+      "name": "tidb_encode_record_key",
+      "arity": {
+        "min": 3,
+        "max": null,
+        "line": 316
+      },
+      "classification": "never_implemented_at_baseline",
+      "evidence": "Registry-only, no executable dispatch/lowering found in Rust crates.",
+      "in_denominator": false
+    },
+    {
+      "name": "tidb_mvcc_info",
+      "arity": {
+        "min": 1,
+        "max": 1,
+        "line": 319
+      },
+      "classification": "never_implemented_at_baseline",
+      "evidence": "Registry-only, no executable dispatch/lowering found in Rust crates.",
+      "in_denominator": false
+    },
+    {
+      "name": "tidb_row_checksum",
+      "arity": {
+        "min": 0,
+        "max": 0,
+        "line": 322
+      },
+      "classification": "never_implemented_at_baseline",
+      "evidence": "Registry-only, no executable dispatch/lowering found in Rust crates.",
+      "in_denominator": false
+    },
+    {
+      "name": "uuid_short",
+      "arity": {
+        "min": 0,
+        "max": 0,
+        "line": 350
+      },
+      "classification": "source_deliberately_unavailable",
+      "evidence": "builtin_registry.rs:484 returns FunctionNotExists; not a migrated kernel.",
+      "in_denominator": false
+    }
+  ],
+  "baseline_sha256": "a9b91ca9bf8ee234a724aada7881d9a0881df4562d220619606e8c805557c344",
+  "historical_credit_ledger_sha256": "a280d6854712a51f63e4e13b1442759e6154393911528f327ef5662ea774c2a3",
+  "credit_note": "Do not credit JSON_SCHEMA_VALID merely because its source scheduling is unified. Five host algorithms remain visible/uncredited; denominator is unchanged. No claim of complete Go package transcreation, all-family TiKV algorithms, or production readiness.",
+  "current_driver": "One canonical SDK frame for migrated public AST/Expression/ScalarFunction/native batch/Suite/Unistore sources. Static host exceptions are value/context primitives, never failure-triggered native evaluator replay.",
+  "rows": [
+    {
+      "id": "abs",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "abs"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "acos",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "acos"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "addtime",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "addtime"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "aes_decrypt",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "aes_decrypt"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "aes_encrypt",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "aes_encrypt"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "and",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "and"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "any_value",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "any_value"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ascii",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ascii"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "asin",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "asin"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "atan",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "atan",
+        "atan2"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "benchmark",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "benchmark"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "between",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "between"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bin",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bin"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bin_to_uuid",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bin_to_uuid"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bit_count",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bit_count"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bit_length",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bit_length"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bitand",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bitand"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bitneg",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bitneg"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bitor",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bitor"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "bitxor",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "bitxor"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "case",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "case"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "cast",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "cast_",
+        "cast_binary",
+        "cast_char",
+        "cast_date",
+        "cast_datetime",
+        "cast_decimal",
+        "cast_decimal_in_union",
+        "cast_double",
+        "cast_float",
+        "cast_int_to_decimal_in_union",
+        "cast_json",
+        "cast_real_in_union",
+        "cast_real_int_in_union",
+        "cast_real_to_decimal_in_union",
+        "cast_signed",
+        "cast_string_to_decimal_in_union",
+        "cast_time",
+        "cast_unsigned",
+        "cast_unsigned_in_union",
+        "cast_vector",
+        "cast_year"
+      ],
+      "category": "cast",
+      "domain_profile": "cast",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ceil",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ceil",
+        "ceiling"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "char_func",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "char_func"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "char_length",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "char_length",
+        "character_length"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "charset",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "charset"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "coalesce",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "coalesce"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "coercibility",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "coercibility"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "collation",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "collation"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "compress",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "compress"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "concat",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "concat"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "concat_ws",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "concat_ws"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "connection_id",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "connection_id"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "conv",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "conv"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "convert_charset",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "convert",
+        "convert_using",
+        "from_binary",
+        "to_binary"
+      ],
+      "category": "convert_charset",
+      "domain_profile": "convert_charset",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "convert_tz",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "convert_tz"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "cos",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "cos"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "cot",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "cot"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "crc32",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "crc32"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "curdate",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "curdate",
+        "current_date"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "current_resource_group",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "current_resource_group"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "current_role",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "current_role"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "current_user",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "current_user"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "curtime",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "current_time",
+        "curtime"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "database",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "database",
+        "schema"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "date",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "date"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "date_add",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "adddate",
+        "date_add"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "date_format",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "date_format"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "date_literal",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "date_literal"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "date_sub",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "date_sub",
+        "subdate"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "datediff",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "datediff"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "dayname",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "dayname"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "dayofmonth",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "day",
+        "dayofmonth"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "dayofweek",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "dayofweek"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "dayofyear",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "dayofyear"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "decode",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "decode"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "degrees",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "degrees"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "div",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "div"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "elt",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "elt"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "encode",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "encode"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "eq",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "eq"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "exp",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "exp"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "export_set",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "export_set"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "extract",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "extract"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "field",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "field"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "find_in_set",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "find_in_set"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "floor",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "floor"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "format",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "format"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "format_bytes",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "format_bytes"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "format_nano_time",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "format_nano_time"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "found_rows",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "found_rows"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "from_base64",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "from_base64"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "from_days",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "from_days"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "from_unixtime",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "from_unixtime"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ge",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ge"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "get_format",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "get_format"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "get_lock",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "get_lock"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "getparam",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "getparam"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "getvar",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "getvar"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "greatest",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "greatest"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "grouping",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "grouping"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "gt",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "gt"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "hex",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "hex"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "hour",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "hour"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "if",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "if"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ifnull",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ifnull"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ilike",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ilike"
+      ],
+      "category": "pattern",
+      "domain_profile": "pattern",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "in",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "in"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "inet6_aton",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "inet6_aton"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "inet6_ntoa",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "inet6_ntoa"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "inet_aton",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "inet_aton"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "inet_ntoa",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "inet_ntoa"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "insert_func",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "insert_func"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "instr",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "instr"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "intdiv",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "intdiv"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "interval",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "interval"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "is_free_lock",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "is_free_lock"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "is_ipv4",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "is_ipv4"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "is_ipv4_compat",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "is_ipv4_compat"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "is_ipv4_mapped",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "is_ipv4_mapped"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "is_ipv6",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "is_ipv6"
+      ],
+      "category": "network",
+      "domain_profile": "network",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "is_used_lock",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "is_used_lock"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "is_uuid",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "is_uuid"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "isfalse",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "isfalse",
+        "isnotfalse"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "isnull",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "isnotunknown",
+        "isnull",
+        "isunknown"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "istrue",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "isnottrue",
+        "istrue"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "istrue_with_null",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "istrue_with_null"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_array",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_array"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_array_append",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_array_append"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_array_insert",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_array_insert"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_contains",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_contains"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_contains_path",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_contains_path"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_depth",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_depth"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_extract",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_extract"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_insert",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_insert"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_keys",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_keys"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_length",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_length"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_member_of",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_member_of",
+        "json_memberof"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_merge",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_merge",
+        "json_merge_preserve"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_merge_patch",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_merge_patch"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_object",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_object"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_overlaps",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_overlaps"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_pretty",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_pretty"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_quote",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_quote"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_remove",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_remove"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_replace",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_replace"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_schema_valid",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_schema_valid"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "uncredited_static_host_compatibility",
+      "native_algorithm_deleted": false,
+      "algorithm_owner": "TiDB builtin_ext/json/report.rs and third-party JSON schema validator",
+      "source_control": "N18 owned schema/document phases in SDK; original host validation/cache/resolver remains explicit compatibility work"
+    },
+    {
+      "id": "json_search",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_search"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_set",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_set"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_storage_free",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_storage_free"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_storage_size",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_storage_size"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_sum_crc32",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_sum_crc32"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_type",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_type"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_unquote",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_unquote"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "json_valid",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "json_valid"
+      ],
+      "category": "json",
+      "domain_profile": "json",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "last_day",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "last_day"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "last_insert_id",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "last_insert_id"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "lastval",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "lastval"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "le",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "le"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "least",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "least"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "left",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "left"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "leftshift",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "leftshift"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "length",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "length",
+        "octet_length"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "like",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "like"
+      ],
+      "category": "pattern",
+      "domain_profile": "pattern",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ln",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ln"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "load_file",
+      "in_frozen_denominator": false,
+      "frozen_classification": "compatibility_stub",
+      "spellings": [
+        "load_file"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "locate",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "locate",
+        "position"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "log",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "log"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "log10",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "log10"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "log2",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "log2"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "lower",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "lcase",
+        "lower"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "lpad",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "lpad"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "lt",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "lt"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ltrim",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ltrim"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "make_set",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "make_set"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "makedate",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "makedate"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "maketime",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "maketime"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "md5",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "md5"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "microsecond",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "microsecond"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "minus",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "minus"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "minute",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "minute"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "mod",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "mod"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "month",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "month"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "monthname",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "monthname"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "mul",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "mul"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "name_const",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "name_const"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ne",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ne"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "nextval",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "nextval"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "not",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "not"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "now",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "current_timestamp",
+        "localtime",
+        "localtimestamp",
+        "now"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "nulleq",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "nulleq"
+      ],
+      "category": "comparison",
+      "domain_profile": "comparison",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "nullif",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "nullif"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "oct",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "oct"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "or",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "or"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "ord",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ord"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "password",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "password"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "period_add",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "period_add"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "period_diff",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "period_diff"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "pi",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "pi"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "plus",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "plus"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "pow",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "pow",
+        "power"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "quarter",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "quarter"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "quote",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "quote"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "radians",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "radians"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "rand",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "rand"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "random_bytes",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "random_bytes"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "regexp_instr",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "regexp_instr"
+      ],
+      "category": "pattern",
+      "domain_profile": "pattern",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "regexp_like",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "regexp",
+        "regexp_like"
+      ],
+      "category": "pattern",
+      "domain_profile": "pattern",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "regexp_replace",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "regexp_replace"
+      ],
+      "category": "pattern",
+      "domain_profile": "pattern",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "regexp_substr",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "regexp_substr"
+      ],
+      "category": "pattern",
+      "domain_profile": "pattern",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "release_all_locks",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "release_all_locks"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "release_lock",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "release_lock"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "repeat",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "repeat"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "replace",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "replace"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "reverse",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "reverse"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "right",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "right"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "rightshift",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "rightshift"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "round",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "round"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "row_count",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "row_count"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "rpad",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "rpad"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "rtrim",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "rtrim"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sec_to_time",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sec_to_time"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "second",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "second"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "setval",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "setval"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "setvar",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "setvar"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "sha1",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sha",
+        "sha1"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sha2",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sha2"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sign",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sign"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sin",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sin"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sleep",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "sleep"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "sm3",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sm3"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "space",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "space"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sqrt",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sqrt"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "str_to_date",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "str_to_date"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "strcmp",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "strcmp"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "substring",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "mid",
+        "substr",
+        "substring"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "substring_index",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "substring_index"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "subtime",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "subtime"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "sysdate",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "sysdate"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "tan",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tan"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "tidb_bounded_staleness",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_bounded_staleness"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "tidb_current_tso",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "tidb_current_tso"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "tidb_decode_binary_plan",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_decode_binary_plan"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "uncredited_static_host_compatibility",
+      "native_algorithm_deleted": false,
+      "algorithm_owner": "TiDB builtin_ext/info.rs::decode_binary_plan -> tidb_util::plancodec; original warning policy",
+      "source_control": "Value-only named compatibility adapter inside common eager SDK source"
+    },
+    {
+      "id": "tidb_decode_key",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "tidb_decode_key"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "tidb_decode_plan",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_decode_plan"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "uncredited_static_host_compatibility",
+      "native_algorithm_deleted": false,
+      "algorithm_owner": "TiDB builtin_ext/info.rs::decode_plan -> tidb_util::plancodec",
+      "source_control": "Value-only named compatibility adapter inside common eager SDK source"
+    },
+    {
+      "id": "tidb_encode_sql_digest",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_encode_sql_digest"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "uncredited_static_host_compatibility",
+      "native_algorithm_deleted": false,
+      "algorithm_owner": "TiDB builtin_ext/info.rs::encode_sql_digest -> tidb_parser::normalize_digest",
+      "source_control": "Value-only named compatibility adapter inside common eager SDK source"
+    },
+    {
+      "id": "tidb_is_ddl_owner",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "tidb_is_ddl_owner"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "tidb_parse_tso",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_parse_tso"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "tidb_parse_tso_logical",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_parse_tso_logical"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "tidb_shard",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "tidb_shard"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "tidb_version",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "tidb_version"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "time",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "time"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "time_format",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "time_format"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "time_to_sec",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "time_to_sec"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "timediff",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "timediff"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "timestamp",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "timestamp"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "timestamp_literal",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "timestamp_literal"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "timestampadd",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "timestampadd"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "timestampdiff",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "timestampdiff"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "to_base64",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "to_base64"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "to_days",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "to_days"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "to_seconds",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "to_seconds"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "translate",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "translate"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "trim",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ltrim_with",
+        "rtrim_with",
+        "trim"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "truncate",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "truncate"
+      ],
+      "category": "math",
+      "domain_profile": "math",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "unaryminus",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "unaryminus"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "unaryplus",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "unaryplus"
+      ],
+      "category": "operator_numeric",
+      "domain_profile": "operator_numeric",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "uncompress",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "uncompress"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "uncompressed_length",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "uncompressed_length"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "unhex",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "unhex"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "unix_timestamp",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "unix_timestamp"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "upper",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "ucase",
+        "upper"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "user",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "session_user",
+        "system_user",
+        "user"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "utc_date",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "utc_date"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "utc_time",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "utc_time"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "utc_timestamp",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "utc_timestamp"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "uuid",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "uuid"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "uuid_timestamp",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "uuid_timestamp"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "uuid_to_bin",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "uuid_to_bin"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "uuid_v4",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "uuid_v4"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "uuid_v7",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "uuid_v7"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "uuid_version",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "uuid_version"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "validate_password_strength",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "validate_password_strength"
+      ],
+      "category": "crypto",
+      "domain_profile": "crypto",
+      "credit": "uncredited_static_host_compatibility",
+      "native_algorithm_deleted": false,
+      "algorithm_owner": "TiDB builtin_ext/crypto.rs -> tidb_util::password_validation and genuine session/global accessors",
+      "source_control": "Value-only named compatibility adapter inside common eager SDK source"
+    },
+    {
+      "id": "values",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "values"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "vec_as_text",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_as_text"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_cosine_distance",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_cosine_distance"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_dims",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_dims"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_from_text",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_from_text"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_l1_distance",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_l1_distance"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_l2_distance",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_l2_distance"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_l2_norm",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_l2_norm"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "vec_negative_inner_product",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vec_negative_inner_product"
+      ],
+      "category": "vector",
+      "domain_profile": "vector",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "version",
+      "in_frozen_denominator": false,
+      "frozen_classification": "host_only",
+      "spellings": [
+        "version"
+      ],
+      "category": "host",
+      "domain_profile": "host",
+      "credit": "excluded_by_original_frozen_classification",
+      "scope": "Original host-specific or original NULL-stub row; not added to migration credit."
+    },
+    {
+      "id": "vitess_hash",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "vitess_hash"
+      ],
+      "category": "misc",
+      "domain_profile": "misc",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "week",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "week"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "weekday",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "weekday"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "weekofyear",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "weekofyear"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "weight_string",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "weight_string"
+      ],
+      "category": "string",
+      "domain_profile": "string",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "xor",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "xor"
+      ],
+      "category": "control",
+      "domain_profile": "control",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "year",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "year"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    },
+    {
+      "id": "yearweek",
+      "in_frozen_denominator": true,
+      "frozen_classification": "implemented_pure_or_contextual",
+      "spellings": [
+        "yearweek"
+      ],
+      "category": "temporal",
+      "domain_profile": "temporal",
+      "credit": "functional_tikv_only",
+      "native_algorithm_deleted": true,
+      "credit_basis": "Existing historical per-family evidence retained; N54-N65 subsequently close public/default/AST/batch/fallback/Unistore entry routes, not a new alias-based credit."
+    }
+  ]
+}
