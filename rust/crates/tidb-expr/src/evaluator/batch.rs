@@ -777,6 +777,59 @@ fn native_integer_row_batch(root: &Expression) -> bool {
             && matches!(native_comparison_operation(function.func_name.lowercase()), Some(SqlBatchHostOperation::CompareNative(_))))
 }
 
+// A genuine native candidate outside the established Projection profiles.
+// Reuse its actual native view instead of rejecting contextual arguments.
+fn additional_context_native_view(
+    root: &Expression,
+    limits: BatchSourceLimits,
+) -> Result<Option<NativeView>> {
+    let Expression::ScalarFunction(function) = root else {
+        return Ok(None);
+    };
+    if function.pb_signature().is_some()
+        || function.pb_origin().is_some()
+        || function.has_values_offset()
+        || function.has_grouping_metadata()
+    {
+        return Ok(None);
+    }
+    // Bound the genuine tree before inspecting recursive native eligibility.
+    profile_shape(root, limits)?;
+    if native_unary_sign_operation(function.func_name.lowercase()).is_some()
+        || matches!(
+            function.func_name.lowercase(),
+            "abs"
+                | "cast_decimal"
+                | "cast_json"
+                | "cast_char"
+                | "plus"
+                | "minus"
+                | "mul"
+                | "mod"
+                | "div"
+                | "intdiv"
+        )
+        || native_concat_row_batch(function)
+        || native_string_row_batch(root)
+        || native_regexp_row_batch(root)
+        || native_integer_row_batch(root)
+    {
+        return Ok(None);
+    }
+    if !contains_context_value(root, limits.tree.max_depth, &mut { limits.tree.max_nodes }) {
+        return Ok(None);
+    }
+    let Some(target) = crate::scalar_function::static_batch_target(root) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        if crate::scalar_function::native_scalar_row_batch(root) {
+            NativeView::RootValue
+        } else {
+            NativeView::BulkRoot(target)
+        },
+    ))
+}
 fn context_root_policy(
     root: &Expression,
     unordered: bool,
@@ -788,6 +841,9 @@ fn context_root_policy(
     }
     // Bound admission inspection before examining a deferred typed template.
     profile_shape(root, limits)?;
+    if unordered && additional_context_native_view(root, limits)?.is_some() {
+        return Ok((shortcut, false, None));
+    }
     let mut probe = None;
     if unordered {
         if !matches!(
@@ -7443,8 +7499,15 @@ impl PreparedBatch {
         } else {
             DeferredRootProfiles::possible(root, source_limits)?
         };
+        let native_context_view = if ordered || deferred.is_some() {
+            None
+        } else {
+            additional_context_native_view(root, source_limits)?
+        };
         let view = if ordered || deferred.is_some() {
             Some(NativeView::RootValue)
+        } else if native_context_view.is_some() {
+            native_context_view
         } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
             && {
                 profile_shape(root, source_limits)?;
@@ -7476,7 +7539,8 @@ impl PreparedBatch {
             None
         };
         let pair = !ordered
-            && (matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()))
+            && (native_context_view.is_some_and(|view| view.bulk_target().is_some())
+                || matches!(root, Expression::ScalarFunction(function) if view.is_some_and(|view| window_value_operation(function, view).is_some()))
                 || (view == Some(NativeView::BulkRoot(NativeEvalType::Int))
                     && pb_value_integer_batch(root)));
         let fast = !ordered && promote && decimal_fast_source::possible(root);
@@ -9102,9 +9166,19 @@ impl PreparedBatchSuite {
         let mut schema = Vec::new();
         reserve(&mut schema, row_schema.len())?;
         schema.extend(row_schema.iter().map(snapshot_field_type));
+        let bind_context_native =
+            suite
+                .program
+                .calculated
+                .iter()
+                .try_fold(false, |bound, root| {
+                    Ok::<_, BatchFailure>(
+                        bound || additional_context_native_view(root, limits)?.is_some(),
+                    )
+                })?;
         Ok(Self {
             owner: Arc::clone(&suite.program),
-            bind_ready_cache: workers.iter().any(|worker| {
+            bind_ready_cache: bind_context_native || workers.iter().any(|worker| {
                 std::iter::once(worker.source.as_ref())
                     .chain(worker.row_profile.iter().map(|row| row.source.as_ref()))
                     .any(|source| {

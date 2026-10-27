@@ -18,7 +18,7 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
-- [ ] (2026-10-27 next) Close remaining genuine contextual native profiles.
+- [x] (2026-10-27 N63 validated) Close remaining genuine contextual native profiles.
   A read-only linked public API probe confirms CHAR_LENGTH(?) with a Varchar
   parameter succeeds in native Suite but Projection still refuses Admission.
   Capture actual native/old-Projection originals across genuine native registry
@@ -27,8 +27,23 @@ previous user contract; demand and side-effect ordering do not.
   whole-operand phases, flag-disabled behavior, real scope and atomic output.
   Do not fabricate declarations, owners or another evaluator. This precedes
   Unistore/services/final performance; the generic retry branch is already gone.
+  N63 pre-observer signed N62 archive contains627files. Native originals16416/
+  8A4471067FCF4CED and actual pre-N62 Projection16416/58F7ED7180273A11 are fixed
+  after four complete runs each. Exact old production2 restoration/capture and
+  exact current2 restoration are authenticated; the temporary hold is inactive.
+  Current Projection reproduced4032 differences/refusals and0replay records.
+  A genuine additional_context_native_view now selects existing native RootValue
+  or BulkRoot(target), with a real row/off companion and existing publication/
+  initial cache policy. All16416 cases match with0refusal/replay, and4 focused
+  original/counter/resource/owner/recovery controls pass. Final full frontend
+  2358/exact inherited3/95/1023.19s, routing10, Projection52/Expand6,
+  Unistore195/exactold3/13, SHOW31/exactold2, production149warnings/lint/dual3fmt
+  and original/source/restore/protected audits pass. Frontend346warnings match
+  N62 exactly. Unchanged SDK full/clippy inputs are authenticated. Receipt
+  evidence/no-fallback-n63.md records the checkpoint; actual public Unistore
+  SimpleExpr/typed consumers, full services and final performance continue.
 
-- [ ] (2026-10-27 N62) Close genuine remaining source admissions before deleting
+- [x] (2026-10-27 N62 checkpoint validated; context guard closed in N63) Close genuine remaining source admissions before deleting
   generic Suite retry routing. Archive signed N61 source624files before observers;
   capture/repeat real decoded PB display/return/argument metadata and genuine
   incoming-schema versus expression-decoding contracts. Preserve exact originals,
@@ -311,6 +326,20 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N63 ordinary context registry capture covers76 real function/type specs and
+  16416 observations, including direct/deferred parameters, flags, NULL, errors,
+  panic and two Suite calls. Old actual Projection used native retry in5688
+  records; the N62 state still refused4032. Genuine native scalar-row collectors
+  (including CHAR_LENGTH/substrings) and generic typed return families must
+  retain their actual native views and publication boundary. The first prototype
+  matches all16416 original Projection records. Source resource/owner controls
+  and old-tree entry counters pass; recursive eligibility inspection is bounded
+  by profile_shape before admission metadata traversal. The final full frontend
+  preserves exact inherited3 failures and unchanged346warnings; actual new
+  context4/routing10 and all existing native/Decimal/AST controls pass in it.
+  Actual ingestion first selects supported PB signatures into shared expressions;
+  public SimpleExpr and seven typed recursive consumers remain independent work.
 
 - N62 final independent API audit: despite full2354/exactold3/95 and inventory
   83088/0/0, CHAR_LENGTH with a real Varchar parameter succeeds in native Suite
@@ -727,6 +756,26 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Validate and sign the N63 context checkpoint, then immediately capture
+  genuine public Unistore typed originals before changing its remaining walkers.
+  Rationale: full2358/exactold3 and strict16416 context equivalence prove this
+  consumer closure, while PB ingestion priority does not retire public SimpleExpr.
+  SDK suspended host tasks must own state and cannot retain invocation/context
+  references or invoke an old expression evaluator as a child callback.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
+
+- Decision: N63 reuses the actual native source view for remaining ordinary
+  contextual candidates. Native scalar-row specializations select RootValue;
+  other native targets select BulkRoot(target), retaining a separate RootValue
+  program for the disabled vector flag when necessary. Initial binding applies
+  only to newly admitted profiles. Established Projection/PB profiles retain
+  their existing views and scope policy.
+  Rationale: native Int result wrappers and whole typed phases are consumer
+  semantics; replacing every candidate with generic scalar evaluation would
+  change output/error demand. Real eligibility, declarations and source owners
+  already provide these facts to the same SDK compiler and driver.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
 
 - Decision: Record N62 as a validated local checkpoint and continue remaining
   genuine contextual native closure immediately. Do not claim that removing a
@@ -1153,6 +1202,19 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N63 checkpoint validation is complete. Independent native16416/8A4471067FCF4CED
+and actual old Projection16416/58F7ED7180273A11 remain fixed; all4032 reproduced
+refusals are eliminated without replay. Full2358/exact inherited3/95/1023.19s,
+context4/routing10, Projection52/Expand6, Unistore195/exactold3/13,
+SHOW31/exactold2, production149warnings/lint/dual3fmt and source/original/restore
+and protected-file audits pass. Frontend346warnings are unchanged. SDK full/clippy
+is reused only under authenticated clean unchanged source. Only one production
+file changes genuine metadata/profile selection and binding; no kernels, caps,
+SQL declarations, ownership seals or SDK implementation change. Receipt
+evidence/no-fallback-n63.md preserves exact commands and caveats. Overall task #4
+continues with real public SimpleExpr/typed consumers, full services and final
+unified performance; no global completion claim is made.
 
 N62 checkpoint validation is complete: full2354/exact inherited3/95/992.49s,
 Projection52/Expand6, Unistore195/exactold3/13, SHOW31/exactold2, production/lint,

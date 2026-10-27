@@ -35084,3 +35084,6 @@ mod decimal_entry_tests;
 
 #[path = "batch_routing_closure_tests.rs"]
 mod routing_closure_tests;
+
+#[path = "batch_context_native_closure_tests.rs"]
+mod context_native_closure_tests;
