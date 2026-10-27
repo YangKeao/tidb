@@ -699,6 +699,31 @@ fn contains_metadata_property(node: &Expression, depth: usize, remaining: &mut u
         _ => false,
     }
 }
+// Hidden virtual columns keep their genuine expression only for numeric
+// diagnostic rendering. Survey it separately from physical value demand so a
+// parameter is requested only if the original overflow text demands it.
+fn contains_hidden_virtual_diagnostic(
+    node: &Expression,
+    depth: usize,
+    remaining: &mut usize,
+) -> bool {
+    if depth == 0 || *remaining == 0 {
+        return true;
+    } // the complete survey owns resource refusal
+    *remaining -= 1;
+    match node {
+        Expression::Column(c) => c.is_hidden && c.virtual_expr.is_some(),
+        Expression::ScalarFunction(f) => f
+            .args
+            .iter()
+            .any(|child| contains_hidden_virtual_diagnostic(child, depth - 1, remaining)),
+        Expression::Constant(c) => c
+            .deferred_expr
+            .as_deref()
+            .is_some_and(|child| contains_hidden_virtual_diagnostic(child, depth - 1, remaining)),
+        Expression::CorrelatedColumn(_) => false,
+    }
+}
 fn context_template_declared(node: &Expression, depth: usize, remaining: &mut usize) -> bool {
     if depth == 0 || *remaining == 0 {
         return false;
@@ -899,9 +924,7 @@ fn typed_source_tree_complete(
             (NativeEvalType::VectorFloat32, Some(Datum::VectorFloat32(_))) => true,
             _ => false,
         },
-        Expression::Column(column) => {
-            column.virtual_expr.is_none() && column.correlated_col_unique_id == 0
-        }
+        Expression::Column(_) => true,
         Expression::CorrelatedColumn(_) => false,
         Expression::ScalarFunction(function) => {
             if resolve_call_in_view(function, view).is_err() {
@@ -2586,9 +2609,7 @@ fn native_concat_row_batch(function: &ScalarFunction) -> bool {
                 .is_some_and(|field| field.eval_type() == NativeEvalType::String)
                 && match arg {
                     Expression::Constant(c) => c.deferred_expr.is_none(),
-                    Expression::Column(c) => {
-                        c.virtual_expr.is_none() && c.correlated_col_unique_id == 0
-                    }
+                    Expression::Column(_) => true,
                     _ => false,
                 }
         })
@@ -2617,9 +2638,7 @@ fn native_string_row_batch(root: &Expression) -> bool {
                 .is_some_and(|field| field.eval_type() == NativeEvalType::String)
                 && match arg {
                     Expression::Constant(c) => c.deferred_expr.is_none(),
-                    Expression::Column(c) => {
-                        c.virtual_expr.is_none() && c.correlated_col_unique_id == 0
-                    }
+                    Expression::Column(_) => true,
                     _ => false,
                 }
         })
@@ -4173,6 +4192,10 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                                     child,
                                     limits.tree.max_depth,
                                     &mut { limits.tree.max_nodes },
+                                ) || contains_hidden_virtual_diagnostic(
+                                    child,
+                                    limits.tree.max_depth,
+                                    &mut { limits.tree.max_nodes },
                                 )
                             }))
                     {
@@ -4386,14 +4409,9 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 {
                     budget_context_source(&mut budget, Some(sql))?;
                 } else {
-                    // A genuine public Row follows Column.Eval: these are
-                    // planner-only facts and are not evaluated or substituted.
-                    // Projection still authenticates its declared batch input.
-                    if matches!(inputs, SourceInputs::Projection(_))
-                        && (column.virtual_expr.is_some() || column.correlated_col_unique_id != 0)
-                    {
-                        return Err(BatchFailure::admission("virtual/correlated batch column"));
-                    }
+                    // Both scalar and typed Column reads use the physical
+                    // cell. Planner annotations do not substitute its value;
+                    // hidden virtual metadata remains available to diagnostics.
                     let index = usize::try_from(column.index)
                         .map_err(|_| BatchFailure::admission("negative batch column index"))?;
                     if index >= inputs.width() {
@@ -4449,7 +4467,13 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                                     child,
                                     limits.tree.max_depth,
                                     &mut { limits.tree.max_nodes },
-                                )
+                                ) || (native_arithmetic_operation(function.func_name.lowercase())
+                                    .is_some()
+                                    && contains_hidden_virtual_diagnostic(
+                                        child,
+                                        limits.tree.max_depth,
+                                        &mut { limits.tree.max_nodes },
+                                    ))
                             }));
                 if selected_pb_numeric
                     || (contextual_numeric

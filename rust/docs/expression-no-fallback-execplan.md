@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-27 N57 validated) Genuine physical Column reads now ignore planner virtual/correlation markers while retaining real declarations, storage authentication, original typed phases and all caps. Existing numeric diagnostic graphs now retain demanded hidden virtual metadata;144 original cases reproduced missing parameter demand/error identity before the fix. Original1728/4EAD65319048E375, pre-change shared1728/535CA5CB231F073D, edge240/E68166457C10F6D9 and hidden144/6D36FF5166A1AD47 are fixed. Full2298/exact inherited3+1 stale capability assertion/95ignore; after one exact test-only guard update, that guard and7 new controls pass with unchanged full-tested production/observer source. Coverage748 same-full batch+1 focused guard,50public/43context/inventory83088/0/0; Unistore195/exact3/13, Projection52/Expand6/production/lint/dual3fmt/provenance pass. The96 unrelated missing-type CAST routes remain explicitly open. See evidence/no-fallback-n57.md; continue optional CAST, genuine AST/raw/typed/global fallback/service/performance work.
+
 - [x] (2026-10-27 N56 validated) Actual Unistore ingestion retains the genuine Arc expression; explicit Clone remains deep. One hot request-owned scalar plan reuses the same SDK, actual owner/physical width, existing limits and demand-time ready scope. Frozen32256/461C9558DA525FA9 and10260/51B0824478C18677 remain fixed; preparation/owner controls were RED before promotion. Final9frontend+4Unistore controls pass; full frontend2292/exact inherited3/95ignore/all742batch/346warning Counter, Unistore195/exact inherited3/13ignore/unchanged393aggregate warnings, same-run50public/43context/inventory83088/0/0, Projection52/Expand6/production/lint/dual8fmt/reconstruction pass. Isolated actual request loop saves59.9–63.3% current-SDK preparation time. Receipt evidence/no-fallback-n56.md. Raw/typed/AST/generic fallback/service/final performance remain open.
 
 - [x] (2026-10-27 N55 validated) Real scalar filters now lazily prepare once per demanded root and reuse the existing SDK cursor.399 sources/plan files were archived before edits; independent25920/9C47E8782A22C4DF remains fixed. Three repeated-preparation controls were RED before promotion, all six focused tests now pass. Fresh full frontend2283/exact inherited3/95ignore/all733batch/exact346warning Counter, same-run50public/43context/inventory83088/0/0, Projection52, Expand6+64/B42, production/lint/dual5fmt/reconstruction pass. Isolated32/1024/8192-row current-shared public baseline versus actual filter saves63–65% time. See evidence/no-fallback-n55.md. Continue owned Unistore/request reuse and all remaining global entry/fallback/service/performance work.
@@ -227,6 +229,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- (2026-10-27 N57 focused) Planner Column annotations do not change physical reads, but a hidden column's virtual expression can supply live parameter values to overflow text. The new independent144-case original fixture reproduced missing parameter demand and IntOverflow instead of original DataOutOfRange before the fix. The existing numeric diagnostic recipe now compiles those genuine demanded sources. Separate original1728 and pre-change shared1728 pins retain the existing144 selected direct-column improvements and explicitly expose96 missing-type CAST routes; the latter still has an open public scalar error difference and is not counted as resolved here.
 
 - (2026-10-27 N56 validated) LegacyEvaluator is recreated per row, while ReadyValueCache persists per request. Cache the genuine owned root there. Existing prepared_worker_count counts older operation workers, so two inherited Unistore tests still expect1 where the scalar route reports0; no fake worker counts or SQL expectation rebasing were introduced. Already-bound effective ready caches must continue to override a metadata holder, including unwind poisoning.
 
@@ -579,6 +583,10 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Admit genuine physical Column reads independently of planner virtual/correlation flags, while separately surveying hidden virtual metadata for the existing arithmetic diagnostic graph.
+  Rationale: Scalar and typed readers already use the physical cell. Real CorrelatedColumn is a distinct source. Removing flags must preserve typed string phases, actual SQL/storage declaration authentication, all existing caps and demanded live error metadata; no virtual expression is evaluated as a replacement value.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
 
 - Decision: Retain one genuine Arc root and its detached scalar plan per request lane, with plan dropped before owner; release the cache borrow before callbacks and key by actual root identity and physical width.
   Rationale: The actual owner preserves RAND identity and the existing source compiler/SDK loop and public limits; bounded one-slot replacement introduces no aggregate Resource policy and no context retention. Alternating roots may recompile. Normal errors reuse the program; reentry creates a fresh same-SDK program.
@@ -939,6 +947,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N57 closes planner-marker refusals without discarding hidden metadata demand or changing physical storage contracts. The independent original fixture also found and fixed a genuine shared overflow diagnostic loss. All functional gates retain their exact inherited failures; a historical rejection assertion was replaced by its now-supported positive check after the complete run, with the exact test-only delta and full-plus-focused provenance retained. No original observations were rebased. Missing-type CAST compatibility remains open, as do genuine AST/raw/typed callers, generic fallback removal and final service/performance validation.
 
 N56 is validated against the complete inherited frontend and Unistore baselines. Request-level preparation now survives ephemeral per-row evaluators with unchanged live row/context effects, deep Clone semantics, ready-scope behavior and error/resource boundaries. Isolated same-SDK scan-loop measurements improve2.49–2.73x; this is not a final SQL-service result. Continue the remaining genuine AST, typed/raw callers, generic Admission fallback removal and complete service/performance gates; task4 remains active.
 

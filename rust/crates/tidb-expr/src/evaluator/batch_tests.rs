@@ -1422,10 +1422,44 @@ fn whole_source_closure_refuses_unproved_nodes_flags_and_pb_even_when_empty() {
         &[],
     )
     .unwrap();
+    // Genuine physical columns with planner annotations now have a proved
+    // source profile. The virtual expression's literal1 never replaces cells.
+    let virtual_owner = suite(plus(int(0), Expression::Column(virtual_column)));
+    let mut virtual_worker = PreparedBatch::compile(
+        &virtual_owner,
+        &[ty()],
+        true,
+        1,
+        limits(),
+        ExecutionLimits::default(),
+        65536,
+    )
+    .unwrap();
+    let mut physical = chunk(
+        &[ty()],
+        &[vec![Datum::Int(7)], vec![Datum::Int(-4)], vec![Datum::Null]],
+    );
+    physical.set_sel(Some(vec![1, 0, 1, 2]));
+    let mut result = output_for(&ty());
+    virtual_owner
+        .run_batch(
+            &crate::NoColumns,
+            &mut EvalContext::default(),
+            &mut virtual_worker,
+            &mut physical,
+            &mut result,
+            &[ty()],
+        )
+        .unwrap();
+    assert_eq!(
+        (0..result.num_rows())
+            .map(|i| result.get_row(i).get_datum(0, &ty()))
+            .collect::<Vec<_>>(),
+        vec![Datum::Int(-4), Datum::Int(7), Datum::Int(-4), Datum::Null]
+    );
     for bad in [
         Expression::Constant(parameter),
         Expression::Constant(deferred),
-        Expression::Column(virtual_column),
         Expression::ScalarFunction(opaque),
         pb,
         call("cast", ty(), vec![int(1)]),
@@ -35035,3 +35069,6 @@ fn native_concat_values_authenticate_prefix_cancel_scope_and_resources() {
 
 #[path = "batch_owned_scalar_tests.rs"]
 mod owned_scalar_tests;
+
+#[path = "batch_column_profile_tests.rs"]
+mod column_profile_tests;
