@@ -431,13 +431,11 @@ impl EvaluatorProgram {
     }
 }
 
-/// Per-suite TiKV eager-batch state. `Unsupported` is decided once before any
-/// values or warnings are observed; a prepared worker is affine to this suite.
-/// Resource/contract failures retain one terminal error rather than selecting
-/// another evaluator or repeating preparation on subsequent calls.
+/// Per-suite shared-batch state. A prepared worker is affine to this suite.
+/// Preparation failures retain one terminal error rather than selecting another
+/// evaluator or repeating preparation on subsequent calls.
 enum BatchLane {
     Uninitialized,
-    Unsupported(BatchRefusal),
     Failed {
         reason: BatchRefusal,
         error: EvaluatorError,
@@ -447,9 +445,8 @@ enum BatchLane {
 
 /// Bounded reason why a suite could not prepare the closed batch path.
 ///
-/// This is route telemetry, not an alternate error mapping. Preparation still
-/// distinguishes temporary capability gaps from terminal preparation errors.
-/// Execution failures on a prepared route propagate without replay.
+/// This is route telemetry, not an alternate error mapping. Every preparation
+/// refusal is terminal. Execution failures also propagate without replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatchRefusal {
     /// The expression is outside the closed eager-batch semantic class.
@@ -472,7 +469,8 @@ pub struct BatchRouteSnapshot {
     /// Calls handled by the compiled shared projection, including direct columns.
     /// The scratch snapshot separately counts actual shared-program windows.
     pub prepared: u64,
-    /// Calls that executed the canonical native fallback route.
+    /// Historical retry count. The shared route retains this field for telemetry
+    /// compatibility; preparation failures never select another evaluator.
     pub fallback: u64,
     /// Failed preparation attempts, including terminal errors. At most one per suite.
     pub refusals: u64,
@@ -615,7 +613,7 @@ impl EvaluatorSuite {
     #[must_use]
     pub fn batch_route_snapshot(&self) -> BatchRouteSnapshot {
         let refusal = match &*self.batch_lane.borrow() {
-            BatchLane::Unsupported(reason) | BatchLane::Failed { reason, .. } => Some(*reason),
+            BatchLane::Failed { reason, .. } => Some(*reason),
             BatchLane::Uninitialized | BatchLane::Prepared(_) => None,
         };
         BatchRouteSnapshot {
@@ -627,12 +625,12 @@ impl EvaluatorSuite {
     }
 
     /// Returns retained scratch capacities when this suite prepared the batch
-    /// route. Unsupported and not-yet-invoked suites return `None`.
+    /// route. Failed and not-yet-invoked suites return `None`.
     #[must_use]
     pub fn batch_scratch_snapshot(&self) -> Option<BatchScratchSnapshot> {
         match &*self.batch_lane.borrow() {
             BatchLane::Prepared(worker) => Some(worker.scratch_snapshot()),
-            BatchLane::Uninitialized | BatchLane::Unsupported(_) | BatchLane::Failed { .. } => None,
+            BatchLane::Uninitialized | BatchLane::Failed { .. } => None,
         }
     }
 
@@ -654,9 +652,9 @@ impl EvaluatorSuite {
     }
 
     /// Projection-lane entry for checked pure calculations and direct columns.
-    /// Preparation covers all outputs before evaluation. Unsupported suites
-    /// temporarily retain migration routing; prepared calculations use shared
-    /// RPN programs and never replay after an execution error. Disabling the
+    /// Preparation covers all outputs before evaluation and returns any failure
+    /// directly. Prepared calculations use shared RPN programs and never replay
+    /// after an execution error. Disabling the
     /// vector optimization selects the original row-demand profile in that same
     /// driver. Whole-selection profiles retain complete argument phases.
     pub fn run_with_tikv_batch<C: Columns>(
@@ -713,29 +711,17 @@ impl EvaluatorSuite {
                     self.batch_route_refusals
                         .set(self.batch_route_refusals.get().saturating_add(1));
                     let reason = error.refusal();
-                    if reason == BatchRefusal::Admission {
-                        // Temporary capability gap, retired as the unified
-                        // executor covers the remaining expression classes.
-                        BatchLane::Unsupported(reason)
-                    } else {
-                        // A resource or contract failure is not evidence that
-                        // another evaluator may safely execute this program.
-                        BatchLane::Failed {
-                            reason,
-                            error: error.into_prepare_error(),
-                        }
+                    BatchLane::Failed {
+                        reason,
+                        error: error.into_prepare_error(),
                     }
                 }
             };
         }
-        if let BatchLane::Failed { error, .. } = &*lane {
-            return Err(error.clone());
-        }
-        let BatchLane::Prepared(worker) = &mut *lane else {
-            self.batch_route_fallback
-                .set(self.batch_route_fallback.get().saturating_add(1));
-            drop(lane);
-            return self.run(ctx, input, output);
+        let worker = match &mut *lane {
+            BatchLane::Prepared(worker) => worker,
+            BatchLane::Failed { error, .. } => return Err(error.clone()),
+            BatchLane::Uninitialized => unreachable!("batch preparation initializes the lane"),
         };
         worker.set_window_size(window_size);
         self.batch_route_prepared

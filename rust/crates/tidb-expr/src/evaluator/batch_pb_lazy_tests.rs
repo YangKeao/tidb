@@ -1236,7 +1236,7 @@ fn pb_lazy_source_rejects_stale_optional_declarations_and_selected_origins() {
             assert!(result.is_err(), "stale origin admitted: {sig:?}/{bad}");
             assert_eq!(
                 result.err().unwrap().refusal(),
-                BatchRefusal::Admission,
+                BatchRefusal::Contract,
                 "{sig:?}/{bad}"
             );
         }

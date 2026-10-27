@@ -9310,7 +9310,7 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
             unreachable!()
         };
         c.deferred_expr = Some(Box::new(parameter(0, string_ty())));
-        assert!(!native_string_row_batch(&deferred));
+        assert!(native_string_row_batch(&deferred));
         let literal_only = call(
             name,
             string_ty(),
@@ -9318,7 +9318,7 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
                 .map(|_| literal(Datum::new_string("constant"), string_ty()))
                 .collect(),
         );
-        assert!(!native_string_row_batch(&literal_only));
+        assert!(native_string_row_batch(&literal_only));
         let owner = suite(make());
         let mut prepared = PreparedBatchSuite::compile(
             &owner,

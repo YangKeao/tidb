@@ -463,7 +463,7 @@ fn planner_annotations_preserve_source_budgets_and_real_storage_declarations() {
     assert_eq!(output.num_rows(), 0);
     // Ignoring planner flags never permits decoding a different storage code.
     assert!(
-        matches!(compile(&[real_ty()], limits(), 8 << 20), Err(error) if error.refusal() == BatchRefusal::Admission)
+        matches!(compile(&[real_ty()], limits(), 8 << 20), Err(error) if error.refusal() == BatchRefusal::Contract)
     );
     assert!(compile(&[ty()], limits(), 8 << 20).is_ok());
 }

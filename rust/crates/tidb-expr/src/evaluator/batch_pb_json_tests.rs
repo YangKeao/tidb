@@ -971,7 +971,7 @@ fn pb_json_source_actual_legacy_consumers_and_stale_origins() {
                 1 << 20,
             );
             assert!(result.is_err(), "{sig:?}/{bad}");
-            assert_eq!(result.err().unwrap().refusal(), BatchRefusal::Admission);
+            assert_eq!(result.err().unwrap().refusal(), BatchRefusal::Contract);
         }
     }
 }

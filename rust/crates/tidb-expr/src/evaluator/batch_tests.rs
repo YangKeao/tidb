@@ -35081,3 +35081,6 @@ mod optional_cast_tests;
 
 #[path = "batch_decimal_entry_tests.rs"]
 mod decimal_entry_tests;
+
+#[path = "batch_routing_closure_tests.rs"]
+mod routing_closure_tests;

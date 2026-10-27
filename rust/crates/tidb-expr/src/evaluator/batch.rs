@@ -757,17 +757,26 @@ impl ContextTypeProbe {
         }
     }
 }
-// These actual generic integer-result comparisons collect scalar row
-// results in native VecEvalInt. Their operands keep raw scalar demand,
-// including a declined integer fast probe; they are not typed broadcasts.
-fn native_integer_comparison_row_batch(root: &Expression) -> bool {
+// Genuine batch-eligible Boolean integer results retain scalar argument
+// demand and original 0/1/NULL presentation inside the native row collector.
+fn native_boolean_row_batch(root: &Expression) -> bool {
     matches!(root, Expression::ScalarFunction(function)
+        if function.pb_signature().is_none() && function.pb_origin().is_none()
+            && matches!(function.func_name.lowercase(), "isnull" | "istrue" | "isfalse" | "isnottrue" | "isnotfalse" | "isunknown" | "isnotunknown" | "istrue_with_null" | "not")
+            && crate::scalar_function::static_batch_target(root) == Some(NativeEvalType::Int))
+}
+// Generic integer comparisons retain their original scalar demand, including
+// a declined integer fast probe. Neither row profile broadcasts its arguments.
+fn native_integer_row_batch(root: &Expression) -> bool {
+    native_boolean_row_batch(root)
+        || matches!(root, Expression::ScalarFunction(function)
         if function.pb_signature().is_none() && function.pb_origin().is_none()
             && function.args.len() == 2
             && function.ret_type.as_ref().is_some_and(|field| field.code() == FieldTypeCode::LongLong)
             && function.args.iter().all(|argument| argument.static_type().is_some_and(|field| field.eval_type() == NativeEvalType::Int))
             && matches!(native_comparison_operation(function.func_name.lowercase()), Some(SqlBatchHostOperation::CompareNative(_))))
 }
+
 fn context_root_policy(
     root: &Expression,
     unordered: bool,
@@ -799,7 +808,7 @@ fn context_root_policy(
             && !native_string_row_batch(root)
             && !native_regexp_row_batch(root)
             && !pb_value_row_batch(root)
-            && !native_integer_comparison_row_batch(root)
+            && !native_integer_row_batch(root)
         {
             return Err(BatchFailure::admission(
                 "contextual typed root operand phases are not yet closed",
@@ -2417,14 +2426,6 @@ fn pb_value_owner(function: &ScalarFunction) -> bool {
             .pb_eager_values()
             .is_some_and(|owner| Some(owner.signature()) == function.pb_signature())
 }
-// Some legacy enabled batch bodies bypass ScalarFunction::eval. Keep those
-// root profiles outside this scalar-signature closure until separately proven.
-fn pb_value_legacy_bulk(root: &Expression) -> bool {
-    matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function) && function.pb_lazy_values().is_none() && function.pb_boolean_values().is_none()
-        && (matches!(function.func_name.lowercase(),"abs"|"cast_json"|"cast_decimal") || native_arithmetic_operation(function.func_name.lowercase()).is_some())
-        && crate::scalar_function::static_batch_target(root).is_some()
-        && (!native_no_argument_header_call(function) || pb_value_unary_batch(root).is_some()))
-}
 // A real bulk consumer can select the old unary batch body even though the
 // same PB expression has a scalar arity header. Retain both actual profiles.
 fn pb_value_unary_view(function: &ScalarFunction, view: NativeView) -> bool {
@@ -2615,8 +2616,8 @@ fn native_concat_row_batch(function: &ScalarFunction) -> bool {
         })
 }
 // These original declared-string batch entries collect ordinary row results;
-// lazy child choices remain inside their existing value owners. Inspect only
-// the authentic flat source metadata and its original batch eligibility.
+// lazy child choices remain inside their existing value owners. The genuine
+// native batch eligibility also admits nested and deferred typed arguments.
 fn native_string_row_batch(root: &Expression) -> bool {
     let Expression::ScalarFunction(function) = root else {
         return false;
@@ -2629,19 +2630,6 @@ fn native_string_row_batch(root: &Expression) -> bool {
         && !function.has_values_offset()
         && !function.has_grouping_metadata()
         && crate::scalar_function::static_batch_target(root) == Some(NativeEvalType::String)
-        && function
-            .args
-            .iter()
-            .any(|arg| matches!(arg,Expression::Constant(c) if c.param_marker.is_some()))
-        && function.args.iter().all(|arg| {
-            arg.static_type()
-                .is_some_and(|field| field.eval_type() == NativeEvalType::String)
-                && match arg {
-                    Expression::Constant(c) => c.deferred_expr.is_none(),
-                    Expression::Column(_) => true,
-                    _ => false,
-                }
-        })
 }
 // LIKE retains lazy raw operands and the actual optional escape cast fact.
 fn native_optional_wildcard_call(function: &ScalarFunction) -> bool {
@@ -4029,9 +4017,9 @@ fn preflight_source<'a, N: SourceReference<'a>>(
             };
             if let Some(origin) = origin {
                 if !declaration.is_some_and(|field| origin.matches_effective_type(field)) {
-                    return Err(BatchFailure::admission(
+                    return Err(BatchFailure::from(binding(
                         "PB effective declaration differs from its original snapshot",
-                    ));
+                    )));
                 }
             }
         }
@@ -4043,9 +4031,9 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                             != function.pb_signature().map(|signature| signature as i32)
                         || origin.child_count != function.args.len()
                     {
-                        return Err(BatchFailure::admission(
+                        return Err(BatchFailure::from(binding(
                             "PB selected implementation differs from its origin",
-                        ));
+                        )));
                     }
                 }
             }
@@ -4076,9 +4064,9 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                             budget.field(original, 1)?;
                         }
                         if !declaration.is_some_and(|field| origin.matches_effective_type(field)) {
-                            return Err(BatchFailure::admission(
+                            return Err(BatchFailure::from(binding(
                                 "PB header declaration differs from its original snapshot",
-                            ));
+                            )));
                         }
                     }
                 }
@@ -4367,9 +4355,9 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                     budget.field(original, 1)?;
                 }
                 if !origin.matches_effective_type(sql) {
-                    return Err(BatchFailure::admission(
+                    return Err(BatchFailure::from(binding(
                         "PB effective declaration differs from its original snapshot",
-                    ));
+                    )));
                 }
             }
         }
@@ -4439,9 +4427,11 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                     // cell. Planner annotations do not substitute its value;
                     // hidden virtual metadata remains available to diagnostics.
                     let index = usize::try_from(column.index)
-                        .map_err(|_| BatchFailure::admission("negative batch column index"))?;
+                        .map_err(|_| BatchFailure::from(binding("negative batch column index")))?;
                     if index >= inputs.width() {
-                        return Err(BatchFailure::admission("batch column outside row schema"));
+                        return Err(BatchFailure::from(binding(
+                            "batch column outside row schema",
+                        )));
                     }
                     budget.add(column.orig_name.len())?;
                     budget.array::<usize>(1)?;
@@ -5142,11 +5132,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
         };
         if item.view.value_role().is_none()
             || native_arithmetic_operation(function.func_name.lowercase()).is_none()
-            || ((function.pb_binary_values().is_some()
-                || function.pb_boolean_values().is_some()
-                || function.pb_lazy_values().is_some()
-                || function.pb_cast_values().is_some())
-                && !pb_value_arithmetic_view(function, item.view))
+            || (pb_value_owner(function) && !pb_value_arithmetic_view(function, item.view))
         {
             continue;
         }
@@ -5240,9 +5226,9 @@ fn preflight_source<'a, N: SourceReference<'a>>(
             }
             if field.collation() != item.declared_sql().collation() || field != item.declared_sql()
             {
-                return Err(BatchFailure::admission(
+                return Err(BatchFailure::from(binding(
                     "batch binding differs from complete row declaration",
-                ));
+                )));
             }
         }
     }
@@ -5571,15 +5557,6 @@ enum SourceConsumer {
     Scalar,
 }
 impl SourceConsumer {
-    fn unordered(self) -> bool {
-        matches!(
-            self,
-            Self::Projection {
-                unordered: true,
-                ..
-            }
-        )
-    }
     fn root_policy(
         self,
         root: SourceNodeRef<'_>,
@@ -5625,22 +5602,6 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
         view
     };
 
-    if consumer.unordered()
-        && matches!(root.kind(),BorrowedNodeKind::ScalarFunction(function) if pb_value_owner(function))
-    {
-        let root = root
-            .expression()
-            .ok_or_else(|| binding("Projection PB root lost its expression owner"))?;
-        profile_shape(root, limits)?;
-        if pb_value_legacy_bulk(root)
-            && pb_value_unary_batch(root).is_none()
-            && pb_value_arithmetic_batch(root).is_none()
-        {
-            return Err(BatchFailure::admission(
-                "PB legacy bulk display profile remains outside this closure",
-            ));
-        }
-    }
     let (constant_root_shortcut, context_row_only, root_type_probe) =
         consumer.root_policy(root.into(), limits)?;
     let mut checked = preflight_source(root, inputs, limits, view, root_type_probe.is_some())?;
@@ -5653,7 +5614,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
             || native_concat_row_batch(function)
             || native_string_row_batch(root)
             || native_regexp_row_batch(root) || pb_value_row_batch(root)
-            || native_integer_comparison_row_batch(root))
+            || native_integer_row_batch(root))
     });
     let context_row_only =
         context_row_only && checked[0].view.bulk_target().is_none() && !row_value_batch;
@@ -9166,7 +9127,14 @@ impl PreparedBatchSuite {
                     )
                         })
                     })
-            }) || suite.program.calculated.iter().any(native_string_row_batch),
+            }) || suite.program.calculated.iter().any(|root| {
+                // The contextual row profiles retain their original initial
+                // binding. Pure value roots keep the existing no-Ready path.
+                (native_string_row_batch(root) || native_boolean_row_batch(root))
+                    && contains_context_value(root, limits.tree.max_depth, &mut {
+                        limits.tree.max_nodes
+                    })
+            }),
             workers,
             schema: schema.into_boxed_slice(),
             source_limits: limits,

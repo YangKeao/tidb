@@ -687,7 +687,7 @@ fn pb_regexp_source_provenance_and_legacy_precedence_guards() {
         )
         .err()
         .expect("stale provenance must be refused");
-        assert_eq!(failure.refusal(), BatchRefusal::Admission, "bad={bad}");
+        assert_eq!(failure.refusal(), BatchRefusal::Contract, "bad={bad}");
     }
     // The newly closed eager PB owner keeps its actual selected signature.
     let mut other = pb_call(

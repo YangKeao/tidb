@@ -18,6 +18,57 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [ ] (2026-10-27 next) Close remaining genuine contextual native profiles.
+  A read-only linked public API probe confirms CHAR_LENGTH(?) with a Varchar
+  parameter succeeds in native Suite but Projection still refuses Admission.
+  Capture actual native/old-Projection originals across genuine native registry
+  profiles before editing the old contextual typed-root guard. Reuse native
+  RootValue/BulkRoot and the existing SDK driver, preserving scalar-row versus
+  whole-operand phases, flag-disabled behavior, real scope and atomic output.
+  Do not fabricate declarations, owners or another evaluator. This precedes
+  Unistore/services/final performance; the generic retry branch is already gone.
+
+- [ ] (2026-10-27 N62) Close genuine remaining source admissions before deleting
+  generic Suite retry routing. Archive signed N61 source624files before observers;
+  capture/repeat real decoded PB display/return/argument metadata and genuine
+  incoming-schema versus expression-decoding contracts. Preserve exact originals,
+  demand/NULL/header/selected coordinates/output prefixes and cache histories;
+  reproduce actual routing gaps, then fix source policies in the same SDK graph
+  without fabricated owners/schema or weakened runtime binding seals. Remove
+  Unsupported/Admission-to-self.run only after these contracts close; resource,
+  SQL and binding failures remain terminal. Continue real legacy SimpleExpr
+  traversal and service/final performance afterward.
+  The legal original cohorts127008/C738E3D0F524444E and432/E60EF3ABFBDAA21B
+  now strictly match with no refusal or retry after fixing actual PB identity
+  diagnostics and classifying unchanged binding seals as terminal contracts.
+  Archived executed candidate source before deleting Unsupported and self.run
+  retry. Every preparation refusal is now retained and returned; final source,
+  full frontend and actual caller verification are in progress.
+  The first complete frontend exposed one remaining ordinary row-collector
+  admission family and seven stale binding-category expectations. Preserve the
+  fixed388800/ED53E168732558ED original matrix: nested native String collectors
+  use genuine native eligibility; eligible Boolean integer collectors retain
+  scalar child demand and atomic batch output. A separate672/2B6BC730362FA53D
+  original scope matrix exposed missing initial cache queries, including empty
+  selections and non-batch-eligible Boolean rows. Bind the real Boolean owner
+  independently of batch eligibility. All9 routing checks, all388800 observations,
+  seven negative controls, String recovery, inventory83088/0/0, lint and dual12
+  format passed. The second frontend was deliberately canceled after exposing
+  a pure ANY_VALUE literal's prohibited retired-Ready lookup; its completed
+  Projection52/Expand6/Unistore195-old3-13/SHOW31-old2/production gates remain
+  recorded, but that frontend is not a complete baseline. Context-only binding
+  fixes the actual identity regression. Native Suite scope originals672/2B6B...
+  are now explicitly separate from actual original Projection scope originals
+  672/EA60639F6C88EF85. The latter were captured four times from exact signed N61
+  evaluator.rs and batch.rs, then current source was restored byte-for-byte.
+  Their immutable JSON fixture now passes10 focused routing checks. New full
+  frontend2354/exactold3/95/992.49s, Projection52/Expand6/Unistore195-old3-13/
+  SHOW31-old2, production149warnings/lint/dual12fmt/sourceaudit/checker pass.
+  Remaining contextual native guard coverage is still incomplete: the independent
+  CHAR_LENGTH parameter probe confirms a legitimate Admission not covered by
+  that suite. Receipt evidence/no-fallback-n62.md records this checkpoint and the
+  open gap; no overall completion or readiness claim is made.
+
 - [x] (2026-10-27 N61 validated) Retire actual ScalarFunction/Suite Decimal priority recursion
   by factoring its genuine function root and actual Chunk storage into the
   existing DecimalFast SourcePlan/SDK frame. The signed N60 pre-observer archive
@@ -260,6 +311,48 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N62 final independent API audit: despite full2354/exactold3/95 and inventory
+  83088/0/0, CHAR_LENGTH with a real Varchar parameter succeeds in native Suite
+  and fails Projection preparation as Admission. The old contextual typed-root
+  restriction still names an unfinished native phase family. Broad native entry
+  support alone does not prove every Projection consumer profile is admitted.
+  Preserve this standalone linked-program proof and capture the complete real
+  native registry/context set before the next source change.
+
+- N62 scope-oracle domain correction: the native public Suite always initially
+  queries its cache, while already shared Projection row profiles have their own
+  no-Ready binding contract. Treating all native traces as Projection traces
+  overbound pure ANY_VALUE literals and non-batch-eligible Boolean rows. Preserve
+  native672/2B6BC730362FA53D unchanged. Independently capture the actual pre-N62
+  Projection entry from exact signed N61 production source2: four runs produce
+  672/EA60639F6C88EF85 and byte-identical records. Restore current2 by saved SHA
+  after both capture jobs terminate; the authoritative restore-state is inactive.
+  This is a fixture/API-domain correction, not a rebase or an ignored failure.
+
+- N62 complete validation found ordinary nested IFNULL String and IS NULL row
+  collectors still refused by old flat-argument/context predicates. The fixed
+  original388800-case matrix reproduced both successive preparation failures;
+  genuine native eligibility and existing row/atomic-publication profiles close
+  them without changing kernels. New scope originals672/2B6BC730362FA53D then
+  reproduced omitted initial cache getters: even empty selection requires the
+  original Suite query before flags. A first repair tied binding to typed batch
+  eligibility and still failed non-eligible IS TRUE rows. The real Boolean owner
+  now selects binding separately from its batch profile. The same672 cases match
+  across flags, healthy/poisoned caches, empty/duplicate rows and repeated calls.
+
+- N62 first PB fixture changed declarations after protobuf decoding and therefore
+  violated an existing owner seal. Its52920 records remain immutable historical
+  negatives; they do not justify relaxing that seal. The broader native API also
+  accepts coordinates and decoder/schema histories that mandatory Projection
+  deliberately rejects. Separate legal Projection originals127008+432 were fixed
+  before source edits. They exposed4704 behavior differences and240 actual retry
+  records: ordinary arithmetic diagnostics read absent PB operands, and an old
+  display-name bulk guard rejected genuine CAST owners. Exact existing invalid
+  owner/schema checks had also been mislabeled Admission. The corrected legal
+  candidate matches all127440 records with zero refusal/retry; invalid bindings
+  terminate without SQL callbacks. No original hash was rebased.
+
 
 - N61: direct Decimal result comparisons alone missed the actual reused Suite's
   poisoned-cache state. The real Suite cohort exposed32 original ScopePoisoned
@@ -634,6 +727,48 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Record N62 as a validated local checkpoint and continue remaining
+  genuine contextual native closure immediately. Do not claim that removing a
+  retry branch proves every previously supported input is admitted.
+  Rationale: an independent public API probe found a valid CHAR_LENGTH parameter
+  case outside the existing complete test matrix. Native eligibility and source
+  profiles must be reused systematically before global completion.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
+
+- Decision: Use actual pre-change Projection scope records to select Projection
+  binding policy, keeping native Suite scope records as a distinct API contract.
+  Pure value/physical roots retain their existing no-Ready path. Context-only
+  initialization and typed-batch eligibility are verified against the preserved
+  Projection fixture before finalizing ordinary Boolean binding.
+  Rationale: a native wrapper's unconditional query is not a valid oracle for an
+  already shared Projection path. Standalone identity RED/GREEN and exact old
+  source restoration provide independently reviewable evidence for the split.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
+
+- Superseded decision: Keep Boolean scope ownership separate from native batch eligibility.
+  The ordinary real owner selects initial Suite cache binding; only genuine
+  static Int eligibility selects atomic integer row collection. String collection
+  uses its genuine original native eligibility, including nested/deferred values.
+  Rationale: fixed original traces proved that a scalar row owner still queries
+  the cache before flags, while argument demand and output publication follow
+  different native profiles. Do not broaden old comparison cache policy or turn
+  another source guard off globally. Seven stale negative test expectations are
+  updated only from Admission to Contract with unchanged fixtures and conditions.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
+
+- Decision: N62 removes Unsupported and the generic preparation-to-native retry
+  only after the legal Projection source cohorts strictly pass. Use actual PB
+  ownership to select arithmetic diagnostics, remove the obsolete bulk guard,
+  and classify unchanged owner/schema/column checks as binding contracts. Retain
+  the public historical fallback telemetry field and actual scope adapter; their
+  names do not imply a second evaluator. Every preparation failure is stored and
+  returned on repeat without evaluation or preparation replay.
+  Rationale: genuine source contracts now close in the same SDK graph; invalid
+  binding and resource failures cannot authorize another evaluator. Native and
+  Projection APIs retain their distinct, existing coordinate/schema contracts.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
+
 
 - N61: factor the existing DecimalFast compiler and exact leaf loop, using the
   genuine function root and real Chunk storage for native calls while preserving
@@ -1018,6 +1153,19 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N62 checkpoint validation is complete: full2354/exact inherited3/95/992.49s,
+Projection52/Expand6, Unistore195/exactold3/13, SHOW31/exactold2, production/lint,
+dual12-file formatting and original/source/restore audits pass. Legal127440,
+optional388800 and actual Projection scope672 records remain fixed. Native scope
+672 is retained as a distinct API domain. The second frontend was canceled after
+a genuine no-Ready regression; its partial run is not a baseline. The final
+independent probe nevertheless confirms a legitimate contextual CHAR_LENGTH
+Admission absent from the matrix. Receipt evidence/no-fallback-n62.md explicitly
+retains that open gap. Continue native context profiles, then actual public
+Unistore SimpleExpr/typed closure, full services and final unified performance;
+task #4 is not complete.
+
 
 N61 has promoted actual public Decimal priority after207975 frozen original
 observations matched, with60 additional exact scope/getter pairs. Six public
