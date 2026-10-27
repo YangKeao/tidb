@@ -9475,3 +9475,6 @@ pub(crate) fn eval_public_function(
     plan.eval(context, row)
         .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
 }
+
+#[path = "batch_ast_source.rs"]
+pub(crate) mod ast_source;

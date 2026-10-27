@@ -504,26 +504,50 @@ impl tidb_executor::Columns for ShowRowResolver<'_> {
     }
 }
 
+// One genuine statement owner and one fixed virtual output schema. Preparation
+// remains lazy so an empty or LIKE-excluded SHOW never evaluates its predicate.
+struct ShowPredicate<'a> {
+    root: &'a tidb_ast::Expr,
+    program: Option<tidb_executor::PreparedAstExpression<'a>>,
+}
+impl<'a> ShowPredicate<'a> {
+    fn new(root: &'a tidb_ast::Expr) -> Self {
+        Self {
+            root,
+            program: None,
+        }
+    }
+}
+
 /// Whether one virtual `SHOW` row satisfies the statement's `WHERE`.
 fn show_row_matches(
-    predicate: &tidb_ast::Expr,
+    predicate: &mut ShowPredicate<'_>,
     columns: &[&str],
     row: &[Datum],
     _ctx: &dyn tidb_executor::Columns,
 ) -> Result<bool, DriverError> {
-    // go's SHOW WHERE resolves names against the statement's OWN output
-    // columns; a name outside that list is ErrBadField with the 'where
-    // clause' clause -- even when it names a DATA column of the inspected
-    // table (oracle: `SHOW COLUMNS FROM sy WHERE b IS NOT NULL` fails
-    // `Unknown column 'b' in 'where clause'`).
-    if let Some(missing) = first_unknown_output_column(predicate, columns) {
-        return Err(DriverError::UnknownColumnInClause {
-            column: missing,
-            clause: "where clause".to_owned(),
-        });
+    if predicate.program.is_none() {
+        // Resolve names against this statement's own output before evaluation,
+        // retaining the original first unknown-name and empty-output behavior.
+        if let Some(missing) = first_unknown_output_column(predicate.root, columns) {
+            return Err(DriverError::UnknownColumnInClause {
+                column: missing,
+                clause: "where clause".to_owned(),
+            });
+        }
+        predicate.program = Some(
+            tidb_executor::PreparedAstExpression::compile(predicate.root)
+                .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?,
+        );
     }
+    // Preserve the original SHOW-only resolver. Session capabilities were not
+    // forwarded by this entry; the compiled plan retains neither this row nor ctx.
     let resolver = ShowRowResolver { columns, row };
-    let value = tidb_executor::eval_in(predicate, &resolver)
+    let value = predicate
+        .program
+        .as_mut()
+        .expect("prepared at first demanded row")
+        .eval(&resolver)
         .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
     let truthy = tidb_executor::truthy_of(&value)
         .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
@@ -654,6 +678,7 @@ fn filter_show_output(
     };
     let column_names: Vec<&str> = columns.iter().map(|(name, _)| name.as_str()).collect();
     let mut filtered = Vec::with_capacity(rows.len());
+    let mut where_clause = where_clause.map(ShowPredicate::new);
     for row in rows {
         let matches_like = match &like_pattern {
             None => true,
@@ -665,7 +690,7 @@ fn filter_show_output(
         if !matches_like {
             continue;
         }
-        if let Some(predicate) = where_clause {
+        if let Some(predicate) = where_clause.as_mut() {
             if !show_row_matches(predicate, &column_names, &row, ctx)? {
                 continue;
             }
@@ -1048,6 +1073,7 @@ impl Session {
                 let text =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                 let mut rows = Vec::new();
+                let mut predicate = show.where_clause.as_ref().map(ShowPredicate::new);
                 let ctx = self.statement_context(false);
                 for definition in sysvar::SYS_VARS {
                     if self.sem_hides_sysvar(definition.name) {
@@ -1082,7 +1108,7 @@ impl Session {
                     ];
                     // Go plans the WHERE as a selection over the same
                     // virtual rows, which is what this filter is.
-                    if let Some(predicate) = &show.where_clause {
+                    if let Some(predicate) = predicate.as_mut() {
                         if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row, &ctx)? {
                             continue;
                         }
@@ -1125,6 +1151,7 @@ impl Session {
                     Some(tidb_ast::ShowStatusFilter::Where(expr)) => Some(expr),
                     _ => None,
                 };
+                let mut predicate = predicate.map(ShowPredicate::new);
                 let text =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                 let mut rows = Vec::new();
@@ -1177,7 +1204,7 @@ impl Session {
                     ];
                     // Go plans the WHERE as a selection over the same
                     // virtual rows, which is what this filter is.
-                    if let Some(predicate) = predicate {
+                    if let Some(predicate) = predicate.as_mut() {
                         if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row, &ctx)? {
                             continue;
                         }
@@ -1212,6 +1239,7 @@ impl Session {
                     Some(tidb_ast::ShowCharsetFilter::Where(expr)) => Some(expr),
                     _ => None,
                 };
+                let mut predicate = predicate.map(ShowPredicate::new);
                 let text =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                 let number =
@@ -1243,7 +1271,7 @@ impl Session {
                         Datum::Bytes(info.default_collation.into_bytes()),
                         Datum::Int(info.maxlen as i64),
                     ];
-                    if let Some(predicate) = predicate {
+                    if let Some(predicate) = predicate.as_mut() {
                         if !show_row_matches(predicate, SHOW_CHARSET_COLUMNS, &row, &ctx)? {
                             continue;
                         }
@@ -1279,6 +1307,7 @@ impl Session {
                     Some(tidb_ast::ShowEnginesFilter::Where(expr)) => Some(expr),
                     _ => None,
                 };
+                let mut predicate = predicate.map(ShowPredicate::new);
                 let text =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                 let row = vec![
@@ -1305,6 +1334,7 @@ impl Session {
                 };
                 let included = matches_like
                     && predicate
+                        .as_mut()
                         .map(|predicate| {
                             show_row_matches(predicate, SHOW_ENGINES_COLUMNS, &row, &ctx)
                         })
@@ -1354,6 +1384,7 @@ impl Session {
                     Some(tidb_ast::ShowCollationFilter::Where(expr)) => Some(expr),
                     _ => None,
                 };
+                let mut predicate = predicate.map(ShowPredicate::new);
                 let text =
                     || tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                 let number =
@@ -1396,7 +1427,7 @@ impl Session {
                         Datum::Int(sortlen),
                         Datum::Bytes(pad_attribute.as_bytes().to_vec()),
                     ];
-                    if let Some(predicate) = predicate {
+                    if let Some(predicate) = predicate.as_mut() {
                         if !show_row_matches(predicate, SHOW_COLLATION_COLUMNS, &row, &ctx)? {
                             continue;
                         }
@@ -1813,6 +1844,7 @@ impl Session {
                     }
                     Some(tidb_ast::ShowTablesFilter::Where(expr)) => (None, Some(expr)),
                 };
+                let mut where_clause = where_clause.map(ShowPredicate::new);
                 let database = match &show.database {
                     Some(name) => name.clone(),
                     None => self.require_current_database()?.to_owned(),
@@ -1883,7 +1915,7 @@ impl Session {
                             table_type_of(is_view, is_sequence).as_bytes().to_vec(),
                         ));
                     }
-                    if let Some(predicate) = where_clause {
+                    if let Some(predicate) = where_clause.as_mut() {
                         if !show_row_matches(predicate, &column_names, &row, &ctx)? {
                             continue;
                         }

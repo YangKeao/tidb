@@ -295,7 +295,8 @@ pub use tidb_expr::infer_pushdown::{blacklist_name, blacklist_store_mask, ExprPu
 pub use tidb_expr::CurrentTso;
 pub use tidb_expr::{
     eval_in, like_match_with_collation, like_match_with_collation_in, truthy_of,
-    BlockEncryptionMode, Columns, EvalError, JsonError, MysqlRng, SessionTimeZone,
+    BlockEncryptionMode, Columns, EvalError, JsonError, MysqlRng, PreparedAstExpression,
+    SessionTimeZone,
 };
 pub use tidb_expr::{ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin};
 pub use topn::TopNExec;

@@ -196,6 +196,12 @@ mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
 pub(super) enum NativeHostMetadata {
+    Ast {
+        node: usize,
+        arguments: Box<[usize]>,
+        // Proven from the genuine final CHAR_FUNC argument, never a SQL type.
+        raw_string: bool,
+    },
     PbLazy(Box<NativePbLazy>),
     PbBoolean(Box<NativePbBoolean>),
     PbBinary(Box<NativePbBinary>),
@@ -600,6 +606,7 @@ impl NativeHostMetadata {
 mod compression_source;
 
 enum SqlDemand {
+    Ast(Box<ast_source::AstTask>),
     PbLazy(Box<pb_lazy_values_source::PbLazyTask>),
     PbBoolean(Box<pb_boolean_values_source::PbBooleanTask>),
     PbIntegerMod(Box<pb_binary_values_source::PbModTask>),
@@ -777,6 +784,7 @@ struct NativeTask {
 impl NativeTask {
     fn next_argument(&self) -> LocalResult<Option<usize>> {
         match &self.demand {
+            SqlDemand::Ast(task) => Ok(task.next),
             SqlDemand::WeightString(task) => Ok(task.next_argument()),
             SqlDemand::RegexpValues(task) => Ok(task.next_argument()),
             SqlDemand::PbIntegerMod(task) => Ok(Some(task.tokens.len())),
@@ -853,6 +861,7 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
+            SqlDemand::Ast(_) => Err(binding("AST demand cannot buffer wire data")),
             SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
             SqlDemand::RegexpValues(_) => Err(binding("regexp values own their actual phases")),
             SqlDemand::PbIntegerMod(_) => Err(binding("PB MOD owns its actual raw prefix")),
@@ -987,6 +996,11 @@ impl NativeTask {
             return bytes
                 .checked_add(task.retained_bytes())
                 .ok_or_else(|| resource("cached list task extent overflow"));
+        }
+        if let SqlDemand::Ast(task) = &self.demand {
+            return bytes
+                .checked_add(task.retained_bytes()?)
+                .ok_or_else(|| resource("AST task extent overflow"));
         }
         if let SqlDemand::TypedWindow(task) = &self.demand {
             return bytes
@@ -1144,6 +1158,7 @@ struct TaskSlot<'a> {
 }
 
 pub(super) struct NativeBatchHosts<'a> {
+    ast_nodes: &'a [&'a tidb_ast::Expr],
     catalog: HostCatalog,
     context: &'a dyn Columns,
     metadata: &'a [NativeHostMetadata],
@@ -1164,6 +1179,11 @@ pub(super) struct NativeBatchHosts<'a> {
     input: Option<&'a Chunk>,
 }
 impl<'a> NativeBatchHosts<'a> {
+    pub(super) fn with_ast_nodes(mut self, nodes: &'a [&'a tidb_ast::Expr]) -> Self {
+        self.ast_nodes = nodes;
+        self
+    }
+
     pub(super) fn with_input(mut self, input: &'a Chunk) -> Self {
         self.input = Some(input);
         self
@@ -1175,6 +1195,7 @@ impl<'a> NativeBatchHosts<'a> {
         max_retained_bytes: usize,
     ) -> Self {
         Self {
+            ast_nodes: &[],
             catalog,
             metadata,
             constant_probes: &[],
@@ -1610,7 +1631,8 @@ impl<'a> NativeBatchHosts<'a> {
             .metadata
             .get(self.task(id)?.slot.index())
             .ok_or_else(|| binding("native SQL result lacks its metadata"))?;
-        let result = if !output_role.expression_view() {
+        let ast = matches!(metadata, NativeHostMetadata::Ast { .. });
+        let result = if ast || !output_role.expression_view() {
             // A genuine ScalarFunction caller has already received its own
             // result-family coercion, without an enclosing Expression view.
             result
@@ -2923,6 +2945,9 @@ impl NativeBatchHosts<'_> {
                 "SQL host invocation differs from its catalog signature".into(),
             ));
         }
+        if self.catalog.sql_batch_operation(invocation.slot)? == SqlBatchHostOperation::AstNative {
+            return self.start_ast(invocation);
+        }
         if !self.constant_probes.is_empty() {
             if self.constant_probes.len() != self.metadata.len() {
                 return Err(binding("source prefix descriptor count differs"));
@@ -2944,6 +2969,7 @@ impl NativeBatchHosts<'_> {
         }
         let mut ready_preparation = None;
         let demand = match self.catalog.sql_batch_operation(invocation.slot)? {
+            SqlBatchHostOperation::AstNative => unreachable!("routed above"),
             SqlBatchHostOperation::EagerValuesNative => {
                 if let Some(NativeHostMetadata::HeaderOutcome {
                     kind,
@@ -4109,6 +4135,12 @@ impl NativeBatchHosts<'_> {
         reply: HostArgReply<'_>,
     ) -> LocalResult<HostStep> {
         self.validate_row_reply(id, reply)?;
+        if matches!(self.task(id)?.demand, SqlDemand::Ast(_)) {
+            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
+                return Err(binding("AST source cannot be wire NULL"));
+            };
+            return self.resume_ast(id, Some(token));
+        }
         let task = self.task(id)?;
         if matches!(task.demand, SqlDemand::JsonSchema(_)) {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
@@ -5032,3 +5064,6 @@ pub(super) use diagnostic_source::CompiledDiagnosticParent;
 
 #[path = "batch_concat_value.rs"]
 mod concat_value_source;
+
+#[path = "batch_ast_host.rs"]
+mod ast_host;
