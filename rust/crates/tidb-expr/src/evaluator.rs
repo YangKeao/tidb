@@ -94,8 +94,8 @@ pub fn vectorizable(expressions: &[Expression]) -> bool {
 /// nevertheless preserves the important vectorized contract: filters run
 /// filter-major, rejected rows are removed before the next filter, and direct
 /// column/constant expressions are materialized column-wise. Any other
-/// scalar-function node uses its row evaluator as the explicit fallback,
-/// without evaluating rows that an earlier filter already rejected.
+/// scalar-function node reuses a shared scalar plan, prepared on its first
+/// live row, without evaluating rows an earlier filter already rejected.
 pub fn vectorized_filter_consider_null<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
@@ -131,6 +131,32 @@ pub fn vec_eval_bool<C: Columns>(
     filter_physical_rows(ctx, vec_enabled, filters, input, selected, nulls, false)
 }
 
+// A filter keeps immediate per-row truth conversion and its original demand
+// order. Preparation is pure metadata work, delayed until the first live row;
+// the borrow prevents root mutation while the detached plan is reused.
+fn eval_scalar_filter<'a>(
+    filter: &'a Expression,
+    prepared: &mut Option<batch::PreparedScalarExpression<'a>>,
+    context: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Datum, EvalError> {
+    #[cfg(test)]
+    if crate::test_original_eval::requested() {
+        return filter.eval(context, row);
+    }
+    #[cfg(test)]
+    crate::test_original_eval::note_shared();
+    match prepared {
+        Some(plan) => plan.eval(context, row),
+        None => {
+            let mut plan = batch::PreparedScalarExpression::compile(filter, row.len())?;
+            let result = plan.eval(context, row);
+            *prepared = Some(plan);
+            result
+        }
+    }
+}
+
 fn filter_physical_rows<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
@@ -158,6 +184,7 @@ fn filter_physical_rows<C: Columns>(
     // three-valued truth handling in that branch.
     if row_based {
         for filter in filters {
+            let mut prepared = None;
             let int_type = filter
                 .static_type()
                 .is_some_and(|ty| ty.eval_type() == tidb_datatype::EvalType::Int);
@@ -165,7 +192,8 @@ fn filter_physical_rows<C: Columns>(
                 if !selected[row_index] {
                     continue;
                 }
-                let value = filter.eval(ctx, input.physical_row(row_index))?;
+                let value =
+                    eval_scalar_filter(filter, &mut prepared, ctx, input.physical_row(row_index))?;
                 let truth = crate::truthy_of(&value)?;
                 if truth.is_none() && int_type {
                     nulls[row_index] = true;
@@ -218,13 +246,17 @@ fn filter_physical_rows<C: Columns>(
             }
         };
         if !column_wise {
-            // The scalar evaluator is the documented fallback for every
-            // other shape, over the live rows only.
+            // Other shapes use the same shared scalar frame over live rows,
+            // preparing once while preserving immediate truth conversion.
+            let mut prepared = None;
             is_zero.clear();
             for &physical in &sel {
-                is_zero.push(truth_code(
-                    &filter.eval(ctx, input.physical_row(physical))?,
-                )?);
+                is_zero.push(truth_code(&eval_scalar_filter(
+                    filter,
+                    &mut prepared,
+                    ctx,
+                    input.physical_row(physical),
+                )?)?);
             }
         }
         let mut kept = 0;
@@ -2129,3 +2161,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "evaluator/filter_prepared_tests.rs"]
+mod filter_prepared_tests;

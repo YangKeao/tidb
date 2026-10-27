@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-27 N55 validated) Real scalar filters now lazily prepare once per demanded root and reuse the existing SDK cursor.399 sources/plan files were archived before edits; independent25920/9C47E8782A22C4DF remains fixed. Three repeated-preparation controls were RED before promotion, all six focused tests now pass. Fresh full frontend2283/exact inherited3/95ignore/all733batch/exact346warning Counter, same-run50public/43context/inventory83088/0/0, Projection52, Expand6+64/B42, production/lint/dual5fmt/reconstruction pass. Isolated32/1024/8192-row current-shared public baseline versus actual filter saves63–65% time. See evidence/no-fallback-n55.md. Continue owned Unistore/request reuse and all remaining global entry/fallback/service/performance work.
+
 - [x] N52 genuine function root:87 original files archived; four independent original cohorts plus prior direct-function pin give82060 unchanged observations. Real function ownership and output role pass28 public tests. Repaired16-byte temporary-reference inflation using one generic compiler and original8-byte Expression storage; original limits preserved. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, lint/dual-ten-file fmt and ownership checks pass. Public API promotion remains separate and unfinished.
 - [x] N53 public-row closure:89 TiDB/two SDK originals archived and independent404 observations pinned. Reproduced virtual-marker admission and MAX-cursor Resource differences, then preserved actual public Column behavior and genuine coordinates through the same SDK frame. Fresh public32/context43/Projection52/Expand/inventory/lint/dual-six-file fmt, SDK1150/exact inherited1/1ignore/17warnings and clippy171/89 pass unchanged. SDK local3ee7511; receipt no-fallback-n53.md. Public entry promotion remains next.
 - [x] N54 public scalar promotion:the three default public entries now use the genuine shared SDK frame, with the exact old recursion available only through an explicit default-off cfg(test) oracle. Independent99144-record comparisons and routing/budget controls pass; all733 batch tests pass in the last full run. Five remaining legacy controls were corrected at reference call sites and rerun separately; full-plus-focused evidence is documented without claiming a later clean full sweep. Production check/Projection52/context43/Expand/inventory/lint/dual30fmt and ownership/reconstruction pass. Actual caller reuse, remaining fallback/driver paths and final service/performance work remain.
@@ -223,6 +225,10 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- (2026-10-27 N55 validated) Eight rows of the original parameterized integer expression make sixteen reads because probing and general demand each read live values; reuse preserves both. Invalid selection indices intentionally preserve the original panic and effects. Full regression delegates its final long phase to a child process; that child was allowed to finish before isolated timing. Source/module warning counters and coverage include nested host/native modules, not only the tests submodule.
+
+- (2026-10-27 N55 design) Public scalar lowering fixes collation translation to true and reads no live Columns during compilation. A borrowed immutable root can therefore pin a detached source plan within one filter invocation, while every row still supplies its genuine context and physical coordinate. Typed vector filters have distinct whole-column phases and stay unchanged in this checkpoint.
 
 N54 public routing changed the meaning of historical tests that called the public API to capture an original phase counter or uncapped reference. Keep those reference callbacks explicitly on the test-only old bodies, while default functional tests and actual candidates stay on the shared driver. Resource policies can make an oversized graph terminal even when old lazy evaluation could skip most of it; do not bypass limits or rebase original golden records.
 
@@ -569,6 +575,10 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Compile each scalar filter only when its first surviving physical row is demanded, and retain the original filter-major immediate truth conversion. Do not compile all filters up front or convert truth after evaluating a whole batch. Use the existing BorrowedExpression and SDK cursor frame, with no fabricated Suite, SQL declaration or Row.
+  Rationale: Empty inputs and filters suppressed by earlier predicates must not perform preparation or live reads; truth-conversion errors must precede the next row's side effects. Genuine immutable root borrowing also prevents stale metadata/RAND ownership.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
 
 N54 promotes the already validated genuine scalar consumer and preserves three exact original entry bodies only under cfg(test). Default-off scope and per-entry controls distinguish independent original observations from new public calls. Test reference callbacks alone opt into the oracle; production has no old-evaluator switch. Use existing SDK default limits without changing Projection or explicit caller policies. Date/Author:2026-10-26 ExpressionReuseEngineer.
 
@@ -917,6 +927,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N55 is validated from signed N54 main4a7bfdba9d and unchanged SDK3ee7511. Actual scalar filtering now shares pure preparation while retaining real owner identity and per-row effects. Complete current-source frontend validation has only the exact inherited three failures; all other gates and frozen observations pass. The measured2.7–2.9x local filter speedup isolates preparation reuse within the same SDK and is not a final SQL service claim. The separately requested CPU-load SQL experiment used independent Go worktrees and was delivered with all processes stopped. Global AST/typed/Unistore/fallback/service scope remains required.
 
 N54 default public scalar routing is unified. The last complete run on the current production code gives2272pass/8fail/95ignore/all733batch/346warnings; five legacy test-only oracle controls were then corrected and passed separately, leaving the three inherited failures in combined evidence. Do not label that as a later clean full sweep. Production check and actual Projection52 plus focused context43 and all current gates pass. Receipt no-fallback-n54.md records exact scope and the historical N53 raw-context artifact loss. Remaining caller integration, prepared reuse, generic fallback/old driver retirement, service verification and final performance continue.
 
@@ -5001,3 +5013,5 @@ The real ContextValue conversion already returns a Datum alongside its error. Na
 Before changing that channel, archive5a30922d56 and capture/rerun/pin3240/FB8415D6D51EBFBD. The original first record returns the outer cached planning string whereas the prior ordinary source returned NULL. The completed shared frame matches that corpus and the earlier6720/9DB38EEAA92DDE88 public error-pair pin unchanged. Root error payload copies use the existing64KiB test policy; large-payload refusals are finite-policy tests, not uncapped native equivalence. Callback panic/resource/error recovery reuses the actual compiled plan without retries.
 
 Run public_source_tests (15), the43 exact existing dynamic-leaf/typed-context/deferred/diagnostic tests selected in workspace n51-context-focused.json, actual Projection52, current Expand6+64/B42 and inventory83088/0/0, make lint and both pinned formatters for the five Rust files. The previous N50 whole-frontend baseline is explicitly retained rather than reported as a fresh N51 full run. Receipt rust/docs/evidence/no-fallback-n51.md lists exact commands and limitations. Continue with a genuine borrowed ScalarFunction root and its distinct enclosing-expression result view before switching public entries; task4 remains active.
+
+2026-10-27 revision: recorded actual lazy borrowed filter preparation, independent fixed observations, pre-change compilation failures and completed current-source gates/timings. Next, locate owned-root state in the real request rather than Unistore's ephemeral per-row evaluator.

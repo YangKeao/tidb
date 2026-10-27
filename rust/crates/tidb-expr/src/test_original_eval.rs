@@ -4,6 +4,7 @@ use std::cell::Cell;
 thread_local! {
     static ORIGINAL: Cell<bool> = const { Cell::new(false) };
     static ORIGINAL_ENTRIES: Cell<usize> = const { Cell::new(0) };
+    static SCALAR_PREPARATIONS: Cell<usize> = const { Cell::new(0) };
     static SHARED_ENTRIES: Cell<usize> = const { Cell::new(0) };
 }
 pub(crate) fn requested() -> bool {
@@ -163,4 +164,11 @@ fn public_default_budget_exhaustion_is_terminal_without_original_fallback() {
         Datum::Int(7)
     );
     assert_eq!(entries().1, after.1 + 1);
+}
+
+pub(crate) fn note_scalar_preparation() {
+    SCALAR_PREPARATIONS.with(|n| n.set(n.get() + 1));
+}
+pub(crate) fn scalar_preparations() -> usize {
+    SCALAR_PREPARATIONS.with(Cell::get)
 }

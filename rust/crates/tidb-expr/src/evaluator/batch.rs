@@ -9342,6 +9342,46 @@ impl BatchFailure {
         }
     }
 }
+/// One immutable real expression, prepared without retaining a context or row.
+/// Callers preserve their demand/truth order outside the scalar frame and
+/// supply the genuine physical coordinate on every invocation.
+pub(super) struct PreparedScalarExpression<'a> {
+    plan: scalar_source::BorrowedExpression<'a>,
+}
+impl<'a> PreparedScalarExpression<'a> {
+    pub(super) fn compile(
+        root: &'a Expression,
+        width: usize,
+    ) -> std::result::Result<Self, EvalError> {
+        let (source, execution, maximum) = public_scalar_limits();
+        scalar_source::BorrowedExpression::compile(root, width, true, source, execution, maximum)
+            .map(|plan| Self { plan })
+            .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))
+    }
+    pub(super) fn eval(
+        &mut self,
+        context: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> std::result::Result<Datum, EvalError> {
+        self.plan
+            .eval(context, row)
+            .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
+    }
+    fn eval_with_error_value(
+        &mut self,
+        context: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> std::result::Result<Datum, (Datum, EvalError)> {
+        self.plan
+            .eval_with_error_value(context, row)
+            .map_err(|(value, error)| {
+                (
+                    value,
+                    error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke),
+                )
+            })
+    }
+}
 pub(crate) fn eval_public_expression(
     root: &Expression,
     context: &dyn Columns,
@@ -9349,18 +9389,8 @@ pub(crate) fn eval_public_expression(
 ) -> std::result::Result<Datum, EvalError> {
     #[cfg(test)]
     crate::test_original_eval::note_shared();
-    let (source, execution, maximum) = public_scalar_limits();
-    let mut plan = scalar_source::BorrowedExpression::compile(
-        root,
-        row.len(),
-        true,
-        source,
-        execution,
-        maximum,
-    )
-    .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))?;
+    let mut plan = PreparedScalarExpression::compile(root, row.len())?;
     plan.eval(context, row)
-        .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
 }
 pub(crate) fn eval_public_expression_with_error_value(
     root: &Expression,
@@ -9369,28 +9399,9 @@ pub(crate) fn eval_public_expression_with_error_value(
 ) -> std::result::Result<Datum, (Datum, EvalError)> {
     #[cfg(test)]
     crate::test_original_eval::note_shared();
-    let (source, execution, maximum) = public_scalar_limits();
-    let mut plan = scalar_source::BorrowedExpression::compile(
-        root,
-        row.len(),
-        true,
-        source,
-        execution,
-        maximum,
-    )
-    .map_err(|error| {
-        (
-            Datum::Null,
-            error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare),
-        )
-    })?;
+    let mut plan =
+        PreparedScalarExpression::compile(root, row.len()).map_err(|error| (Datum::Null, error))?;
     plan.eval_with_error_value(context, row)
-        .map_err(|(value, error)| {
-            (
-                value,
-                error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke),
-            )
-        })
 }
 pub(crate) fn eval_public_function(
     root: &ScalarFunction,

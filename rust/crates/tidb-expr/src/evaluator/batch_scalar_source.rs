@@ -90,6 +90,8 @@ impl<'a> BorrowedExpression<'a> {
         execution: ExecutionLimits,
         maximum: usize,
     ) -> Result<Self> {
+        #[cfg(test)]
+        crate::test_original_eval::note_scalar_preparation();
         let source = lower_source_plan(
             root,
             SourceInputs::PhysicalRow { width },
