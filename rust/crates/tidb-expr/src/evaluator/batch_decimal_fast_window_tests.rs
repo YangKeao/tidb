@@ -6,6 +6,9 @@ impl Columns for NoContextCalls {
     fn get(&self, _: &[String]) -> Option<Datum> {
         panic!("no expression callback")
     }
+    fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+        panic!("Projection fast profile has no native scope getter")
+    }
     fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
         panic!("fast phase cannot read time zone")
     }
@@ -115,6 +118,7 @@ fn run_case(
         operation,
         argument_nodes: vec![1, 2].into_boxed_slice(),
         output_node: 0,
+        native_scope: false,
     }];
     let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
     store.borrow_mut().begin_window().unwrap();
@@ -348,5 +352,168 @@ fn decimal_fast_window_preserves_whole_operand_refusal_and_terminal_failure_orde
         null[0][0] = Outcome::Value(None);
         run_case(operation, null, &selection, Some((1, 0)));
         run_case(operation, base, &selection, Some((0, 2049)));
+    }
+}
+
+#[test]
+fn decimal_fast_native_scope_callbacks_authenticate_and_cancel() {
+    use std::cell::Cell;
+    struct C<'a> {
+        store: &'a RefCell<NativeValueStore>,
+        action: Cell<u8>,
+        calls: Cell<usize>,
+    }
+    impl Columns for C<'_> {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            panic!("no expression callback")
+        }
+        fn ready_value_cache(&self) -> Option<&crate::ReadyValueCache> {
+            self.calls.set(self.calls.get() + 1);
+            match self.action.get() {
+                1 => self.store.borrow_mut().begin_window().unwrap(),
+                2 => panic!("native Decimal scope callback"),
+                _ => {}
+            }
+            None
+        }
+    }
+    let field: tipb::FieldType = tidb_query_datatype::FieldTypeTp::VarString.into();
+    let catalog = HostCatalog::for_sql_batch(vec![(
+        SqlBatchHostOperation::AddWindowNative,
+        HostSignature {
+            arg_types: vec![field.clone(); 2].into_boxed_slice(),
+            return_type: field.clone(),
+        },
+    )])
+    .unwrap();
+    let slot = catalog.slot(0).unwrap();
+    let sig = catalog.signature(slot).unwrap().clone();
+    let metadata = [NativeHostMetadata::DecimalFast {
+        operation: SqlBatchHostOperation::AddWindowNative,
+        argument_nodes: vec![1, 2].into_boxed_slice(),
+        output_node: 0,
+        native_scope: true,
+    }];
+    for action in [2, 0, 1] {
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let context = C {
+            store: &store,
+            action: Cell::new(action),
+            calls: Cell::new(0),
+        };
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context, 1 << 20)
+            .with_native_values(Some(&store));
+        let mut eval = EvalContext::default();
+        for recovery in [false, true] {
+            if recovery {
+                context.action.set(0);
+            }
+            store.borrow_mut().begin_window().unwrap();
+            let HostStart::Pending { task, .. } = hosts
+                .start_window(
+                    &mut eval,
+                    HostWindowInvocation {
+                        slot,
+                        occurrence_start: 7,
+                        physical_rows: &[0],
+                        arg_types: &sig.arg_types,
+                        return_type: &sig.return_type,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("pending Decimal window")
+            };
+            let value = |node| {
+                let token = store
+                    .borrow_mut()
+                    .insert_decimal_fast(
+                        fast(2, 0, 0),
+                        NativeValueOrigin {
+                            node,
+                            row: InputRow {
+                                occurrence: 7,
+                                input_row: 0,
+                            },
+                        },
+                    )
+                    .unwrap();
+                VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1)
+            };
+            let left = value(1);
+            let right = value(2);
+            assert!(matches!(
+                hosts
+                    .resume_window(
+                        &mut eval,
+                        &task,
+                        HostWindowArgReply {
+                            index: 0,
+                            occurrence_start: 7,
+                            physical_rows: &[0],
+                            field_type: &field,
+                            values: &left
+                        }
+                    )
+                    .unwrap(),
+                HostStep::NeedArg(_)
+            ));
+            let calls = context.calls.get();
+            struct Cancel<'a, 'b> {
+                hosts: &'a mut NativeBatchHosts<'b>,
+                task: &'a HostTaskId,
+            }
+            impl Drop for Cancel<'_, '_> {
+                fn drop(&mut self) {
+                    self.hosts.cancel(self.task);
+                }
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let guard = Cancel {
+                    hosts: &mut hosts,
+                    task: &task,
+                };
+                guard.hosts.resume_window(
+                    &mut eval,
+                    &task,
+                    HostWindowArgReply {
+                        index: 1,
+                        occurrence_start: 7,
+                        physical_rows: &[0],
+                        field_type: &field,
+                        values: &right,
+                    },
+                )
+            }));
+            assert_eq!(context.calls.get(), calls + 1);
+            if !recovery && action == 2 {
+                assert!(result.is_err());
+            } else if !recovery && action == 1 {
+                assert!(
+                    matches!(result.unwrap(), Err(LocalError::BindingContract(_))),
+                    "scope callback invalidated generation but host published a result"
+                );
+            } else {
+                assert!(matches!(result.unwrap().unwrap(), HostStep::Ready(_)));
+            }
+            assert!(hosts
+                .resume_window(
+                    &mut eval,
+                    &task,
+                    HostWindowArgReply {
+                        index: 1,
+                        occurrence_start: 7,
+                        physical_rows: &[0],
+                        field_type: &field,
+                        values: &right
+                    }
+                )
+                .is_err());
+            assert_eq!(
+                context.calls.get(),
+                calls + 1,
+                "canceled task replayed scope callback"
+            );
+        }
     }
 }

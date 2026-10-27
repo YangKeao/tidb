@@ -4619,6 +4619,17 @@ pub(crate) fn batch_candidate<'a>(
     Ok(Some(EligibleBatch { expression, target }))
 }
 
+#[cfg(test)]
+std::thread_local! {static ORIGINAL_DECIMAL_TREE_ENTRIES:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};}
+#[cfg(test)]
+fn note_original_decimal_tree() {
+    ORIGINAL_DECIMAL_TREE_ENTRIES.with(|counter| counter.set(counter.get() + 1));
+}
+#[cfg(test)]
+pub(crate) fn original_decimal_tree_entries() -> usize {
+    ORIGINAL_DECIMAL_TREE_ENTRIES.with(std::cell::Cell::get)
+}
+
 /// Go `VecEvalDecimal` over one expression node, restricted to the shapes
 /// whose row evaluation is `ops::decimal_binary`'s exact fast arithmetic:
 /// integer and decimal columns, strict integer and decimal constants, and
@@ -4626,12 +4637,15 @@ pub(crate) fn batch_candidate<'a>(
 /// one argument is a decimal (an integer-only node is integer arithmetic).
 /// `None` means the shape is not covered or a value left the `i128` fast
 /// path; the caller then evaluates the whole column row by row.
+#[cfg(test)]
 fn vec_eval_decimal(
     expression: &Expression,
     input: &Chunk,
     physical: &[usize],
     ctx: &dyn Columns,
 ) -> Result<Option<Vec<Option<DecimalValue>>>, EvalError> {
+    #[cfg(test)]
+    note_original_decimal_tree();
     use tidb_datatype::FieldTypeCode;
     let Some(field_type) = expression.static_type() else {
         return Ok(None);
@@ -4722,12 +4736,15 @@ fn vec_eval_decimal(
 }
 
 /// The `+`/`-`/`*` node of [`vec_eval_decimal`].
+#[cfg(test)]
 fn vec_eval_decimal_function(
     function: &ScalarFunction,
     input: &Chunk,
     physical: &[usize],
     ctx: &dyn Columns,
 ) -> Result<Option<Vec<Option<DecimalValue>>>, EvalError> {
+    #[cfg(test)]
+    note_original_decimal_tree();
     use crate::tikv::{BinaryArithmeticOperation, NativeDecimalFastOutcome};
     use tidb_datatype::FieldTypeCode;
     if function.func_name.lowercase() == "cast_decimal" {
@@ -4783,11 +4800,14 @@ fn vec_eval_decimal_function(
 /// integer padded to `scale` fraction digits. An unspecified target shape
 /// keeps the row path (it returns the source unchanged), as does a value
 /// whose padding leaves `i128`.
+#[cfg(test)]
 fn vec_eval_cast_int_as_decimal(
     function: &ScalarFunction,
     input: &Chunk,
     physical: &[usize],
 ) -> Option<Vec<Option<DecimalValue>>> {
+    #[cfg(test)]
+    note_original_decimal_tree();
     let [Expression::Column(column)] = function.args.as_slice() else {
         return None;
     };
@@ -4816,8 +4836,8 @@ impl ScalarFunction {
     /// Go `builtinArithmetic{Plus,Minus,Multiply}DecimalSig.vecEvalDecimal`:
     /// appends this expression's value for every row of `input` to column
     /// `output_index` of `output`, column-wise. Returns `Ok(false)` with
-    /// nothing appended when the shape is not covered (see
-    /// [`vec_eval_decimal`]); the appended cells are the ones the row
+    /// nothing appended when the coefficient domain is not covered;
+    /// the appended cells are the ones the row
     /// evaluator would append through `Chunk::append_datum`.
     pub(crate) fn vec_eval_decimal_arithmetic_in(
         &self,
@@ -4826,6 +4846,28 @@ impl ScalarFunction {
         output: &mut Chunk,
         output_index: usize,
     ) -> Result<bool, EvalError> {
+        #[cfg(test)]
+        if crate::test_original_eval::requested() {
+            return self.vec_eval_decimal_arithmetic_in_original(ctx, input, output, output_index);
+        }
+        crate::evaluator::batch::eval_native_decimal_priority(
+            self,
+            ctx,
+            input,
+            output,
+            output_index,
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn vec_eval_decimal_arithmetic_in_original(
+        &self,
+        ctx: &dyn Columns,
+        input: &Chunk,
+        output: &mut Chunk,
+        output_index: usize,
+    ) -> Result<bool, EvalError> {
+        #[cfg(test)]
+        note_original_decimal_tree();
         if !self
             .get_static_type()
             .is_some_and(|ty| ty.code() == tidb_datatype::FieldTypeCode::NewDecimal)

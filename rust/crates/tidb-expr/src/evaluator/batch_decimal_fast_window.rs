@@ -194,12 +194,15 @@ impl NativeBatchHosts<'_> {
             }));
         }
         let Some(NativeHostMetadata::DecimalFast {
-            operation: actual, ..
+            operation: actual,
+            native_scope,
+            ..
         }) = self.metadata.get(slot.index())
         else {
             unreachable!()
         };
         let op = operation(*actual)?;
+        let native_scope = *native_scope;
         let SqlDemand::WindowDecimalFast { left, .. } = &self.task(id)?.demand else {
             unreachable!()
         };
@@ -209,6 +212,34 @@ impl NativeBatchHosts<'_> {
         // Both entire operands have arrived. A checked-domain refusal stops
         // computation and propagates Unsupported to the parent argument stage.
         for position in 0..values.len() {
+            // The genuine public native consumer checked its live cache at
+            // each arithmetic cell, including NULL, after both whole operands.
+            // The existing Projection profile keeps its own scope contract.
+            if native_scope {
+                let cache = self.context.ready_value_cache();
+                // Full replies were authenticated before copying. Rejoin one
+                // original token after the callback to reject an invalidated
+                // window generation before using those copied coefficients.
+                let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(position)
+                else {
+                    unreachable!("authenticated fast reply")
+                };
+                store.borrow().decimal_fast(
+                    token,
+                    NativeValueOrigin {
+                        node: argument_nodes[1],
+                        row: InputRow {
+                            occurrence: start + position,
+                            input_row: reply.physical_rows[position],
+                        },
+                    },
+                )?;
+                if let Some(cache) = cache {
+                    if let Err(error) = cache.original_scope_status() {
+                        return self.native_failure(error);
+                    }
+                }
+            }
             values[position] = match (left[position], values[position]) {
                 (Some(left), Some(right)) => match native_decimal_fast_binary(left, right, op) {
                     Some(value) => Some(value),

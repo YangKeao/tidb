@@ -4,8 +4,8 @@ use super::*;
 
 // A public Chunk's selected coordinates retain their original demand-time
 // cell behavior. No invented row universe or physical SQL schema is supplied.
-struct Coordinates<'a> {
-    inner: NativeChunk<'a>,
+pub(super) struct Coordinates<'a> {
+    pub(super) inner: NativeChunk<'a>,
 }
 impl NativeDatumSource for Coordinates<'_> {
     fn schema(&self) -> &[tipb::FieldType] {
@@ -44,6 +44,23 @@ impl NativeDatumSource for Coordinates<'_> {
         coordinates: &[usize],
         expected: &tipb::FieldType,
     ) -> LocalResult<Option<VectorValue>> {
+        if let Some(ordinal) = self.inner.source.bindings.get(rows_slot).copied() {
+            if let SourceKind::DecimalFastInput(value) = &self.inner.source.nodes[ordinal].kind {
+                if self.inner.source.schema.get(rows_slot) != Some(expected)
+                    || coordinates != self.inner.selection
+                {
+                    return Err(binding("native fast occurrence/type differs"));
+                }
+                return decimal_fast_source::read_batch(
+                    value,
+                    self.inner.input,
+                    self.inner.native_values,
+                    ordinal,
+                    coordinates,
+                )
+                .map(Some);
+            }
+        }
         if coordinates
             .iter()
             .all(|row| *row < self.inner.input.physical_rows())

@@ -18,6 +18,27 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-27 N61 validated) Retire actual ScalarFunction/Suite Decimal priority recursion
+  by factoring its genuine function root and actual Chunk storage into the
+  existing DecimalFast SourcePlan/SDK frame. The signed N60 pre-observer archive
+  contains622files. Capture/repeat independent direct entry bytes, empty/NULL/
+  refused shapes/left-before-right/MAX/prefix behavior and long boundary cohorts
+  before source changes. Preserve original tree as test-only oracle and keep
+  existing Projection schema/reference-size/cap policies. Generic Suite routing,
+  Unistore SimpleExpr trees, services and final performance continue afterward.
+  Default genuine function/Chunk source now uses the existing detached DecimalFast
+  plan and same SDK frame; four old tree bodies are cfg(test). Frozen primary
+  207360/C538B0CF8411E721, long135/B96F12A499841AAB and actualSuite480/
+  F2BA883A3C3AF0B3 all match, with60 extra live scope pairs. Reproduced32 real
+  poisoned-cache differences and one callback-generation publication failure,
+  fixed at original demand boundaries without Ready workers or alternate trees.
+  Final6entry/7protocol+reuse/12native, complete frontend2344-exactold3-95/878.38s,
+  Projection52/Expand6/Uni195-exactold3-13/SHOW31-exactold2, production149warnings,
+  lint/dual10fmt/source622audit/checker pass. Front346warnings exactN60; other
+  callers have no added warnings and remove one unused old IF import. SDKsource
+  byte-unchangedfromN60, full1153-exactold1-1/scopedclippy171-89 authenticated.
+  Receipt evidence/no-fallback-n61.md. Local DCO only; overall work continues.
+
 - [x] (2026-10-27 N60 validated) Retire the real public eligible native typed batch traversal. Archive the signed N59 source before adding observers; capture and freeze independent direct native entry behavior with the original scalar scope. Preserve actual eligibility/type probes before empty input, deferred target forwarding, scalar string-row presentation, complete operand phases and atomic Vec publication. Adapt genuine roots and actual Chunk storage to the existing SDK program and bindings without a replacement Suite, tree or SQL schema. Keep original typed recursion test-only and prove the default never enters it; then continue Suite decimal fast, generic Admission routing, services and final performance.
   Independent originals are frozen before promotion:36288/F3712C960BDDF2E8, registry326304/A2B25084573D4F4F, integer-result4608/D46B5C12B95021E3, hybrid6912/86375CDF1EAB4989, long/recovery360/2B5245F38AECC3EC and remaining return families571032/EE0D1D76A4E318D3. The executed prototype passed12 focused checks with all945504 observations unchanged, zero old native traversal and zero nested scalar dispatch on new paths. The192 entropy observations verify unchanged native admission (all decline), not RNG computation. SDK coordinate API protocol2pass retains original bounded/singleton APIs, schema/catalog even-empty checks, original row-only1 limit and the same driver/error identity. Genuine native Chunk inputs use actual width and demanded native cell semantics; no SQL schema or row universe is guessed. A direct typed bitwise root now uses original integer presentation, while deferred wrappers retain their existing sole normalizer; duplicated hybrid callbacks were reproduced480RED and eliminated. The original four typed recursive bodies and original EligibleBatch entry are now cfg(test) only; the public default calls the shared SDK source. Current-source focused12/production, complete frontend2336-exactold3-95/959.03s, Projection52/Expand6/Unistore195-exactold3-13/actualSHOW31-exactold2, SDK1153-exactold1-1, scopedclippy171/89 and17SDKwarnings unchanged, lint/dual14fmt/sourceaudit/finalchecker all verify. Mainfrontend346warningCounter exact; normalcaller150warnings has explicitly documented +1unusedoldIFimport/-3oldwarnings. Receipt evidence/no-fallback-n60.md; local DCO only, no overall completion claim.
 
@@ -239,6 +260,14 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N61: direct Decimal result comparisons alone missed the actual reused Suite's
+  poisoned-cache state. The real Suite cohort exposed32 original ScopePoisoned
+  outcomes becoming success; checks now occur per arithmetic cell after both
+  whole operands, including NULL. A separate real callback protocol exposed a
+  generation-invalidated result being published; original-token authentication
+  after the getter fixes it. Both REDs, original pins and executed source bytes
+  are preserved in evidence/no-fallback-n61.md.
 
 - N60: the actual public native API can calculate constants at maximum selected
   coordinates without touching a physical cell. Premature row/column checks
@@ -605,6 +634,14 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- N61: factor the existing DecimalFast compiler and exact leaf loop, using the
+  genuine function root and real Chunk storage for native calls while preserving
+  Projection's actual owner, SQL schema seal and eight-byte reference budget.
+  Native scope metadata belongs only to its genuine consumer; do not change the
+  existing Projection getter policy or call a Ready/old interpreter to recreate
+  scope outcomes. Authenticate callbacks and rely on the SDK's established
+  cancellation contract; staged cells retain output atomicity.
 
 - N60: add a genuine-coordinate SDK entry forwarding to the same existing batch
   driver; never invent a Suite, SQL schema or physical row universe for the
@@ -981,6 +1018,16 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N61 has promoted actual public Decimal priority after207975 frozen original
+observations matched, with60 additional exact scope/getter pairs. Six public
+entry and seven protocol/value/reuse checks plus12 native regressions pass;
+production149warnings/lint/dual10fmt/sourceaudit pass. Fresh Projection52,
+Expand6/Unistore195-exactold3-13/SHOW31-exactold2 retain their contracts. Complete
+frontend2344/exactold3/95ignore/878.38s now passes its inherited baseline;
+source/protected-file/checker pass before local DCO. SDKsourceunchangedfromsignedN60; reuse its actual full/clippy only
+with SDK hash authentication. GenericSuitefallback, real legacy SimpleExpr trees,
+services and finalperformance remain. Receipt: evidence/no-fallback-n61.md.
 
 N60 has promoted the public eligible native batch entry after 945504 independently
 frozen original observations and12 default-entry checks matched, with no old

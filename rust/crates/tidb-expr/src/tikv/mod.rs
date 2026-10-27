@@ -159,6 +159,7 @@ pub use legacy_date_arithmetic::{
 };
 mod null_if;
 pub use from_unixtime::eval_from_unixtime_legacy_scoped_in;
+#[cfg(test)]
 pub(crate) use if_control::eval_if_in;
 pub(crate) use if_null::eval_if_null_in;
 pub(crate) use null_if::eval_null_if_in;
@@ -180,12 +181,8 @@ mod unix_timestamp;
 pub use adapter_failure::{
     ExpressionAdapterFailure, ExpressionAdapterFailureClass, ExpressionAdapterFailureOrigin,
 };
-pub(crate) use ready_value::{
-    eval_arithmetic_decimal_fast_in, evaluate_args_in, evaluate_bytes_in, evaluate_closed_args,
-    evaluate_closed_regexp_args, evaluate_prepared_args_in, evaluate_regexp_in,
-    native_time_result_contract_error, EvaluatedBytesResult, PreparationUnwindGuard,
-    RegexpFunction,
-};
+#[cfg(test)]
+pub(crate) use ready_value::eval_arithmetic_decimal_fast_in;
 pub use ready_value::{
     eval_legacy_bytes_comparison_in, eval_legacy_date_in, eval_legacy_decimal_arithmetic_in,
     eval_legacy_decimal_comparison_in, eval_legacy_decimal_division_in,
@@ -197,6 +194,11 @@ pub use ready_value::{
     eval_legacy_time_comparison_in, eval_regexp_legacy_ready_in, LegacyBinaryArgs,
     LegacyIntegerArithmetic, LegacyLikeArgs, ReadyValueCache, RegexpLegacyInput,
     ScopedReadyValueColumns,
+};
+pub(crate) use ready_value::{
+    evaluate_args_in, evaluate_bytes_in, evaluate_closed_args, evaluate_closed_regexp_args,
+    evaluate_prepared_args_in, evaluate_regexp_in, native_time_result_contract_error,
+    EvaluatedBytesResult, PreparationUnwindGuard, RegexpFunction,
 };
 pub(crate) use tidb_query_datatype::codec::mysql::json::NativeJsonError;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
@@ -224,6 +226,9 @@ use tidb_query_expr::local::{
     prepare_field_real_args as prepare_field_real_args_local,
     prepare_make_set_args as prepare_make_set_args_local,
 };
+#[cfg(test)]
+pub(crate) use tidb_query_expr::NativeDecimalFastOutcome;
+pub(crate) use tidb_query_expr::NativeDecimalFastValue;
 pub(crate) use tidb_query_expr::{
     native_binary_json_datum, native_cast_as_json, native_cast_as_json_typed,
     native_cast_as_json_value_typed, native_cast_json_prepared_argument, native_json_argument,
@@ -234,7 +239,6 @@ pub(crate) use tidb_query_expr::{
     NativeJsonStringArgument,
 };
 pub use tidb_query_expr::{BinaryArithmeticOperation, ComparisonOp};
-pub(crate) use tidb_query_expr::{NativeDecimalFastOutcome, NativeDecimalFastValue};
 pub use unix_timestamp::{unix_timestamp_dec_legacy_in, unix_timestamp_int_legacy_in};
 
 /// Builds only the opaque constant-list key owner, without a runtime scope.

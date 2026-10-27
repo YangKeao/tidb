@@ -8315,48 +8315,14 @@ impl NativeDatumSource for NativeChunk<'_> {
         }
         let node = &self.source.nodes[ordinal];
         if let SourceKind::DecimalFastInput(value) = &node.kind {
-            let store = self
-                .native_values
-                .ok_or_else(|| binding("fast source store missing"))?;
-            let count = physical_rows.len();
-            let payload = count
-                .checked_mul(native_values::HANDLE_BYTES)
-                .ok_or_else(|| resource("fast input vector bytes overflow"))?;
-            store.borrow().precheck_import(
-                payload
-                    .checked_add(array_bytes::<usize>(
-                        count
-                            .checked_add(1)
-                            .ok_or_else(|| resource("fast input offsets overflow"))?,
-                    )?)
-                    .ok_or_else(|| resource("fast input vector allowance overflow"))?,
-            )?;
-            let mut output = ChunkedVecBytes::try_with_capacities(count, payload)
-                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-            let mut unsupported = false;
-            for (occurrence, &input_row) in physical_rows.iter().enumerate() {
-                let observed = if unsupported {
-                    tidb_query_expr::NativeDecimalFastOutcome::Unsupported
-                } else {
-                    value.read(self.input, input_row)?
-                };
-                unsupported |= matches!(
-                    observed,
-                    tidb_query_expr::NativeDecimalFastOutcome::Unsupported
-                );
-                let token = store.borrow_mut().insert_decimal_fast(
-                    observed,
-                    NativeValueOrigin {
-                        node: ordinal,
-                        row: InputRow {
-                            occurrence,
-                            input_row,
-                        },
-                    },
-                )?;
-                output.push_ref(Some(&token));
-            }
-            return Ok(Some(VectorValue::Bytes(output)));
+            return decimal_fast_source::read_batch(
+                value,
+                self.input,
+                self.native_values,
+                ordinal,
+                physical_rows,
+            )
+            .map(Some);
         }
         if node.view.value_role().is_some() {
             return Ok(None);
@@ -8779,6 +8745,16 @@ pub(crate) fn eval_eligible_native_batch(
     input: &Chunk,
 ) -> std::result::Result<Vec<Datum>, EvalError> {
     native_source::eval(candidate, context, input)
+}
+
+pub(crate) fn eval_native_decimal_priority(
+    function: &ScalarFunction,
+    context: &dyn Columns,
+    input: &Chunk,
+    output: &mut Chunk,
+    output_index: usize,
+) -> std::result::Result<bool, EvalError> {
+    decimal_fast_source::eval_function(function, context, input, output, output_index)
 }
 
 #[cfg(test)]

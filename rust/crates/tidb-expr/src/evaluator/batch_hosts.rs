@@ -420,6 +420,7 @@ pub(super) enum NativeHostMetadata {
         operation: SqlBatchHostOperation,
         argument_nodes: Box<[usize]>,
         output_node: usize,
+        native_scope: bool,
     },
     Plain,
     Regexp(tidb_query_expr::NativeRegexpInvocation),

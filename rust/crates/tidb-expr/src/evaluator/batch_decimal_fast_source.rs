@@ -66,6 +66,57 @@ impl FastInput {
         })
     }
 }
+// The same closed fast-leaf batch loop serves both genuine source contracts.
+// It stops physical reads after the first representation refusal.
+pub(super) fn read_batch(
+    value: &FastInput,
+    input: &Chunk,
+    native_values: Option<&RefCell<NativeValueStore>>,
+    ordinal: usize,
+    physical_rows: &[usize],
+) -> LocalResult<VectorValue> {
+    let store = native_values.ok_or_else(|| binding("fast source store missing"))?;
+    let count = physical_rows.len();
+    let payload = count
+        .checked_mul(native_values::HANDLE_BYTES)
+        .ok_or_else(|| resource("fast input vector bytes overflow"))?;
+    store.borrow().precheck_import(
+        payload
+            .checked_add(array_bytes::<usize>(
+                count
+                    .checked_add(1)
+                    .ok_or_else(|| resource("fast input offsets overflow"))?,
+            )?)
+            .ok_or_else(|| resource("fast input vector allowance overflow"))?,
+    )?;
+    let mut output = ChunkedVecBytes::try_with_capacities(count, payload)
+        .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+    let mut unsupported = false;
+    for (occurrence, &input_row) in physical_rows.iter().enumerate() {
+        let observed = if unsupported {
+            tidb_query_expr::NativeDecimalFastOutcome::Unsupported
+        } else {
+            value.read(input, input_row)?
+        };
+        unsupported |= matches!(
+            observed,
+            tidb_query_expr::NativeDecimalFastOutcome::Unsupported
+        );
+        let token = store.borrow_mut().insert_decimal_fast(
+            observed,
+            NativeValueOrigin {
+                node: ordinal,
+                row: InputRow {
+                    occurrence,
+                    input_row,
+                },
+            },
+        )?;
+        output.push_ref(Some(&token));
+    }
+    Ok(VectorValue::Bytes(output))
+}
+
 fn integer(field: &FieldType) -> bool {
     matches!(
         field.code(),
@@ -77,8 +128,8 @@ fn integer(field: &FieldType) -> bool {
             | FieldTypeCode::Year
     )
 }
-fn arithmetic(node: &Expression) -> Option<SqlBatchHostOperation> {
-    let Expression::ScalarFunction(function) = node else {
+fn arithmetic(node: SourceNodeRef<'_>) -> Option<SqlBatchHostOperation> {
+    let BorrowedNodeKind::ScalarFunction(function) = node.kind() else {
         return None;
     };
     if function.get_static_type()?.code() != FieldTypeCode::NewDecimal
@@ -97,12 +148,35 @@ fn arithmetic(node: &Expression) -> Option<SqlBatchHostOperation> {
         _ => return None,
     })
 }
-fn cast_root(root: &Expression) -> bool {
-    matches!(root,Expression::ScalarFunction(function) if function.func_name.lowercase()=="cast_decimal"
+fn cast_root(root: SourceNodeRef<'_>) -> bool {
+    matches!(root.kind(),BorrowedNodeKind::ScalarFunction(function) if function.func_name.lowercase()=="cast_decimal"
         && function.get_static_type().is_some_and(|field|field.code()==FieldTypeCode::NewDecimal))
 }
 pub(super) fn possible(root: &Expression) -> bool {
-    arithmetic(root).is_some() || cast_root(root)
+    arithmetic(root.into()).is_some() || cast_root(root.into())
+}
+fn field<'a>(node: SourceNodeRef<'a>) -> Option<&'a FieldType> {
+    match node.kind() {
+        BorrowedNodeKind::Constant(value) => value.ret_type.as_ref(),
+        BorrowedNodeKind::Column(value) => value.get_static_type(),
+        BorrowedNodeKind::CorrelatedColumn(value) => value.column.get_static_type(),
+        BorrowedNodeKind::ScalarFunction(value) => value.get_static_type(),
+    }
+}
+#[derive(Clone, Copy)]
+enum Storage<'a> {
+    Schema(&'a [FieldType]),
+    Chunk(&'a Chunk),
+}
+impl Storage<'_> {
+    fn size(self, index: usize) -> Option<i64> {
+        match self {
+            Self::Schema(fields) => fields.get(index).map(get_fixed_len),
+            Self::Chunk(input) => {
+                (index < input.num_cols()).then(|| input.column(index).type_size())
+            }
+        }
+    }
 }
 
 fn literal(value: &Datum, field: &FieldType) -> Outcome {
@@ -130,16 +204,20 @@ fn literal(value: &Datum, field: &FieldType) -> Outcome {
     };
     value.map_or(Outcome::Unsupported, |value| Outcome::Value(Some(value.0)))
 }
-fn capture(node: &Expression, schema: &[FieldType], budget: &mut Budget) -> Result<FastInput> {
+fn capture(
+    node: SourceNodeRef<'_>,
+    storage: Storage<'_>,
+    budget: &mut Budget,
+) -> Result<FastInput> {
     let unsupported = || FastInput::Constant(Outcome::Unsupported);
-    let Some(field) = node.static_type() else {
+    let Some(field) = field(node) else {
         return Ok(unsupported());
     };
     if !integer(field) && field.code() != FieldTypeCode::NewDecimal {
         return Ok(unsupported());
     }
-    Ok(match node {
-        Expression::Constant(value) => {
+    Ok(match node.kind() {
+        BorrowedNodeKind::Constant(value) => {
             let Some(value) = value.literal_value() else {
                 return Ok(unsupported());
             };
@@ -152,15 +230,18 @@ fn capture(node: &Expression, schema: &[FieldType], budget: &mut Budget) -> Resu
             )?;
             FastInput::Constant(literal(value, field))
         }
-        Expression::Column(column) => {
+        BorrowedNodeKind::Column(column) => {
             let Ok(index) = usize::try_from(column.index) else {
                 return Ok(unsupported());
             };
-            let Some(actual) = schema.get(index) else {
-                return Err(binding("fast column outside row schema").into());
+            let Some(actual) = storage.size(index) else {
+                return match storage {
+                    Storage::Schema(_) => Err(binding("fast column outside row schema").into()),
+                    Storage::Chunk(_) => Ok(unsupported()),
+                };
             };
             let decimal = field.code() == FieldTypeCode::NewDecimal;
-            if get_fixed_len(actual)
+            if actual
                 != if decimal {
                     tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE
                 } else {
@@ -175,7 +256,7 @@ fn capture(node: &Expression, schema: &[FieldType], budget: &mut Budget) -> Resu
                 decimal,
             }
         }
-        Expression::ScalarFunction(function)
+        BorrowedNodeKind::ScalarFunction(function)
             if field.code() == FieldTypeCode::NewDecimal
                 && function.func_name.lowercase() == "cast_decimal" =>
         {
@@ -191,10 +272,7 @@ fn capture(node: &Expression, schema: &[FieldType], budget: &mut Budget) -> Resu
             let Ok(index) = usize::try_from(column.index) else {
                 return Ok(unsupported());
             };
-            if schema
-                .get(index)
-                .is_none_or(|field| get_fixed_len(field) != 8)
-            {
+            if storage.size(index) != Some(8) {
                 return Ok(unsupported());
             }
             FastInput::IntegerCast { index, shape }
@@ -209,8 +287,8 @@ pub(super) struct PreparedFast {
 }
 // Compile-time arena entries contain only borrowed source identity and shape;
 // no borrowed expression escapes the bounded immutable factory.
-struct Pending<'a> {
-    expression: &'a Expression,
+struct Pending<N> {
+    expression: N,
     depth: usize,
     force_input: bool,
 }
@@ -234,7 +312,42 @@ pub(super) fn compile(
         .calculated
         .get(calculated_slot)
         .ok_or_else(|| binding("fast calculation slot missing"))?;
-    if !possible(root) {
+    let prepared = compile_plan(
+        root,
+        Storage::Schema(row_schema),
+        new_collation,
+        unit,
+        limits,
+    )?;
+    let mut detached = Vec::new();
+    reserve(&mut detached, row_schema.len())?;
+    detached.extend(row_schema.iter().map(snapshot_field_type));
+    Ok(PreparedFast {
+        source: Arc::new(BatchSource {
+            owner: Arc::clone(&suite.program),
+            root_identity: root as *const Expression as usize,
+            calculated_slot,
+            output_index: suite.program.calculated_output_indexes[calculated_slot],
+            row_schema: detached.into_boxed_slice(),
+            plan: prepared.source,
+        }),
+        program: prepared.program,
+        empty_supported: prepared.empty_supported,
+    })
+}
+struct DetachedFast {
+    source: SourcePlan,
+    program: LocalBatchProgram,
+    empty_supported: bool,
+}
+fn compile_plan<'a, N: SourceReference<'a>>(
+    root: N,
+    storage: Storage<'_>,
+    new_collation: bool,
+    unit: u64,
+    limits: BatchSourceLimits,
+) -> Result<DetachedFast> {
+    if arithmetic(root.into()).is_none() && !cast_root(root.into()) {
         return Err(binding("fast root is outside the priority arithmetic shape").into());
     }
     profile_shape(root, limits)?;
@@ -242,11 +355,13 @@ pub(super) fn compile(
         used: 0,
         max: limits.max_metadata_bytes,
     };
-    for field in row_schema {
-        budget.field(field, 1)?;
+    if let Storage::Schema(fields) = storage {
+        for field in fields {
+            budget.field(field, 1)?;
+        }
     }
     let mut pending = Vec::new();
-    budget.array::<Pending<'_>>(1)?;
+    budget.array::<Pending<N>>(1)?;
     reserve(&mut pending, 1)?;
     pending.push(Pending {
         expression: root,
@@ -268,17 +383,17 @@ pub(super) fn compile(
         budget.array::<NodeRecord>(1)?;
         budget.array::<LocalExpr>(1)?;
         let fallback = native_bytes_type();
-        let borrowed = expression.static_type().unwrap_or(&fallback);
+        let borrowed = field(expression.into()).unwrap_or(&fallback);
         budget.field(borrowed, 3)?;
         budget.field(&native_bytes_type(), 6)?;
         budget.array::<BuildNode>(1)?;
         let field = snapshot_field_type(borrowed);
         let op = if force_input {
             None
-        } else if depth == 1 && cast_root(expression) {
+        } else if depth == 1 && cast_root(expression.into()) {
             Some(SqlBatchHostOperation::CastDecimalWindowNative)
         } else {
-            arithmetic(expression)
+            arithmetic(expression.into())
         };
         let arity = match op {
             None => 0,
@@ -286,7 +401,7 @@ pub(super) fn compile(
             Some(_) => 2,
         };
         let input = if op.is_none() {
-            let value = capture(expression, row_schema, &mut budget)?;
+            let value = capture(expression.into(), storage, &mut budget)?;
             empty_supported &= !matches!(value, FastInput::Constant(Outcome::Unsupported));
             Some(value)
         } else {
@@ -304,7 +419,7 @@ pub(super) fn compile(
             // The genuine column-only priority CAST imports its checked,
             // padded coefficient directly, stopping physical reads on the
             // first representation refusal as the native owner does.
-            budget.array::<Pending<'_>>(1)?;
+            budget.array::<Pending<N>>(1)?;
             reserve(&mut pending, 1)?;
             pending.push(Pending {
                 expression,
@@ -312,13 +427,13 @@ pub(super) fn compile(
                 force_input: true,
             });
         } else if arity == 2 {
-            let Expression::ScalarFunction(function) = expression else {
+            let BorrowedNodeKind::ScalarFunction(function) = expression.kind() else {
                 unreachable!()
             };
-            budget.array::<Pending<'_>>(2)?;
+            budget.array::<Pending<N>>(2)?;
             reserve(&mut pending, 2)?;
             pending.extend(function.args.iter().rev().map(|expression| Pending {
-                expression,
+                expression: N::from(expression),
                 depth: depth + 1,
                 force_input: false,
             }));
@@ -391,6 +506,7 @@ pub(super) fn compile(
                 operation,
                 argument_nodes: argument_nodes.into_boxed_slice(),
                 output_node: ordinal,
+                native_scope: matches!(storage, Storage::Chunk(_)),
             });
             sites.push(OrdinaryCallSite::sql_native_batch(
                 ordinal,
@@ -479,16 +595,8 @@ pub(super) fn compile(
         },
         &facts,
     )?;
-    let mut detached = Vec::new();
-    reserve(&mut detached, row_schema.len())?;
-    detached.extend(row_schema.iter().map(snapshot_field_type));
-    let source = Arc::new(BatchSource {
-        owner: Arc::clone(&suite.program),
-        root_identity: root as *const Expression as usize,
-        calculated_slot,
-        output_index: suite.program.calculated_output_indexes[calculated_slot],
-        row_schema: detached.into_boxed_slice(),
-        plan: SourcePlan {
+    Ok(DetachedFast {
+        source: SourcePlan {
             unit,
             nodes: nodes.into_boxed_slice(),
             bindings: bindings.into_boxed_slice(),
@@ -504,12 +612,202 @@ pub(super) fn compile(
             context_policy: None,
             limits,
         },
-    });
-    Ok(PreparedFast {
-        source,
         program,
         empty_supported,
     })
+}
+
+pub(super) fn eval_function(
+    function: &ScalarFunction,
+    context: &dyn Columns,
+    input: &Chunk,
+    output: &mut Chunk,
+    output_index: usize,
+) -> std::result::Result<bool, EvalError> {
+    let (limits, execution, maximum) = public_scalar_limits();
+    eval_function_with_policies(
+        function,
+        context,
+        input,
+        output,
+        output_index,
+        limits,
+        execution,
+        maximum,
+    )
+}
+pub(super) fn eval_function_with_policies(
+    function: &ScalarFunction,
+    context: &dyn Columns,
+    input: &Chunk,
+    output: &mut Chunk,
+    output_index: usize,
+    limits: BatchSourceLimits,
+    execution: ExecutionLimits,
+    maximum: usize,
+) -> std::result::Result<bool, EvalError> {
+    if !function
+        .get_static_type()
+        .is_some_and(|field| field.code() == FieldTypeCode::NewDecimal)
+    {
+        return Ok(false);
+    }
+    let root = SourceNodeRef::Function(function);
+    if arithmetic(root).is_none() && !cast_root(root) {
+        return Ok(false);
+    }
+    let mut prepared = compile_plan(root, Storage::Chunk(input), true, 1, limits)
+        .map_err(|e| e.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))?;
+    execute_function(
+        &mut prepared,
+        context,
+        input,
+        output,
+        output_index,
+        execution,
+        maximum,
+    )
+    .map_err(|e| e.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
+}
+fn execute_function(
+    prepared: &mut DetachedFast,
+    context: &dyn Columns,
+    input: &Chunk,
+    output: &mut Chunk,
+    output_index: usize,
+    execution: ExecutionLimits,
+    maximum: usize,
+) -> Result<bool> {
+    if input.num_rows() == 0 {
+        return Ok(prepared.empty_supported);
+    }
+    let count = input.num_rows();
+    let extent = array_bytes::<usize>(count)?
+        .checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(count)?)
+        .ok_or_else(|| resource("native fast result extent overflow"))?;
+    if extent > maximum {
+        return Err(resource("native fast result extent exceeds policy").into());
+    }
+    let mut selection = Vec::new();
+    selection
+        .try_reserve_exact(count)
+        .map_err(|_| resource("native fast selection allocation failed"))?;
+    if let Some(rows) = input.sel() {
+        selection.extend_from_slice(rows);
+    } else {
+        selection.extend(0..count);
+    }
+    let mut cells = Vec::new();
+    cells
+        .try_reserve_exact(count)
+        .map_err(|_| resource("native fast output allocation failed"))?;
+    let extent = array_bytes::<usize>(selection.capacity())?
+        .checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(
+            cells.capacity(),
+        )?)
+        .ok_or_else(|| resource("native fast reserved extent overflow"))?;
+    let store = RefCell::new(NativeValueStore::new(maximum)?);
+    store.borrow().precheck_import(extent)?;
+    store.borrow_mut().begin_window()?;
+    let source = &prepared.source;
+    if source.nodes[0].view != NativeView::DecimalFast
+        || !prepared.program.requires_whole_selection()
+    {
+        return Err(binding("native fast source contract differs").into());
+    }
+    let catalog = source
+        .hosts
+        .clone()
+        .ok_or_else(|| binding("native fast host catalog missing"))?;
+    let mut hosts = NativeBatchHosts::new(catalog, &source.host_metadata, context, maximum)
+        .with_native_values(Some(&store));
+    let mut native = native_source::Coordinates {
+        inner: NativeChunk {
+            source,
+            native_values: Some(&store),
+            input,
+            selection: &selection,
+        },
+    };
+    let mut checked = CheckedInputs {
+        source: &mut native,
+        hosts: Some(&mut hosts),
+    };
+    let result = prepared.program.eval_coordinates_with_bindings(
+        execution,
+        &mut EvalContext::default(),
+        &selection,
+        &mut checked,
+    );
+    drop(checked);
+    if let Some(error) = hosts.take_native_error() {
+        return Err(error.into());
+    }
+    let VectorValue::Bytes(values) = result? else {
+        return Err(binding("native fast result carrier differs").into());
+    };
+    if values.len() != selection.len() {
+        return Err(binding("native fast result length differs").into());
+    }
+    let retained = extent
+        .checked_add(
+            values
+                .retained_heap_bytes()
+                .ok_or_else(|| resource("native fast token extent overflow"))?,
+        )
+        .ok_or_else(|| resource("native fast retained extent overflow"))?;
+    let stored = store.borrow();
+    stored.precheck_import(retained)?;
+    let mut unsupported = false;
+    for (occurrence, &input_row) in selection.iter().enumerate() {
+        let token = values
+            .get(occurrence)
+            .ok_or_else(|| binding("native fast wire NULL is not a result"))?;
+        unsupported |= matches!(
+            stored.decimal_fast(
+                token,
+                NativeValueOrigin {
+                    node: 0,
+                    row: InputRow {
+                        occurrence,
+                        input_row
+                    }
+                }
+            )?,
+            Outcome::Unsupported
+        );
+    }
+    if unsupported {
+        return Ok(false);
+    }
+    for (occurrence, &input_row) in selection.iter().enumerate() {
+        match stored.decimal_fast(
+            values.get(occurrence).expect("authenticated fast result"),
+            NativeValueOrigin {
+                node: 0,
+                row: InputRow {
+                    occurrence,
+                    input_row,
+                },
+            },
+        )? {
+            Outcome::Unsupported => {
+                return Err(binding("authenticated native fast result changed domain").into())
+            }
+            Outcome::Value(None) => cells.push(None),
+            Outcome::Value(Some(value)) => match DecimalValue(*value).to_my_decimal() {
+                Some(cell) => cells.push(Some(cell)),
+                None => return Ok(false),
+            },
+        }
+    }
+    for cell in &cells {
+        match cell {
+            Some(cell) => output.append_my_decimal(output_index, cell),
+            None => output.append_null(output_index),
+        }
+    }
+    Ok(true)
 }
 
 impl PreparedBatch {
@@ -834,9 +1132,15 @@ mod tests {
                         let Expression::ScalarFunction(function) = &root else {
                             unreachable!()
                         };
-                        let expected_supported = function
-                            .vec_eval_decimal_arithmetic_in(&context, &input, &mut expected, 0)
-                            .unwrap();
+                        let expected_supported = crate::test_original_eval::with_original(|| {
+                            function.vec_eval_decimal_arithmetic_in(
+                                &context,
+                                &input,
+                                &mut expected,
+                                0,
+                            )
+                        })
+                        .unwrap();
                         assert_eq!(
                             supported,
                             expected_supported,
@@ -894,5 +1198,74 @@ mod tests {
             .unwrap()
             .empty_supported
         );
+    }
+    #[test]
+    fn native_decimal_function_program_unwinds_and_reuses_after_demanded_cell_panic() {
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(6);
+        let function = ScalarFunction::new(
+            CiString::new("plus"),
+            decimal.clone(),
+            vec![column(0, &integer), column(1, &decimal)],
+        );
+        let mut input = Chunk::new_with_capacity(&[integer, decimal.clone()], 2);
+        for (a, b) in [
+            (
+                Datum::Int(7),
+                Datum::Decimal(tidb_datatype::Decimal::from_literal("1.25")),
+            ),
+            (Datum::Null, Datum::Null),
+        ] {
+            input.append_datum(0, &a);
+            input.append_datum(1, &b);
+        }
+        let (limits, execution, maximum) = public_scalar_limits();
+        let mut prepared = compile_plan(
+            SourceNodeRef::Function(&function),
+            Storage::Chunk(&input),
+            true,
+            1,
+            limits,
+        )
+        .unwrap();
+        for selection in [vec![0, 1, 0], vec![usize::MAX], vec![1, 0, 1]] {
+            input.set_sel(Some(selection));
+            let mut output = Chunk::new_with_capacity(std::slice::from_ref(&decimal), 0);
+            let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execute_function(
+                    &mut prepared,
+                    &Context,
+                    &input,
+                    &mut output,
+                    0,
+                    execution,
+                    maximum,
+                )
+            }));
+            if input.sel().unwrap() == [usize::MAX] {
+                assert!(actual.is_err());
+                assert_eq!(output.num_rows(), 0);
+            } else {
+                assert!(actual.unwrap().unwrap());
+                let mut original = Chunk::new_with_capacity(std::slice::from_ref(&decimal), 0);
+                assert!(crate::test_original_eval::with_original(
+                    || function.vec_eval_decimal_arithmetic_in(&Context, &input, &mut original, 0)
+                )
+                .unwrap());
+                assert_eq!(output.num_rows(), original.num_rows());
+                for row in 0..output.num_rows() {
+                    assert_eq!(
+                        output.column(0).is_null(row),
+                        original.column(0).is_null(row)
+                    );
+                    assert_eq!(
+                        output.column(0).get_raw(row).as_ref(),
+                        original.column(0).get_raw(row).as_ref()
+                    );
+                }
+            }
+        }
     }
 }
