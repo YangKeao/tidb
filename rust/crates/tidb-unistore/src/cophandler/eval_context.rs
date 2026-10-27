@@ -114,10 +114,22 @@ impl Columns for RequestEvalContext {
 }
 
 /// A decoded builtin and the request that owns its evaluation settings.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SharedExpression {
-    pub(super) expression: tidb_expr::expression::Expression,
+    // The real ingested tree is allocated before its first evaluation. A lane
+    // may retain this owner without retaining the request's Columns context.
+    pub(super) expression: Arc<tidb_expr::expression::Expression>,
     pub(super) context: Arc<RequestEvalContext>,
+}
+impl Clone for SharedExpression {
+    fn clone(&self) -> Self {
+        // Explicit SharedExpression.Clone has always cloned the expression;
+        // cloning the outer Arc<SharedExpression> alone still shares it.
+        Self {
+            expression: Arc::new(self.expression.as_ref().clone()),
+            context: Arc::clone(&self.context),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -228,11 +240,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            topn.evaluate(
-                &row,
-                std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),
-            )
-            .unwrap(),
+            topn.evaluate(&row, std::rc::Rc::new(tidb_expr::ReadyValueCache::new()),)
+                .unwrap(),
             [expected.clone()]
         );
         let mut agg = RegionAggregator::build(

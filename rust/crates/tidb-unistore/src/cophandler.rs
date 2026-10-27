@@ -2169,7 +2169,7 @@ fn convert_shared(
 ) -> Result<SimpleExpr, String> {
     tidb_expr::distsql_builtin::pb_to_expr(expr, &context.column_types).map(|expression| {
         SimpleExpr::Shared(Arc::new(SharedExpression {
-            expression,
+            expression: Arc::new(expression),
             context: Arc::clone(context),
         }))
     })
@@ -2185,9 +2185,10 @@ impl LegacyEvaluator<'_> {
         // The evaluator is the unistore evaluation lane. Bind its affine cache
         // to the child request context without placing !Sync workers in the
         // shared Arc<RequestEvalContext>.
-        let result = self
-            .ready_values
-            .with_columns(columns, |bound| expr.expression.eval(bound, row.to_row()));
+        let result = self.ready_values.with_columns(columns, |bound| {
+            self.ready_values
+                .eval_owned_expression(&expr.expression, bound, row.to_row())
+        });
         result.map_err(LegacyEvalError::from)
     }
 }
@@ -4017,18 +4018,19 @@ impl LegacyEvaluator<'_> {
         if self.raw_columns.ready_value_cache().is_some() {
             return self.eval_expr_bound(expr);
         }
-        self.ready_values.with_columns(self.raw_columns, |raw_columns| {
-            LegacyEvaluator {
-                row: self.row,
-                div_precision_increment: self.div_precision_increment,
-                time_zone: self.time_zone,
-                raw_columns,
-                ready_values: std::rc::Rc::clone(&self.ready_values),
-                #[cfg(test)]
-                shared_override: self.shared_override,
-            }
-            .eval_expr_bound(expr)
-        })
+        self.ready_values
+            .with_columns(self.raw_columns, |raw_columns| {
+                LegacyEvaluator {
+                    row: self.row,
+                    div_precision_increment: self.div_precision_increment,
+                    time_zone: self.time_zone,
+                    raw_columns,
+                    ready_values: std::rc::Rc::clone(&self.ready_values),
+                    #[cfg(test)]
+                    shared_override: self.shared_override,
+                }
+                .eval_expr_bound(expr)
+            })
     }
 
     fn eval_expr_bound(&self, expr: &SimpleExpr) -> LegacyResult<Option<i128>> {
@@ -4985,11 +4987,11 @@ mod tests {
         let mut column = Column::new(1, string);
         column.index = 0;
         let shared = SharedExpression {
-            expression: Expression::ScalarFunction(ScalarFunction::new(
+            expression: Arc::new(Expression::ScalarFunction(ScalarFunction::new(
                 CiString::new("ascii"),
                 integer,
                 vec![Expression::Column(column)],
-            )),
+            ))),
             context: Arc::new(RequestEvalContext::new(zone(), 4, 0)),
         };
         let row = [Datum::Bytes(b"A".to_vec())];
@@ -5037,8 +5039,6 @@ mod tests {
         let any = in_list(vec![SimpleExpr::Int(300)]);
         assert_eq!(eval_expr(&any, &row_null, 4, &zone()).expect("evals"), None);
     }
-
-
 
     #[test]
     fn unknown_request_types_answer_gos_exact_message() {
@@ -6292,10 +6292,6 @@ mod tests {
         }
     }
 
-
-
-
-
     #[test]
     fn integer_division_follows_mysql() {
         use tidb_datatype::{Datum, Decimal};
@@ -6446,8 +6442,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn is_null_family_checks_its_own_leaf() {
         use tidb_datatype::Datum;
@@ -6572,8 +6566,6 @@ mod tests {
             );
         }
     }
-
-
 
     #[test]
     fn json_member_of_follows_go_equality_rules() {
@@ -6841,8 +6833,6 @@ mod tests {
         assert_eq!(evaluator.eval_expr(&extra).unwrap(), Some(7));
     }
 
-
-
     #[test]
     fn legacy_substring_preserves_arities_lossy_units_and_wide_ints() {
         let time_zone = zone();
@@ -6942,8 +6932,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn legacy_case_preserves_ascii_unicode_and_grouped_lossy_bytes() {
         let time_zone = zone();
@@ -6996,8 +6984,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn legacy_pow_preserves_raw_nonfinite_results() {
         let time_zone = zone();
@@ -7038,8 +7024,6 @@ mod tests {
         let compare = SimpleExpr::Func(SimpleSig::EqReal, vec![nan.clone(), nan]);
         assert_eq!(evaluator.eval_expr(&compare).unwrap(), Some(1));
     }
-
-
 
     #[test]
     fn legacy_trig_preserves_libm_values_and_raw_specials() {
@@ -7086,8 +7070,6 @@ mod tests {
         assert_eq!(evaluator.eval_real(Some(&right_null)).unwrap(), None);
     }
 
-
-
     #[test]
     fn legacy_inverse_trig_preserves_raw_nan_consumers() {
         let acos = SimpleExpr::Func(SimpleSig::Acos, vec![SimpleExpr::Real(2.0)]);
@@ -7102,12 +7084,6 @@ mod tests {
             Some(1)
         );
     }
-
-
-
-
-
-
 
     #[test]
     fn probe_pow_expr() {
@@ -7348,10 +7324,6 @@ mod tests {
         }
     }
 
-
-
-
-
     #[test]
     fn temporal_extraction_follows_go() {
         use tidb_datatype::{Datum, Time, TimeType};
@@ -7537,8 +7509,6 @@ mod tests {
             Some(b"17".to_vec())
         );
     }
-
-
 
     #[test]
     fn conv_rebinds_digits_across_bases_like_go() {
@@ -8223,8 +8193,6 @@ mod tests {
         assert_eq!(eval_bytes(Some(&raw), &[], 4, &zone()), Some(vec![0xff]));
     }
 
-
-
     #[test]
     fn unix_timestamp_reads_the_session_zone() {
         use tidb_datatype::{Datum, Time, TimeType};
@@ -8258,8 +8226,6 @@ mod tests {
             );
         }
     }
-
-
 
     #[test]
     fn from_unix_time_renders_through_the_session_zone() {
@@ -8731,8 +8697,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn legacy_week_preserves_raw_mode_zero_fields_and_nulls() {
         use tidb_datatype::{CoreTime, Datum, Time, TimeType};
@@ -8774,8 +8738,6 @@ mod tests {
             assert_eq!(evaluator.eval_expr(&week(children)).unwrap(), None);
         }
     }
-
-
 
     #[test]
     fn legacy_date_format_preserves_raw_bytes_and_distinct_presence() {
@@ -8838,12 +8800,6 @@ mod tests {
             assert_eq!(evaluator.eval_expr(&call).unwrap(), Some(presence));
         }
     }
-
-
-
-
-
-
 
     #[test]
     fn legacy_comparison_fixed_domains_and_real_total_order() {
@@ -9042,20 +8998,6 @@ mod tests {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     #[test]
     fn legacy_coalesce_and_case_string_wire_admission_stays_closed() {
         use tipb::ScalarFuncSig as Sig;
@@ -9109,12 +9051,8 @@ mod tests {
             );
         }
     }
-
-
-
-
-
-
-
-
 }
+
+#[cfg(test)]
+#[path = "cophandler/owned_scalar_tests.rs"]
+mod owned_scalar_tests;

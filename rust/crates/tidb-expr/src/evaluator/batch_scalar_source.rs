@@ -1,13 +1,21 @@
 // Copyright 2026 PingCAP, Inc. Licensed under Apache-2.0.
-//! Genuine borrowed public scalar callers in the existing SDK frame.
+//! Genuine borrowed and Arc-owned scalar callers in the existing SDK frame.
 //! No expression, Suite, SQL declaration or physical Chunk is manufactured.
 use super::*;
 use tidb_chunk::row::Row;
 
 pub(super) struct BorrowedExpression<'a> {
-    // The lifetime pins the genuine root; no context or live argument value is
-    // retained in its detached source plan.
+    // The lifetime pins the genuine root; the detached plan retains no context
+    // or live argument value.
     root: SourceNodeRef<'a>,
+    plan: ScalarPlan,
+}
+pub(super) struct OwnedExpression {
+    // Drop compiled metadata before releasing its genuine address-bearing tree.
+    plan: ScalarPlan,
+    root: std::sync::Arc<Expression>,
+}
+struct ScalarPlan {
     width: usize,
     source: SourcePlan,
     program: LocalBatchProgram,
@@ -90,6 +98,58 @@ impl<'a> BorrowedExpression<'a> {
         execution: ExecutionLimits,
         maximum: usize,
     ) -> Result<Self> {
+        let plan =
+            ScalarPlan::compile(root, view, width, new_collation, limits, execution, maximum)?;
+        Ok(Self { root, plan })
+    }
+    pub(super) fn eval(&mut self, context: &dyn Columns, row: Row<'_>) -> Result<Datum> {
+        self.plan.eval(context, row)
+    }
+    pub(super) fn eval_with_error_value(
+        &mut self,
+        context: &dyn Columns,
+        row: Row<'_>,
+    ) -> std::result::Result<Datum, (Datum, BatchFailure)> {
+        self.plan.eval_with_error_value(self.root, context, row)
+    }
+}
+impl OwnedExpression {
+    pub(super) fn compile(
+        root: std::sync::Arc<Expression>,
+        width: usize,
+        new_collation: bool,
+        limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        maximum: usize,
+    ) -> Result<Self> {
+        let plan = ScalarPlan::compile(
+            root.as_ref().into(),
+            NativeView::RootValue,
+            width,
+            new_collation,
+            limits,
+            execution,
+            maximum,
+        )?;
+        Ok(Self { plan, root })
+    }
+    pub(super) fn matches(&self, root: &std::sync::Arc<Expression>, width: usize) -> bool {
+        self.plan.width == width && std::sync::Arc::ptr_eq(&self.root, root)
+    }
+    pub(super) fn eval(&mut self, context: &dyn Columns, row: Row<'_>) -> Result<Datum> {
+        self.plan.eval(context, row)
+    }
+}
+impl ScalarPlan {
+    fn compile(
+        root: SourceNodeRef<'_>,
+        view: NativeView,
+        width: usize,
+        new_collation: bool,
+        limits: BatchSourceLimits,
+        execution: ExecutionLimits,
+        maximum: usize,
+    ) -> Result<Self> {
         #[cfg(test)]
         crate::test_original_eval::note_scalar_preparation();
         let source = lower_source_plan(
@@ -110,7 +170,6 @@ impl<'a> BorrowedExpression<'a> {
             &source.facts,
         )?;
         Ok(Self {
-            root,
             width,
             source,
             program,
@@ -123,6 +182,7 @@ impl<'a> BorrowedExpression<'a> {
     }
     pub(super) fn eval_with_error_value(
         &mut self,
+        root: SourceNodeRef<'_>,
         context: &dyn Columns,
         row: Row<'_>,
     ) -> std::result::Result<Datum, (Datum, BatchFailure)> {
@@ -136,7 +196,7 @@ impl<'a> BorrowedExpression<'a> {
                 // The genuine Constant owner supplies its cached planning
                 // value after a failed read/child. This is data inspection,
                 // with no new evaluation or replacement expression.
-                let value = match self.root.kind() {
+                let value = match root.kind() {
                     BorrowedNodeKind::Constant(constant) => {
                         match crate::tikv::identity_actual::copy_bounded(
                             &constant.value,

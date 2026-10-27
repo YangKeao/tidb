@@ -35032,3 +35032,6 @@ fn native_concat_values_authenticate_prefix_cancel_scope_and_resources() {
         }
     }
 }
+
+#[path = "batch_owned_scalar_tests.rs"]
+mod owned_scalar_tests;

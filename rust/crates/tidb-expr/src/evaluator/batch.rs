@@ -9382,6 +9382,34 @@ impl<'a> PreparedScalarExpression<'a> {
             })
     }
 }
+/// Affine compiled state for one genuine immutable Arc-owned tree.
+/// The scalar plan owns the tree through its complete metadata lifetime.
+pub(crate) struct PreparedOwnedExpression {
+    plan: scalar_source::OwnedExpression,
+}
+impl PreparedOwnedExpression {
+    pub(crate) fn compile(
+        root: std::sync::Arc<Expression>,
+        width: usize,
+    ) -> std::result::Result<Self, EvalError> {
+        let (source, execution, maximum) = public_scalar_limits();
+        scalar_source::OwnedExpression::compile(root, width, true, source, execution, maximum)
+            .map(|plan| Self { plan })
+            .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))
+    }
+    pub(crate) fn matches(&self, root: &std::sync::Arc<Expression>, width: usize) -> bool {
+        self.plan.matches(root, width)
+    }
+    pub(crate) fn eval(
+        &mut self,
+        context: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> std::result::Result<Datum, EvalError> {
+        self.plan
+            .eval(context, row)
+            .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
+    }
+}
 pub(crate) fn eval_public_expression(
     root: &Expression,
     context: &dyn Columns,

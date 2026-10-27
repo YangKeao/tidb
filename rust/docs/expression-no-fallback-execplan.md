@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-27 N56 validated) Actual Unistore ingestion retains the genuine Arc expression; explicit Clone remains deep. One hot request-owned scalar plan reuses the same SDK, actual owner/physical width, existing limits and demand-time ready scope. Frozen32256/461C9558DA525FA9 and10260/51B0824478C18677 remain fixed; preparation/owner controls were RED before promotion. Final9frontend+4Unistore controls pass; full frontend2292/exact inherited3/95ignore/all742batch/346warning Counter, Unistore195/exact inherited3/13ignore/unchanged393aggregate warnings, same-run50public/43context/inventory83088/0/0, Projection52/Expand6/production/lint/dual8fmt/reconstruction pass. Isolated actual request loop saves59.9–63.3% current-SDK preparation time. Receipt evidence/no-fallback-n56.md. Raw/typed/AST/generic fallback/service/final performance remain open.
+
 - [x] (2026-10-27 N55 validated) Real scalar filters now lazily prepare once per demanded root and reuse the existing SDK cursor.399 sources/plan files were archived before edits; independent25920/9C47E8782A22C4DF remains fixed. Three repeated-preparation controls were RED before promotion, all six focused tests now pass. Fresh full frontend2283/exact inherited3/95ignore/all733batch/exact346warning Counter, same-run50public/43context/inventory83088/0/0, Projection52, Expand6+64/B42, production/lint/dual5fmt/reconstruction pass. Isolated32/1024/8192-row current-shared public baseline versus actual filter saves63–65% time. See evidence/no-fallback-n55.md. Continue owned Unistore/request reuse and all remaining global entry/fallback/service/performance work.
 
 - [x] N52 genuine function root:87 original files archived; four independent original cohorts plus prior direct-function pin give82060 unchanged observations. Real function ownership and output role pass28 public tests. Repaired16-byte temporary-reference inflation using one generic compiler and original8-byte Expression storage; original limits preserved. Fresh full frontend2266/exact inherited3/95ignore/all725batch/346warnings, Projection52, Expand6+64/B42, inventory83088/0/0, lint/dual-ten-file fmt and ownership checks pass. Public API promotion remains separate and unfinished.
@@ -225,6 +227,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- (2026-10-27 N56 validated) LegacyEvaluator is recreated per row, while ReadyValueCache persists per request. Cache the genuine owned root there. Existing prepared_worker_count counts older operation workers, so two inherited Unistore tests still expect1 where the scalar route reports0; no fake worker counts or SQL expectation rebasing were introduced. Already-bound effective ready caches must continue to override a metadata holder, including unwind poisoning.
 
 - (2026-10-27 N55 validated) Eight rows of the original parameterized integer expression make sixteen reads because probing and general demand each read live values; reuse preserves both. Invalid selection indices intentionally preserve the original panic and effects. Full regression delegates its final long phase to a child process; that child was allowed to finish before isolated timing. Source/module warning counters and coverage include nested host/native modules, not only the tests submodule.
 
@@ -575,6 +579,14 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Retain one genuine Arc root and its detached scalar plan per request lane, with plan dropped before owner; release the cache borrow before callbacks and key by actual root identity and physical width.
+  Rationale: The actual owner preserves RAND identity and the existing source compiler/SDK loop and public limits; bounded one-slot replacement introduces no aggregate Resource policy and no context retention. Alternating roots may recompile. Normal errors reuse the program; reentry creates a fresh same-SDK program.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
+
+- Decision: Use concrete Arc<Expression> ownership and one hot scalar preparation slot in the actual request lane. Evict a different owner/width before compilation; keep operation-scope busy/poison checks at their existing demand points.
+  Rationale: Unistore creates its LegacyEvaluator per row, while Rc<ReadyValueCache> persists for the request. A concrete Arc keeps genuine node identities alive without self-reference or a getter contract. A single hot slot bounds retained preparation by one existing public-limit plan and avoids inventing aggregate cache Resource failures; alternating roots may still recompile. Taking the slot out before evaluation permits nested callbacks to use the same SDK without holding a RefCell borrow or shared mutex.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
 
 - Decision: Compile each scalar filter only when its first surviving physical row is demanded, and retain the original filter-major immediate truth conversion. Do not compile all filters up front or convert truth after evaluating a whole batch. Use the existing BorrowedExpression and SDK cursor frame, with no fabricated Suite, SQL declaration or Row.
   Rationale: Empty inputs and filters suppressed by earlier predicates must not perform preparation or live reads; truth-conversion errors must precede the next row's side effects. Genuine immutable root borrowing also prevents stale metadata/RAND ownership.
@@ -927,6 +939,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N56 is validated against the complete inherited frontend and Unistore baselines. Request-level preparation now survives ephemeral per-row evaluators with unchanged live row/context effects, deep Clone semantics, ready-scope behavior and error/resource boundaries. Isolated same-SDK scan-loop measurements improve2.49–2.73x; this is not a final SQL-service result. Continue the remaining genuine AST, typed/raw callers, generic Admission fallback removal and complete service/performance gates; task4 remains active.
 
 N55 is validated from signed N54 main4a7bfdba9d and unchanged SDK3ee7511. Actual scalar filtering now shares pure preparation while retaining real owner identity and per-row effects. Complete current-source frontend validation has only the exact inherited three failures; all other gates and frozen observations pass. The measured2.7–2.9x local filter speedup isolates preparation reuse within the same SDK and is not a final SQL service claim. The separately requested CPU-load SQL experiment used independent Go worktrees and was delivered with all processes stopped. Global AST/typed/Unistore/fallback/service scope remains required.
 

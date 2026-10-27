@@ -138,6 +138,9 @@ fn prepare_cache_worker(
 /// Sync nor Clone: one movable evaluation lane has exclusive access to every
 /// prepared worker and drops all workers with that lane.
 pub struct ReadyValueCache {
+    // One hot root keeps retention bounded by one existing public preparation.
+    // It is independent of demand-time ready-operation scope/poison state.
+    scalar_plan: RefCell<Option<crate::evaluator::batch::PreparedOwnedExpression>>,
     workers: RefCell<HashMap<EvaluatedBytesOp, Box<EvaluatedBytesWorker>>>,
     busy: Cell<bool>,
     poisoned: Cell<bool>,
@@ -175,10 +178,47 @@ impl ReadyValueCache {
         Ok(())
     }
 
+    /// Evaluate a genuine Arc-owned root in the same shared scalar driver.
+    /// One hot plan is keyed by its actual owner and physical row width. The
+    /// current context and row are borrowed only during this invocation.
+    pub fn eval_owned_expression(
+        &self,
+        root: &std::sync::Arc<crate::expression::Expression>,
+        context: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        #[cfg(test)]
+        if crate::test_original_eval::requested() {
+            return root.eval(context, row);
+        }
+        #[cfg(test)]
+        crate::test_original_eval::note_shared();
+        // Release the slot borrow before pure compilation or any callback.
+        // Reentry can use another program in this same SDK, without sharing a
+        // mutable worker or changing demand-time ready-capability checks.
+        let previous = self.scalar_plan.borrow_mut().take();
+        let mut plan = match previous {
+            Some(plan) if plan.matches(root, row.len()) => plan,
+            other => {
+                // Evict before compiling, rather than imposing a new aggregate
+                // Resource failure or retaining an unbounded owner map.
+                drop(other);
+                crate::evaluator::batch::PreparedOwnedExpression::compile(
+                    std::sync::Arc::clone(root),
+                    row.len(),
+                )?
+            }
+        };
+        let result = plan.eval(context, row);
+        *self.scalar_plan.borrow_mut() = Some(plan);
+        result
+    }
+
     /// Creates an empty lane cache; no worker is prepared before first demand.
     #[must_use]
     pub fn new() -> Self {
         Self {
+            scalar_plan: RefCell::new(None),
             workers: RefCell::new(HashMap::new()),
             busy: Cell::new(false),
             poisoned: Cell::new(false),
