@@ -449,6 +449,7 @@ fn render_numeric_expression_text(
 
 // Go wraps non-decimal DIV arguments in a cast during construction. Strict
 // constants fold that cast; columns and computed arguments retain it in errors.
+#[cfg(test)]
 fn numeric_argument_text(
     function: &ScalarFunction,
     expression: &Expression,
@@ -794,6 +795,7 @@ fn numeric_string_diagnostic_bound(bytes: &[u8]) -> Result<Option<usize>, &'stat
 /// in an arithmetic overflow. Resolved columns and nested arithmetic
 /// functions retain their source names and shape; unknown expression kinds
 /// keep the caller's safe fallback instead of inventing a display string.
+#[cfg(test)]
 fn arithmetic_overflow_expression(
     function: &ScalarFunction,
     op: tidb_ast::BinaryOp,
@@ -814,6 +816,7 @@ fn arithmetic_overflow_expression(
 /// Go's 1690 text for one binary integer overflow: the result type's integer
 /// class (`BIGINT` / `BIGINT UNSIGNED`, from the function's declared result
 /// type) and the rendered operand list.
+#[cfg(test)]
 fn arithmetic_overflow_error(
     function: &ScalarFunction,
     op: tidb_ast::BinaryOp,
@@ -834,6 +837,7 @@ fn arithmetic_overflow_error(
 
 /// Go's 1690 text for one binary REAL overflow. The real signatures use the
 /// same operand rendering as integer signatures, but always name `DOUBLE`.
+#[cfg(test)]
 fn real_arithmetic_overflow_error(
     function: &ScalarFunction,
     op: tidb_ast::BinaryOp,
@@ -850,6 +854,7 @@ fn real_arithmetic_overflow_error(
 
 /// Go's 1690 text for one binary DECIMAL overflow. The decimal signatures
 /// carry the same source-shaped operand expression and name their domain.
+#[cfg(test)]
 fn decimal_arithmetic_overflow_error(
     function: &ScalarFunction,
     op: tidb_ast::BinaryOp,
@@ -1010,6 +1015,7 @@ fn render_math_overflow_expression(
     ))
 }
 
+#[cfg(test)]
 fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
     render_math_overflow_expression(function, &|constant| {
         constant
@@ -1042,6 +1048,7 @@ pub(crate) fn static_math_overflow_expression(function: &ScalarFunction) -> Opti
 /// Converts the datum-only overflow carriers from math builtins into Go's
 /// function-specific 1690 diagnostics while the argument expressions remain
 /// available on the scalar-function node.
+#[cfg(test)]
 fn math_overflow_error(
     function: &ScalarFunction,
     error: EvalError,
@@ -1495,6 +1502,7 @@ impl ScalarFunction {
     /// one. A value already in the right family is returned untouched, so the
     /// result type's LENGTH constraints are applied only where Go's own
     /// argument cast would have applied them.
+    #[cfg(test)]
     fn coerce_to_ret_type(&self, value: Datum) -> Result<Datum, EvalError> {
         coerce_function_result(self.func_name.lowercase(), self.get_static_type(), value)
     }
@@ -1662,8 +1670,8 @@ impl ScalarFunction {
 
     /// Go `ScalarFunction.Eval`: evaluate the function against one row, and
     /// return a value in the eval-type family of the function's own result
-    /// type -- see [`Self::coerce_to_ret_type`] for why that is the whole
-    /// point of Go's `Eval` and not an afterthought.
+    /// type. The shared value-result conversion retains Go's original Eval
+    /// family presentation.
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         #[cfg(test)]
         if crate::test_original_eval::requested() {
@@ -1838,6 +1846,7 @@ impl ScalarFunction {
         }
     }
 
+    #[cfg(test)]
     fn eval_binary_values(
         &self,
         op: BinaryOp,
@@ -3972,12 +3981,15 @@ fn eval_numeric_operand_row(
     )
 }
 
+#[cfg(test)]
 fn eval_numeric_operand_batch(
     expression: &Expression,
     ctx: &dyn Columns,
     input: &Chunk,
     target: EvalType,
 ) -> Result<Vec<Datum>, EvalError> {
+    #[cfg(test)]
+    note_original_native_batch_tree();
     let field = expression
         .static_type()
         .expect("numeric argument has a type");
@@ -4028,6 +4040,7 @@ fn eval_numeric_operand_batch(
 
 /// Go JSON cast signatures consume their source EvalType, including hybrid
 /// string names and signed integer carriers, before constructing binary JSON.
+#[cfg(test)]
 fn cast_json_argument_value(function: &ScalarFunction, value: Datum) -> Result<Datum, EvalError> {
     crate::builtin_ext::json::cast_json_prepared(
         &value,
@@ -4175,11 +4188,14 @@ pub(crate) fn batch_supported(expression: &Expression, target: EvalType) -> bool
 
 // Integer batches carry the same i64 bit patterns as Go chunk.Int64s. This
 // avoids cloning large Datum enums for every intermediate arithmetic node.
+#[cfg(test)]
 fn eval_integer_batch(
     expression: &Expression,
     ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Vec<Option<i64>>, EvalError> {
+    #[cfg(test)]
+    note_original_native_batch_tree();
     let bits = native_batch_integer_bits;
     match expression {
         Expression::Constant(constant) => {
@@ -4328,12 +4344,15 @@ fn eval_integer_batch(
     }
 }
 
+#[cfg(test)]
 fn eval_batch_values(
     expression: &Expression,
     ctx: &dyn Columns,
     input: &Chunk,
     target: EvalType,
 ) -> Result<Vec<Datum>, EvalError> {
+    #[cfg(test)]
+    note_original_native_batch_tree();
     if target == EvalType::Int {
         let unsigned = expression
             .static_type()
@@ -4414,11 +4433,14 @@ pub(crate) fn native_integer_batch_decimal_value(
     convert_numeric_datum(Datum::Decimal(decimal), target, ctx)
 }
 
+#[cfg(test)]
 fn eval_arithmetic_batch(
     function: &ScalarFunction,
     ctx: &dyn Columns,
     input: &Chunk,
 ) -> Result<Vec<Datum>, EvalError> {
+    #[cfg(test)]
+    note_original_native_batch_tree();
     // Go evaluates the entire left batch, then the entire right batch, then
     // arithmetic. A NULL left row does not suppress right operand errors.
     let domain = function
@@ -4463,7 +4485,20 @@ fn eval_arithmetic_batch(
     Ok(left)
 }
 
-/// Native batch reference evaluation for typed expression trees. A full
+#[cfg(test)]
+std::thread_local! {
+    static ORIGINAL_NATIVE_BATCH_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn note_original_native_batch_tree() {
+    ORIGINAL_NATIVE_BATCH_ENTRIES.with(|counter| counter.set(counter.get() + 1));
+}
+#[cfg(test)]
+pub(crate) fn original_native_batch_entries() -> usize {
+    ORIGINAL_NATIVE_BATCH_ENTRIES.with(std::cell::Cell::get)
+}
+
+/// The original native eligibility pass followed by the shared SDK batch program. A full
 /// eligibility pass precedes evaluation, so declining a shape never emits a
 /// warning or evaluates an operand. Other signatures retain their existing path.
 /// Deferred wrappers forward the requested domain and use child metadata.
@@ -4500,6 +4535,21 @@ impl EligibleBatch<'_> {
         ctx: &dyn Columns,
         input: &Chunk,
     ) -> Result<Vec<Datum>, EvalError> {
+        #[cfg(test)]
+        if crate::test_original_eval::requested() {
+            return self.eval_native_original(ctx, input);
+        }
+        crate::evaluator::batch::eval_eligible_native_batch(self, ctx, input)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn eval_native_original(
+        self,
+        ctx: &dyn Columns,
+        input: &Chunk,
+    ) -> Result<Vec<Datum>, EvalError> {
+        #[cfg(test)]
+        note_original_native_batch_tree();
         // Keep the original empty guard AFTER native eligibility/get_type.
         if input.num_rows() == 0 {
             return Ok(Vec::new());

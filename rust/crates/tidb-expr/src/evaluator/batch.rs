@@ -1141,10 +1141,10 @@ impl SourceKind {
         node: impl Into<SourceNodeRef<'a>>,
         sql: Option<&FieldType>,
         view: NativeView,
-        columns: usize,
+        inputs: SourceInputs<'_>,
     ) -> Result<Self> {
         let node = node.into();
-        if let Some(target) = row_typed_context_target(node, view) {
+        if let Some(target) = inputs.typed_context_target(node, view) {
             return Ok(Self::TypedContext {
                 target,
                 arity: usize::from(
@@ -1153,7 +1153,7 @@ impl SourceKind {
                 ),
             });
         }
-        if source_value_failure(node, view, columns).is_some() {
+        if source_value_failure(node, view, inputs.width()).is_some() {
             return Ok(Self::ContextValue { arity: 0 });
         }
         if matches!(node.kind(), BorrowedNodeKind::CorrelatedColumn(_))
@@ -3938,19 +3938,45 @@ fn preflight_view<'a>(
 enum SourceInputs<'a> {
     Projection(&'a [FieldType]),
     PhysicalRow { width: usize },
+    NativeBatch { width: usize },
 }
 impl<'a> SourceInputs<'a> {
     fn width(self) -> usize {
         match self {
             Self::Projection(fields) => fields.len(),
-            Self::PhysicalRow { width } => width,
+            Self::PhysicalRow { width } | Self::NativeBatch { width } => width,
         }
     }
     fn declarations(self) -> &'a [FieldType] {
         match self {
             Self::Projection(fields) => fields,
-            Self::PhysicalRow { .. } => &[],
+            Self::PhysicalRow { .. } | Self::NativeBatch { .. } => &[],
         }
+    }
+    fn typed_context_target<'n>(
+        self,
+        node: impl Into<SourceNodeRef<'n>>,
+        view: NativeView,
+    ) -> Option<NativeEvalType> {
+        let node = node.into();
+        row_typed_context_target(node, view).or_else(|| {
+            if !matches!(self, Self::NativeBatch { .. }) {
+                return None;
+            }
+            let BorrowedNodeKind::Column(column) = node.kind() else {
+                return None;
+            };
+            if usize::try_from(column.index)
+                .ok()
+                .is_none_or(|i| i >= self.width())
+            {
+                // The original typed batch leaf reports its own index error
+                // only when demanded; no replacement schema makes it valid.
+                view.bulk_target()
+            } else {
+                None
+            }
+        })
     }
     fn declaration(self, index: usize) -> Option<&'a FieldType> {
         self.declarations().get(index)
@@ -4096,7 +4122,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
             }
         }
 
-        if row_typed_context_target(node, view).is_some() {
+        if inputs.typed_context_target(node, view).is_some() {
             budget.array::<crate::typed_context_value::TypedContextValue>(1)?;
             budget.array::<NativeTypedDescriptor>(1)?;
             if typed_cache_source(node, view) {
@@ -4243,7 +4269,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                     budget_context_source(&mut budget, None)?
                 }
                 BorrowedNodeKind::Constant(c) if c.literal_value().is_some() => {
-                    if row_typed_context_target(node, view).is_some() {
+                    if inputs.typed_context_target(node, view).is_some() {
                         budget_context_source(&mut budget, None)?;
                     }
                     budget.add(
@@ -4280,7 +4306,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 }
                 BorrowedNodeKind::CorrelatedColumn(_) => budget_context_source(&mut budget, None)?,
                 BorrowedNodeKind::Column(_)
-                    if row_typed_context_target(node, view).is_some()
+                    if inputs.typed_context_target(node, view).is_some()
                         || source_value_failure(node, view, inputs.width()).is_some() =>
                 {
                     budget_context_source(&mut budget, None)?
@@ -4388,7 +4414,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                         }
                     }
                 } else {
-                    if row_typed_context_target(node, view).is_some() {
+                    if inputs.typed_context_target(node, view).is_some() {
                         budget_context_source(&mut budget, Some(sql))?;
                     }
                     let literal = value.literal_value().expect("plain literal source");
@@ -4404,7 +4430,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 }
             }
             BorrowedNodeKind::Column(column) => {
-                if row_typed_context_target(node, view).is_some()
+                if inputs.typed_context_target(node, view).is_some()
                     || source_value_failure(node, view, inputs.width()).is_some()
                 {
                     budget_context_source(&mut budget, Some(sql))?;
@@ -5669,7 +5695,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
         } else {
             projected(item.declared_sql(), new_collation)?
         };
-        let kind = SourceKind::capture(item.node, item.sql, item.view, inputs.width())?;
+        let kind = SourceKind::capture(item.node, item.sql, item.view, inputs)?;
         let construction = match &kind {
             SourceKind::DecimalFastInput(_) => {
                 return Err(binding("fast source entered the ordinary source factory").into())
@@ -6950,6 +6976,10 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 };
                                 NativeHostMetadata::RawValues {
                                     operation,
+                                    // Deferred typed wrappers already normalize their actual
+                                    // child. Only this direct original batch root needs it here.
+                                    integer_batch: matches!(item.view,NativeView::BulkRoot(NativeEvalType::Int))
+                                        .then_some(item.sql.is_some_and(FieldType::is_unsigned)),
                                     name: sql.func_name.lowercase().into(),
                                     result_type: item.sql.map(snapshot_field_type),
                                     left_node: left,
@@ -8739,6 +8769,17 @@ impl EvaluatorSuite {
 
 #[path = "batch_scalar_source.rs"]
 mod scalar_source;
+
+#[path = "batch_native_source.rs"]
+mod native_source;
+
+pub(crate) fn eval_eligible_native_batch(
+    candidate: crate::scalar_function::EligibleBatch<'_>,
+    context: &dyn Columns,
+    input: &Chunk,
+) -> std::result::Result<Vec<Datum>, EvalError> {
+    native_source::eval(candidate, context, input)
+}
 
 #[cfg(test)]
 #[path = "batch_tests.rs"]

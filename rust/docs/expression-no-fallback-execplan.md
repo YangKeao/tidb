@@ -18,6 +18,10 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-27 N60 validated) Retire the real public eligible native typed batch traversal. Archive the signed N59 source before adding observers; capture and freeze independent direct native entry behavior with the original scalar scope. Preserve actual eligibility/type probes before empty input, deferred target forwarding, scalar string-row presentation, complete operand phases and atomic Vec publication. Adapt genuine roots and actual Chunk storage to the existing SDK program and bindings without a replacement Suite, tree or SQL schema. Keep original typed recursion test-only and prove the default never enters it; then continue Suite decimal fast, generic Admission routing, services and final performance.
+  Independent originals are frozen before promotion:36288/F3712C960BDDF2E8, registry326304/A2B25084573D4F4F, integer-result4608/D46B5C12B95021E3, hybrid6912/86375CDF1EAB4989, long/recovery360/2B5245F38AECC3EC and remaining return families571032/EE0D1D76A4E318D3. The executed prototype passed12 focused checks with all945504 observations unchanged, zero old native traversal and zero nested scalar dispatch on new paths. The192 entropy observations verify unchanged native admission (all decline), not RNG computation. SDK coordinate API protocol2pass retains original bounded/singleton APIs, schema/catalog even-empty checks, original row-only1 limit and the same driver/error identity. Genuine native Chunk inputs use actual width and demanded native cell semantics; no SQL schema or row universe is guessed. A direct typed bitwise root now uses original integer presentation, while deferred wrappers retain their existing sole normalizer; duplicated hybrid callbacks were reproduced480RED and eliminated. The original four typed recursive bodies and original EligibleBatch entry are now cfg(test) only; the public default calls the shared SDK source. Current-source focused12/production, complete frontend2336-exactold3-95/959.03s, Projection52/Expand6/Unistore195-exactold3-13/actualSHOW31-exactold2, SDK1153-exactold1-1, scopedclippy171/89 and17SDKwarnings unchanged, lint/dual14fmt/sourceaudit/finalchecker all verify. Mainfrontend346warningCounter exact; normalcaller150warnings has explicitly documented +1unusedoldIFimport/-3oldwarnings. Receipt evidence/no-fallback-n60.md; local DCO only, no overall completion claim.
+
+
 - [x] (2026-10-27 N59 validated) Capture independent genuine parsed AST behavior before source changes and preserve the original recursive entry as a test-only oracle before retirement. Build every demanded genuine AST child in the existing SDK graph with distinct AST metadata/demand policies, actual named/session/sequence producers and genuine occurrence RAND keys; no fake Expression/ScalarFunction/FieldType, recursive value callback or second driver. Preserve late arity/name errors, all-left/all-right ROW phases and intermediate Position/Trim/Between coercions. Validate all AST shapes/function families, owner/provenance/caps/reentry, public and actual SHOW callers; fresh complete frontend/SDK/Projection/Unistore/service gates are required at this broader frame/source change. Then continue raw/typed callers and generic fallback removal/final performance.
   Original AST snapshots and independent observers are captured: primary191763/789B6C5CB3543C08, registry82080/3E5E6C815EB16E9C, AES2160/6E2ECFB35F591274, plus independentcache70/53FD82D7D84ECAF7. The original recursive AST/function/IN bodies are preserved exactly in cfg(test) original_ast.rs; source audit checks605 archives and the three copied bodies. The SDK prototype passed18 focused checks, genuine reused-owner/error/panic recovery, entropy properties and callback/cancel/provenance controls. Source-only metadata budget gaps for empty ROW wrappers, raw CHAR charset and sequence paths were observed RED and fixed with a pure borrowed preflight; all original hashes stayed fixed. Fresh SDK1151pass/exact inherited1fail/1ignore and17warnings, clippy171total89expr unchanged, dualformat pass. The production AST default now uses PreparedAstExpression over the same SDK graph, with no recursive fallback. Every actual value child, including CHAR's final genuine RawString under its original consumer profile, is compiled in that graph. Actual SHOW consumers keep one lazy genuine plan per statement and preserve original resolver-only capabilities, first-name validation and empty-row behavior. Final focused19 and production checks pass. Fresh complete frontend2324/exact inherited3/95ignore, Projection52, Expand6, Unistore195/exact inherited3/13ignore and actual Session SHOW31pass/exact original2fail are verified. The two SHOW failures were reproduced with exact original main/SDK Rust bodies before restoring current bytes; expanded actual filter coverage passes. Final lint, dual formatting, source stability and original/protected-file audits precede local DCO. Receipt evidence/no-fallback-n59.md. Full service/final performance and remaining native/Suite/fallback closure continue as overall work. The earlier huge BENCHMARK observer cancellation and the source/test setup mistakes remain explicitly recorded in workspace evidence.
 
@@ -235,6 +239,16 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- N60: the actual public native API can calculate constants at maximum selected
+  coordinates without touching a physical cell. Premature row/column checks
+  changed real deferred errors and panics; the genuine native caller therefore
+  uses actual width/coordinates and existing demand-time typed sources, while
+  Projection retains its own bounded contract. The function inventory also
+  exposed signed bitwise result presentation and duplicated hybrid conversion
+  callbacks; direct-root normalization alone preserves the existing wrappers.
+  Failed attempts, fixture corrections and fixed original digests are recorded
+  in evidence/no-fallback-n60.md.
 
 - (2026-10-27 N58 validated) Ordinary non-JSON casts already have a value boundary accepting real optional fields; the earlier optimized metadata path had rejected them before actual child demand. NULL must bypass missing result type, while a non-NULL child reaches the original late error. Reusing the existing Cast prefix fixes all changed-domain records without new cast algorithms or SQL metadata. Existing full-declared, PB, JSON, UNION and unknown-CAST paths remain excluded by the pure predicate. The previous96 historical error-gap controls were strengthened to original equivalence rather than rebasing an old original digest.
 
@@ -591,6 +605,14 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- N60: add a genuine-coordinate SDK entry forwarding to the same existing batch
+  driver; never invent a Suite, SQL schema or physical row universe for the
+  native API. Keep public finite limits and bounded/singleton APIs unchanged.
+  Preserve old native/PB tree bodies only as independent test oracles; authenticate
+  final output and conversion callbacks, and publish the Vec only after success.
+  Continue real Decimal priority and Unistore SimpleExpr traversals and remove
+  generic Admission routing before claiming the overall goal.
 
 - Decision: Validate N58's two-file optional non-JSON CAST classification with the independent42336 public and20736 Projection records, real cached error/NULL recovery, stronger historical96 original cases, fresh prefix/UNION/public/context/filter/owned-source checks and complete Projection/Unistore/production/lint/format gates. Retain N57's complete frontend evidence for unchanged branches and label it as retained, not a fresh N58 full run.
   Rationale: Exact source reconstruction proves the frame, caps, JSON/PB bodies and every fully declared or existing UNION/unknown-CAST classification unchanged. The new branch is restricted to one genuine non-JSON ordinary CAST argument with optional source/result fields; fresh targeted tests directly cover that whole changed domain. Repeat a broad complete frontend run when later source/frame changes warrant it, and at final global validation.
@@ -959,6 +981,15 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N60 has promoted the public eligible native batch entry after 945504 independently
+frozen original observations and12 default-entry checks matched, with no old
+native traversal or nested scalar driver. Fresh SDK1153/exactold1/1ignore,
+Projection52/Expand6/Unistore195-exactold3-13/actualSHOW31-exactold2 pass their
+expected contracts. Fresh complete frontend2336/exactold3/95ignore passes its inherited baseline;
+source stability, protected files, lint, dual14fmt and finalchecker all pass
+before signing the local checkpoint. No push or overall
+completion is implied. Detailed evidence: evidence/no-fallback-n60.md.
 
 N58 eliminates the recorded ordinary optional CAST error/refusal gap and preserves live values, typed publication and reused-owner recovery under the existing SDK frame. Fresh changed-domain and affected-entry/caller checks pass; the narrow two-file classification change retains explicitly labelled N57 complete frontend evidence for unaffected branches. Genuine AST/raw/typed entry retirement, generic fallback removal and final complete service/performance validation remain required; the task continues.
 

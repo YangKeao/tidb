@@ -93,6 +93,7 @@ impl NativeTypedDescriptor {
         target: NativeEvalType,
         maximum: usize,
         input: Option<&Chunk>,
+        input_is_bounded: bool,
         row: InputRow,
     ) -> std::result::Result<crate::typed_context_value::TypedRead<'_>, EvalError> {
         let value = match self {
@@ -113,7 +114,7 @@ impl NativeTypedDescriptor {
                         ),
                     )
                 })?;
-                if row.input_row >= input.physical_rows() {
+                if input_is_bounded && row.input_row >= input.physical_rows() {
                     return Err(EvalError::ExpressionRuntimeFailure(
                         crate::ExpressionRuntimeFailure::from_local_eval(
                             binding("typed column physical row is outside input"),
@@ -334,8 +335,14 @@ impl<'a> NativeBatchHosts<'a> {
                     .descriptor
                     .as_ref()
                     .expect("validated typed read")
-                    .begin_bounded(self.context, meta.target, maximum, self.input, row)?
-                {
+                    .begin_bounded(
+                        self.context,
+                        meta.target,
+                        maximum,
+                        self.input,
+                        self.input_is_bounded,
+                        row,
+                    )? {
                     crate::typed_context_value::TypedRead::Ready(value) => Ok(value),
                     crate::typed_context_value::TypedRead::Child(_) => {
                         Err(EvalError::ExpressionRuntimeFailure(

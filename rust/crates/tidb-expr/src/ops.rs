@@ -1039,6 +1039,7 @@ pub(crate) const fn effective_div_precision_increment(raw: u32) -> u32 {
 
 /// Go Decimal DIV performs bounded DecimalDiv before converting the quotient
 /// to an integer. Its truncation/overflow warning precedes any integer error.
+#[cfg(test)]
 pub(crate) fn decimal_integer_division(
     a: &Decimal,
     b: &Decimal,

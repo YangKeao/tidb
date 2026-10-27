@@ -396,6 +396,8 @@ pub(super) enum NativeHostMetadata {
     },
     RawValues {
         operation: NativeRawValueOperation,
+        // Actual typed batch consumer; Some(true) is its unsigned root.
+        integer_batch: Option<bool>,
         name: Box<str>,
         result_type: Option<FieldType>,
         left_node: usize,
@@ -1177,6 +1179,7 @@ pub(super) struct NativeBatchHosts<'a> {
     root_value: Option<Datum>,
     typed_values: Box<[Option<Datum>]>,
     input: Option<&'a Chunk>,
+    input_is_bounded: bool,
 }
 impl<'a> NativeBatchHosts<'a> {
     pub(super) fn with_ast_nodes(mut self, nodes: &'a [&'a tidb_ast::Expr]) -> Self {
@@ -1186,6 +1189,15 @@ impl<'a> NativeBatchHosts<'a> {
 
     pub(super) fn with_input(mut self, input: &'a Chunk) -> Self {
         self.input = Some(input);
+        self.input_is_bounded = true;
+        self
+    }
+
+    // The genuine public native entry supplies selected cursor coordinates.
+    // Its demanded cells keep native validation; other callers stay bounded.
+    pub(super) fn with_coordinate_input(mut self, input: &'a Chunk) -> Self {
+        self.input = Some(input);
+        self.input_is_bounded = false;
         self
     }
     pub(super) fn new(
@@ -1214,6 +1226,7 @@ impl<'a> NativeBatchHosts<'a> {
             root_value: None,
             typed_values: Box::new([]),
             input: None,
+            input_is_bounded: true,
         }
     }
     pub(super) fn with_constant_root_shortcut(mut self, enabled: bool) -> Self {

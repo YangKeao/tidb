@@ -201,6 +201,7 @@ pub use ready_value::{
 pub(crate) use tidb_query_datatype::codec::mysql::json::NativeJsonError;
 use tidb_query_expr::local::prepare_concat_args as prepare_concat_args_local;
 use tidb_query_expr::local::prepare_find_in_set_keys as prepare_find_in_set_keys_local;
+#[cfg(test)]
 pub use tidb_query_expr::local::NativeDecimalDivisionDisposition;
 #[cfg(test)]
 pub(crate) use tidb_query_expr::local::{

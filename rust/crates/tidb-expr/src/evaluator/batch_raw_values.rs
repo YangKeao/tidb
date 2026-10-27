@@ -42,6 +42,7 @@ impl NativeBatchHosts<'_> {
         };
         let Some(NativeHostMetadata::RawValues {
             operation,
+            integer_batch,
             name,
             result_type,
             left_node,
@@ -209,6 +210,42 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
+        let result = if let Some(unsigned) = integer_batch {
+            // The original typed entry normalizes the actual expression value
+            // before interpreting its bits. Scalar/raw consumers keep UInt.
+            let normalized =
+                tidb_query_expr::local::with_value_kernel_work_limit(available, || {
+                    let value = crate::expression::apply_enum_set_integer_view(
+                        result,
+                        result_type.as_ref(),
+                    );
+                    let value = crate::scalar_function::normalize_numeric_row_value(
+                        value,
+                        result_type.as_ref(),
+                        NativeEvalType::Int,
+                        self.context,
+                    )?;
+                    Ok::<_, EvalError>(crate::scalar_function::native_batch_integer_value(
+                        crate::scalar_function::native_batch_integer_bits(value)?,
+                        *unsigned,
+                    ))
+                });
+            // Hybrid conversion can invoke context effects. Authenticate the
+            // original operands again after that callback, without a store loan.
+            {
+                let store = store.borrow();
+                store.get(left_token, NativeValueRole::CharInput, left_origin)?;
+                if let Some(origin) = right_origin {
+                    store.get(token, NativeValueRole::CharInput, origin)?;
+                }
+            }
+            match normalized {
+                Ok(value) => value,
+                Err(error) => return self.native_failure(error),
+            }
+        } else {
+            result
+        };
         self.finish_native_value(id, result, *output_node, *output_role, row, base)
             .map(HostStep::Ready)
     }
@@ -296,6 +333,7 @@ mod tests {
                 };
                 let metadata = [NativeHostMetadata::RawValues {
                     operation,
+                    integer_batch: None,
                     name: name.into(),
                     result_type: declared.then(|| {
                         if matches!(
@@ -581,6 +619,7 @@ mod tests {
             let slot = catalog.slot(0).unwrap();
             let metadata = [NativeHostMetadata::RawValues {
                 operation,
+                integer_batch: None,
                 name: "unaryminus".into(),
                 result_type: declared.then(|| FieldType::new(FieldTypeCode::Double)),
                 left_node: 1,
@@ -875,6 +914,176 @@ mod tests {
                 ctx.calls.get(),
                 1,
                 "replay must not call the warning handler again"
+            );
+            assert!(provider.take_native_error().is_none());
+            provider.cancel(&task);
+        }
+    }
+    #[test]
+    fn native_entry_typed_raw_result_callbacks_authenticate_and_never_replay() {
+        struct TypedContext<'a> {
+            store: &'a RefCell<NativeValueStore>,
+            action: Cell<u8>,
+            calls: Cell<usize>,
+        }
+        impl Columns for TypedContext<'_> {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                panic!("no invented row")
+            }
+            fn time_zone(&self) -> tidb_datatype::SessionTimeZone {
+                self.calls.set(self.calls.get() + 1);
+                match self.action.replace(0) {
+                    1 => self.store.borrow_mut().begin_window().unwrap(),
+                    2 => panic!("typed raw conversion callback"),
+                    _ => (),
+                }
+                tidb_datatype::SessionTimeZone::utc()
+            }
+        }
+        let operation = NativeRawValueOperation::Bitwise {
+            operation: B::And,
+            unsigned: [false; 2],
+        };
+        let field: tipb::FieldType = tidb_query_datatype::FieldTypeTp::Blob.into();
+        let args = [field.clone(), field.clone()];
+        let catalog = HostCatalog::for_sql_batch(vec![(
+            operation.sql_operation(),
+            HostSignature {
+                arg_types: args.to_vec().into_boxed_slice(),
+                return_type: field.clone(),
+            },
+        )])
+        .unwrap();
+        let slot = catalog.slot(0).unwrap();
+        let metadata = [NativeHostMetadata::RawValues {
+            operation,
+            integer_batch: Some(false),
+            name: "bitand".into(),
+            result_type: Some(FieldType::new(FieldTypeCode::Bit).with_flen(8)),
+            left_node: 1,
+            right_node: Some(2),
+            output_node: 0,
+            output_role: NativeValueRole::Output,
+        }];
+        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let context = TypedContext {
+            store: &store,
+            action: Cell::new(0),
+            calls: Cell::new(0),
+        };
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 65536)
+            .with_native_values(Some(&store));
+        let mut eval = EvalContext::default();
+        let row = InputRow {
+            occurrence: 0,
+            input_row: 0,
+        };
+        for action in [1, 2, 0] {
+            store.borrow_mut().begin_window().unwrap();
+            context.action.set(action);
+            context.calls.set(0);
+            let HostStart::Pending { task, request } = provider
+                .start(
+                    &mut eval,
+                    HostInvocation {
+                        slot,
+                        row,
+                        arg_types: &args,
+                        return_type: &field,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("actual arguments required")
+            };
+            assert_eq!(request.index, 0);
+            let left = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Int(1),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 1, row },
+                )
+                .unwrap();
+            let left = VectorValue::from_scalar(&ScalarValue::Bytes(Some(left)), 1);
+            let HostStep::NeedArg(request) = provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &field,
+                        values: &left,
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("second actual argument required")
+            };
+            assert_eq!(request.index, 1);
+            assert_eq!(context.calls.get(), 0);
+            let right = store
+                .borrow_mut()
+                .insert_clone(
+                    &Datum::Int(1),
+                    NativeValueRole::CharInput,
+                    NativeValueOrigin { node: 2, row },
+                )
+                .unwrap();
+            let right = VectorValue::from_scalar(&ScalarValue::Bytes(Some(right)), 1);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                provider.resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &right,
+                    },
+                )
+            }));
+            assert_eq!(context.calls.get(), 1);
+            match action {
+                1 => assert!(matches!(
+                    result.unwrap(),
+                    Err(LocalError::BindingContract(_))
+                )),
+                2 => assert!(result.is_err()),
+                _ => {
+                    let HostStep::Ready(output) = result.unwrap().unwrap() else {
+                        panic!("typed output required")
+                    };
+                    let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                        panic!("output handle required")
+                    };
+                    assert_eq!(
+                        *store
+                            .borrow()
+                            .get(
+                                token,
+                                NativeValueRole::Output,
+                                NativeValueOrigin { node: 0, row }
+                            )
+                            .unwrap(),
+                        Datum::Int(1)
+                    );
+                }
+            }
+            assert!(provider
+                .resume(
+                    &mut eval,
+                    &task,
+                    HostArgReply {
+                        index: 1,
+                        field_type: &field,
+                        values: &right
+                    }
+                )
+                .is_err());
+            assert_eq!(
+                context.calls.get(),
+                1,
+                "consumed typed conversion replayed a callback"
             );
             assert!(provider.take_native_error().is_none());
             provider.cancel(&task);

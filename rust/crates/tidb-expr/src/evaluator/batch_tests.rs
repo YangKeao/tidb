@@ -28,6 +28,9 @@ use tidb_proto::tipb as db_pb;
 use tidb_query_datatype::expr::Error as KernelError;
 use tidb_query_expr::local::OrdinaryProfile;
 
+#[path = "batch_native_entry_tests.rs"]
+mod native_entry_tests;
+
 #[path = "batch_public_source_tests.rs"]
 mod public_source_tests;
 

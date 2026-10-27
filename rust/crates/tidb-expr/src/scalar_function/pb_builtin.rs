@@ -15,10 +15,14 @@
 //! Go `getSignatureByPB`: select an implementation from the wire enum.
 //! SQL function names are diagnostic metadata, never an overload selector here.
 
-use super::{eval_numeric_operand_row, eval_numeric_row, logic_truthy, ScalarFunction};
+use super::logic_truthy;
+#[cfg(test)]
+use super::{eval_numeric_operand_row, eval_numeric_row, ScalarFunction};
 use crate::context::{Columns, EvalError};
+#[cfg(test)]
 use crate::expression::ConstLevel;
 use tidb_ast::BinaryOp;
+#[cfg(test)]
 use tidb_chunk::row::Row;
 use tidb_datatype::{Datum, EvalType, FieldType, UNSPECIFIED_LENGTH};
 use tidb_proto::tipb::ScalarFuncSig;
@@ -633,6 +637,7 @@ impl PbBuiltin {
         Some(Self { signature, kernel })
     }
 
+    #[cfg(test)]
     pub(super) fn eval(
         self,
         function: &ScalarFunction,
