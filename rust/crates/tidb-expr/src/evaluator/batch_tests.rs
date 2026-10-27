@@ -35072,3 +35072,6 @@ mod owned_scalar_tests;
 
 #[path = "batch_column_profile_tests.rs"]
 mod column_profile_tests;
+
+#[path = "batch_optional_cast_tests.rs"]
+mod optional_cast_tests;

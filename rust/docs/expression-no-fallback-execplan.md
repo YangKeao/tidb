@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-27 N58 validated) Genuine optional one-argument ordinary non-JSON CASTs use the existing value prefix with real optional declarations, original NULL/child/error order and unchanged frame/caps. Frozen public42336/71C4B89C782FC261 and Projection20736/B680282F5C43F00A remain fixed; pre-change31752/11664 differences and15552 refusals are eliminated. New6 plus prior7 focused controls pass, including cached real-owner NULL/error recovery. The96 N57 cases now strictly match original and prepare, while historical shared evidence is retained truthfully. Fresh affected-entry177pass/5existingignore includes50public/43context/65prefix-UNION/9owned/14filter/inventory83088/0/0; Projection52/Unistore195-exact3-13/Expand6/production/lint/dual5fmt/provenance pass. No fresh N58 complete frontend claim; validation decision and retained N57 full evidence are explicit. Receipt evidence/no-fallback-n58.md. Continue genuine AST/raw/typed/global fallback/service/performance work.
+
 - [x] (2026-10-27 N57 validated) Genuine physical Column reads now ignore planner virtual/correlation markers while retaining real declarations, storage authentication, original typed phases and all caps. Existing numeric diagnostic graphs now retain demanded hidden virtual metadata;144 original cases reproduced missing parameter demand/error identity before the fix. Original1728/4EAD65319048E375, pre-change shared1728/535CA5CB231F073D, edge240/E68166457C10F6D9 and hidden144/6D36FF5166A1AD47 are fixed. Full2298/exact inherited3+1 stale capability assertion/95ignore; after one exact test-only guard update, that guard and7 new controls pass with unchanged full-tested production/observer source. Coverage748 same-full batch+1 focused guard,50public/43context/inventory83088/0/0; Unistore195/exact3/13, Projection52/Expand6/production/lint/dual3fmt/provenance pass. The96 unrelated missing-type CAST routes remain explicitly open. See evidence/no-fallback-n57.md; continue optional CAST, genuine AST/raw/typed/global fallback/service/performance work.
 
 - [x] (2026-10-27 N56 validated) Actual Unistore ingestion retains the genuine Arc expression; explicit Clone remains deep. One hot request-owned scalar plan reuses the same SDK, actual owner/physical width, existing limits and demand-time ready scope. Frozen32256/461C9558DA525FA9 and10260/51B0824478C18677 remain fixed; preparation/owner controls were RED before promotion. Final9frontend+4Unistore controls pass; full frontend2292/exact inherited3/95ignore/all742batch/346warning Counter, Unistore195/exact inherited3/13ignore/unchanged393aggregate warnings, same-run50public/43context/inventory83088/0/0, Projection52/Expand6/production/lint/dual8fmt/reconstruction pass. Isolated actual request loop saves59.9–63.3% current-SDK preparation time. Receipt evidence/no-fallback-n56.md. Raw/typed/AST/generic fallback/service/final performance remain open.
@@ -229,6 +231,8 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- (2026-10-27 N58 validated) Ordinary non-JSON casts already have a value boundary accepting real optional fields; the earlier optimized metadata path had rejected them before actual child demand. NULL must bypass missing result type, while a non-NULL child reaches the original late error. Reusing the existing Cast prefix fixes all changed-domain records without new cast algorithms or SQL metadata. Existing full-declared, PB, JSON, UNION and unknown-CAST paths remain excluded by the pure predicate. The previous96 historical error-gap controls were strengthened to original equivalence rather than rebasing an old original digest.
 
 - (2026-10-27 N57 focused) Planner Column annotations do not change physical reads, but a hidden column's virtual expression can supply live parameter values to overflow text. The new independent144-case original fixture reproduced missing parameter demand and IntOverflow instead of original DataOutOfRange before the fix. The existing numeric diagnostic recipe now compiles those genuine demanded sources. Separate original1728 and pre-change shared1728 pins retain the existing144 selected direct-column improvements and explicitly expose96 missing-type CAST routes; the latter still has an open public scalar error difference and is not counted as resolved here.
 
@@ -583,6 +587,10 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Validate N58's two-file optional non-JSON CAST classification with the independent42336 public and20736 Projection records, real cached error/NULL recovery, stronger historical96 original cases, fresh prefix/UNION/public/context/filter/owned-source checks and complete Projection/Unistore/production/lint/format gates. Retain N57's complete frontend evidence for unchanged branches and label it as retained, not a fresh N58 full run.
+  Rationale: Exact source reconstruction proves the frame, caps, JSON/PB bodies and every fully declared or existing UNION/unknown-CAST classification unchanged. The new branch is restricted to one genuine non-JSON ordinary CAST argument with optional source/result fields; fresh targeted tests directly cover that whole changed domain. Repeat a broad complete frontend run when later source/frame changes warrant it, and at final global validation.
+  Date/Author: 2026-10-27 / ExpressionReuseEngineer.
 
 - Decision: Admit genuine physical Column reads independently of planner virtual/correlation flags, while separately surveying hidden virtual metadata for the existing arithmetic diagnostic graph.
   Rationale: Scalar and typed readers already use the physical cell. Real CorrelatedColumn is a distinct source. Removing flags must preserve typed string phases, actual SQL/storage declaration authentication, all existing caps and demanded live error metadata; no virtual expression is evaluated as a replacement value.
@@ -947,6 +955,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+N58 eliminates the recorded ordinary optional CAST error/refusal gap and preserves live values, typed publication and reused-owner recovery under the existing SDK frame. Fresh changed-domain and affected-entry/caller checks pass; the narrow two-file classification change retains explicitly labelled N57 complete frontend evidence for unaffected branches. Genuine AST/raw/typed entry retirement, generic fallback removal and final complete service/performance validation remain required; the task continues.
 
 N57 closes planner-marker refusals without discarding hidden metadata demand or changing physical storage contracts. The independent original fixture also found and fixed a genuine shared overflow diagnostic loss. All functional gates retain their exact inherited failures; a historical rejection assertion was replaced by its now-supported positive check after the complete run, with the exact test-only delta and full-plus-focused provenance retained. No original observations were rebased. Missing-type CAST compatibility remains open, as do genuine AST/raw/typed callers, generic fallback removal and final service/performance validation.
 

@@ -6,6 +6,7 @@ use super::*;
 pub(crate) enum PrefixKind {
     Union,
     UnknownCast,
+    OptionalCast,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrefixPhase {
@@ -55,6 +56,14 @@ impl PrefixKind {
             .is_some_and(|target| !ordinary_cast_target(target))
         {
             Some(Self::UnknownCast)
+        } else if name
+            .strip_prefix("cast_")
+            .is_some_and(|target| target != "json" && ordinary_cast_target(target))
+            && (function.get_static_type().is_none() || function.args[0].static_type().is_none())
+        {
+            // The original ordinary non-JSON value boundary accepts genuine
+            // optional source/result declarations after demanding its child.
+            Some(Self::OptionalCast)
         } else {
             None
         }
@@ -62,7 +71,7 @@ impl PrefixKind {
     pub(crate) fn first(self) -> PrefixPhase {
         match self {
             Self::Union => PrefixPhase::Union,
-            Self::UnknownCast => PrefixPhase::Cast,
+            Self::UnknownCast | Self::OptionalCast => PrefixPhase::Cast,
         }
     }
 }

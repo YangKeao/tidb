@@ -116,8 +116,8 @@ fn records(shared: bool, require_prepared: bool) -> Vec<String> {
                             if shared {
                                 let route = s.batch_route_snapshot();
                                 if optional && shape == 6 {
-                                    // This pre-existing missing-declaration cast profile remains
-                                    // outside this planner-marker change, including mask zero.
+                                    // N58 closes the independently recorded missing-type CAST
+                                    // gap, including the original mask-zero planner case.
                                     assert_eq!(
                                         (
                                             route.prepared,
@@ -125,7 +125,7 @@ fn records(shared: bool, require_prepared: bool) -> Vec<String> {
                                             route.refusals,
                                             route.refusal
                                         ),
-                                        (0, 1, 1, Some(BatchRefusal::Admission))
+                                        (1, 0, 0, None)
                                     );
                                     retained_optional_cast += 1;
                                 } else if route.fallback != 0
@@ -178,10 +178,10 @@ fn projection_planner_columns_keep_original_phases_and_physical_values() {
     );
     let mut selected_direct = 0;
     let mut retained_cast = 0;
-    assert_eq!(
-        (current.len(), digest(&current)),
-        (1728, 0x535CA5CB231F073D)
-    );
+    // N57's pre-change shared535CA5CB231F073D is retained in its raw
+    // evidence and receipt. N58 fixes its CAST error gap; original records
+    // remain unchanged and now directly authenticate those corrected cases.
+    assert_eq!(current.len(), 1728);
     for (i, (old, new)) in original.iter().zip(&current).enumerate() {
         let label = old
             .split('|')
@@ -198,15 +198,9 @@ fn projection_planner_columns_keep_original_phases_and_physical_values() {
             assert!(new.contains("|Ok(())|"));
             selected_direct += 1;
         } else if label[1] == "true" && label[2] == "6" {
-            // Pre-existing public scalar CAST missing-type error differs from
-            // original recursion; preserve its pre-change shared pin here and
-            // keep that independent compatibility gap explicitly open.
-            if label[5] == "2" {
-                assert_eq!(old, new);
-            } else {
-                assert!(old.contains("column has no result type"));
-                assert!(new.contains("class: InvalidSpecification, phase: Some(Prepare)"));
-            }
+            // The previously recorded96 missing-type CAST cases now match
+            // the unchanged independent original, including empty selections.
+            assert_eq!(old, new, "corrected CAST original/candidate record {i}");
             retained_cast += 1;
         } else {
             assert_eq!(old, new, "original/candidate record {i}");

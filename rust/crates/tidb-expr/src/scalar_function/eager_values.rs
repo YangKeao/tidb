@@ -47,7 +47,7 @@ impl EagerValueKernel {
             (Some(Kind::Union), Phase::Union) => true,
             (Some(Kind::Union), Phase::Cast) => self.name().starts_with("cast_"),
             (Some(Kind::Union), Phase::Common) => !self.name().starts_with("cast_"),
-            (Some(Kind::UnknownCast), Phase::Cast) => true,
+            (Some(Kind::UnknownCast | Kind::OptionalCast), Phase::Cast) => true,
             _ => false,
         }
     }
