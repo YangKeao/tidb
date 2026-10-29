@@ -12,7 +12,7 @@
 // limitations under the License.
 
 //! Values-only builtin-family routing and original native value boundaries.
-//! Recursive AST traversal is preserved only in the test oracle.
+//! AST evaluation uses the shared source program.
 
 use tidb_ast::BinaryOp;
 
@@ -30,9 +30,22 @@ use crate::time_fn::calendar::{
 };
 use crate::{Columns, Datum, EvalError};
 
-// Direct legacy-function observers explicitly use the preserved test oracle.
 #[cfg(test)]
-pub(crate) use crate::original_ast::eval_func;
+pub(crate) fn eval_func(
+    name: &str,
+    args: &[tidb_ast::Expr],
+    cols: &dyn Columns,
+    _derived_collation: Option<tidb_datatype::Collation>,
+) -> Result<Datum, EvalError> {
+    crate::eval_in(
+        &tidb_ast::Expr::Func {
+            name: name.to_owned(),
+            args: args.to_vec(),
+            origin_position: 0,
+        },
+        cols,
+    )
+}
 
 /// Go `builtinBenchmarkSig.evalInt`'s first-argument `EvalInt` boundary.
 pub(crate) fn benchmark_loop_count(

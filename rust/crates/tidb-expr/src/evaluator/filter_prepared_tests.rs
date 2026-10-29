@@ -174,32 +174,12 @@ fn digest(records: &[String]) -> u64 {
     hash
 }
 #[test]
-fn filter_original_observations() {
-    let before = crate::test_original_eval::entries();
-    let records = crate::test_original_eval::with_original(records);
-    let after = crate::test_original_eval::entries();
-    assert!(after.0 > before.0);
-    assert_eq!(after.1, before.1);
-    println!(
-        "N55 original filter count={} digest={:016X}",
-        records.len(),
-        digest(&records)
-    );
-    assert_eq!(records.len(), 25_920);
-    assert_eq!(digest(&records), 0x9C47_E878_2A22_C4DF);
-}
-#[test]
-fn filter_default_matches_independent_original() {
-    let expected = crate::test_original_eval::with_original(records);
-    let before = crate::test_original_eval::entries();
+fn filter_public_observations_match_frozen_results() {
     let actual = records();
-    let after = crate::test_original_eval::entries();
-    assert_eq!(after.0, before.0, "default filter used original recursion");
-    assert!(after.1 > before.1);
-    assert_eq!(expected.len(), actual.len());
-    for (i, (old, new)) in expected.iter().zip(&actual).enumerate() {
-        assert_eq!(old, new, "actual filter record {i}");
-    }
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (25920, 0x9C47_E878_2A22_C4DF)
+    );
 }
 #[test]
 fn filter_prepares_each_demanded_scalar_root_once() {
@@ -210,7 +190,7 @@ fn filter_prepares_each_demanded_scalar_root_once() {
             chunk.append_int64(0, 1);
         }
         let filters = vec![call("plus", vec![leaf::column(), parameter()])];
-        let before = crate::test_original_eval::scalar_preparations();
+        let before = crate::test_evaluation::scalar_preparations();
         assert_eq!(
             evaluate(entry, &context, &filters, &chunk).unwrap().0,
             vec![true; 8]
@@ -219,7 +199,7 @@ fn filter_prepares_each_demanded_scalar_root_once() {
         // live parameter. Preparation reuse must preserve both reads.
         assert_eq!(context.calls.get(), 16);
         assert_eq!(
-            crate::test_original_eval::scalar_preparations() - before,
+            crate::test_evaluation::scalar_preparations() - before,
             1,
             "scalar filter recompiled its genuine root for every live row"
         );
@@ -233,35 +213,29 @@ fn filter_only_prepares_demanded_roots_and_resource_never_replays() {
     for entry in 0..4 {
         let context = leaf::Context::new(2, Datum::Int(1)); // Panics on any live parameter read.
         let empty = input(0, 0);
-        let before = crate::test_original_eval::scalar_preparations();
+        let before = crate::test_evaluation::scalar_preparations();
         assert_eq!(
             evaluate(entry, &context, &[oversized()], &empty).unwrap(),
             (vec![], vec![])
         );
-        assert_eq!(crate::test_original_eval::scalar_preparations(), before);
+        assert_eq!(crate::test_evaluation::scalar_preparations(), before);
         assert_eq!(context.calls.get(), 0);
         let chunk = input(7, 0);
         let suppressed = vec![int(0), oversized()];
-        let before = crate::test_original_eval::scalar_preparations();
+        let before = crate::test_evaluation::scalar_preparations();
         assert_eq!(
             evaluate(entry, &context, &suppressed, &chunk).unwrap().0,
             vec![false; 7]
         );
         assert_eq!(
-            crate::test_original_eval::scalar_preparations() - before,
+            crate::test_evaluation::scalar_preparations() - before,
             usize::from(entry == 0 || entry == 2)
         );
         assert_eq!(context.calls.get(), 0);
         let demanded = vec![int(1), oversized()];
-        let before = crate::test_original_eval::entries();
         let error = evaluate(entry, &context, &demanded, &chunk).unwrap_err();
         assert!(matches!(error, EvalError::ExpressionRuntimeFailure(error)
             if error.class() == crate::ExpressionRuntimeFailureClass::ResourceLimit));
-        assert_eq!(
-            crate::test_original_eval::entries().0,
-            before.0,
-            "resource exhaustion invoked the original interpreter"
-        );
         assert_eq!(context.calls.get(), 0, "preparation demanded a live value");
     }
 }
@@ -293,11 +267,11 @@ fn filter_reuse_does_not_cache_failed_contexts_or_mutated_roots() {
                 (outcome, context.snapshot())
             };
             let original = leaf::Context::new(profile, Datum::Int(1));
-            let expected = crate::test_original_eval::with_original(|| observe(&original));
+            let expected = (|| observe(&original))();
             let actual = leaf::Context::new(profile, Datum::Int(1));
-            let before = crate::test_original_eval::scalar_preparations();
+            let before = crate::test_evaluation::scalar_preparations();
             assert_eq!(observe(&actual), expected);
-            assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
+            assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
         }
         // The previous call's borrow is over: public AST fields may now change.
         let Expression::ScalarFunction(function) = &mut filters[0] else {
@@ -305,13 +279,13 @@ fn filter_reuse_does_not_cache_failed_contexts_or_mutated_roots() {
         };
         function.args[1] = int(4);
         let actual = leaf::Context::new(2, Datum::Int(1));
-        let before = crate::test_original_eval::scalar_preparations();
+        let before = crate::test_evaluation::scalar_preparations();
         assert_eq!(
             evaluate(entry, &actual, &filters, &chunk).unwrap().0,
             vec![true; 8]
         );
         assert_eq!(actual.calls.get(), 0);
-        assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
+        assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
     }
 }
 
@@ -347,15 +321,12 @@ fn filter_reuse_matches_public_per_row_execution_and_reports_timing() {
             .unwrap()
         };
         assert_eq!(prepared(), expected);
-        let before = crate::test_original_eval::scalar_preparations();
+        let before = crate::test_evaluation::scalar_preparations();
         assert_eq!(per_row(&root, &chunk), expected);
-        assert_eq!(
-            crate::test_original_eval::scalar_preparations() - before,
-            rows
-        );
-        let before = crate::test_original_eval::scalar_preparations();
+        assert_eq!(crate::test_evaluation::scalar_preparations() - before, rows);
+        let before = crate::test_evaluation::scalar_preparations();
         assert_eq!(prepared(), expected);
-        assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
+        assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
         // Same current shared compiler/SDK and real row on both sides. The
         // public-entry baseline prepares for each row, as before this change.
         // Timing is descriptive; correctness and compilation counts decide pass.

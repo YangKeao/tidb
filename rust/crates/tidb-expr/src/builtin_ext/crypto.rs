@@ -150,68 +150,6 @@ where
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn eval_aes_lazy_original<F>(
-    name: &str,
-    arg_count: usize,
-    mut eval: F,
-    ctx: &dyn Columns,
-) -> Option<Result<Datum, EvalError>>
-where
-    F: FnMut(usize) -> Result<Datum, EvalError>,
-{
-    let function = if name.eq_ignore_ascii_case("aes_encrypt") {
-        "aes_encrypt"
-    } else if name.eq_ignore_ascii_case("aes_decrypt") {
-        "aes_decrypt"
-    } else {
-        return None;
-    };
-    use crate::tikv::{EvaluatedArgs, EvaluatedBytesOp};
-    Some(crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || {
-            let mode = ctx.block_encryption_mode();
-            if mode.iv_required() {
-                if arg_count != 3 {
-                    return Err(EvalError::WrongParameterCount(function));
-                }
-            } else if !(2..=3).contains(&arg_count) {
-                return Err(EvalError::WrongParameterCount(function));
-            }
-            let null = || {
-                Ok((
-                    EvaluatedBytesOp::AesNullNative,
-                    EvaluatedArgs::NullWitness(None),
-                ))
-            };
-            let Some(input) = sql_string_bytes(&eval(0)?)? else {
-                return null();
-            };
-            let Some(password) = sql_string_bytes(&eval(1)?)? else {
-                return null();
-            };
-            let arguments = if mode.iv_required() {
-                let Some(iv) = sql_string_bytes(&eval(2)?)? else {
-                    return null();
-                };
-                EvaluatedArgs::Bytes3([Some(input), Some(password), Some(iv)])
-            } else {
-                if arg_count == 3 {
-                    ctx.append_warning(1618, "<IV> option ignored");
-                }
-                EvaluatedArgs::Bytes2(Some(input), Some(password))
-            };
-            Ok((aes_operation(function == "aes_encrypt", mode), arguments))
-        },
-        |computed| {
-            Ok(computed
-                .into_bytes()?
-                .map_or(Datum::Null, Datum::new_string))
-        },
-    ))
-}
-
 /// Only immutable signature metadata selects the recipe; the worker receives
 /// the complete password and IV and owns key derivation and cipher policy.
 pub(crate) fn aes_operation(

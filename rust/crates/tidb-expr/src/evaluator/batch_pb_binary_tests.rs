@@ -989,9 +989,43 @@ fn pb_binary_source_direct_consumers_and_fixed_cap_recovery() {
                     panic!()
                 };
                 let control = C::new(true, values.clone(), 0);
-                let raw = function
-                    .original_pb_binary_value_for_test(&control, input(&None).get_row(0))
-                    .unwrap();
+                let builtin = function.pb_binary_values().unwrap();
+                let raw = if let Some(domain) = builtin.domain() {
+                    let source = input(&None);
+                    let operand = |index| {
+                        crate::scalar_function::eval_numeric_operand_row(
+                            &function.args[index],
+                            &control,
+                            source.get_row(0),
+                            domain,
+                        )
+                        .unwrap()
+                    };
+                    builtin
+                        .eval_values(
+                            operand(0),
+                            operand(1),
+                            [0, 1].map(|i| {
+                                function.args[i]
+                                    .static_type()
+                                    .is_some_and(|field| !field.is_unsigned())
+                            }),
+                            function.derived_collation(),
+                            crate::ops::Operands::of(&function.args[0], &function.args[1]),
+                            &control,
+                        )
+                        .unwrap()
+                } else {
+                    builtin
+                        .integer_mod_values(
+                            builtin.integer_mod_operand(0, values[0].clone()).unwrap(),
+                            builtin.integer_mod_operand(1, values[1].clone()).unwrap(),
+                            crate::Columns::div_precision_increment(&control),
+                            function.derived_collation(),
+                            &control,
+                        )
+                        .unwrap()
+                };
                 let raw = crate::scalar_function::interpret_integer_result(
                     raw,
                     function.ret_type.as_ref(),

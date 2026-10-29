@@ -1,5 +1,5 @@
 // Copyright 2026 PingCAP, Inc. Licensed under Apache-2.0.
-//! Original eager scalar value-body observations, before metadata extraction.
+//! Shared value-only kernels checked against frozen scalar observations.
 use crate::{constant::Constant, expression::Expression, scalar_function::ScalarFunction, Datum};
 use tidb_datatype::{FieldType, FieldTypeCode};
 
@@ -139,15 +139,14 @@ fn fold(hash: &mut u64, value: &[u8]) {
     }
 }
 #[test]
-fn eager_scalar_original_observations() {
-    if isolated("eager_scalar_original_observations") {
+fn eager_value_kernel_matches_frozen_observations() {
+    if isolated("eager_value_kernel_matches_frozen_observations") {
         return;
     }
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-20T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
     tidb_datatype::with_test_conversion_clock(now, || {
-        let input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
         let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
         for profile in 0..3 {
             for level in 0..3 {
@@ -156,22 +155,28 @@ fn eager_scalar_original_observations() {
                         for value in super::byte_unary_value_tests::values() {
                             let f = function(name, &value, &ret);
                             let ctx = super::calendar_value_tests::context(profile, 2, level);
-                            let before = crate::scalar_function::eager_value_phases_for_test();
-                            let value = super::misc_identity_value_tests::observe(
+
+                            let mut reached_value_body = false;
+                            let observed = super::misc_identity_value_tests::observe(
                                 || {
-                                    crate::test_original_eval::with_original(|| {
-                                        f.eval(&ctx, input.get_row(0))
-                                    })
+                                    // Keep the frozen record's stored-header probe, then
+                                    // test the value kernel directly without an interpreter.
+                                    if let Some(header) = f.identity_constant_probe() {
+                                        let _ = header.sql_string().ok();
+                                    }
+                                    reached_value_body = true;
+                                    let result=crate::scalar_function::eager_values::EagerValueKernel::capture(&f)
+                                    .eval_in(&ctx,arguments(name,&value),|error|error)?;
+                                    crate::scalar_function::coerce_function_result(
+                                        f.func_name.lowercase(),
+                                        f.ret_type.as_ref(),
+                                        result,
+                                    )
                                 },
                                 &ctx,
                             );
-                            fold(&mut hash, &value);
-                            fold(
-                                &mut hash,
-                                &((crate::scalar_function::eager_value_phases_for_test() - before)
-                                    as u64)
-                                    .to_le_bytes(),
-                            );
+                            fold(&mut hash, &observed);
+                            fold(&mut hash, &u64::from(reached_value_body).to_le_bytes());
                             count += 1;
                         }
                     }
@@ -183,23 +188,16 @@ fn eager_scalar_original_observations() {
     });
 }
 #[test]
-fn eager_scalar_registered_shapes_really_enter_original_eager_phase() {
-    let input = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
+fn eager_scalar_registered_shapes_use_common_argument_policy() {
     for &name in NAMES {
         let f = function(
             name,
             &Datum::new_string("hello"),
             &FieldType::new(FieldTypeCode::VarString),
         );
-        let ctx = super::calendar_value_tests::context(1, 2, 0);
-        let before = crate::scalar_function::eager_value_phases_for_test();
-        let _ = super::misc_identity_value_tests::observe(
-            || crate::test_original_eval::with_original(|| f.eval(&ctx, input.get_row(0))),
-            &ctx,
-        );
         assert_eq!(
-            crate::scalar_function::eager_value_phases_for_test() - before,
-            1,
+            crate::scalar_function::argument_policy::classify(&f),
+            crate::scalar_function::argument_policy::ArgumentPolicy::CommonEager,
             "{name}"
         );
     }

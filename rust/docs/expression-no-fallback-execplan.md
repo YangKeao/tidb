@@ -18,6 +18,8 @@ previous user contract; demand and side-effect ordering do not.
 
 ## Progress
 
+- [x] (2026-10-29) Remove the retained test-only AST, scalar, protobuf, native-batch, Decimal and Unistore evaluators and their activation switches. Preserve existing JSON fixtures and public-path fixed results; store260historical out-of-budget reference rows as data. Explicitly retire the old-only diagnostic observer and unbounded membership reference, replacing them with independently captured pre-deletion public/admitted baselines. Complete the full frontend sweep2345pass/6fail/95ignore, then fix the two test-reference defects and retire their duplicated old-only observer. Targeted final matrices pass; the remaining3failures are the inherited baseline. Only2testmodules and one production helper visibility change after the full sweep, with its entire body/file otherwise byte-identical. Uni207/exactold3/13ignore, Projection52, Expand6, lint, dual44formats and source audits pass. Receipt evidence/no-fallback-n66-test-oracle-retirement.md; no push or performance claim.
+
 - [x] (2026-10-28 final service/performance evidence) Run actual release Rust native/current SQL frontends against the same real current TiKV fixture.48pairs/96functional observations match values/metadata/diagnostics, including true binary prepared rebinds and all5static compatibility exceptions. Complete270primary cells/52060queries,32CPUload cells/1605queries,36concurrency windows/26608queries,16separate allocator/copy observations and4separate CPU profiles. All source/binary/digest checks pass; all owned services, clients and duty workers stop and eight ports are free. Preserve240/245frozen family credit, all5exceptions uncredited. Current runtime is slower: JSON batch-setting1024 median latency2.13x native and8clients throughput0.14x; no performance-improvement or production-readiness claim. Report evidence/expression-unification-final-evaluation.zh.md and companion coverage/19-entry inventories. Remaining acceptance is independent human review; any subsequent optimization must remain in the same SDK and preserve quota/demand/provenance contracts.
 
 - [x] (2026-10-28 N65 verified) Both scan filters, TopN keys and aggregate arguments now retain genuine borrowed plans outside physical-row loops. Parameter callback reentry and reuse pass. Final full frontend2363/exactold3/95ignore, Unistore209/exactold3/13, Projection52/Expand6/SHOW31/exactold2, SDK1164/exactold1/1 and exact171 clippy warnings pass their contracts. A narrowly proven final field doc and3 already-unused private functions made test-only are covered by fresh fragment/full-Unistore/production/lint/dual-format gates; frontend warning Counter returns to346. Source audit checks13 retained originals, unchanged executed observers/record hashes and unchanged canonical SDK driver. Receipt evidence/no-fallback-n65.md. Real-service correctness/performance work continues.
@@ -396,6 +398,9 @@ previous user contract; demand and side-effect ordering do not.
   shared-library and release-server cohorts and report remaining performance costs.
 
 ## Surprises & Discoveries
+
+- Observation (2026-10-29): An explicitly selected old interpreter is not always the pre-deletion default public contract. A7200-row old diagnostic observer hadA4F6DB5E8D40E458; the actual public path independently captured twice before deletion already had80E3F7155D1FD890. Preserve the distinction rather than silently relabeling the old observer. Malformed Decimal metadata also requires separate historical-reference data and live finite-resource checks; no cap is raised.
+  Evidence: N66 retirement receipt, original/default capture provenance and final typed-dynamic13pass. The full membership reference remains1144320/0926C1DF1FCFFBE1 in the pre-deletion capture; actual admitted rows are1141600/6DCAFE78EBD1BFF5 with2720terminal resources, all still exercised after retirement.
 
 - JSON REPLACE stages every prepared pair before one kernel; APPEND must execute each pair before demanding another. A literal NULL value operand has a separate actual consumer recipe. FROM_UNIXTIME converts its actual Decimal before requesting the format child. These phases now use owned continuation values and preserve old failure/read order.
 
@@ -885,6 +890,14 @@ actual argument/result carriers before compilation so this known capability gap
 is classified as admission, rather than swallowing arbitrary InvalidSpec errors.
 
 ## Decision Log
+
+- Decision: Validate the final narrow test-reference fixes by targeted complete matrices and an exact source comparison after the completed broad sweep. Do not claim a full sweep of the exact final source. Preserve original-only observer digests as historical evidence, and give independently captured public/admitted cohorts explicit test names and expectations.
+  Rationale: The completed broad sweep found exactly2test-reference defects (3tests including a duplicated old-only observer) plus the3inherited failures. Only the affected test modules and a current operand helper's visibility change afterward; its production body is unchanged. A second26million-case sweep adds no coverage of the final narrow changes beyond their complete targeted reruns.
+  Date/Author: 2026-10-29 / ExpressionReuseEngineer
+
+- Decision: Retire test-only old evaluators as well as production fallback, including their activation switches and redundant original-only control suites. Keep historical receipts and immutable expected records unchanged. Public/prepared or cached/uncached API comparisons may remain when they exercise different entry/lifecycle paths; do not relabel a current-versus-current call as independent original validation.
+  Rationale: YangKeao explicitly authorized deletion in thread message c49af5d4 on 2026-10-29, superseding the earlier requirement to retain these bodies as live differential oracles. No host compatibility algorithm migration or performance change is requested.
+  Date/Author: 2026-10-29 / ExpressionReuseEngineer
 
 - Decision: Promote all actual legacy typed consumers together after0 unimplemented cells and the complete fixed scope comparison pass. Preserve test-only recursive originals with all internal calls explicitly redirected to originals, while existing frozen observers exercise the new default. This provides independent original/current evidence without any production retry.
 
@@ -1391,6 +1404,8 @@ TiDBEngineer.
   Date/Author: 2026-10-17 / TiDBEngineer.
 
 ## Outcomes & Retrospective
+
+The 2026-10-29 retirement removes the live test-only evaluators as requested. Existing fixed JSON records remain unchanged; original-only and unbounded observations are explicitly distinguished from the default public and finite caller contracts. Final validation combines the completed broad sweep and targeted test-reference reruns, leaving only known failures. The final frontend inventory has 2,445 tests, reduced by 16 obsolete or duplicate controls; Unistore has 223 tests, reduced by two retained-original controls. Production evaluation remains the shared SDK. Family credit remains 240/245, with all five host algorithms uncredited. No service or performance rerun, publication, or independent human review is claimed.
 
 Final actual service evidence is complete, not just unit timings or the separate cgo experiment. The common SDK routes and no-replay default are verified; frozen coverage remains240/245with5visible host compatibility algorithms. The final performance report documents significant allocator/transport/accounting overhead and explicit next priorities rather than a speedup. Hardware, real data, requested versus observed chunk variables, debug storage, original server background panics and shutdown limits are recorded. All owned experiment processes and ports are cleaned. Independent human review remains unclaimed; this is not production release readiness. Historical milestone notes below describe their then-current remaining work.
 
@@ -5563,3 +5578,10 @@ Before changing that channel, archive5a30922d56 and capture/rerun/pin3240/FB8415
 Run public_source_tests (15), the43 exact existing dynamic-leaf/typed-context/deferred/diagnostic tests selected in workspace n51-context-focused.json, actual Projection52, current Expand6+64/B42 and inventory83088/0/0, make lint and both pinned formatters for the five Rust files. The previous N50 whole-frontend baseline is explicitly retained rather than reported as a fresh N51 full run. Receipt rust/docs/evidence/no-fallback-n51.md lists exact commands and limitations. Continue with a genuine borrowed ScalarFunction root and its distinct enclosing-expression result view before switching public entries; task4 remains active.
 
 2026-10-27 revision: recorded actual lazy borrowed filter preparation, independent fixed observations, pre-change compilation failures and completed current-source gates/timings. Next, locate owned-root state in the real request rather than Unistore's ephemeral per-row evaluator.
+
+
+## Remove retained evaluators after migration
+
+The migration has already fixed original results in digest assertions and JSON fixtures. The remaining old evaluators are test-only implementations in `tidb-expr/src/original_ast.rs`, test branches in `expression.rs`, `scalar_function.rs`, and test-only `_original` methods in `tidb-unistore/src/cophandler.rs`. Remove them and their switches; preserve public evaluation, value-only algorithms, metadata and error handling. Retain golden regression checks at the nearest existing suites. Delete comparison scaffolding that has no purpose without a second evaluator, and document reduced test counts explicitly.
+
+From repository root run `RUSTFLAGS='' CARGO_BUILD_JOBS=8 ../tools/cargo-tidb test --manifest-path rust/Cargo.toml --release --locked --offline -j8 -p tidb-expr --lib`, the equivalent `-p tidb-unistore --lib`, and relevant `tidb-executor` Projection/Expand tests. Run `make lint` with no test builds active, then format-check all changed Rust files using both existing toolchains. Known pre-existing failures remain listed in the final evaluation receipt. No services, SQL performance rerun, SDK rebuild or publication is required for this test-only retirement. Historical source/results remain recoverable from the existing signed commits; do not regenerate golden fixtures.

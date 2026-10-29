@@ -233,15 +233,14 @@ fn unregistered_names_keep_original_eager_values_and_errors() {
 }
 
 #[test]
-fn explicit_original_public_row_contracts_are_independent() {
-    use crate::test_original_eval::compare_records;
-    let metadata = compare_records(|| row_records(|e, c, r| e.eval_with_error_value(c, r)));
+fn public_row_contracts_match_frozen_results() {
+    let metadata = (|| row_records(|e, c, r| e.eval_with_error_value(c, r)))();
     assert_eq!(
         (metadata.len(), digest(&metadata)),
         (288, 0x433BC944B34D725D)
     );
-    let cursor = compare_records(|| cursor_records(|e, c, r| e.eval_with_error_value(c, r)));
+    let cursor = (|| cursor_records(|e, c, r| e.eval_with_error_value(c, r)))();
     assert_eq!((cursor.len(), digest(&cursor)), (20, 0x8A3846E1FFF37587));
-    let unknown = compare_records(|| unknown_records(|e, c, r| e.eval_with_error_value(c, r)));
+    let unknown = (|| unknown_records(|e, c, r| e.eval_with_error_value(c, r)))();
     assert_eq!((unknown.len(), digest(&unknown)), (96, 0x636A12C8D9724869));
 }

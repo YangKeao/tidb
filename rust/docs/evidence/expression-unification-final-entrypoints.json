@@ -7,9 +7,9 @@
         "eval",
         "eval_in"
       ],
-      "current_source_sha256": "5c4d15294ab3bcf8a5636a11d5dc639a7f5a2abeb170590780550610a308b947",
+      "current_source_sha256": "c914c455cb32b39a6763f89e09d119a293dae5330e1ea58923930f1bc26c0675",
       "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
-      "evidence": "N59",
+      "evidence": "N59 / N66 test-oracle retirement",
       "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
     },
     {
@@ -18,9 +18,9 @@
       "original_symbols": [
         "Expression::eval"
       ],
-      "current_source_sha256": "710dd53a267d67e104da7e6adc640aef31f3a31f19d8d8d2fdb3eeb2651cdaf6",
+      "current_source_sha256": "c78b260ab784807ac10e0653bb9dbd6011394e1b023989b4cd4910f2b5c8d956",
       "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
-      "evidence": "N54-N58",
+      "evidence": "N54-N58 / N66 test-oracle retirement",
       "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
     },
     {
@@ -43,9 +43,9 @@
         "EvaluatorSuite",
         "ColumnSwapHelper"
       ],
-      "current_source_sha256": "410a646fb7805f55e7bcd2c85ea1dfa4fa25344f7bddab38f6396990a5993602",
+      "current_source_sha256": "cfb8ad50d934b7b80f0c6a551076d1832b33e80510f939ece4ce86ff0f9370a5",
       "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
-      "evidence": "N60-N62",
+      "evidence": "N60-N62 / N66 test-oracle retirement",
       "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
     },
     {
@@ -75,9 +75,9 @@
         "fit_decimal_column",
         "get_time_value"
       ],
-      "current_source_sha256": "5c4d15294ab3bcf8a5636a11d5dc639a7f5a2abeb170590780550610a308b947",
+      "current_source_sha256": "c914c455cb32b39a6763f89e09d119a293dae5330e1ea58923930f1bc26c0675",
       "current_route": "existing caller metadata/scheduling plus shared SDK value primitive; no general evaluator replay",
-      "evidence": "M2/shared SDK value facades",
+      "evidence": "M2/shared SDK value facades / N66 test-oracle retirement",
       "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
     },
     {
@@ -101,9 +101,9 @@
         "SimpleExpr::Shared",
         "SimpleExpr::Func"
       ],
-      "current_source_sha256": "7f321ba3c176630271bc83f96054d7e80a467a94e7739a482bc05d062cd5419b",
+      "current_source_sha256": "daf491cb0ce54a48070303e567578ace7c6a73375c2bedd60a0e67fbc8ce3d26",
       "current_route": "public shared SDK source program, directly or through the actual public Expression/AST/Suite entry",
-      "evidence": "N56/N65",
+      "evidence": "N56/N65 / N66 test-oracle retirement",
       "scope_note": "This is a final call-site inventory supported by prior immutable tests/source audits and current gates, not an independent third-party code review or proof of complete executor migration."
     },
     {
@@ -240,5 +240,17 @@
   ],
   "default_native_replay": false,
   "static_uncredited_compatibility_families": 5,
-  "independent_third_party_review": "pending human review; not claimed"
+  "independent_third_party_review": "pending human review; not claimed",
+  "oracle_retirement": {
+    "date": "2026-10-29",
+    "receipt": "no-fallback-n66-test-oracle-retirement.md",
+    "note": "Source hashes updated after retiring test-only evaluators. Earlier performance results retain their originally measured source and binary provenance; no new speedup is claimed.",
+    "updated_entry_ids": [
+      "ast",
+      "typed_row",
+      "batch",
+      "helper",
+      "unistore"
+    ]
+  }
 }

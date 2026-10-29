@@ -5,21 +5,14 @@ use crate::tikv::dynamic_leaf_tests as leaf;
 use std::sync::{Arc, RwLock};
 
 fn without_native_tree_dispatch<T>(body: impl FnOnce() -> T) -> T {
-    assert!(!crate::test_original_eval::requested());
-    let native = crate::scalar_function::original_native_batch_entries();
-    let scalar = crate::test_original_eval::entries();
-    let result = body();
+    let before = crate::test_evaluation::shared_entries();
+    let value = body();
     assert_eq!(
-        crate::scalar_function::original_native_batch_entries(),
-        native,
-        "shared native entry called original typed traversal"
+        crate::test_evaluation::shared_entries(),
+        before,
+        "batch source nested a public scalar driver"
     );
-    assert_eq!(
-        crate::test_original_eval::entries(),
-        scalar,
-        "shared native entry nested a scalar expression driver"
-    );
-    result
+    value
 }
 
 fn fields() -> Vec<FieldType> {
@@ -215,48 +208,12 @@ fn digest(records: &[String]) -> u64 {
     hash
 }
 #[test]
-fn native_entry_original_contract_capture() {
-    let old = crate::test_original_eval::with_original(|| {
-        records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    eprintln!("N60 native original {} {:016X}", old.len(), digest(&old));
-    assert_eq!((old.len(), digest(&old)), (36288, 0xF371_2C96_0BDD_F2E8));
-}
-
-#[test]
-fn native_entry_shared_graph_matches_original_contract() {
-    let old = crate::test_original_eval::with_original(|| {
-        records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    assert_eq!((old.len(), digest(&old)), (36288, 0xF371_2C96_0BDD_F2E8));
-    let actual = without_native_tree_dispatch(|| {
-        records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    let mut differences = 0usize;
-    let mut categories = std::collections::BTreeMap::<String, usize>::new();
-    let mut shown = std::collections::BTreeSet::new();
-    for (index, (old, new)) in old.iter().zip(&actual).enumerate() {
-        if old != new {
-            let key = old.split('|').next().unwrap();
-            let selection = key.rsplit('/').next().unwrap();
-            let category = format!(
-                "selection{selection}:{} -> {}",
-                old.split('|').nth(1).unwrap(),
-                new.split('|').nth(1).unwrap()
-            );
-            *categories.entry(category.clone()).or_default() += 1;
-            if shown.len() < 24 && shown.insert(category) {
-                eprintln!("N60 native difference {index}\nOLD {old}\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    eprintln!("N60 categories {categories:?}");
-    eprintln!(
-        "N60 native shared {} / {differences} differences",
-        actual.len()
+fn native_entry_public_contract_matches_frozen_results() {
+    let actual = records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (36288, 0xF371_2C96_0BDD_F2E8)
     );
-    assert_eq!(differences, 0);
 }
 
 #[path = "batch_native_registry_tests.rs"]
@@ -335,35 +292,12 @@ fn integer_result_records(
     records
 }
 #[test]
-fn native_entry_integer_result_original_and_shared() {
-    let old = crate::test_original_eval::with_original(|| {
-        integer_result_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    eprintln!(
-        "N60 integer result original {} {:016X}",
-        old.len(),
-        digest(&old)
+fn native_entry_integer_result_matches_frozen_results() {
+    let actual = integer_result_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (4608, 0xD46B_5C12_B950_21E3)
     );
-    assert_eq!((old.len(), digest(&old)), (4608, 0xD46B_5C12_B950_21E3));
-    let actual = without_native_tree_dispatch(|| {
-        integer_result_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    let mut differences = 0;
-    let mut shown = std::collections::BTreeSet::new();
-    for (index, (old, new)) in old.iter().zip(&actual).enumerate() {
-        if old != new {
-            let category = old.split('/').next().unwrap().to_owned();
-            if shown.len() < 16 && shown.insert(category) {
-                eprintln!("N60 integer result difference{index}\\nOLD {old}\\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    eprintln!(
-        "N60 integer result shared {} / {differences} differences",
-        actual.len()
-    );
-    assert_eq!(differences, 0);
 }
 fn hybrid_result_records(
     mut evaluate: impl FnMut(
@@ -437,35 +371,12 @@ fn hybrid_result_records(
     records
 }
 #[test]
-fn native_entry_hybrid_result_original_and_shared() {
-    let old = crate::test_original_eval::with_original(|| {
-        hybrid_result_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    eprintln!(
-        "N60 hybrid result original {} {:016X}",
-        old.len(),
-        digest(&old)
+fn native_entry_hybrid_result_matches_frozen_results() {
+    let actual = hybrid_result_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (6912, 0x8637_5CDF_1EAB_4989)
     );
-    assert_eq!((old.len(), digest(&old)), (6912, 0x8637_5CDF_1EAB_4989));
-    let actual = without_native_tree_dispatch(|| {
-        hybrid_result_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    let mut differences = 0;
-    let mut shown = std::collections::BTreeSet::new();
-    for (index, (old, new)) in old.iter().zip(&actual).enumerate() {
-        if old != new {
-            let category = old.split('/').take(2).collect::<Vec<_>>().join("/");
-            if shown.len() < 12 && shown.insert(category) {
-                eprintln!("N60 hybrid result difference{index}\\nOLD {old}\\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    eprintln!(
-        "N60 hybrid result shared {} / {differences} differences",
-        actual.len()
-    );
-    assert_eq!(differences, 0);
 }
 fn run_native_surface(
     e: &Expression,
@@ -565,24 +476,11 @@ fn lifecycle_records(shared: bool) -> Vec<String> {
 }
 #[test]
 fn native_entry_long_live_context_panic_and_null_recovery() {
-    let old = crate::test_original_eval::with_original(|| lifecycle_records(false));
-    eprintln!("N60 lifecycle original {} {:016X}", old.len(), digest(&old));
-    assert_eq!((old.len(), digest(&old)), (360, 0x2B52_45F3_8AEC_C3EC));
-    let actual = without_native_tree_dispatch(|| lifecycle_records(true));
-    let mut differences = 0;
-    for (index, (old, new)) in old.iter().zip(&actual).enumerate() {
-        if old != new {
-            if differences < 8 {
-                eprintln!("N60 lifecycle difference{index}\\nOLD {old}\\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    eprintln!(
-        "N60 lifecycle shared {} / {differences} differences",
-        actual.len()
+    let actual = lifecycle_records(true);
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (360, 0x2B52_45F3_8AEC_C3EC)
     );
-    assert_eq!(differences, 0);
 }
 #[test]
 fn native_entry_resource_refusals_do_not_evaluate_or_retry_and_recover() {
@@ -590,11 +488,10 @@ fn native_entry_resource_refusals_do_not_evaluate_or_retry_and_recover() {
     let expression = plus(parameter(), parameter());
     let input = chunk(&[], &[vec![], vec![], vec![]]);
     let original_context = leaf::Context::new(0, Datum::Int(7));
-    let original = crate::test_original_eval::with_original(|| {
-        crate::scalar_function::try_eval_batch(&expression, &original_context, &input)
-    })
-    .unwrap()
-    .unwrap();
+    let original =
+        (|| crate::scalar_function::try_eval_batch(&expression, &original_context, &input))()
+            .unwrap()
+            .unwrap();
     let original_calls = original_context.calls.get();
     assert_eq!(
         original_calls, 4,
@@ -752,7 +649,7 @@ fn entropy_records(shared: bool) -> Vec<String> {
 }
 #[test]
 fn native_entry_entropy_keeps_actual_admission_without_value_effects() {
-    let original = crate::test_original_eval::with_original(|| entropy_records(false));
+    let original = (|| entropy_records(false))();
     let actual = without_native_tree_dispatch(|| entropy_records(true));
     assert_eq!(
         original, actual,

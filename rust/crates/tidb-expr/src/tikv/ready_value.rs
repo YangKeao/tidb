@@ -203,11 +203,7 @@ impl ReadyValueCache {
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<Datum, EvalError> {
         #[cfg(test)]
-        if crate::test_original_eval::requested() {
-            return root.eval(context, row);
-        }
-        #[cfg(test)]
-        crate::test_original_eval::note_shared();
+        crate::test_evaluation::note_shared();
         // Release the slot borrow before pure compilation or any callback.
         // Reentry can use another program in this same SDK, without sharing a
         // mutable worker or changing demand-time ready-capability checks.

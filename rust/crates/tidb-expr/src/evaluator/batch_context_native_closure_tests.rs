@@ -213,9 +213,7 @@ fn context_records(projection: bool) -> (Vec<String>, Vec<String>) {
                                                 &[ty()],
                                             )
                                         } else {
-                                            crate::test_original_eval::with_original(|| {
-                                                suite.run(&context, &mut input, &mut output)
-                                            })
+                                            (|| suite.run(&context, &mut input, &mut output))()
                                         }
                                     }));
                                 let status = match result {
@@ -273,17 +271,11 @@ fn context_projection_actual_preserves_original_and_retires_admissions() {
     let old: Vec<String> =
         serde_json::from_str(include_str!("batch_context_native_original.json")).unwrap();
     assert_eq!((old.len(), digest(&old)), (16416, 0x58F7_ED71_8027_3A11));
-    let native_before = crate::scalar_function::original_native_batch_entries();
-    let scalar_before = crate::test_original_eval::entries();
+    let scalar_before = crate::test_evaluation::shared_entries();
     let (actual, routes) = context_records(true);
     assert_eq!(
-        native_before,
-        crate::scalar_function::original_native_batch_entries(),
-        "shared context profile entered old native batch tree"
-    );
-    assert_eq!(
         scalar_before,
-        crate::test_original_eval::entries(),
+        crate::test_evaluation::shared_entries(),
         "shared context profile entered old scalar tree"
     );
     assert_eq!(old.len(), actual.len());

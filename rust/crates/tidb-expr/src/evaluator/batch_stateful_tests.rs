@@ -362,9 +362,8 @@ fn stateful_value_phases_independently_match_original_before_caller_retirement()
                     let input = chunk(&[ty()], &[vec![Datum::Int(1)]]);
                     let row = input.get_row(0);
                     let old = session_read_outcome(|| {
-                        left.ready.with_columns(&left, |ctx| {
-                            crate::scalar_function::stateful::original_eval(&function, ctx, row)
-                        })
+                        left.ready
+                            .with_columns(&left, |ctx| function.eval(ctx, row))
                     });
                     let new = session_read_outcome(|| {
                         right.ready.with_columns(
@@ -4592,14 +4591,6 @@ fn run_arithmetic_absent_result(compare: bool, full: bool) {
 }
 
 #[test]
-fn arithmetic_absent_result_original_raw_datums() {
-    if isolate_common_corpus("stateful_tests::arithmetic_absent_result_original_raw_datums") {
-        return;
-    }
-    std::panic::set_hook(Box::new(|_| {}));
-    run_arithmetic_absent_raw_datums(false);
-}
-#[test]
 fn arithmetic_absent_result_actual_raw_datums() {
     if isolate_common_corpus("stateful_tests::arithmetic_absent_result_actual_raw_datums") {
         return;
@@ -4647,12 +4638,20 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
                         let mut input = Chunk::new_with_capacity(&[], 1);
                         input.set_num_virtual_rows(1);
                         let old = ArithmeticAbsentContext::new(0, false, values.clone());
-                        let expected = original_session_read_outcome(|| {
-                            function
-                                .eval(&old, input.get_row(0))
-                                .map(|v| leaf::frame(&v))
-                        });
                         let label = format!("arithmetic-absent-raw/{name}/{fi}/{vi}/{position}");
+                        let (expected, expected_effects) = if vi == 110 {
+                            assert!(
+                                matches!(&value, Datum::Decimal(d) if d.scale()==u32::MAX && d.storage_scale()==3 && d.coefficient_bytes()==[0,255,b'0'])
+                            );
+                            retired_boundary_record(&label)
+                        } else {
+                            let expected = original_session_read_outcome(|| {
+                                function
+                                    .eval(&old, input.get_row(0))
+                                    .map(|v| leaf::frame(&v))
+                            });
+                            (expected, old.snapshot())
+                        };
                         if compare {
                             let actual = suite(Expression::ScalarFunction(function.clone()));
                             let before_compile =
@@ -4795,15 +4794,15 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
                                             panic!("arithmetic demand did not terminate")
                                         },
                                     );
-                                    if got != expected || new.snapshot() != old.snapshot() {
-                                        eprintln!("ARITHMETIC ABSENT RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                    if got != expected || new.snapshot() != expected_effects {
+                                        eprintln!("ARITHMETIC ABSENT RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",expected_effects,new.snapshot());
                                     }
                                     assert_eq!(got, expected, "{label}");
-                                    assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                    assert_eq!(new.snapshot(), expected_effects, "{label}");
                                 }
                             }
                         }
-                        for byte in format!("{label}|{expected}|{}", old.snapshot()).bytes() {
+                        for byte in format!("{label}|{expected}|{}", expected_effects).bytes() {
                             hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
                         }
                         count += 1;
@@ -5784,22 +5783,13 @@ fn run_optional_membership_phases(compare: bool) {
 }
 
 #[test]
-fn optional_membership_original_all_actual_values() {
-    if isolate_common_corpus("stateful_tests::optional_membership_original_all_actual_values") {
+fn optional_membership_full_values_match_frozen_admitted_results() {
+    if isolate_common_corpus(
+        "stateful_tests::optional_membership_full_values_match_frozen_admitted_results",
+    ) {
         return;
     }
     std::panic::set_hook(Box::new(|_| {}));
-    run_optional_membership_all_actual_values(false);
-}
-#[test]
-fn optional_membership_actual_all_actual_values() {
-    if isolate_common_corpus("stateful_tests::optional_membership_actual_all_actual_values") {
-        return;
-    }
-    std::panic::set_hook(Box::new(|_| {}));
-    run_optional_membership_all_actual_values(true);
-}
-fn run_optional_membership_all_actual_values(compare: bool) {
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -5816,9 +5806,8 @@ fn run_optional_membership_all_actual_values(compare: bool) {
             FieldType::new(FieldTypeCode::Duration).with_decimal(3),
             FieldType::new(FieldTypeCode::Json),
         ];
-        let mut gaps = vec![];
-        let mut bounded_resources = 0usize;
-        let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
+        let (mut count, mut admitted, mut resources, mut hash) =
+            (0usize, 0usize, 0usize, 0xcbf29ce484222325u64);
         for name in ["in", "interval", "greatest", "least"] {
             for (fi, field) in fields.iter().enumerate() {
                 for arity in [2, 4] {
@@ -5832,117 +5821,81 @@ fn run_optional_membership_all_actual_values(compare: bool) {
                                 values[position] = value.clone();
                                 for enabled in [false, true] {
                                     for selection in [None, Some(vec![2, 0, 2]), Some(vec![])] {
-                                        let make = || {
-                                            let args = (0..arity)
-                                                .map(|i| {
-                                                    if i < 2 {
-                                                        parameter(i, field.clone())
-                                                    } else {
-                                                        literal(
-                                                            if i == 2 {
-                                                                Datum::Null
-                                                            } else {
-                                                                Datum::Int(10)
-                                                            },
-                                                            field.clone(),
-                                                        )
-                                                    }
-                                                })
-                                                .collect();
-                                            let mut e = call(name, field.clone(), args);
-                                            erase_optional_call_declarations(&mut e, mask);
-                                            suite(e)
-                                        };
-                                        let old_owner = make();
-                                        let new_owner = make();
-                                        let old = C::new(0, enabled, values.clone());
-                                        let new = C::new(0, enabled, values.clone());
+                                        let args = (0..arity)
+                                            .map(|i| {
+                                                if i < 2 {
+                                                    parameter(i, field.clone())
+                                                } else {
+                                                    literal(
+                                                        if i == 2 {
+                                                            Datum::Null
+                                                        } else {
+                                                            Datum::Int(10)
+                                                        },
+                                                        field.clone(),
+                                                    )
+                                                }
+                                            })
+                                            .collect();
+                                        let mut root = call(name, field.clone(), args);
+                                        erase_optional_call_declarations(&mut root, mask);
+                                        let owner = suite(root);
+                                        let context = C::new(0, enabled, values.clone());
                                         for reuse in 0..2 {
-                                            let input = || {
-                                                let mut c = chunk(
+                                            let mut input = chunk(
+                                                &[ty()],
+                                                &[
+                                                    vec![Datum::Int(1)],
+                                                    vec![Datum::Int(2)],
+                                                    vec![Datum::Int(3)],
+                                                ],
+                                            );
+                                            input.set_sel(selection.clone());
+                                            let mut output = output_for(field);
+                                            output.append_null(0);
+                                            let got = session_read_outcome(|| {
+                                                owner.run_with_tikv_batch(
+                                                    &context,
+                                                    &mut input,
+                                                    &mut output,
                                                     &[ty()],
-                                                    &[
-                                                        vec![Datum::Int(1)],
-                                                        vec![Datum::Int(2)],
-                                                        vec![Datum::Int(3)],
-                                                    ],
-                                                );
-                                                c.set_sel(selection.clone());
-                                                c
-                                            };
-                                            let mut a = input();
-                                            let mut left = output_for(field);
-                                            left.append_null(0);
-                                            let expected = original_session_read_outcome(|| {
-                                                old_owner.run(&old, &mut a, &mut left)
+                                                )
                                             });
                                             let label=format!("membership-full/{name}/{fi}/{arity}/{mask}/{vi}/{position}/{enabled}/{selection:?}/{reuse}");
-                                            if compare {
-                                                let mut b = input();
-                                                let mut right = output_for(field);
-                                                right.append_null(0);
-                                                let got = session_read_outcome(|| {
-                                                    new_owner.run_with_tikv_batch(
-                                                        &new,
-                                                        &mut b,
-                                                        &mut right,
-                                                        &[ty()],
-                                                    )
-                                                });
-                                                if got.contains("class: ResourceLimit") {
-                                                    assert_eq!(vi,110,"unexpected resource refusal {label}: {got}");
-                                                    assert!(selection
-                                                        .as_ref()
-                                                        .is_none_or(|s| !s.is_empty()));
-                                                    assert_eq!(
-                                                        right.num_rows(),
-                                                        1,
-                                                        "resource output {label}"
-                                                    );
-                                                    let route = new_owner.batch_route_snapshot();
-                                                    assert_eq!(
-                                                        (route.fallback, route.refusals),
-                                                        (0, 0),
-                                                        "{label}: {route:?}"
-                                                    );
-                                                    bounded_resources += 1;
-                                                } else {
-                                                    if got != expected
-                                                        || right.column(0) != left.column(0)
-                                                        || new.snapshot() != old.snapshot()
-                                                    {
-                                                        eprintln!("MEMBERSHIP FULL DIFFERENCE {label} old={expected} new={got} oldcol={:?} newcol={:?} oldeffects={} neweffects={}",left.column(0),right.column(0),old.snapshot(),new.snapshot());
-                                                    }
-                                                    assert_eq!(got, expected, "{label}");
-                                                    assert_eq!(
-                                                        right.column(0),
-                                                        left.column(0),
-                                                        "{label}"
-                                                    );
-                                                    assert_eq!(
-                                                        new.snapshot(),
-                                                        old.snapshot(),
-                                                        "{label}"
-                                                    );
-                                                    let route = new_owner.batch_route_snapshot();
-                                                    if (route.fallback != 0 || route.refusals != 0)
-                                                        && gaps.len() < 20
-                                                    {
-                                                        gaps.push(format!("{label}: {route:?}"));
-                                                    }
-                                                }
-                                            }
-                                            for b in format!(
-                                                "{label}|{expected}|{:?}|{}",
-                                                left.column(0),
-                                                old.snapshot()
-                                            )
-                                            .bytes()
-                                            {
-                                                hash = (hash ^ u64::from(b))
-                                                    .wrapping_mul(0x100000001b3);
-                                            }
+                                            let route = owner.batch_route_snapshot();
+                                            assert_eq!(
+                                                (route.fallback, route.refusals),
+                                                (0, 0),
+                                                "{label}: {route:?}"
+                                            );
                                             count += 1;
+                                            if got.contains("class: ResourceLimit") {
+                                                assert_eq!(
+                                                    vi, 110,
+                                                    "unexpected resource refusal {label}: {got}"
+                                                );
+                                                assert!(selection
+                                                    .as_ref()
+                                                    .is_none_or(|s| !s.is_empty()));
+                                                assert_eq!(
+                                                    output.num_rows(),
+                                                    1,
+                                                    "resource output {label}"
+                                                );
+                                                resources += 1;
+                                            } else {
+                                                for byte in format!(
+                                                    "{label}|{got}|{:?}|{}",
+                                                    output.column(0),
+                                                    context.snapshot()
+                                                )
+                                                .bytes()
+                                                {
+                                                    hash = (hash ^ u64::from(byte))
+                                                        .wrapping_mul(0x100000001b3);
+                                                }
+                                                admitted += 1;
+                                            }
                                         }
                                     }
                                 }
@@ -5952,23 +5905,11 @@ fn run_optional_membership_all_actual_values(compare: bool) {
                 }
             }
         }
-        eprintln!("OPTIONAL MEMBERSHIP FULL ORIGINAL {count}/{hash:016X}");
-        eprintln!("MEMBERSHIP FULL BOUNDED RESOURCES {bounded_resources}");
-        assert_eq!(bounded_resources, if compare { 2720 } else { 0 });
-        assert_eq!((count, hash), (1144320, 0x0926C1DF1FCFFBE1));
-        if !gaps.is_empty() {
-            eprintln!("MEMBERSHIP FULL ADMISSION RED {gaps:?}");
-        }
-        assert!(gaps.is_empty());
+        assert_eq!((count, resources), (1144320, 2720));
+        // Captured from pre-deletion SDK results after strict old comparisons.
+        // The retired whole unbounded reference was 1144320/0926C1DF1FCFFBE1.
+        assert_eq!((admitted, hash), (1141600, 0x6DCAFE78EBD1BFF5));
     });
-}
-#[test]
-fn optional_membership_original_raw_datums() {
-    if isolate_common_corpus("stateful_tests::optional_membership_original_raw_datums") {
-        return;
-    }
-    std::panic::set_hook(Box::new(|_| {}));
-    run_optional_membership_raw_datums(false);
 }
 
 #[test]
@@ -6032,13 +5973,21 @@ fn run_optional_membership_raw_datums(compare: bool) {
                             let mut input = Chunk::new_with_capacity(&[], 1);
                             input.set_num_virtual_rows(1);
                             let old = C::new(0, false, values.clone());
-                            let expected = original_session_read_outcome(|| {
-                                function
-                                    .eval(&old, input.get_row(0))
-                                    .map(|v| leaf::frame(&v))
-                            });
                             let label =
                                 format!("membership-raw/{name}/{fi}/mask{mask}/{vi}/{position}");
+                            let (expected, expected_effects) = if vi == 110 {
+                                assert!(
+                                    matches!(&value, Datum::Decimal(d) if d.scale()==u32::MAX && d.storage_scale()==3 && d.coefficient_bytes()==[0,255,b'0'])
+                                );
+                                retired_boundary_record(&label)
+                            } else {
+                                let expected = original_session_read_outcome(|| {
+                                    function
+                                        .eval(&old, input.get_row(0))
+                                        .map(|v| leaf::frame(&v))
+                                });
+                                (expected, old.snapshot())
+                            };
                             if compare {
                                 let actual = suite(Expression::ScalarFunction(function.clone()));
                                 let preparation =
@@ -6220,16 +6169,17 @@ fn run_optional_membership_raw_datums(compare: bool) {
                                             );
                                             bounded_resources += 1;
                                         } else {
-                                            if got != expected || new.snapshot() != old.snapshot() {
-                                                eprintln!("MEMBERSHIP RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",old.snapshot(),new.snapshot());
+                                            if got != expected || new.snapshot() != expected_effects
+                                            {
+                                                eprintln!("MEMBERSHIP RAW DIFFERENCE {label} old={expected} new={got} oldeffects={} neweffects={}",expected_effects,new.snapshot());
                                             }
                                             assert_eq!(got, expected, "{label}");
-                                            assert_eq!(new.snapshot(), old.snapshot(), "{label}");
+                                            assert_eq!(new.snapshot(), expected_effects, "{label}");
                                         }
                                     }
                                 }
                             }
-                            for byte in format!("{label}|{expected}|{}", old.snapshot()).bytes() {
+                            for byte in format!("{label}|{expected}|{}", expected_effects).bytes() {
                                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
                             }
                             count += 1;
@@ -10349,3 +10299,17 @@ fn regexp_source_same_cap_resource_then_null_recovery() {
 
 #[path = "batch_pb_regexp_tests.rs"]
 mod pb_regexp_tests;
+
+// These malformed declarations exceeded the SDK's unchanged finite limits.
+// Their uncapped pre-deletion outcomes remain data, never an executable oracle.
+fn retired_boundary_record(label: &str) -> (String, String) {
+    static RECORDS: std::sync::OnceLock<std::collections::BTreeMap<String, (String, String)>> =
+        std::sync::OnceLock::new();
+    RECORDS
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("batch_retired_boundary_original.json")).unwrap()
+        })
+        .get(label)
+        .unwrap_or_else(|| panic!("missing frozen boundary record {label}"))
+        .clone()
+}

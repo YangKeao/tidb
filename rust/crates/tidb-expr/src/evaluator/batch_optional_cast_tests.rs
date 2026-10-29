@@ -115,7 +115,7 @@ fn records(original: bool) -> Vec<String> {
                                 let observation = leaf::observe(
                                     || {
                                         if original {
-                                            crate::test_original_eval::with_original(invoke)
+                                            invoke()
                                         } else {
                                             invoke()
                                         }
@@ -218,9 +218,7 @@ fn suite_records(shared: bool, require_prepared: bool) -> Vec<String> {
                                                 &[ty()],
                                             )
                                         } else {
-                                            crate::test_original_eval::with_original(|| {
-                                                owner.run(&context, &mut input, &mut output)
-                                            })
+                                            (|| owner.run(&context, &mut input, &mut output))()
                                         }
                                     }));
                                 let result = match outcome {
@@ -323,11 +321,13 @@ fn ordinary_optional_cast_reuses_real_owner_after_null_and_sql_error() {
     );
     let mut borrowed = PreparedScalarExpression::compile(owner.as_ref(), 1).unwrap();
     let cache = crate::ReadyValueCache::new();
-    let before = crate::test_original_eval::scalar_preparations();
+    let expected: Vec<_> = (0..input.num_rows())
+        .map(|row| owner.eval(&crate::NoColumns, input.get_row(row)))
+        .collect();
+    let before = crate::test_evaluation::scalar_preparations();
     for row in 0..input.num_rows() {
         let actual_row = input.get_row(row);
-        let original =
-            crate::test_original_eval::with_original(|| owner.eval(&crate::NoColumns, actual_row));
+        let original = &expected[row];
         let borrowed_result = borrowed.eval(&crate::NoColumns, actual_row);
         let owned_result = cache.eval_owned_expression(&owner, &crate::NoColumns, actual_row);
         assert_eq!(
@@ -349,7 +349,7 @@ fn ordinary_optional_cast_reuses_real_owner_after_null_and_sql_error() {
             );
         }
     }
-    assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
+    assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
     assert_eq!(Arc::strong_count(&owner), 2);
     let denied = super::super::scalar_source::BorrowedExpression::compile(
         owner.as_ref(),

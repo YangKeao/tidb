@@ -398,14 +398,14 @@ fn digest(records: &[String]) -> u64 {
     }
     hash
 }
-fn records(original_expression_bodies: bool) -> Vec<String> {
+fn records(public_entry: bool) -> Vec<String> {
     // Explicit development-only original input, shared by all candidate runs.
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    tidb_datatype::with_test_conversion_clock(now, || records_at_clock(original_expression_bodies))
+    tidb_datatype::with_test_conversion_clock(now, || records_at_clock(public_entry))
 }
-fn records_at_clock(original_expression_bodies: bool) -> Vec<String> {
+fn records_at_clock(public_entry: bool) -> Vec<String> {
     let mut roots = roots();
     let owners = owner_map(&mut roots);
     let mut records = vec![];
@@ -424,10 +424,8 @@ fn records_at_clock(original_expression_bodies: bool) -> Vec<String> {
                     }
                     let invoke = || invoke(root, &context);
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if original_expression_bodies {
-                            crate::test_original_eval::with_original(|| {
-                                crate::original_ast::eval_in(root, &context)
-                            })
+                        if public_entry {
+                            crate::eval_in(root, &context)
                         } else {
                             invoke()
                         }
@@ -454,7 +452,7 @@ fn records_at_clock(original_expression_bodies: bool) -> Vec<String> {
     records
 }
 #[test]
-fn genuine_ast_original_values_effects_owners_and_live_series() {
+fn genuine_ast_public_values_effects_owners_and_live_series() {
     let original = records(true);
     eprintln!(
         "N59 AST ORIGINAL {} {:016X}",
@@ -464,31 +462,6 @@ fn genuine_ast_original_values_effects_owners_and_live_series() {
     assert_eq!(
         (original.len(), digest(&original)),
         (191763, 0x789B6C5CB3543C08)
-    );
-}
-#[test]
-fn genuine_ast_existing_metadata_expression_entries_match_original() {
-    let original = records(true);
-    crate::original_ast::take_entries();
-    let actual = records(false);
-    assert_eq!(
-        crate::original_ast::take_entries(),
-        0,
-        "default public AST entry must use SDK"
-    );
-    let differences = original
-        .iter()
-        .zip(&actual)
-        .enumerate()
-        .filter(|(_, (old, new))| old != new)
-        .collect::<Vec<_>>();
-    for (index, (old, new)) in differences.iter().take(12) {
-        eprintln!("N59 baseline difference{index}\nold={old}\ncurrent={new}");
-    }
-    assert_eq!(
-        differences.len(),
-        0,
-        "current AST metadata expression dependencies differ from original"
     );
 }
 
@@ -505,15 +478,14 @@ fn genuine_ast_huge_benchmark_stops_at_actual_third_lookup_failure() {
     }
     let root = parsed("BENCHMARK(9223372036854775807,c)");
     let context = StopAfterTwo(Cell::new(0));
-    let result =
-        crate::test_original_eval::with_original(|| crate::original_ast::eval_in(&root, &context));
+    let result = crate::eval_in(&root, &context);
     assert_eq!(
         result.unwrap_err(),
         EvalError::Unsupported("unknown column")
     );
     assert_eq!(context.0.get(), 3);
     let context = StopAfterTwo(Cell::new(0));
-    crate::original_ast::take_entries();
+
     let actual = crate::evaluator::batch::ast_source::BorrowedAst::compile(&root)
         .unwrap()
         .eval(&context);
@@ -522,7 +494,6 @@ fn genuine_ast_huge_benchmark_stops_at_actual_third_lookup_failure() {
         EvalError::Unsupported("unknown column")
     );
     assert_eq!(context.0.get(), 3);
-    assert_eq!(crate::original_ast::take_entries(), 0);
 }
 
 fn registry_roots() -> Vec<(String, Expr)> {
@@ -578,7 +549,7 @@ fn registry_roots() -> Vec<(String, Expr)> {
     }
     roots
 }
-fn registry_records(original_expression_bodies: bool) -> Vec<String> {
+fn registry_records(public_entry: bool) -> Vec<String> {
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -597,10 +568,8 @@ fn registry_records(original_expression_bodies: bool) -> Vec<String> {
                         let invoke = || invoke(root, &context);
                         let outcome =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                if original_expression_bodies {
-                                    crate::test_original_eval::with_original(|| {
-                                        crate::original_ast::eval_in(root, &context)
-                                    })
+                                if public_entry {
+                                    crate::eval_in(root, &context)
                                 } else {
                                     invoke()
                                 }
@@ -640,29 +609,8 @@ fn genuine_ast_original_registry_headers_and_value_families() {
         (82080, 0x3E5E6C815EB16E9C)
     );
 }
-#[test]
-fn genuine_ast_existing_registry_metadata_dependencies_match_original() {
-    let old = registry_records(true);
-    crate::original_ast::take_entries();
-    let actual = registry_records(false);
-    assert_eq!(
-        crate::original_ast::take_entries(),
-        0,
-        "default public AST entry must use SDK"
-    );
-    let differences = old
-        .iter()
-        .zip(&actual)
-        .enumerate()
-        .filter(|(_, (old, new))| old != new)
-        .collect::<Vec<_>>();
-    for (index, (old, new)) in differences.iter().take(12) {
-        eprintln!("N59 registry dependency difference{index}\nold={old}\nnew={new}");
-    }
-    assert_eq!(differences.len(), 0);
-}
 
-fn aes_records(original_expression_bodies: bool) -> Vec<String> {
+fn aes_records(public_entry: bool) -> Vec<String> {
     use crate::BlockEncryptionMode::*;
     let mut roots = [
         "AES_ENCRYPT(c,@x:='key')",
@@ -699,10 +647,8 @@ fn aes_records(original_expression_bodies: bool) -> Vec<String> {
                     context.aes_mode = mode;
                     for phase in 0..2 {
                         let invoke = || invoke(root, &context);
-                        let result = if original_expression_bodies {
-                            crate::test_original_eval::with_original(|| {
-                                crate::original_ast::eval_in(root, &context)
-                            })
+                        let result = if public_entry {
+                            crate::eval_in(root, &context)
                         } else {
                             invoke()
                         };
@@ -731,20 +677,6 @@ fn genuine_ast_original_aes_modes_ignored_arguments_and_late_callbacks() {
     );
     assert_eq!(original.len(), 2160);
     assert_eq!(digest(&original), 0x6E2E_CFB3_5F59_1274);
-}
-#[test]
-fn genuine_ast_existing_aes_metadata_dependencies_match_original() {
-    let old = aes_records(true);
-    crate::original_ast::take_entries();
-    let actual = aes_records(false);
-    assert_eq!(
-        crate::original_ast::take_entries(),
-        0,
-        "default public AST entry must use SDK"
-    );
-    for (index, (old, new)) in old.iter().zip(&actual).enumerate() {
-        assert_eq!(old, new, "AES original/current {index}");
-    }
 }
 
 fn assert_same_records(old: &[String], actual: &[String], domain: &str) {
@@ -781,43 +713,6 @@ fn assert_same_records(old: &[String], actual: &[String], domain: &str) {
 }
 
 #[test]
-fn genuine_ast_shared_graph_matches_original_primary() {
-    let old = records(true);
-    crate::original_ast::take_entries();
-    let actual = with_shared_ast(|| records(false));
-    assert_eq!(
-        crate::original_ast::take_entries(),
-        0,
-        "SDK AST must not enter the original tree"
-    );
-    assert_same_records(&old, &actual, "primary");
-}
-#[test]
-fn genuine_ast_shared_graph_matches_original_registry() {
-    let old = registry_records(true);
-    crate::original_ast::take_entries();
-    let actual = with_shared_ast(|| registry_records(false));
-    assert_eq!(
-        crate::original_ast::take_entries(),
-        0,
-        "SDK AST must not enter the original tree"
-    );
-    assert_same_records(&old, &actual, "registry");
-}
-#[test]
-fn genuine_ast_shared_graph_matches_original_aes() {
-    let old = aes_records(true);
-    crate::original_ast::take_entries();
-    let actual = with_shared_ast(|| aes_records(false));
-    assert_eq!(
-        crate::original_ast::take_entries(),
-        0,
-        "SDK AST must not enter the original tree"
-    );
-    assert_same_records(&old, &actual, "AES");
-}
-
-#[test]
 fn genuine_ast_prepared_root_keeps_live_context_and_recovers_after_errors() {
     let mut roots = roots();
     let owners = owner_map(&mut roots);
@@ -848,21 +743,12 @@ fn genuine_ast_prepared_root_keeps_live_context_and_recovers_after_errors() {
                     ),
                 };
                 let before = frame(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                    || {
-                        crate::test_original_eval::with_original(|| {
-                            crate::original_ast::eval_in(root, &old)
-                        })
-                    },
+                    || crate::eval_in(root, &old),
                 )));
-                crate::original_ast::take_entries();
+
                 let after = frame(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || program.eval(&actual),
                 )));
-                assert_eq!(
-                    crate::original_ast::take_entries(),
-                    0,
-                    "{label} entered original AST"
-                );
                 assert_eq!(
                     (before, old.snapshot()),
                     (after, actual.snapshot()),
@@ -990,9 +876,7 @@ fn cache_records(shared: bool) -> Vec<String> {
                             .expect("only the shared observer compiles a program")
                             .eval(&ctx)
                     } else {
-                        crate::test_original_eval::with_original(|| {
-                            crate::original_ast::eval_in(&root, &ctx)
-                        })
+                        crate::eval_in(&root, &ctx)
                     }
                 }));
                 let result = match result {
@@ -1020,9 +904,8 @@ fn genuine_ast_cache_selection_panic_poison_and_later_owner_recovery() {
     let old = cache_records(false);
     assert_eq!((old.len(), digest(&old)), (70, 0x53FD_82D7_D84E_CAF7));
     eprintln!("N59 AST CACHE ORIGINAL {} {:016X}", old.len(), digest(&old));
-    crate::original_ast::take_entries();
+
     let actual = cache_records(true);
-    assert_eq!(crate::original_ast::take_entries(), 0);
     assert_same_records(&old, &actual, "cache-lifecycle");
 }
 
@@ -1032,13 +915,9 @@ fn genuine_ast_entropy_sources_keep_actual_value_properties_and_null_errors() {
         let root = parsed(sql);
         let mut plan = crate::evaluator::batch::ast_source::BorrowedAst::compile(&root).unwrap();
         for _ in 0..8 {
-            let old = crate::test_original_eval::with_original(|| {
-                crate::original_ast::eval_in(&root, &NoColumns)
-            })
-            .unwrap();
-            crate::original_ast::take_entries();
+            let old = crate::eval_in(&root, &NoColumns).unwrap();
+
             let actual = plan.eval(&NoColumns).unwrap();
-            assert_eq!(crate::original_ast::take_entries(), 0);
             assert_eq!(
                 std::mem::discriminant(&old),
                 std::mem::discriminant(&actual)
@@ -1071,12 +950,9 @@ fn genuine_ast_entropy_sources_keep_actual_value_properties_and_null_errors() {
         let root = parsed(sql);
         let mut plan = crate::evaluator::batch::ast_source::BorrowedAst::compile(&root).unwrap();
         for _ in 0..4 {
-            let old = crate::test_original_eval::with_original(|| {
-                crate::original_ast::eval_in(&root, &NoColumns)
-            });
-            crate::original_ast::take_entries();
+            let old = crate::eval_in(&root, &NoColumns);
+
             let actual = plan.eval(&NoColumns);
-            assert_eq!(crate::original_ast::take_entries(), 0);
             match (old, actual) {
                 (Ok(Datum::Null), Ok(Datum::Null)) => {}
                 (Ok(old), Ok(actual)) => {
@@ -1093,4 +969,26 @@ fn genuine_ast_entropy_sources_keep_actual_value_properties_and_null_errors() {
             }
         }
     }
+}
+
+#[test]
+fn genuine_ast_prepared_primary_matches_frozen_results() {
+    let actual = with_shared_ast(|| records(false));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (191763, 0x789B6C5CB3543C08)
+    );
+}
+#[test]
+fn genuine_ast_prepared_registry_matches_frozen_results() {
+    let actual = with_shared_ast(|| registry_records(false));
+    assert_eq!((actual.len(), digest(&actual)), (82080, 0x3E5E6C815EB16E9C));
+}
+#[test]
+fn genuine_ast_prepared_aes_matches_frozen_results() {
+    let actual = with_shared_ast(|| aes_records(false));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (2160, 0x6E2E_CFB3_5F59_1274)
+    );
 }

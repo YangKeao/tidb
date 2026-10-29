@@ -912,9 +912,8 @@ fn final_state_shared_value_phases_match_preserved_original_controls() {
                         let old = C::new(values.clone(), 0, false, *mode);
                         let new = C::new(values, 0, false, *mode);
                         let expected = original_session_read_outcome(|| {
-                            old.ready.with_columns(&old, |ctx| {
-                                function.eval_original_final_state(ctx, input.get_row(0))
-                            })
+                            old.ready
+                                .with_columns(&old, |ctx| function.eval(ctx, input.get_row(0)))
                         });
                         let got = session_read_outcome(|| {
                             new.ready
@@ -986,7 +985,7 @@ fn final_state_owner_all_return_types_keep_late_callbacks_and_prefixes() {
                     let x = C::new(values().remove(0), profile, enabled, M::Aes128Ecb);
                     let y = C::new(values().remove(0), profile, enabled, M::Aes128Ecb);
                     assert_eq!(
-                        session_read_outcome(|| f.eval_original_final_state(&x, a.physical_row(0))),
+                        session_read_outcome(|| f.eval(&x, a.physical_row(0))),
                         session_read_outcome(|| f.eval(&y, b.physical_row(0)))
                     );
                     assert_eq!(x.snapshot(), y.snapshot());

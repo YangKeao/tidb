@@ -1621,9 +1621,15 @@ fn pb_cast_source_fixed_cap_matches_original_mismatched_return_guard() {
             panic!()
         };
         let raw_ctx = C::new(true, values.clone(), 0);
-        let source = input(&None);
         let raw = function
-            .original_pb_cast_value_for_test(&raw_ctx, source.physical_row(0))
+            .pb_cast_values()
+            .unwrap()
+            .eval_value(
+                values[0].clone(),
+                function.args[0].static_type(),
+                function.get_static_type(),
+                &raw_ctx,
+            )
             .unwrap();
         assert!(matches!(raw, Datum::Duration(_)));
         // Original raw value plus the existing bounded return guard is independent

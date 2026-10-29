@@ -422,8 +422,8 @@ pub(crate) fn diagnostic_expression(which: usize, value: &Datum) -> Expression {
     }
 }
 #[test]
-fn typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits() {
-    if isolated("typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits") {
+fn typed_dynamic_public_diagnostic_empty_row_effects_and_short_circuits() {
+    if isolated("typed_dynamic_public_diagnostic_empty_row_effects_and_short_circuits") {
         return;
     }
     let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
@@ -433,20 +433,20 @@ fn typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits() {
                 for float in [false, true] {
                     let expr = diagnostic_expression(which, &script[0]);
                     let ctx = Context::new(profile, script.clone());
-                    let result =
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            crate::test_original_eval::with_original(|| {
-                                crate::scalar_function::numeric_expression_text(&expr, float, &ctx)
-                            })
-                        })) {
-                            Ok(v) => format!("{v:?}"),
-                            Err(p) => format!(
-                                "PANIC:{:?}",
-                                p.downcast_ref::<String>()
-                                    .map(String::as_str)
-                                    .or_else(|| p.downcast_ref::<&str>().copied())
-                            ),
-                        };
+                    let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                        || {
+                            (|| crate::scalar_function::numeric_expression_text(&expr, float, &ctx))(
+                            )
+                        },
+                    )) {
+                        Ok(v) => format!("{v:?}"),
+                        Err(p) => format!(
+                            "PANIC:{:?}",
+                            p.downcast_ref::<String>()
+                                .map(String::as_str)
+                                .or_else(|| p.downcast_ref::<&str>().copied())
+                        ),
+                    };
                     fold(
                         &mut hash,
                         &format!(
@@ -466,14 +466,7 @@ fn typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits() {
                     let root = proof::call(name, field, vec![expr]);
                     let ctx = Context::new(profile, script.clone());
                     let input = proof::input(false);
-                    let result = outcome(
-                        || {
-                            crate::test_original_eval::with_original(|| {
-                                root.eval(&ctx, input.get_row(0))
-                            })
-                        },
-                        &ctx,
-                    );
+                    let result = outcome(|| root.eval(&ctx, input.get_row(0)), &ctx);
                     fold(
                         &mut hash,
                         &format!("math|{which}|{profile}|{si}|{name}|{result}"),
@@ -483,8 +476,11 @@ fn typed_dynamic_original_diagnostic_empty_row_effects_and_short_circuits() {
             }
         }
     }
-    assert_eq!((count, hash), (7200, 0xA4F6DB5E8D40E458));
-    eprintln!("TYPED DYNAMIC ORIGINAL DIAGNOSTIC {count} {hash:016X}");
+    // Captured twice from the pre-deletion public entry at d4df288ab2.
+    // The retired explicit-old-interpreter observer was A4F6DB5E8D40E458;
+    // it exercised a different path and is retained in the retirement receipt.
+    assert_eq!((count, hash), (7200, 0x80E3F7155D1FD890));
+    eprintln!("TYPED DYNAMIC PUBLIC DIAGNOSTIC {count} {hash:016X}");
 }
 
 fn candidate(

@@ -182,128 +182,21 @@ fn registry_records_with_fields(
     })
 }
 #[test]
-fn native_entry_registry_original_capture() {
-    let before = crate::test_original_eval::entries();
-    let first = crate::test_original_eval::with_original(|| {
-        registry_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
+fn native_entry_registry_public_matches_frozen_results() {
+    let actual = registry_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i));
     assert_eq!(
-        crate::test_original_eval::entries().1,
-        before.1,
-        "original registry entered shared scalar evaluator"
-    );
-    let second = crate::test_original_eval::with_original(|| {
-        registry_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    eprintln!(
-        "N60 registry original {} {:016X}",
-        first.len(),
-        digest(&first)
-    );
-    assert_eq!(
-        (first.len(), digest(&first)),
+        (actual.len(), digest(&actual)),
         (326304, 0xA2B2_5084_573D_4F4F)
     );
-    assert_eq!(
-        first, second,
-        "independent original repeated registry changed"
-    );
 }
 
 #[test]
-fn native_entry_registry_shared_graph_matches_original() {
-    let old = crate::test_original_eval::with_original(|| {
-        registry_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    assert_eq!((old.len(), digest(&old)), (326304, 0xA2B2_5084_573D_4F4F));
-    let actual = without_native_tree_dispatch(|| {
-        registry_records(|e, c, i| crate::scalar_function::try_eval_batch(e, c, i))
-    });
-    let mut differences = 0usize;
-    let mut categories = std::collections::BTreeMap::<String, usize>::new();
-    let mut shown = std::collections::BTreeSet::new();
-    for (index, (old, new)) in old.iter().zip(&actual).enumerate() {
-        if old != new {
-            let name = old.split('/').next().unwrap();
-            let category = format!(
-                "{name}: {} -> {}",
-                old.split('|').nth(1).unwrap(),
-                new.split('|').nth(1).unwrap()
-            );
-            *categories.entry(category.clone()).or_default() += 1;
-            if shown.len() < 24 && shown.insert(category) {
-                eprintln!("N60 registry difference{index}\nOLD {old}\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    eprintln!(
-        "N60 registry shared {} / {differences} differences; categories {categories:?}",
-        actual.len()
-    );
-    assert_eq!(differences, 0);
-}
-
-#[test]
-fn native_entry_return_families_original_capture() {
-    let before = crate::test_original_eval::entries();
-    let original = crate::test_original_eval::with_original(|| {
-        registry_records_with_fields(&remaining_fields(), |e, c, i| {
-            crate::scalar_function::try_eval_batch(e, c, i)
-        })
+fn native_entry_return_families_public_matches_frozen_results() {
+    let actual = registry_records_with_fields(&remaining_fields(), |e, c, i| {
+        crate::scalar_function::try_eval_batch(e, c, i)
     });
     assert_eq!(
-        crate::test_original_eval::entries().1,
-        before.1,
-        "original return families entered shared scalar evaluator"
-    );
-    let repeated = crate::test_original_eval::with_original(|| {
-        registry_records_with_fields(&remaining_fields(), |e, c, i| {
-            crate::scalar_function::try_eval_batch(e, c, i)
-        })
-    });
-    eprintln!(
-        "N60 return families original {} {:016X}",
-        original.len(),
-        digest(&original)
-    );
-    assert_eq!(
-        (original.len(), digest(&original)),
+        (actual.len(), digest(&actual)),
         (571032, 0xEE0D_1D76_A4E3_18D3)
     );
-    assert_eq!(original, repeated);
-}
-
-#[test]
-fn native_entry_return_families_shared_graph_matches_original() {
-    let original = crate::test_original_eval::with_original(|| {
-        registry_records_with_fields(&remaining_fields(), |e, c, i| {
-            crate::scalar_function::try_eval_batch(e, c, i)
-        })
-    });
-    assert_eq!(
-        (original.len(), digest(&original)),
-        (571032, 0xEE0D_1D76_A4E3_18D3)
-    );
-    let actual = without_native_tree_dispatch(|| {
-        registry_records_with_fields(&remaining_fields(), |e, c, i| {
-            crate::scalar_function::try_eval_batch(e, c, i)
-        })
-    });
-    let mut differences = 0usize;
-    let mut shown = std::collections::BTreeSet::new();
-    for (index, (old, new)) in original.iter().zip(&actual).enumerate() {
-        if old != new {
-            let category = old.split('/').take(4).collect::<Vec<_>>().join("/");
-            if shown.len() < 24 && shown.insert(category) {
-                eprintln!("N60 return families difference{index}\nOLD {old}\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    eprintln!(
-        "N60 return families shared {} / {differences} differences",
-        actual.len()
-    );
-    assert_eq!(differences, 0);
 }

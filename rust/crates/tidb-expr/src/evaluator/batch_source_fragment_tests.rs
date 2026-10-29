@@ -344,12 +344,12 @@ fn native_fragment_composes_real_children_in_one_driver_and_keeps_late_errors() 
             mode: Cell::new(mode),
             failure: context.failure.clone(),
         };
-        let expected: Vec<_> = crate::test_original_eval::with_original(|| {
+        let expected: Vec<_> = (|| {
             fragments
                 .iter()
                 .map(|f| f.owner.eval(&original_context, input.to_row()))
                 .collect()
-        });
+        })();
         for state in &mut states {
             state.reset().unwrap();
         }
@@ -382,8 +382,8 @@ fn native_fragment_composes_real_children_in_one_driver_and_keeps_late_errors() 
             caught: None,
             cancelled: vec![],
         };
-        let entries_before = crate::test_original_eval::entries();
-        let preparations_before = crate::test_original_eval::scalar_preparations();
+        let entries_before = crate::test_evaluation::shared_entries();
+        let preparations_before = crate::test_evaluation::scalar_preparations();
         let output = program
             .eval_cursor_with_bindings(
                 ExecutionLimits::default(),
@@ -393,12 +393,12 @@ fn native_fragment_composes_real_children_in_one_driver_and_keeps_late_errors() 
             )
             .unwrap();
         assert_eq!(
-            crate::test_original_eval::entries(),
+            crate::test_evaluation::shared_entries(),
             entries_before,
             "composed driver called a public or original subtree evaluator"
         );
         assert_eq!(
-            crate::test_original_eval::scalar_preparations(),
+            crate::test_evaluation::scalar_preparations(),
             preparations_before,
             "composed invocation prepared a hidden scalar program"
         );

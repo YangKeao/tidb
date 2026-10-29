@@ -723,8 +723,12 @@ fn prepared_batch_values(
     Ok(result)
 }
 #[test]
-fn typed_prepared_column_independently_preserves_original_decoders_guards_and_effects() {
-    if isolate_common_corpus("typed_context_tests::typed_prepared_column_independently_preserves_original_decoders_guards_and_effects") { return; }
+fn typed_prepared_column_matches_public_row_guards_and_effects() {
+    if isolate_common_corpus(
+        "typed_context_tests::typed_prepared_column_matches_public_row_guards_and_effects",
+    ) {
+        return;
+    }
     std::panic::set_hook(Box::new(|_| {}));
     use super::super::hosts::NativeTypedDescriptor;
     let mut fields = crate::tikv::eager_scalar_value_tests::types()
@@ -755,9 +759,41 @@ fn typed_prepared_column_independently_preserves_original_decoders_guards_and_ef
                         );
                         let want = prepared_batch_observation(
                             || {
-                                crate::scalar_function::original_typed_batch_values_for_test(&expr,&old,&input,target).and_then(|values| values.into_iter().map(|v| {
-                            if target==NativeEvalType::Int { Ok(crate::scalar_function::native_batch_integer_value(crate::scalar_function::native_batch_integer_bits(v)?,false)) } else { Ok(v) }
-                        }).collect())
+                                (0..input.num_rows())
+                                    .map(|row| {
+                                        let Expression::Column(column) = &expr else {
+                                            unreachable!()
+                                        };
+                                        let value = if target == NativeEvalType::Int
+                                            && !field.as_ref().is_some_and(FieldType::is_hybrid)
+                                        {
+                                            let index = usize::try_from(index).map_err(|_| {
+                                                EvalError::Unsupported(
+                                                    "invalid integer column index",
+                                                )
+                                            })?;
+                                            if index >= input.num_cols() {
+                                                return Err(EvalError::Unsupported(
+                                                    "invalid integer column index",
+                                                ));
+                                            }
+                                            let physical = input.get_row(row).idx();
+                                            if input.column(index).is_null(physical) {
+                                                Datum::Null
+                                            } else {
+                                                Datum::Int(input.column(index).get_int64(physical))
+                                            }
+                                        } else {
+                                            crate::scalar_function::normalize_numeric_row_value(
+                                                expr.eval(&old, input.get_row(row))?,
+                                                field.as_ref(),
+                                                target,
+                                                &old,
+                                            )?
+                                        };
+                                        Ok(value)
+                                    })
+                                    .collect()
                             },
                             &old,
                         );
@@ -776,6 +812,9 @@ fn typed_prepared_column_independently_preserves_original_decoders_guards_and_ef
                             },
                             &ctx,
                         );
+                        if got != want {
+                            eprintln!("column {fi} {target:?} index={index} sel={selection:?} p={profile}: public={want} prepared={got}");
+                        }
                         assert_eq!(
                             got, want,
                             "column {fi} {target:?} index={index} sel={selection:?} p={profile}"
@@ -791,8 +830,12 @@ fn typed_prepared_column_independently_preserves_original_decoders_guards_and_ef
     eprintln!("PREPARED COLUMN INDEPENDENT {count}");
 }
 #[test]
-fn typed_prepared_literal_independently_preserves_original_conversion_and_broadcast() {
-    if isolate_common_corpus("typed_context_tests::typed_prepared_literal_independently_preserves_original_conversion_and_broadcast") { return; }
+fn typed_prepared_literal_matches_direct_conversion_and_broadcast() {
+    if isolate_common_corpus(
+        "typed_context_tests::typed_prepared_literal_matches_direct_conversion_and_broadcast",
+    ) {
+        return;
+    }
     std::panic::set_hook(Box::new(|_| {}));
     use super::super::hosts::NativeTypedDescriptor;
     let mut fields = crate::tikv::eager_scalar_value_tests::types()
@@ -836,26 +879,20 @@ fn typed_prepared_literal_independently_preserves_original_conversion_and_broadc
                     );
                     let want = prepared_batch_observation(
                         || {
-                            crate::scalar_function::original_typed_batch_values_for_test(
-                                &expr, &old, &input, target,
-                            )
-                            .and_then(|values| {
-                                values
-                                    .into_iter()
-                                    .map(|v| {
-                                        if target == NativeEvalType::Int {
-                                            Ok(crate::scalar_function::native_batch_integer_value(
-                                                crate::scalar_function::native_batch_integer_bits(
-                                                    v,
-                                                )?,
-                                                false,
-                                            ))
-                                        } else {
-                                            Ok(v)
-                                        }
-                                    })
-                                    .collect()
-                            })
+                            let Expression::Constant(constant) = &expr else {
+                                unreachable!()
+                            };
+                            let value =
+                                constant.eval_typed_as_on_row(&old, input.get_row(0), target)?;
+                            let value = if target == NativeEvalType::Int {
+                                crate::scalar_function::native_batch_integer_value(
+                                    crate::scalar_function::native_batch_integer_bits(value)?,
+                                    false,
+                                )
+                            } else {
+                                value
+                            };
+                            Ok(vec![value; input.num_rows()])
                         },
                         &old,
                     );

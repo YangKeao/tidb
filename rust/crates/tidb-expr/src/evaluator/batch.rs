@@ -9505,7 +9505,7 @@ pub(crate) fn eval_public_expression(
     row: tidb_chunk::row::Row<'_>,
 ) -> std::result::Result<Datum, EvalError> {
     #[cfg(test)]
-    crate::test_original_eval::note_shared();
+    crate::test_evaluation::note_shared();
     let mut plan = PreparedScalarExpression::compile(root, row.len())?;
     plan.eval(context, row)
 }
@@ -9515,7 +9515,7 @@ pub(crate) fn eval_public_expression_with_error_value(
     row: tidb_chunk::row::Row<'_>,
 ) -> std::result::Result<Datum, (Datum, EvalError)> {
     #[cfg(test)]
-    crate::test_original_eval::note_shared();
+    crate::test_evaluation::note_shared();
     let mut plan =
         PreparedScalarExpression::compile(root, row.len()).map_err(|error| (Datum::Null, error))?;
     plan.eval_with_error_value(context, row)
@@ -9526,7 +9526,7 @@ pub(crate) fn eval_public_function(
     row: tidb_chunk::row::Row<'_>,
 ) -> std::result::Result<Datum, EvalError> {
     #[cfg(test)]
-    crate::test_original_eval::note_shared();
+    crate::test_evaluation::note_shared();
     let (source, execution, maximum) = public_scalar_limits();
     let mut plan = scalar_source::BorrowedExpression::compile_function(
         root,

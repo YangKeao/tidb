@@ -684,24 +684,10 @@ fn legacy_source_original_full_width_and_error_demand_contracts() {
     assert!(e.eval_bytes(None).unwrap().is_none());
 }
 
-thread_local! {
-    static ORIGINAL_TREES: std::cell::Cell<[usize;7]> = const {std::cell::Cell::new([0;7])};
-}
-pub(super) fn note_tree(view: usize) {
-    ORIGINAL_TREES.with(|counts| {
-        let mut value = counts.get();
-        value[view] += 1;
-        counts.set(value)
-    });
-}
-pub(super) fn tree_entries() -> [usize; 7] {
-    ORIGINAL_TREES.with(std::cell::Cell::get)
-}
 #[test]
-fn legacy_source_default_never_enters_old_typed_trees() {
+fn legacy_source_default_evaluates_all_typed_views() {
     let zone = tidb_datatype::SessionTimeZone::utc();
     let e = LegacyEvaluator::new(&[], 4, &zone);
-    ORIGINAL_TREES.with(|counts| counts.set([0; 7]));
     assert_eq!(
         e.eval_expr(&SimpleExpr::Func(
             SimpleSig::PlusInt,
@@ -754,12 +740,6 @@ fn legacy_source_default_never_enters_old_typed_trees() {
         )))
         .unwrap(),
         Some("ÉX".as_bytes().to_vec())
-    );
-    let counts = ORIGINAL_TREES.with(std::cell::Cell::get);
-    eprintln!("N64 actual old typed tree entries {counts:?}");
-    assert_eq!(
-        counts, [0; 7],
-        "every real public/typed calculation must use the same SDK graph"
     );
 }
 

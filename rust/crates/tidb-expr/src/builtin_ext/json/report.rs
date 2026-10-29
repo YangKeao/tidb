@@ -127,59 +127,6 @@ impl JsonSchemaCache {
             None => prepare_json_schema(value).map(PreparedSchemaValue::Owned),
         }
     }
-    pub(crate) fn eval(
-        &self,
-        args: &[Expression],
-        ctx: &dyn Columns,
-        row: Row<'_>,
-    ) -> Result<Datum, EvalError> {
-        let [schema_arg, document_arg] = args else {
-            return Err(EvalError::WrongParameterCount("json_schema_valid"));
-        };
-        let schema = schema_arg.eval(ctx, row)?;
-        if schema.is_null() {
-            return Ok(Datum::Null);
-        }
-        let context =
-            (schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT).then(|| ctx.context_id());
-        let prepared = self.prepare_value(&schema, context)?;
-        if prepared.is_absent() {
-            return Ok(Datum::Null);
-        }
-        prepared.validate_value(&document_arg.eval(ctx, row)?)
-    }
-    // Exact executed pre-extraction demand/cache wrapper; tests only.
-    #[cfg(test)]
-    pub(crate) fn original_eval(
-        &self,
-        args: &[Expression],
-        ctx: &dyn Columns,
-        row: Row<'_>,
-    ) -> Result<Datum, EvalError> {
-        let [schema_arg, document_arg] = args else {
-            return Err(EvalError::WrongParameterCount("json_schema_valid"));
-        };
-        let schema_value = schema_arg.eval(ctx, row)?;
-        if schema_value.is_null() {
-            return Ok(Datum::Null);
-        }
-
-        if schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT {
-            let schema = self
-                .0
-                .get_or_init_cache(ctx.context_id(), || prepare_json_schema(&schema_value))?;
-            let Some(schema) = schema.as_ref().as_ref() else {
-                return Ok(Datum::Null);
-            };
-            return validate_json_schema(schema, &document_arg.eval(ctx, row)?);
-        }
-
-        let schema = prepare_json_schema(&schema_value)?;
-        let Some(schema) = schema.as_ref() else {
-            return Ok(Datum::Null);
-        };
-        validate_json_schema(schema, &document_arg.eval(ctx, row)?)
-    }
 }
 
 /// Parses and checks the schema argument without resolving external `$ref`s.

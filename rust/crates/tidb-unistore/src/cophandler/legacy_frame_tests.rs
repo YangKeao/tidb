@@ -1,5 +1,5 @@
 // Copyright 2026 PingCAP, Inc. Licensed under Apache-2.0.
-//! Complete source conformance against independent retained originals.
+//! Complete source conformance against public one-shot and prepared entrypoints.
 //! No test or production route retries through the old evaluator.
 use super::*;
 use std::cell::RefCell;
@@ -17,21 +17,20 @@ const VIEWS: [View; 9] = [
     View::Datum,
     View::FoldedInt,
 ];
-fn old(e: &LegacyEvaluator<'_>, root: &SimpleExpr, view: View) -> String {
+fn public(e: &LegacyEvaluator<'_>, root: &SimpleExpr, view: View) -> String {
     match view {
-        View::Int => format!("{:?}", e.eval_expr_original(root)),
-        View::Decimal => format!("{:?}", e.eval_decimal_original(Some(root))),
-        View::Json => format!("{:?}", e.eval_json_original(Some(root))),
-        View::Real => format!(
+        View::Int => format!("{:?}", e.eval_expr(root)),
+        View::Decimal => format!("{:?}", e.eval_decimal(Some(root))),
+        View::Json => format!("{:?}", e.eval_json(Some(root))),
+        View::Real => format!("{:?}", e.eval_real(Some(root)).map(|v| v.map(f64::to_bits))),
+        View::Duration => format!("{:?}", e.eval_duration(Some(root))),
+        View::Time => format!("{:?}", e.eval_time(Some(root))),
+        View::Bytes => format!("{:?}", e.eval_bytes(Some(root))),
+        View::Datum => format!("{:?}", e.eval_datum(root)),
+        View::FoldedInt => format!(
             "{:?}",
-            e.eval_real_original(Some(root))
-                .map(|v| v.map(f64::to_bits))
+            fold_legacy_sql(e.eval_expr(root)).map(Option::flatten)
         ),
-        View::Duration => format!("{:?}", e.eval_duration_original(Some(root))),
-        View::Time => format!("{:?}", e.eval_time_original(Some(root))),
-        View::Bytes => format!("{:?}", e.eval_bytes_original(Some(root))),
-        View::Datum => format!("{:?}", e.eval_datum_original(root)),
-        View::FoldedInt => format!("{:?}", e.folded_int_original(Some(root))),
     }
 }
 fn actual(result: LegacyResult<Value>) -> String {
@@ -60,13 +59,7 @@ fn observed(body: impl FnOnce() -> String) -> String {
     }
 }
 fn assert_candidate(plan: &mut Plan<'_>, e: &LegacyEvaluator<'_>) -> String {
-    let before = super::super::legacy_source_tests::tree_entries();
     let result = observed(|| actual(plan.evaluate(e)));
-    assert_eq!(
-        super::super::legacy_source_tests::tree_entries(),
-        before,
-        "candidate entered an old typed tree"
-    );
     result
 }
 
@@ -163,7 +156,7 @@ fn legacy_frame_candidate_keeps_leaf_views_and_integer_kernel_profiles() {
                 let original = LegacyEvaluator::new(row, 4, &zone);
                 let candidate = LegacyEvaluator::new(row, 4, &zone);
                 for _ in 0..2 {
-                    let expected = observed(|| old(&original, root, view));
+                    let expected = observed(|| public(&original, root, view));
                     assert_eq!(
                         assert_candidate(&mut plan, &candidate),
                         expected,
@@ -299,7 +292,7 @@ fn legacy_frame_candidate_composes_shared_errors_cache_scopes_and_reuse() {
                     candidate.raw_columns = &new_context;
                     candidate.shared_override = Some(&new_context);
                     for _ in 0..2 {
-                        let expected = observed(|| old(&original, root, view));
+                        let expected = observed(|| public(&original, root, view));
                         let value = assert_candidate(&mut plan, &candidate);
                         assert_eq!(value, expected, "{view:?}/{cache_mode}/{failure}");
                         assert_eq!(
@@ -318,7 +311,7 @@ fn legacy_frame_candidate_composes_shared_errors_cache_scopes_and_reuse() {
 }
 
 #[test]
-fn legacy_frame_candidate_admitted_signature_views_match_actual_original_matrix() {
+fn legacy_frame_prepared_signature_views_match_public_matrix() {
     use super::super::legacy_source_tests as original;
     let mut records = 0usize;
     for signature in original::signatures() {
@@ -351,7 +344,7 @@ fn legacy_frame_candidate_admitted_signature_views_match_actual_original_matrix(
                         old_e.raw_columns = &old_context;
                         new_e.raw_columns = &new_context;
                         for reuse in 0..2 {
-                            let expected = observed(|| old(&old_e, &root, view));
+                            let expected = observed(|| public(&old_e, &root, view));
                             let actual = assert_candidate(&mut plan, &new_e);
                             assert_eq!(actual, expected, "{signature:?}/{shape}/{row:?}/{precision}/{zone:?}/{view:?}/{reuse}");
                             assert_eq!(
@@ -397,7 +390,7 @@ fn legacy_frame_candidate_matches_entire_fixed_scope_cohort() {
                             let mut plan = Plan::prepare(&root, view, row.len())
                                 .unwrap_or_else(|e| panic!("{label}/{view:?}: {}", e.message()));
                             for reuse in 0..2 {
-                                let expected = observed(|| old(&old_e, &root, view));
+                                let expected = observed(|| public(&old_e, &root, view));
                                 let actual = assert_candidate(&mut plan, &new_e);
                                 assert_eq!(
                                     actual, expected,
@@ -454,8 +447,7 @@ fn legacy_frame_prepared_root_reuses_rows_and_allows_parameter_reentry() {
         let mut e = LegacyEvaluator::new(&row, 4, &zone);
         e.raw_columns = &context;
         e.shared_override = Some(&context);
-        let before = super::super::legacy_source_tests::tree_entries();
+
         assert_eq!(prepared.integer(&e).unwrap(), Some(i128::from(v + 7)));
-        assert_eq!(super::super::legacy_source_tests::tree_entries(), before);
     }
 }

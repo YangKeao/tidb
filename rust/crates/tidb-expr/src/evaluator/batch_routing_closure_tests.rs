@@ -273,36 +273,11 @@ fn digest(records: &[String]) -> u64 {
     }
     hash
 }
-#[test]
-fn routing_original_capture() {
-    let (a, b) = crate::test_original_eval::with_original(|| {
-        (
-            pb_records(|s, c, i, o, _| s.run(c, i, o)),
-            pb_records(|s, c, i, o, _| s.run(c, i, o)),
-        )
-    });
-    assert_eq!(a, b);
-    println!("N62 PB original {} {:016X}", a.len(), digest(&a));
-    assert_eq!((a.len(), digest(&a)), (52920, 0x0665_8A0B_1D12_9916));
-    let (a, b) = crate::test_original_eval::with_original(|| {
-        (
-            schema_records(|s, c, i, o, _| s.run(c, i, o)),
-            schema_records(|s, c, i, o, _| s.run(c, i, o)),
-        )
-    });
-    assert_eq!(a, b);
-    println!("N62 schema original {} {:016X}", a.len(), digest(&a));
-    assert_eq!((a.len(), digest(&a)), (2940, 0x406B_ABFF_1C0C_2EB9));
-}
 
 #[test]
 fn routing_actual_matches_original_and_has_no_generic_retry() {
-    let old_pb = crate::test_original_eval::with_original(|| {
-        projection_pb_records(|s, c, i, o, _| s.run(c, i, o))
-    });
-    let old_schema = crate::test_original_eval::with_original(|| {
-        projection_schema_records(|s, c, i, o, _| s.run(c, i, o))
-    });
+    let old_pb = (|| projection_pb_records(|s, c, i, o, _| s.run(c, i, o)))();
+    let old_schema = (|| projection_schema_records(|s, c, i, o, _| s.run(c, i, o)))();
     assert_eq!(
         (old_pb.len(), digest(&old_pb)),
         (127008, 0xC738_E3D0_F524_444E)
@@ -507,12 +482,8 @@ fn sealed_pb_records(
 }
 #[test]
 fn routing_original_sealed_pb_capture() {
-    let a = crate::test_original_eval::with_original(|| {
-        sealed_pb_records(|s, c, i, o, _| s.run(c, i, o))
-    });
-    let b = crate::test_original_eval::with_original(|| {
-        sealed_pb_records(|s, c, i, o, _| s.run(c, i, o))
-    });
+    let a = (|| sealed_pb_records(|s, c, i, o, _| s.run(c, i, o)))();
+    let b = (|| sealed_pb_records(|s, c, i, o, _| s.run(c, i, o)))();
     assert_eq!(a, b);
     eprintln!("N62 sealed PB original {} {:016X}", a.len(), digest(&a));
     assert_eq!((a.len(), digest(&a)), (158760, 0x739D_B141_9FCC_0361));
@@ -731,21 +702,13 @@ fn projection_schema_records(
 }
 #[test]
 fn routing_original_projection_contract_capture() {
-    let a = crate::test_original_eval::with_original(|| {
-        projection_pb_records(|s, c, i, o, _| s.run(c, i, o))
-    });
-    let b = crate::test_original_eval::with_original(|| {
-        projection_pb_records(|s, c, i, o, _| s.run(c, i, o))
-    });
+    let a = (|| projection_pb_records(|s, c, i, o, _| s.run(c, i, o)))();
+    let b = (|| projection_pb_records(|s, c, i, o, _| s.run(c, i, o)))();
     assert_eq!(a, b);
     eprintln!("N62 Projection PB original {} {:016X}", a.len(), digest(&a));
     assert_eq!((a.len(), digest(&a)), (127008, 0xC738_E3D0_F524_444E));
-    let a = crate::test_original_eval::with_original(|| {
-        projection_schema_records(|s, c, i, o, _| s.run(c, i, o))
-    });
-    let b = crate::test_original_eval::with_original(|| {
-        projection_schema_records(|s, c, i, o, _| s.run(c, i, o))
-    });
+    let a = (|| projection_schema_records(|s, c, i, o, _| s.run(c, i, o)))();
+    let b = (|| projection_schema_records(|s, c, i, o, _| s.run(c, i, o)))();
     assert_eq!(a, b);
     eprintln!(
         "N62 Projection schema original {} {:016X}",
@@ -943,9 +906,7 @@ fn scope_records(original: bool) -> Vec<String> {
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     if original {
-                                        crate::test_original_eval::with_original(|| {
-                                            suite.run(&context, &mut input, &mut output)
-                                        })
+                                        (|| suite.run(&context, &mut input, &mut output))()
                                     } else {
                                         suite.run_with_tikv_batch(
                                             &context,

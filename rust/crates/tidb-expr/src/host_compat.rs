@@ -15,21 +15,10 @@
 //!
 //! This is not a second expression evaluator: callers evaluate ordinary
 //! arguments, while these adapters perform only compatibility-heavy TiDB work.
-//! JSON schema validation has one explicit expression-level adapter because its
-//! cache and no-I/O-on-NULL contract require lazy demand. Unknown names never
-//! fall back.
+//! JSON schema demand and cache control belong to the shared SDK source.
+//! Unknown names never fall back.
 
-use crate::{expression::Expression, Columns, Datum, EvalError};
-use tidb_chunk::row::Row;
-
-pub(crate) fn eval_json_schema(
-    cache: &crate::builtin_ext::JsonSchemaCache,
-    args: &[Expression],
-    ctx: &dyn Columns,
-    row: Row<'_>,
-) -> Result<Datum, EvalError> {
-    cache.eval(args, ctx, row)
-}
+use crate::{Columns, Datum, EvalError};
 
 pub(crate) fn eval(
     name: &str,

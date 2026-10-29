@@ -1133,14 +1133,14 @@ mod tests {
                         let Expression::ScalarFunction(function) = &root else {
                             unreachable!()
                         };
-                        let expected_supported = crate::test_original_eval::with_original(|| {
+                        let expected_supported = (|| {
                             function.vec_eval_decimal_arithmetic_in(
                                 &context,
                                 &input,
                                 &mut expected,
                                 0,
                             )
-                        })
+                        })()
                         .unwrap();
                         assert_eq!(
                             supported,
@@ -1251,9 +1251,12 @@ mod tests {
             } else {
                 assert!(actual.unwrap().unwrap());
                 let mut original = Chunk::new_with_capacity(std::slice::from_ref(&decimal), 0);
-                assert!(crate::test_original_eval::with_original(
-                    || function.vec_eval_decimal_arithmetic_in(&Context, &input, &mut original, 0)
-                )
+                assert!((|| function.vec_eval_decimal_arithmetic_in(
+                    &Context,
+                    &input,
+                    &mut original,
+                    0
+                ))()
                 .unwrap());
                 assert_eq!(output.num_rows(), original.num_rows());
                 for row in 0..output.num_rows() {

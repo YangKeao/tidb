@@ -147,25 +147,10 @@ fn digest(records: &[String]) -> u64 {
     hash
 }
 #[test]
-fn owned_uncached_original_observations() {
-    let records = crate::test_original_eval::with_original(|| records(false));
-    println!(
-        "N56 owned original count={} digest={:016X}",
-        records.len(),
-        digest(&records)
-    );
-    assert_eq!(records.len(), 32_256);
-    assert_eq!(digest(&records), 0x461C9558DA525FA9);
-}
-#[test]
-fn owned_forwarding_matches_independent_original_and_uncached_shared() {
-    let expected = crate::test_original_eval::with_original(|| records(false));
-    let actual = records(false);
-    let forwarded = records(true);
-    assert_eq!(expected.len(), actual.len());
-    for (i, ((old, shared), cached)) in expected.iter().zip(&actual).zip(&forwarded).enumerate() {
-        assert_eq!(old, shared, "original/shared owned record {i}");
-        assert_eq!(old, cached, "original/owned-cache record {i}");
+fn owned_cached_and_uncached_entries_match_frozen_results() {
+    for cached in [false, true] {
+        let actual = records(cached);
+        assert_eq!((actual.len(), digest(&actual)), (32256, 0x461C9558DA525FA9));
     }
 }
 #[test]
@@ -173,7 +158,7 @@ fn owned_cache_prepares_once_and_keeps_genuine_root_alive() {
     let cache = crate::ReadyValueCache::new();
     let root = Arc::new(plus(column(0), int(2)));
     let input = chunk(&[ty()], &[vec![Datum::Int(5)]]);
-    let before = crate::test_original_eval::scalar_preparations();
+    let before = crate::test_evaluation::scalar_preparations();
     for _ in 0..8 {
         assert_eq!(
             cache
@@ -182,7 +167,7 @@ fn owned_cache_prepares_once_and_keeps_genuine_root_alive() {
             Datum::Int(7)
         );
     }
-    assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
+    assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
     assert_eq!(
         Arc::strong_count(&root),
         2,
@@ -205,7 +190,7 @@ fn owned_cache_width_and_owner_changes_evict_without_stale_bindings() {
     assert!(!Arc::ptr_eq(&a, &b));
     let one = chunk(&[ty()], &[vec![Datum::Int(1)]]);
     let two = chunk(&[ty(), ty()], &[vec![Datum::Int(2), Datum::Int(3)]]);
-    let mut before = crate::test_original_eval::scalar_preparations();
+    let mut before = crate::test_evaluation::scalar_preparations();
     for row in [one.physical_row(0), one.physical_row(0)] {
         assert_eq!(
             cache
@@ -214,15 +199,15 @@ fn owned_cache_width_and_owner_changes_evict_without_stale_bindings() {
             Datum::Int(7)
         );
     }
-    assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
-    before = crate::test_original_eval::scalar_preparations();
+    assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
+    before = crate::test_evaluation::scalar_preparations();
     assert_eq!(
         cache
             .eval_owned_expression(&a, &crate::NoColumns, two.physical_row(0))
             .unwrap(),
         Datum::Int(7)
     );
-    assert_eq!(crate::test_original_eval::scalar_preparations() - before, 1);
+    assert_eq!(crate::test_evaluation::scalar_preparations() - before, 1);
     assert_eq!(
         cache
             .eval_owned_expression(&b, &crate::NoColumns, two.physical_row(0))
@@ -491,7 +476,7 @@ fn rand_records(cached: bool) -> Vec<String> {
 }
 #[test]
 fn owned_rand_keeps_real_owner_for_arc_alias_and_expression_clone() {
-    let expected = crate::test_original_eval::with_original(|| rand_records(false));
+    let expected = (|| rand_records(false))();
     assert_eq!(expected.len(), 45);
     assert_eq!(rand_records(false), expected);
     assert_eq!(rand_records(true), expected);

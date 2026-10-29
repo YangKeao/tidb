@@ -436,7 +436,7 @@ mod tests {
         let maximum = plan.maximum;
         plan.execution.max_retained_bytes = 0;
         plan.maximum = 0;
-        crate::original_ast::take_entries();
+
         let EvalError::ExpressionRuntimeFailure(error) = plan.eval(&crate::NoColumns).unwrap_err()
         else {
             panic!("expected genuine SDK resource refusal");
@@ -445,7 +445,6 @@ mod tests {
             error.class(),
             crate::ExpressionRuntimeFailureClass::ResourceLimit
         );
-        assert_eq!(crate::original_ast::take_entries(), 0);
         plan.execution = saved;
         plan.maximum = maximum;
         assert_eq!(plan.eval(&crate::NoColumns).unwrap(), Datum::Int(7));
@@ -519,13 +518,9 @@ mod tests {
                 ..
             }
         ));
-        let old = crate::test_original_eval::with_original(|| {
-            crate::original_ast::eval_in(&root, &crate::NoColumns)
-        })
-        .unwrap();
-        crate::original_ast::take_entries();
+        let old = (|| crate::eval_in(&root, &crate::NoColumns))().unwrap();
+
         assert_eq!(plan.eval(&crate::NoColumns).unwrap(), old);
-        assert_eq!(crate::original_ast::take_entries(), 0);
         let root = Expr::RawString("latin1".into());
         let mut plan = BorrowedAst::compile(&root).unwrap();
         assert!(matches!(

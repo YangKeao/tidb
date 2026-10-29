@@ -56,7 +56,7 @@ fn observed(
         if shared {
             s.run_with_tikv_batch(context, input, &mut output, &[ty()])
         } else {
-            crate::test_original_eval::with_original(|| s.run(context, input, &mut output))
+            (|| s.run(context, input, &mut output))()
         }
     }));
     let status = match outcome {
@@ -279,9 +279,7 @@ fn edge_records(shared: bool, require_prepared: bool) -> Vec<String> {
                         let outcome = if shared {
                             suite.run_with_tikv_batch(&context, &mut input, &mut output, &[schema])
                         } else {
-                            crate::test_original_eval::with_original(|| {
-                                suite.run(&context, &mut input, &mut output)
-                            })
+                            (|| suite.run(&context, &mut input, &mut output))()
                         };
                         let values = (0..output.num_rows())
                             .map(|i| leaf::frame(&output.get_row(i).get_datum(0, &field)))
@@ -374,9 +372,7 @@ fn diagnostic_records(shared: bool, require_prepared: bool) -> Vec<String> {
                         let outcome = if shared {
                             suite.run_with_tikv_batch(&context, &mut input, &mut output, &[ty()])
                         } else {
-                            crate::test_original_eval::with_original(|| {
-                                suite.run(&context, &mut input, &mut output)
-                            })
+                            (|| suite.run(&context, &mut input, &mut output))()
                         };
                         let values = (0..output.num_rows())
                             .map(|i| leaf::frame(&output.get_row(i).get_datum(0, &ty())))

@@ -785,29 +785,7 @@ impl Expression {
         ctx: &dyn crate::context::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
-        #[cfg(test)]
-        if crate::test_original_eval::requested() {
-            crate::test_original_eval::note_original();
-            return self.eval_original(ctx, row);
-        }
         crate::evaluator::batch::eval_public_expression(self, ctx, row)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn eval_original(
-        &self,
-        ctx: &dyn crate::context::Columns,
-        row: tidb_chunk::row::Row<'_>,
-    ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
-        let value = match self {
-            Expression::Column(c) => c.eval(row),
-            Expression::Constant(c) => c
-                .eval_on_row_with_error_value(ctx, row)
-                .map_err(|(_, error)| error),
-            Expression::CorrelatedColumn(c) => Ok(c.eval()),
-            Expression::ScalarFunction(c) => c.eval(ctx, row),
-        }?;
-        Ok(self.apply_enum_set_as_int(value))
     }
 
     /// Preserve Go's Datum/error pair for rewrites that assign the Datum even
@@ -817,32 +795,7 @@ impl Expression {
         ctx: &dyn crate::context::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<tidb_datatype::Datum, (tidb_datatype::Datum, crate::context::EvalError)> {
-        #[cfg(test)]
-        if crate::test_original_eval::requested() {
-            crate::test_original_eval::note_original();
-            return self.eval_with_error_value_original(ctx, row);
-        }
         crate::evaluator::batch::eval_public_expression_with_error_value(self, ctx, row)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn eval_with_error_value_original(
-        &self,
-        ctx: &dyn crate::context::Columns,
-        row: tidb_chunk::row::Row<'_>,
-    ) -> Result<tidb_datatype::Datum, (tidb_datatype::Datum, crate::context::EvalError)> {
-        if let Expression::Constant(constant) = self {
-            return constant
-                .eval_on_row_with_error_value(ctx, row)
-                .map(|value| self.apply_enum_set_as_int(value));
-        }
-        self.eval(ctx, row)
-            .map_err(|error| (tidb_datatype::Datum::Null, error))
-    }
-
-    #[cfg(test)]
-    fn apply_enum_set_as_int(&self, value: tidb_datatype::Datum) -> tidb_datatype::Datum {
-        apply_enum_set_integer_view(value, self.static_type())
     }
 
     /// Go `Expression.GetType` without an `EvalContext`: the expression's static

@@ -1,0 +1,76 @@
+{
+  "old_tree_symbol_hits": [],
+  "deleted_old_modules": [
+    "rust/crates/tidb-expr/src/original_ast.rs",
+    "rust/crates/tidb-expr/src/test_original_eval.rs",
+    "rust/crates/tidb-unistore/src/cophandler/legacy_source_original_controls.rs",
+    "rust/crates/tidb-unistore/src/cophandler/legacy_scope_original_controls.rs"
+  ],
+  "changed_json_fixtures": [],
+  "golden_json_files_checked": 6,
+  "retained_fixed_digest_assertions": {
+    "rust/crates/tidb-unistore/src/cophandler/legacy_source_tests.rs": [
+      "B02C0B8B9BDDD00C",
+      "940248"
+    ],
+    "rust/crates/tidb-unistore/src/cophandler/legacy_scope_tests.rs": [
+      "3F895141D852AA15",
+      "66048"
+    ],
+    "rust/crates/tidb-expr/src/evaluator/batch_native_registry_tests.rs": [
+      "A2B25084573D4F4F",
+      "EE0D1D76A4E318D3"
+    ],
+    "rust/crates/tidb-expr/src/evaluator/batch_decimal_entry_tests.rs": [
+      "C538B0CF8411E721",
+      "B96F12A499841AAB",
+      "F2BA883A3C3AF0B3"
+    ],
+    "rust/crates/tidb-expr/src/ast_source_tests.rs": [
+      "789B6C5CB3543C08",
+      "3E5E6C815EB16E9C",
+      "6E2ECFB35F591274"
+    ],
+    "rust/crates/tidb-expr/src/evaluator/filter_prepared_tests.rs": [
+      "9C47E8782A22C4DF"
+    ]
+  },
+  "protected_build_sha256": "cc9fb078591d7c94366d1e6f504ff2bade23ccb57a9313f9c7235807ff658d52",
+  "sdk_head": "8f67591496dbcddbb422f5b6049eb07498bd006e",
+  "sdk_status": "",
+  "pass": true,
+  "retired_observer_contracts": {
+    "diagnostic": {
+      "source_commit": "d4df288ab211b33635a1c752017c5f5df6cbaeba",
+      "original_explicit_oracle": "7200/A4F6DB5E8D40E458",
+      "pre_deletion_public_repeated": [
+        "7200/80E3F7155D1FD890",
+        "7200/80E3F7155D1FD890"
+      ],
+      "scope": "Only test-hook original opt-in bypass plus file capture instrumentation; production implementation and existing original assertion unchanged."
+    },
+    "membership": {
+      "admitted_count": 1141600,
+      "admitted_hash": "6DCAFE78EBD1BFF5",
+      "scope": "Actual SDK values/columns/effects after original per-row equalities; unchanged original full hash and exact existing resource count asserted.",
+      "source_commit": "d4df288ab211b33635a1c752017c5f5df6cbaeba",
+      "terminal_resource_count": 2720,
+      "whole_original_count": 1144320,
+      "whole_original_hash": "0926C1DF1FCFFBE1"
+    }
+  },
+  "post_full_narrow_change_proof": {
+    "changes_after_complete_full_sweep": [
+      "rust/crates/tidb-expr/src/scalar_function.rs",
+      "rust/crates/tidb-expr/src/evaluator/batch_stateful_tests.rs",
+      "rust/crates/tidb-expr/src/evaluator/batch_pb_binary_tests.rs"
+    ],
+    "production_change": "Existing eval_numeric_operand_row visibility only; entire file otherwise byte-identical. Other two files are cfg(test) modules.",
+    "runtime_body_unchanged": true
+  },
+  "boundary_fixture": {
+    "path": "rust/crates/tidb-expr/src/evaluator/batch_retired_boundary_original.json",
+    "sha256": "59141827dc1e37ece512d1ef2160ac613f9a5f6a00472f7854b84490240f1fc6",
+    "records": 260
+  }
+}

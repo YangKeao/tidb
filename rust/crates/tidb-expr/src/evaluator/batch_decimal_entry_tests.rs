@@ -231,62 +231,17 @@ fn long_records(
     records
 }
 #[test]
-fn decimal_entry_original_capture() {
-    let a = crate::test_original_eval::with_original(|| {
-        records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    let b = crate::test_original_eval::with_original(|| {
-        records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    assert_eq!(a, b);
-    println!(
-        "N61 decimal original count={} digest={:016X}",
-        a.len(),
-        digest(&a)
+fn decimal_entry_public_matches_frozen_results() {
+    let actual = records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (207360, 0xC538_B0CF_8411_E721)
     );
-    assert_eq!((a.len(), digest(&a)), (207360, 0xC538_B0CF_8411_E721));
-    let a = crate::test_original_eval::with_original(|| {
-        long_records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    let b = crate::test_original_eval::with_original(|| {
-        long_records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    assert_eq!(a, b);
-    println!(
-        "N61 decimal long original count={} digest={:016X}",
-        a.len(),
-        digest(&a)
+    let actual = long_records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0));
+    assert_eq!(
+        (actual.len(), digest(&actual)),
+        (135, 0xB96F_12A4_9984_1AAB)
     );
-    assert_eq!((a.len(), digest(&a)), (135, 0xB96F_12A4_9984_1AAB));
-}
-
-#[test]
-fn decimal_entry_shared_matches_independent_original() {
-    let old = crate::test_original_eval::with_original(|| {
-        records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    assert_eq!((old.len(), digest(&old)), (207360, 0xC538_B0CF_8411_E721));
-    let actual =
-        without_decimal_tree(|| records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0)));
-    let mut differences = 0;
-    for (old, new) in old.iter().zip(&actual) {
-        if old != new {
-            if differences < 12 {
-                eprintln!("N61 difference\nOLD {old}\nNEW {new}");
-            }
-            differences += 1;
-        }
-    }
-    assert_eq!(old.len(), actual.len());
-    assert_eq!(differences, 0);
-    let old = crate::test_original_eval::with_original(|| {
-        long_records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    assert_eq!((old.len(), digest(&old)), (135, 0xB96F_12A4_9984_1AAB));
-    let actual = without_decimal_tree(|| {
-        long_records(|f, c, i, o| f.vec_eval_decimal_arithmetic_in(c, i, o, 0))
-    });
-    assert_eq!(old, actual);
 }
 
 fn suite_records() -> Vec<String> {
@@ -370,14 +325,6 @@ fn suite_records() -> Vec<String> {
     records
 }
 #[test]
-fn decimal_entry_original_suite_capture() {
-    let a = crate::test_original_eval::with_original(suite_records);
-    let b = crate::test_original_eval::with_original(suite_records);
-    assert_eq!(a, b);
-    println!("N61 Decimal Suite original {} {:016X}", a.len(), digest(&a));
-    assert_eq!((a.len(), digest(&a)), (480, 0xF2BA_883A_3C3A_F0B3));
-}
-#[test]
 fn decimal_entry_finite_policies_stage_output_and_recover() {
     let f = function(0, Some(decimal()), value(0), value(2));
     let input = chunk(
@@ -428,13 +375,7 @@ fn decimal_entry_finite_policies_stage_output_and_recover() {
         );
         let mut original = sentinel();
         assert!(
-            crate::test_original_eval::with_original(|| f.vec_eval_decimal_arithmetic_in(
-                &context,
-                &input,
-                &mut original,
-                0
-            ))
-            .unwrap()
+            (|| f.vec_eval_decimal_arithmetic_in(&context, &input, &mut original, 0))().unwrap()
         );
         for row in 0..original.num_rows() {
             assert_eq!(
@@ -450,58 +391,22 @@ fn decimal_entry_finite_policies_stage_output_and_recover() {
 }
 
 fn without_decimal_tree<T>(body: impl FnOnce() -> T) -> T {
-    assert!(!crate::test_original_eval::requested());
-    let decimal = crate::scalar_function::original_decimal_tree_entries();
-    let native = crate::scalar_function::original_native_batch_entries();
-    let scalar = crate::test_original_eval::entries();
+    let before = crate::test_evaluation::shared_entries();
     let value = body();
     assert_eq!(
-        decimal,
-        crate::scalar_function::original_decimal_tree_entries(),
-        "shared Decimal called old tree"
-    );
-    assert_eq!(
-        native,
-        crate::scalar_function::original_native_batch_entries(),
-        "shared Decimal called old native tree"
-    );
-    assert_eq!(
-        scalar,
-        crate::test_original_eval::entries(),
-        "shared Decimal nested scalar driver"
+        crate::test_evaluation::shared_entries(),
+        before,
+        "Decimal batch nested a public scalar driver"
     );
     value
 }
 
 #[test]
-fn decimal_entry_public_suite_matches_original_and_never_enters_old_decimal_tree() {
-    let old = crate::test_original_eval::with_original(suite_records);
-    assert_eq!((old.len(), digest(&old)), (480, 0xF2BA_883A_3C3A_F0B3));
-    let decimal = crate::scalar_function::original_decimal_tree_entries();
-    let native = crate::scalar_function::original_native_batch_entries();
+fn decimal_entry_public_suite_matches_frozen_results() {
     let actual = suite_records();
-    let mut differences = 0;
-    for (old, new) in old.iter().zip(&actual) {
-        if old != new {
-            if differences < 8 {
-                eprintln!(
-                    "N61 Suite difference\nOLD {}\nNEW {}",
-                    &old[..old.len().min(700)],
-                    &new[..new.len().min(700)]
-                );
-            }
-            differences += 1;
-        }
-    }
-    assert_eq!(old.len(), actual.len());
-    assert_eq!(differences, 0);
     assert_eq!(
-        decimal,
-        crate::scalar_function::original_decimal_tree_entries()
-    );
-    assert_eq!(
-        native,
-        crate::scalar_function::original_native_batch_entries()
+        (actual.len(), digest(&actual)),
+        (480, 0xF2BA_883A_3C3A_F0B3)
     );
 }
 
@@ -561,13 +466,13 @@ fn decimal_entry_native_scope_keeps_null_refusal_and_demand_precedence() {
                         &[decimal()],
                         &[vec![Datum::Decimal(Decimal::from_literal("8.75"))]],
                     );
-                    let body = || {
+                    let mut body = || {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             f.vec_eval_decimal_arithmetic_in(&context, &input, &mut output, 0)
                         }))
                     };
                     let result = if original {
-                        crate::test_original_eval::with_original(body)
+                        body()
                     } else {
                         without_decimal_tree(body)
                     };

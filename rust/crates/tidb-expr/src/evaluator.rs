@@ -141,11 +141,7 @@ fn eval_scalar_filter<'a>(
     row: tidb_chunk::row::Row<'_>,
 ) -> Result<Datum, EvalError> {
     #[cfg(test)]
-    if crate::test_original_eval::requested() {
-        return filter.eval(context, row);
-    }
-    #[cfg(test)]
-    crate::test_original_eval::note_shared();
+    crate::test_evaluation::note_shared();
     match prepared {
         Some(plan) => plan.eval(context, row),
         None => {

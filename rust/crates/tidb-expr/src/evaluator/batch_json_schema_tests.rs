@@ -301,10 +301,9 @@ fn json_schema_value_phases_match_active_original_cache_and_lazy_demand() {
                             &left,
                             |ctx| -> std::result::Result<(), EvalError> {
                                 for i in 0..3 {
-                                    prefix_left.borrow_mut().push(leaf::frame(
-                                        &original
-                                            .eval_original_json_schema(ctx, input.get_row(i))?,
-                                    ));
+                                    prefix_left
+                                        .borrow_mut()
+                                        .push(leaf::frame(&original.eval(ctx, input.get_row(i))?));
                                 }
                                 Ok(())
                             },

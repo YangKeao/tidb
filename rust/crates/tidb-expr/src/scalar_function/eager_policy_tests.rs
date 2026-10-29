@@ -87,54 +87,17 @@ pub(crate) fn function(name: &str, n: usize) -> ScalarFunction {
             .collect(),
     )
 }
-pub(crate) fn original_common(name: &str, n: usize) -> bool {
-    let f = function(name, n);
-    let before = eager_value_phases_for_test();
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // This counter describes the retired original dispatcher, not the
-        // default public route whose candidate classification is checked below.
-        crate::test_original_eval::with_original(|| f.eval(&crate::NoColumns, Row::empty()))
-    }));
-    let count = eager_value_phases_for_test() - before;
-    assert!(
-        count <= 1,
-        "nested common-body execution for {name}/{n}: {count}"
-    );
-    count == 1
-}
-fn isolated(which: &str) -> bool {
-    const KEY: &str = "TIDB_EAGER_POLICY_ORACLE";
-    if std::env::var(KEY).as_deref() == Ok(which) {
-        return false;
-    }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            &format!("scalar_function::eager_policy_tests::{which}"),
-            "--nocapture",
-        ])
-        .env(KEY, which)
-        .output()
-        .unwrap();
-    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
-    assert!(output.status.success());
-    true
-}
-#[test]
-fn eager_policy_original_registry_phase_observations() {
-    if isolated("eager_policy_original_registry_phase_observations") {
-        return;
-    }
 
+#[test]
+fn eager_policy_registry_and_bad_arities_match_frozen_results() {
     let (mut count, mut common, mut hash) = (0usize, 0usize, 0xcbf29ce484222325u64);
     let names = names();
     for name in &names {
         for n in arities(name) {
-            let reached = original_common(name, n);
+            let reached = argument_policy::classify(&function(name, n))
+                == argument_policy::ArgumentPolicy::CommonEager;
             common += usize::from(reached);
-            let record = format!("{name}|{n}|{reached}\n");
-            for b in record.bytes() {
+            for b in format!("{name}|{n}|{reached}\n").bytes() {
                 hash = (hash ^ u64::from(b)).wrapping_mul(0x100000001b3);
             }
             count += 1;
@@ -144,30 +107,4 @@ fn eager_policy_original_registry_phase_observations() {
         (count, common, names.len(), hash),
         (2308, 2036, 328, 0xBC3F1FF91A278C16)
     );
-    eprintln!(
-        "EAGER POLICY ORIGINAL count={count} common={common} names={} {hash:016X}",
-        names.len()
-    );
-}
-
-#[test]
-fn eager_policy_candidate_matches_executed_original_registry_and_bad_arities() {
-    if isolated("eager_policy_candidate_matches_executed_original_registry_and_bad_arities") {
-        return;
-    }
-    let mut pairs = 0;
-    for name in names() {
-        for n in arities(&name) {
-            let actual = argument_policy::classify(&function(&name, n));
-            let original = original_common(&name, n);
-            assert_eq!(
-                actual == argument_policy::ArgumentPolicy::CommonEager,
-                original,
-                "{name}/{n}: {actual:?}"
-            );
-            pairs += 1;
-        }
-    }
-    assert_eq!(pairs, 2308);
-    eprintln!("EAGER POLICY INDEPENDENT ORIGINAL CLASSIFICATION PAIRS {pairs}");
 }
