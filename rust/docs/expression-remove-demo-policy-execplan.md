@@ -13,25 +13,30 @@ Task #7 tracks this work. TiDB starts at 4ab480e118b9a4e3cd2b1329bd7894577a99e10
 
 
 - [x] Read current directive, claim task #7, inspect source and repository guidance; confirm no owned builds running.
-- [x] Record failing cancellation regression: cancelled_demo_allowances_do_not_reject_native_projection compiled and failed on old implementation with metadata ResourceLimit (regression-before.log). Deep/wide follow-up pending.
-- [ ] Remove Demo policy checks and their runtime accounting from SDK and TiDB; retain required actual-size overflow/allocation failure handling.
-- [ ] Move immutable checks to preparation and consolidate actual batch validation; preserve changing callback result checks.
-- [ ] Update quota-only tests to the new contract and run relevant existing semantic tests.
-- [ ] Run SDK/front/executor/Unistore checks appropriate to changed interfaces, formatting and root lint; preserve and report known baseline failures.
-- [ ] Verify SQL deep/wide boundary recovery and representative performance, document exact results and remaining limits, commit local changes and deliver evidence.
+- [x] Record failing cancellation regression: cancelled_demo_allowances_do_not_reject_native_projection compiled and failed on old implementation with metadata ResourceLimit (regression-before.log). Deep/wide values and same-session recovery passed in the first-round boundary matrix.
+- [x] Remove Demo policy checks and their runtime accounting from SDK and TiDB; retain required actual-size overflow/allocation failure handling.
+- [x] Move immutable checks to preparation and consolidate actual batch validation; preserve changing callback result checks.
+- [x] Update quota-only tests to the new contract and run relevant existing semantic tests.
+- [x] Run SDK/front/executor/Unistore checks appropriate to changed interfaces, formatting and root lint; preserve and report known baseline failures.
+- [x] Verify SQL deep/wide boundary recovery and representative performance, document exact results and remaining limits, commit local changes and deliver evidence.
 
 - [x] 2026-11-05: Resolve all 442 initial frontend test interface errors; `cargo check --tests` passed before subsequent cleanup. Preserve malformed token lengths by converting only test wire boundaries to Vec.
 - [x] 2026-11-05: Replace two intentionally infinite quota-dependent fixture providers with finite HostContract failures; keep actual cancellation/cleanup proofs. The complete SDK test runner now finishes in less than a second.
-- [x] SDK fullsixth: 1158 passed, the single independently confirmed pre-existing STR_TO_DATE failure, 1 ignored. Final rebuild after unused compatibility parameter names is in progress.
+- [x] SDK fullsixth: 1158 passed, the single independently confirmed pre-existing STR_TO_DATE failure, 1 ignored. Final first-round rebuild and full runtime completed with the same baseline.
 - [x] 2026-11-05: Remove native host storage rescans, repeated warning-size ledgers, per-window value byte ledgers and duplicate retained schema snapshots from production. Explicit private observations compute sizes only when requested.
 - [x] 2026-11-05: Remove private Decimal/vector materialization allowance arguments and reply-size precomputations while retaining actual role/frame guards. Move completed window values into authenticated slots.
-- [ ] Finish deliberate migration of cancelled-policy assertions, preserve actual value/event/ID references, and complete runtime/performance gates below.
+- [x] Finish deliberate migration of cancelled-policy assertions, preserve actual value/event/ID references, and complete runtime/performance gates below.
 
 - [x] Independently preserve original gold references and check explicit policy deltas: AST 191763, reserved raw 184760, reserved dates 715200, membership 1144320, wildcard 42912. All originally admitted membership records are identical. New JSON fixtures assert actual after records before folding archived before records into the unchanged original digests.
 - [x] Resolve all eight failures from the 87-pass focused build8 diagnostic; frontend test compile check27 and executable build9 passed.
 - [x] Full build9 diagnostic completed all2440:2297passed/47failed/95ignored/1timeout. This is not a final-source pass. Final runner allows1800seconds and empirical4GiB AS for exactly two large native corpora,768MiB otherwise; no name-based skips.
 - [x] Delete final unobserved import/copy ledgers found during review; preserve actual store poison checks, allocation checks and per-token authentication.
-- [ ] Final report uses the previous three SQL tables and reports both immediate before/after gains and the remaining gap to the original native frontend. User 6ce6e4da requests local DCO commits after this report, followed by autonomous further performance attempts. No push or deployment is authorized.
+- [x] Final report uses the previous three SQL tables and reports both immediate before/after gains and the remaining gap to the original native frontend. User 6ce6e4da requests local DCO commits after this report, followed by autonomous further performance attempts. No push or deployment is authorized.
+
+- [x] Follow-on frame variant: SDK1158/1known/1ignored, Main973=972passed/1samecommon failure; clippy, lint, dual format and45SQL prechecks passed.
+- [x] Four-round180-cell/170737-query frame experiment audited. JSON/text/control CPU improves6.7%/6.2%/9.8%, but deep16CPU regresses4.3%; this variant is preserved as evidence, not committed as the final optimization.
+- [ ] Refine loop return to small LocalResult<()> using its existing completed-value slot, and inline the small private push_frame helper; rerun SDK and consumer gates.
+- [x] Independently compare refined actual release ELF against round-one af24 and original99a:180cells/172004queries audited,45strict equivalent preflight observations. Retain with explicit heavy-expression gains and small repeated nested/deep/wide regressions; final report generated before local commit. Local commit receipts are recorded in the handoff.
 
 ## Surprises & Discoveries
 
@@ -53,7 +58,7 @@ The old tests often relied on quota failure before reaching later assertions; re
 ## Outcomes & Retrospective
 
 
-Implementation is in progress. Internal EvalBudget and production propagation are deleted, and the public obsolete allowance DTOs remain documented compatibility inputs. Static cache/parent/diagnostic metadata proofs now run during preparation. Native handles are inline arrays and bulk bindings fill the final vector directly; row scopes collect directly into final output. SmallVec observers count heap only on spill. Suite execution now borrows a caller selection or owns one shared generated range; ordered evaluation passes physical rows without constructing Chunk views. Production check passed before the latest selection/allowance edits; test migrations, final checks, runtime/performance verification and commits are pending. No speedup is claimed.
+The Demo policy removal is complete, validated, reported and locally committed as c57e66f1ff/ccca28c. The first-round report preserves all disclosed inherited failures and records production/test Rust net reductions5097/284. Representative4096-row integer/nested/JSON CPU costs fell40.4%/47.4%/38.0%, while remaining1.714x/3.382x/5.270x original. The follow-on trial is complete and the refined in-place-frame variant is retained:4096-row control/JSON/text frontend CPU falls12.6%/9.4%/7.7% relative to the round-one final implementation, while nested/deep16/width8 CPU rises2.8%/1.3%/2.6% across all four rounds. This is a documented tradeoff, not a universal speedup. Cumulative production/test Rust net reductions are5078/281lines. The original-performance goal remains unmet: integer/nested/JSON CPU is still1.666x/3.235x/4.797x original. Further profiling of value transport and authentication is a possible future direction, not an unmeasured gain or part of this commit. No new evaluator, fallback, dependency or public API is introduced.
 
 ## Context and Orientation
 
@@ -139,3 +144,27 @@ Final release ELF af24b10211b8ba79fd22b66fa80e10af6f206d67831a4a8c446e7868b8a035
 At4096rows, integer/nestedinteger/JSON SQL latency fell4.9%/14.7%/24.6%; frontendCPU/query fell40.4%/47.4%/38.0%. CPU remains1.714x/3.382x/5.270x original respectively, so overall original performance has NOT been reached. Full results include scalar/multirow SQL,18families,NULL densities,batch32/1024,vectorization-off,depth/width,memory and1/8-client load. SQL ms/query includes planning,RPC,encoding and fullfetch; it is not pure function ns/eval.
 
 ProductionRust net reduction5097lines;testRust284lines. Exact Git additions/deletions include comments/blank lines;23548lines of independent JSON/TSV policy observations are counted separately. Detailed report and compact evidence are in the agent's evidence/remove-demo-policy/performance/measurement/REPORT.zh.md and companion CSV/JSON files. Per user6ce6e4da, deliver the report first, then localDCO commits, then autonomously try further optimization against original native. No push,PR ordeployment.
+
+### Follow-on: retain suspended frames in place
+
+
+After the delivered report and local commits c57e66f1ff/ccca28c, an actual user-mode cycles profile of the immutable round-one server found26.86% self samples in memmove. Disassembly shows584-byte EvalFrame moves through every pop/re-push, including suspended parents. The follow-on prototype advances frames through last_mut, pushing only a newly demanded child and popping only completed/failed frames. Control results are moved from their accumulator; host finish borrows the frame. The TaskGuard still outlives frame values. A callback error cannot be caught by the same active host's Result boundary, whereas failure to allocate a requested child can be handled by its waiting parent.
+
+The existing exact-cause/cleanup/recovery test is extended from one relay to1/8/32 relay depths, exercising inline and spilled stacks. Run the complete SDK expression suite and relevant frontend frame consumers, preserving all prior golden observations and disclosed baseline failures; run formatting, project clippy and root lint. Then compare the rebuilt candidate against the immutable round-one af24 and original99a binaries on the same six representative4096-row SQL families with balanced rounds, actual frontend CPU and full-fetch latency. Profiles are outside comparison timing. Keep the optimization only if semantics pass and measured gains justify it; otherwise revert this isolated follow-on diff, retaining the failed experiment evidence. No additional API, evaluator, native fallback or dependency is introduced.
+
+### Frame experiment and refinement
+
+
+The preserved frame-only release ELF862baf5bb88a46ab073dc7206195905df5373b6264592dc3be578536fb5c92b8 completed180cells/170737queries with45equivalent preflight observations. At4096rows, JSON/text/control frontend CPU falls6.7%/6.2%/9.8%; deep16CPU increases4.3% across all four rounds, integer2.7%, width8about1.7%. Full records and an explicit provisional report are archived outside the repository under performance/followon. Do not overwrite them or confuse the regression with success.
+
+The next variant retains parents in place but restores a small LocalResult<()> step return. Completion already has an owned value in the existing returned slot; after a successful step its presence causes exactly one frame pop. Errors still exclude the active host unless allocation of a requested child failed. The private push_frame helper receives an inline hint to let code generation optimize initial frame copies. Existing nested demand, exact error identity, cancellation, all SDK tests and973frontend consumers must still match. A fresh15case/three-version/four-round experiment compares directly to af24 and99a, so the original-performance gap and any remaining regressions are explicit rather than inferred from separate historical runs.
+
+## Final refinement result (2026-11-05 23:05Z)
+
+The preserved actual after-round3 ELF ebb0117d1925d8fea67cd7df8bf8c490614197caee3c8ab11bf8a106481f191d completed180cells/172004queries against af24 and99a. Control/Decimal/float/JSON/text CPU falls12.6%/7.8%/8.6%/9.4%/7.7% at4096rows; all four rounds agree on those directions. Nested integer/deep16/width8 CPU rises2.8%/1.3%/2.6%, also all four rounds. Integer CPU changes-0.8% with a range crossing zero. Retain because the larger heavy-expression benefits justify these explicit small regressions; do not claim the original native target is achieved.
+
+The first preflight attempt stopped before timing because12batch cases had different estimated row counts2730.67/3333.33; every result, field, warning and all other EXPLAIN columns matched. That attempt is preserved. Fresh owned storage and frontend restarts converged all estimates to3333.33, and the repeated45observations passed exact equality of every EXPLAIN column without normalization. The precise transient origin is unproven. A diagnostic-only metadata subquery failed identically in current/original; it was not a timed workload.
+
+Final SDK runtime:1158passed/1exact inherited STR_TO_DATE failure/1ignored. Final frontend consumer runtime:972passed/1exact inherited common failure over973selected tests, including complete PB eager actual phases and lazy actual physical cases. Both failure bodies match the round-one baseline after only PID/time normalization. Project clippy, root make lint, both pinned rustfmt toolchains, and git diff --check pass. No real allocation-failure injection or new full2440frontend sweep is claimed. Input snapshots and protected BUILD hash are unchanged throughout build/timing. The final report, raw cell observations, gates and failed/retried preflight records are under agent workspace evidence/remove-demo-policy/performance/followon-return; first-round and provisional reports remain immutable. All owned benchmark processes and data are cleaned only after PID/birth and port checks.
+
+Revision note: closed the previously pending refinement with measured gains, repeated regressions, unchanged failure baselines and a retain decision. No new evaluator, fallback, API or dependency was added.
