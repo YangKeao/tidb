@@ -28,6 +28,7 @@ impl PbModTask {
             left: None,
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
@@ -40,13 +41,11 @@ pub(super) fn present_pb_binary_value(
     meta: &NativePbBinary,
     value: Datum,
     context: &dyn Columns,
-    maximum: usize,
 ) -> std::result::Result<Datum, EvalError> {
     let value = crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-    let value =
-        coerce_optional_value_result(&meta.name, meta.result_type.as_ref(), value, maximum)?;
+    let value = coerce_optional_value_result(&meta.name, meta.result_type.as_ref(), value)?;
     if meta.integer_batch_result {
-        present_integer_batch_value(value, meta.result_type.as_ref(), context, maximum)
+        present_integer_batch_value(value, meta.result_type.as_ref(), context)
     } else {
         Ok(value)
     }
@@ -88,21 +87,14 @@ impl NativeBatchHosts<'_> {
             node: meta.arguments[index],
             row,
         };
-        let copied = {
+        {
             let values = store.borrow();
             for (index, held) in state.tokens.iter().enumerate() {
                 values.get(held, NativeValueRole::CharInput, origin(index))?;
             }
-            native_payload_bytes(values.get(token, NativeValueRole::CharInput, origin(next))?)?
-                .checked_mul(2)
-                .ok_or_else(|| resource("PB MOD copy extent overflow"))?
-        };
-        let base = self.retained_bytes()?;
-        let live = base
-            .checked_add(copied)
-            .and_then(|n| n.checked_add(native_values::HANDLE_BYTES))
-            .ok_or_else(|| resource("PB MOD live extent overflow"))?;
-        self.check_bytes(live)?;
+            values.get(token, NativeValueRole::CharInput, origin(next))?;
+        }
+
         let value =
             store
                 .borrow()
@@ -117,7 +109,7 @@ impl NativeBatchHosts<'_> {
         ) else {
             unreachable!()
         };
-        let old_capacity = state.tokens.capacity();
+
         state
             .tokens
             .try_reserve_exact(1)
@@ -127,15 +119,7 @@ impl NativeBatchHosts<'_> {
                 .try_into()
                 .map_err(|_| binding("PB MOD capability width differs"))?,
         );
-        let live = base
-            .checked_add(copied)
-            .and_then(|n| {
-                n.checked_add(
-                    (state.tokens.capacity() - old_capacity) * native_values::HANDLE_BYTES,
-                )
-            })
-            .ok_or_else(|| resource("PB MOD prefix capacity overflow"))?;
-        self.check_bytes(live)?;
+
         let check = || -> LocalResult<()> {
             let values = store.borrow();
             for (index, token) in state.tokens.iter().enumerate() {
@@ -143,14 +127,7 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            self.max_retained_bytes - live,
-            || {
-                crate::scalar_function::eager_values::audit_work_result(
-                    meta.kernel.integer_mod_operand(next, value),
-                )
-            },
-        );
+        let result = (|| meta.kernel.integer_mod_operand(next, value))();
         check()?;
         let value = match result {
             Ok(value) => value,
@@ -168,7 +145,7 @@ impl NativeBatchHosts<'_> {
                 .as_mut()
                 .expect("live PB MOD task")
                 .demand = SqlDemand::PbIntegerMod(state);
-            self.check_bytes(self.retained_bytes()?)?;
+
             return Ok(HostStep::NeedArg(HostArgRequest {
                 index: 1,
                 mode: ArgMode::Fresh,
@@ -178,20 +155,15 @@ impl NativeBatchHosts<'_> {
             .left
             .take()
             .ok_or_else(|| binding("PB MOD left value absent"))?;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            self.max_retained_bytes - live,
-            || {
-                crate::scalar_function::eager_values::audit_work_result(
-                    meta.kernel.integer_mod_values(
-                        left,
-                        value,
-                        self.context.div_precision_increment(),
-                        meta.collation,
-                        self.context,
-                    ),
-                )
-            },
-        );
+        let result = (|| {
+            meta.kernel.integer_mod_values(
+                left,
+                value,
+                self.context.div_precision_increment(),
+                meta.collation,
+                self.context,
+            )
+        })();
         // Both actual consumed capabilities survive every late context callback.
         let check = || -> LocalResult<()> {
             let values = store.borrow();
@@ -205,22 +177,14 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        let held = base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("PB MOD result allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("PB MOD result extent overflow"))?;
-        self.check_bytes(held)?;
-        let result =
-            present_pb_binary_value(meta, value, self.context, self.max_retained_bytes - held);
+
+        let result = present_pb_binary_value(meta, value, self.context);
         check()?;
         let value = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
     }
 }

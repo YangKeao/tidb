@@ -64,8 +64,7 @@ impl NativeBatchHosts<'_> {
                     .ok_or_else(|| binding("EXTRACT first source lost"))
             }
         };
-        let base = self.retained_bytes()?;
-        let mut live = base;
+
         let null_unit = {
             let values = store.borrow();
             let null_unit = arity == 2
@@ -81,7 +80,7 @@ impl NativeBatchHosts<'_> {
                     Datum::Null
                 );
             for i in 0..arity {
-                let value = values.get(
+                values.get(
                     token_for(i)?,
                     NativeValueRole::CharInput,
                     NativeValueOrigin {
@@ -94,19 +93,12 @@ impl NativeBatchHosts<'_> {
                 if null_unit {
                     continue;
                 }
-                live = live
-                    .checked_add(
-                        native_payload_bytes(value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("EXTRACT clone allowance overflow"))?,
-                    )
-                    .ok_or_else(|| resource("EXTRACT source extent overflow"))?;
             }
             null_unit
         };
-        self.check_bytes(live)?;
+
         if null_unit {
-            return self.finish_extract(id, Datum::Null, *output_node, *output_role, row, base);
+            return self.finish_extract(id, Datum::Null, *output_node, *output_role, row);
         }
         let (owned, second) = {
             let values = store.borrow();
@@ -122,7 +114,7 @@ impl NativeBatchHosts<'_> {
             };
             (get(0)?, if arity == 2 { Some(get(1)?) } else { None })
         };
-        let remaining = self.max_retained_bytes - live;
+        let remaining = usize::MAX;
         // No value-store borrow survives original casts, independently demanded
         // modes, clock/zone/truncation reads or unconditional warning delivery.
         let value = match unit {
@@ -148,7 +140,7 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_extract(id, value, *output_node, *output_role, row, base)
+        self.finish_extract(id, value, *output_node, *output_role, row)
     }
     fn finish_extract(
         &mut self,
@@ -157,36 +149,23 @@ impl NativeBatchHosts<'_> {
         output_node: usize,
         output_role: Option<NativeValueRole>,
         row: InputRow,
-        base: usize,
     ) -> LocalResult<HostStep> {
         let field = self
             .metadata
             .get(self.task(id)?.slot.index())
             .and_then(NativeHostMetadata::result_type)
             .ok_or_else(|| binding("EXTRACT result declaration missing"))?;
-        let live = native_payload_bytes(&value)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("EXTRACT return coercion extent overflow"))?;
-        self.check_bytes(live)?;
-        let value = match crate::tikv::coerce_result_bounded(
-            "extract",
-            field,
-            value,
-            self.max_retained_bytes - live,
-        ) {
+
+        let value = match crate::tikv::coerce_result_bounded("extract", field, value) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
         if let Some(role) = output_role {
             return self
-                .finish_native_value(id, value, output_node, role, row, base)
+                .finish_native_value(id, value, output_node, role, row)
                 .map(HostStep::Ready);
         }
-        self.check_bytes(
-            base.checked_add(128)
-                .ok_or_else(|| resource("EXTRACT integer publication overflow"))?,
-        )?;
+
         let value = match value {
             Datum::Null => None,
             Datum::Int(v) => Some(v),

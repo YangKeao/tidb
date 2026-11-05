@@ -395,8 +395,7 @@ fn timestamp_actual_return_width_without_padding_does_not_allocate_declared_widt
     .unwrap();
     assert_eq!(expected, Datum::new_string("42"));
     assert_eq!(
-        super::epoch_value::finish_epoch_result_bounded(Datum::Int(42), &field, false, 16384)
-            .unwrap(),
+        super::epoch_value::finish_epoch_result_bounded(Datum::Int(42), &field, false).unwrap(),
         expected
     );
 }

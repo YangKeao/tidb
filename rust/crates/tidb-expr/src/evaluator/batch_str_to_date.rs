@@ -66,8 +66,8 @@ impl NativeBatchHosts<'_> {
                 mode: ArgMode::Fresh,
             }));
         }
-        let base = self.retained_bytes()?;
-        let remaining = self.max_retained_bytes - base;
+
+        let remaining = usize::MAX;
         let prepared = {
             let values = store.borrow();
             let first = values.get(
@@ -122,7 +122,7 @@ impl NativeBatchHosts<'_> {
         };
         if let Some(role) = output_role {
             return self
-                .finish_native_value(id, value, *output_node, *role, row, base)
+                .finish_native_value(id, value, *output_node, *role, row)
                 .map(HostStep::Ready);
         }
         let value = crate::expression::apply_enum_set_integer_view(value, Some(result_type));
@@ -134,34 +134,14 @@ impl NativeBatchHosts<'_> {
                     Err(error) => return self.native_failure(error),
                 };
                 let length = bytes.map_or(0, <[u8]>::len);
-                self.check_bytes(
-                    base.checked_add(
-                        length
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("date byte overlap overflow"))?,
-                    )
-                    .and_then(|n| n.checked_add(256))
-                    .ok_or_else(|| resource("date byte publication overflow"))?,
-                )?;
+
                 let mut output = ChunkedVecBytes::try_with_capacities(1, length)
                     .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
                 output.push_ref(bytes);
-                self.check_bytes(
-                    base.checked_add(length)
-                        .and_then(|n| {
-                            output
-                                .retained_heap_bytes()
-                                .and_then(|more| n.checked_add(more))
-                        })
-                        .ok_or_else(|| resource("date byte actual capacity overflow"))?,
-                )?;
+
                 VectorValue::Bytes(output)
             }
             Output::DateTime => {
-                self.check_bytes(
-                    base.checked_add(128)
-                        .ok_or_else(|| resource("date typed publication overflow"))?,
-                )?;
                 let value = match value {
                     Datum::Null => None,
                     Datum::Time(value) => Some(TikvDateTime::from_go_raw_like_go(value.go_raw())),
@@ -174,10 +154,6 @@ impl NativeBatchHosts<'_> {
                 VectorValue::from_scalar(&ScalarValue::DateTime(value), 1)
             }
             Output::Duration => {
-                self.check_bytes(
-                    base.checked_add(128)
-                        .ok_or_else(|| resource("duration typed publication overflow"))?,
-                )?;
                 let value = match value {
                     Datum::Null => None,
                     Datum::Duration(value) => Some(

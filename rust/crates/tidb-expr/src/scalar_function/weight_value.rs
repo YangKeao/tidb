@@ -28,7 +28,6 @@ pub(crate) fn source_type(source: Option<&FieldType>) -> std::borrow::Cow<'_, Fi
     }
 }
 pub(crate) fn padding(kind: &Datum, length: &Datum) -> Result<(bool, i64), EvalError> {
-    super::eager_values::charge_string_work(kind)?;
     let binary = kind.sql_string().is_ok_and(|k| k == "BINARY");
     Ok((binary, crate::cast::to_i64_signed(length)))
 }
@@ -47,7 +46,6 @@ pub(crate) fn evaluate(
     padding: Option<(bool, i64)>,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    super::eager_values::charge_string_work(&value)?;
     let value = crate::cast::cast_arg_as_string(&value, Some(arg_type), ctx)?;
     let string_type = crate::cast::cast_arg_as_string_type(
         arg_type,

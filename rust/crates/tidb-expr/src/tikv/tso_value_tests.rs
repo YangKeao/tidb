@@ -181,18 +181,27 @@ fn tso_finite_work_and_arity_precede_context_demand() {
     for op in [Op::Current, Op::Physical, Op::Logical] {
         let ctx = context(0, 0);
         let vals = vec![Datum::Int(1); op.arity()];
-        for budget in [0, usize::MAX] {
-            assert!(matches!(
-                super::tso_value::eval_bounded(op, &vals, &ctx, budget),
-                Err(EvalError::ExpressionRuntimeFailure(_))
-            ));
-        }
+        assert!(matches!(
+            super::tso_value::eval_bounded(op, &vals, &ctx, 0),
+            Err(EvalError::ExpressionRuntimeFailure(_))
+        ));
         let wrong = vec![Datum::Null; op.arity() + 1];
         assert_eq!(
             super::tso_value::eval_bounded(op, &wrong, &ctx, 0),
             Err(EvalError::Unsupported("bad function arity"))
         );
         assert!(ctx.events.borrow().is_empty());
+        let native = context(0, 0);
+        let name = match op {
+            Op::Current => "TIDB_CURRENT_TSO",
+            Op::Physical => "TIDB_PARSE_TSO",
+            Op::Logical => "TIDB_PARSE_TSO_LOGICAL",
+        };
+        assert_eq!(
+            super::tso_value::eval_bounded(op, &vals, &ctx, usize::MAX),
+            original(name, &vals, &native)
+        );
+        assert_eq!(*ctx.events.borrow(), *native.events.borrow());
     }
 }
 

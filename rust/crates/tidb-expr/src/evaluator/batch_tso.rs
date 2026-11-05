@@ -26,7 +26,7 @@ impl NativeBatchHosts<'_> {
             return Err(binding("TSO source presence differs"));
         }
         let row = task.row;
-        let base = self.retained_bytes()?;
+
         let store = self
             .native_values
             .ok_or_else(|| binding("TSO store missing"))?;
@@ -34,31 +34,19 @@ impl NativeBatchHosts<'_> {
             let token = token.ok_or_else(|| binding("TSO source lost"))?;
             let origin = NativeValueOrigin { node: *node, row };
             let values = store.borrow();
-            let source = values.get(token, NativeValueRole::CharInput, origin)?;
-            let live = native_payload_bytes(source)?
-                .checked_mul(2)
-                .and_then(|n| base.checked_add(n))
-                .ok_or_else(|| resource("TSO source clone extent overflow"))?;
-            self.check_bytes(live)?;
-            Some((
-                values.clone_for_kernel(token, NativeValueRole::CharInput, origin)?,
-                live,
-            ))
+            values.get(token, NativeValueRole::CharInput, origin)?;
+
+            Some(values.clone_for_kernel(token, NativeValueRole::CharInput, origin)?)
         } else {
             None
         };
-        let live = owned.as_ref().map_or(base, |(_, n)| *n);
-        let remaining = self
-            .max_retained_bytes
-            .checked_sub(live)
-            .ok_or_else(|| resource("TSO work exhausted"))?;
+
+        let remaining = usize::MAX;
         // The clone, not a store borrow, crosses the original zone/transaction
         // getter. These callbacks may exclusively access the frame-owned store.
         let result = crate::tikv::tso_value::eval_source_bounded(
             *operation,
-            owned
-                .as_ref()
-                .map_or(&[] as &[Datum], |(v, _)| std::slice::from_ref(v)),
+            owned.as_ref().map_or(&[] as &[Datum], std::slice::from_ref),
             argument_type.as_ref(),
             self.context,
             remaining,
@@ -68,21 +56,13 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let live = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("TSO result extent overflow"))?;
-        self.check_bytes(live)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            operation.name(),
-            result_type,
-            result,
-            self.max_retained_bytes - live,
-        ) {
+
+        let result = match crate::tikv::coerce_result_bounded(operation.name(), result_type, result)
+        {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

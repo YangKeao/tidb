@@ -75,34 +75,17 @@ impl NativeBatchHosts<'_> {
                 mode: ArgMode::Fresh,
             }));
         }
-        let base = self.retained_bytes()?;
-        let copied = {
+
+        {
             let values = store.borrow();
-            let mut copied = 0usize;
             if let (Some(index), Some(token)) = (index, token) {
-                copied = native_payload_bytes(values.get(
-                    token,
-                    NativeValueRole::CharInput,
-                    origin(index),
-                )?)?;
+                values.get(token, NativeValueRole::CharInput, origin(index))?;
             }
             if let WeightTask::Length(kind) = state {
-                copied = copied
-                    .checked_add(native_payload_bytes(values.get(
-                        &kind,
-                        NativeValueRole::CharInput,
-                        origin(1),
-                    )?)?)
-                    .ok_or_else(|| resource("weight padding copy overflow"))?;
+                values.get(&kind, NativeValueRole::CharInput, origin(1))?;
             }
-            copied
-                .checked_mul(2)
-                .ok_or_else(|| resource("weight clone allowance overflow"))?
-        };
-        let live = base
-            .checked_add(copied)
-            .ok_or_else(|| resource("weight live extent overflow"))?;
-        self.check_bytes(live)?;
+        }
+
         self.slots[id.slot]
             .task
             .as_mut()
@@ -121,7 +104,7 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let maximum = self.max_retained_bytes - live;
+
         let padding = if let WeightTask::Length(kind) = state {
             let (kind, length) = {
                 let values = store.borrow();
@@ -134,11 +117,7 @@ impl NativeBatchHosts<'_> {
                     )?,
                 )
             };
-            let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                crate::scalar_function::eager_values::audit_work_result(weight_value::padding(
-                    &kind, &length,
-                ))
-            });
+            let result = (|| weight_value::padding(&kind, &length))();
             check_tokens()?;
             match result {
                 Ok(padding) => Some(padding),
@@ -172,40 +151,29 @@ impl NativeBatchHosts<'_> {
                 NativeValueRole::CharInput,
                 origin(0),
             )?;
-            tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                crate::scalar_function::eager_values::audit_work_result(weight_value::evaluate(
+            (|| {
+                weight_value::evaluate(
                     value,
                     &weight_value::source_type(meta.source_type.as_ref()),
                     meta.explicit_collation,
                     padding,
                     self.context,
-                ))
-            })
+                )
+            })()
         };
         check_tokens()?;
         let value = match result {
             Ok(value) => value,
             Err(e) => return self.native_failure(e),
         };
-        let held = base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("weight output allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("weight output extent overflow"))?;
-        self.check_bytes(held)?;
-        let value = match coerce_optional_value_result(
-            "weight_string",
-            meta.result_type.as_ref(),
-            value,
-            self.max_retained_bytes - held,
-        ) {
-            Ok(value) => value,
-            Err(e) => return self.native_failure(e),
-        };
+
+        let value =
+            match coerce_optional_value_result("weight_string", meta.result_type.as_ref(), value) {
+                Ok(value) => value,
+                Err(e) => return self.native_failure(e),
+            };
         check_tokens()?;
-        self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
     }
 }

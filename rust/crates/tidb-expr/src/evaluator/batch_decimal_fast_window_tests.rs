@@ -66,7 +66,7 @@ impl LocalRuntimeServices for Inputs<'_> {
                 .insert_decimal_fast(self.values[slot][row.input_row].clone(), origin)?
         };
         Ok(VectorValue::from_scalar(
-            &ScalarValue::Bytes(Some(token)),
+            &ScalarValue::Bytes(Some(token.to_vec())),
             1,
         ))
     }
@@ -120,12 +120,11 @@ fn run_case(
         output_node: 0,
         native_scope: false,
     }];
-    let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let context = NoContextCalls;
     let mut input = Inputs {
-        hosts: NativeBatchHosts::new(catalog, &metadata, &context, 64 << 20)
-            .with_native_values(Some(&store)),
+        hosts: NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&store)),
         store: &store,
         schema,
         values: &values,
@@ -237,49 +236,6 @@ fn run_case(
     if !selection.is_empty() {
         input.reads.clear();
         input.fail = None;
-        input.hosts.max_retained_bytes = 0;
-        store.borrow_mut().begin_window().unwrap();
-        let result = program.eval_with_bindings(
-            ExecutionLimits::default(),
-            &mut EvalContext::default(),
-            values[0].len(),
-            selection,
-            &mut input,
-        );
-        assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
-        assert!(input.reads.is_empty());
-        assert!(input.hosts.slots.iter().all(|slot| slot.task.is_none()));
-        input.reads.clear();
-        store.borrow_mut().begin_window().unwrap();
-        input.hosts.max_retained_bytes = input.hosts.retained_bytes().unwrap()
-            + selection.len() * size_of::<usize>()
-            + selection.len() * size_of::<Option<FastValue>>()
-            - 1;
-        let result = program.eval_with_bindings(
-            ExecutionLimits::default(),
-            &mut EvalContext::default(),
-            values[0].len(),
-            selection,
-            &mut input,
-        );
-        assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
-        assert_eq!(
-            input.reads,
-            selection
-                .iter()
-                .enumerate()
-                .map(|(occurrence, &input_row)| (
-                    0,
-                    InputRow {
-                        occurrence,
-                        input_row
-                    }
-                ))
-                .collect::<Vec<_>>()
-        );
-        assert!(input.hosts.slots.iter().all(|slot| slot.task.is_none()));
-        input.reads.clear();
-        input.hosts.max_retained_bytes = 64 << 20;
         input.bad_role = Some((0, selection.len() - 1));
         store.borrow_mut().begin_window().unwrap();
         let result = program.eval_with_bindings(
@@ -395,13 +351,13 @@ fn decimal_fast_native_scope_callbacks_authenticate_and_cancel() {
         native_scope: true,
     }];
     for action in [2, 0, 1] {
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let context = C {
             store: &store,
             action: Cell::new(action),
             calls: Cell::new(0),
         };
-        let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context)
             .with_native_values(Some(&store));
         let mut eval = EvalContext::default();
         for recovery in [false, true] {
@@ -438,7 +394,7 @@ fn decimal_fast_native_scope_callbacks_authenticate_and_cancel() {
                         },
                     )
                     .unwrap();
-                VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1)
+                VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1)
             };
             let left = value(1);
             let right = value(2);

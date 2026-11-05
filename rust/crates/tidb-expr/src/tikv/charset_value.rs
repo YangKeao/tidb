@@ -36,7 +36,7 @@ fn project_value(value: Value, target: Option<&str>, maximum: usize) -> Result<D
                 .capacity()
                 .checked_add(bytes.len())
                 .ok_or_else(|| resource("charset string publication overlap overflow"))?;
-            if maximum == usize::MAX || overlap > maximum {
+            if overlap > maximum {
                 return Err(resource(
                     "charset string publication exceeds value allowance",
                 ));

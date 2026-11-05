@@ -336,6 +336,14 @@ fn pb_eager_source_actual_full() {
     matrix(true, true);
 }
 fn matrix(compare: bool, full: bool) {
+    // Independent pre-policy records retain the historical golden; every changed
+    // malformed Decimal must first match its exact original-native outcome.
+    let policy_records: Vec<(usize, String, String)> = if full {
+        serde_json::from_str(include_str!("batch_pb_eager_policy.json")).unwrap()
+    } else {
+        Vec::new()
+    };
+    let mut policy_records = policy_records.iter().peekable();
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -475,14 +483,25 @@ fn matrix(compare: bool, full: bool) {
                                                                 ));
                                                             }
                                                         }
-                                                        observe(
-                                                            &mut hash,
-                                                            &format!(
-                                                                "{label}|{expected}|{:?}|{}",
-                                                                left.column(0),
-                                                                old.snapshot()
-                                                            ),
+                                                        let record = format!(
+                                                            "{label}|{expected}|{:?}|{}",
+                                                            left.column(0),
+                                                            old.snapshot()
                                                         );
+                                                        if policy_records
+                                                            .peek()
+                                                            .is_some_and(|item| item.0 == count)
+                                                        {
+                                                            let (_, before, after) =
+                                                                policy_records.next().unwrap();
+                                                            assert_eq!(
+                                                                &record, after,
+                                                                "policy outcome {label}"
+                                                            );
+                                                            observe(&mut hash, before);
+                                                        } else {
+                                                            observe(&mut hash, &record);
+                                                        }
                                                         count += 1;
                                                     }
                                                 }
@@ -496,6 +515,10 @@ fn matrix(compare: bool, full: bool) {
                 }
             }
         }
+        assert!(
+            policy_records.next().is_none(),
+            "unvisited policy observation"
+        );
         eprintln!("PB EAGER ORIGINAL full={full} {count}/{hash:016X}");
         assert_eq!(
             (count, hash),
@@ -753,26 +776,33 @@ fn pb_eager_source_direct_consumers_and_fixed_cap_dispositions() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 64 * 1024;
+
         let mut first = input(&Some(vec![0; 8193]));
         let mut output = output_for(&ty);
         output.append_null(0);
         let ctx = C::new(true, values.clone(), 0);
-        let failure = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(failure.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{sig:?}/{failure:?}"
-        );
-        assert_eq!(output.num_rows(), 1);
+        let native = C::new(true, values.clone(), 0);
+        let mut original_input = input(&Some(vec![0; 8193]));
+        let mut original_output = output_for(&ty);
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected, "large PB source/{sig:?}");
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         for null in [true, false, true] {
             let mut values = values.clone();
             if null && !values.is_empty() {
@@ -799,44 +829,10 @@ fn pb_eager_source_direct_consumers_and_fixed_cap_dispositions() {
                     )
                     .map_err(BatchFailure::into_evaluator_error)
             });
-            if got != expected && got.contains("ResourceLimit") {
-                // Explicit finite-policy evidence, outside the strict corpus:
-                // the existing return formatter reserves more than 64 KiB for
-                // some numeric/temporal families. Preserve that policy and cap.
-                assert!(
-                    !null || values.is_empty(),
-                    "NULL recovery must remain exact: {sig:?}"
-                );
-                let Expression::ScalarFunction(function) = &owner.program.calculated[0] else {
-                    unreachable!()
-                };
-                let control = C::new(true, values.clone(), 0);
-                let mut raw = values.clone();
-                let raw = function
-                    .pb_eager_values()
-                    .unwrap()
-                    .eval_values(&mut raw, &control)
-                    .unwrap();
-                let bounded = crate::tikv::identity_actual::coerce_result(
-                    "wire display",
-                    function.get_static_type().unwrap(),
-                    raw,
-                    64 * 1024,
-                );
-                assert!(
-                    matches!(bounded,Err(EvalError::ExpressionRuntimeFailure(ref error)) if error.class()==crate::tikv::ExpressionRuntimeFailureClass::ResourceLimit),
-                    "independent original return boundary must refuse: {sig:?}/{bounded:?}"
-                );
-                assert_eq!(right.num_rows(), 1);
-            } else {
-                assert_eq!(got, expected, "recovery/{sig:?}/{null}");
-                assert_eq!(right.column(0), left.column(0));
-                assert_eq!(new.snapshot(), old.snapshot());
-            }
-            assert_eq!(
-                prepared.workers[0].max_materialization_retained_bytes,
-                64 * 1024
-            );
+
+            assert_eq!(got, expected, "recovery/{sig:?}/{null}");
+            assert_eq!(right.column(0), left.column(0));
+            assert_eq!(new.snapshot(), old.snapshot());
         }
     }
 }
@@ -908,7 +904,7 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
             output_role: NativeValueRole::Output,
         },
     ))];
-    let store = RefCell::new(NativeValueStore::new(256 << 10).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let insert = |value: &Datum, role, node, row| {
         store
@@ -925,8 +921,8 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
         panic: Cell::new(false),
         reads: Cell::new(0),
     };
-    let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 16 << 10)
-        .with_native_values(Some(&store));
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&store));
     let mut eval = EvalContext::default();
     let begin = |p: &mut NativeBatchHosts<'_>, e: &mut EvalContext| {
         let HostStart::Pending { task, .. } = p
@@ -968,48 +964,49 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
                         &mut eval,
                         &task,
                         0,
-                        Some(insert(&Datum::Int(2), NativeValueRole::CharInput, 3, row))
+                        Some(insert(&Datum::Int(2), NativeValueRole::CharInput, 3, row).to_vec())
                     ),
                     Ok(HostStep::NeedArg(_))
                 ));
             }
             let bad = match kind {
                 0 => None,
-                1 => Some(stale.clone()),
-                2 => Some(vec![0; 8]),
-                3 => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::Output,
-                    3 + index,
-                    row,
-                )),
-                4 => Some(insert(&Datum::Int(3), NativeValueRole::CharInput, 99, row)),
-                5 => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    InputRow {
-                        occurrence: 1,
-                        ..row
-                    },
-                )),
-                6 => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    InputRow {
-                        input_row: 1,
-                        ..row
-                    },
-                )),
-                _ => {
-                    store.borrow_mut().begin_window().unwrap();
-                    Some(insert(
+                1 => Some((stale.clone()).to_vec()),
+                2 => Some((vec![0; 8]).to_vec()),
+                3 => {
+                    Some((insert(&Datum::Int(3), NativeValueRole::Output, 3 + index, row)).to_vec())
+                }
+                4 => Some((insert(&Datum::Int(3), NativeValueRole::CharInput, 99, row)).to_vec()),
+                5 => Some(
+                    (insert(
                         &Datum::Int(3),
                         NativeValueRole::CharInput,
                         3 + index,
-                        row,
+                        InputRow {
+                            occurrence: 1,
+                            ..row
+                        },
                     ))
+                    .to_vec(),
+                ),
+                6 => Some(
+                    (insert(
+                        &Datum::Int(3),
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            input_row: 1,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
+                _ => {
+                    store.borrow_mut().begin_window().unwrap();
+                    Some(
+                        (insert(&Datum::Int(3), NativeValueRole::CharInput, 3 + index, row))
+                            .to_vec(),
+                    )
                 }
             };
             if kind == 7 && index == 0 {
@@ -1034,12 +1031,15 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
         &mut eval,
         &task,
         0,
-        Some(insert(
-            &Datum::Bytes(vec![b'x'; 32768]),
-            NativeValueRole::CharInput,
-            3,
-            row,
-        )),
+        Some(
+            insert(
+                &Datum::Bytes(vec![b'x'; 32768]),
+                NativeValueRole::CharInput,
+                3,
+                row,
+            )
+            .to_vec(),
+        ),
     )
     .unwrap();
     assert!(matches!(
@@ -1048,7 +1048,7 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
             &mut eval,
             &task,
             1,
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row))
+            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row).to_vec())
         ),
         Ok(HostStep::Ready(_))
     ));
@@ -1061,7 +1061,7 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
             &mut eval,
             &task,
             0,
-            Some(insert(&Datum::Int(2), NativeValueRole::CharInput, 3, row)),
+            Some(insert(&Datum::Int(2), NativeValueRole::CharInput, 3, row).to_vec()),
         )
         .unwrap();
         context.reset.set(behavior == 1);
@@ -1072,7 +1072,7 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
                 &mut eval,
                 &task,
                 1,
-                Some(insert(&Datum::Int(3), NativeValueRole::CharInput, 4, row)),
+                Some(insert(&Datum::Int(3), NativeValueRole::CharInput, 4, row).to_vec()),
             )
         }));
         match behavior {
@@ -1096,7 +1096,7 @@ fn pb_eager_values_authenticate_every_raw_phase_and_callback_epoch() {
             &mut eval,
             &task,
             0,
-            Some(insert(&Datum::Int(2), NativeValueRole::CharInput, 3, row)),
+            Some(insert(&Datum::Int(2), NativeValueRole::CharInput, 3, row).to_vec()),
         )
         .unwrap();
         provider.cancel(&task);

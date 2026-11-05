@@ -40,7 +40,7 @@ fn preflight(
         .checked_mul(16)
         .and_then(|n| n.checked_add(1024))
         .ok_or_else(resource)?;
-    if maximum == usize::MAX || work > maximum {
+    if work > maximum {
         return Err(resource());
     }
     Ok(())

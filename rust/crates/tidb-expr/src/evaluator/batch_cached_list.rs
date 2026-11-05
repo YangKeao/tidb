@@ -27,6 +27,7 @@ impl CachedListTask {
             Self::List { .. } => 1,
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
     }
@@ -65,9 +66,7 @@ impl NativeBatchHosts<'_> {
                 },
             )?;
         }
-        let base = self.retained_bytes()?;
-        self.check_bytes(base)?;
-        let maximum = self.max_retained_bytes - base;
+
         // Consume before context, cache services, formatting and callbacks.
         // The owned reservation below drops on every error or unwind.
         let demand = std::mem::replace(
@@ -99,31 +98,26 @@ impl NativeBatchHosts<'_> {
                 None
             };
             if let Some(NativeCacheAccess::Hit(lookup)) = access {
-                let result = tidb_query_expr::local::with_value_kernel_work_limit(
-                    maximum,
-                    || -> LocalResult<std::result::Result<Datum, EvalError>> {
-                        let prepared = {
-                            let values = store.borrow();
-                            crate::builtin_ext::prepare_find_in_set_lookup_value(
-                                values.get(&needle, NativeValueRole::CharInput, needle_origin)?,
-                                &lookup,
-                                meta.collation,
-                            )
-                        };
-                        Ok(crate::scalar_function::eager_values::audit_work_result(
-                            prepared.and_then(|args| {
-                                crate::builtin_ext::eval_find_in_set_prepared_values(
-                                    args,
-                                    true,
-                                    self.context,
-                                )
-                                .and_then(|value| {
-                                    coerce_cached_list_result(value, meta.result_type.as_ref())
-                                })
-                            }),
-                        ))
-                    },
-                )?;
+                let result = (|| -> LocalResult<std::result::Result<Datum, EvalError>> {
+                    let prepared = {
+                        let values = store.borrow();
+                        crate::builtin_ext::prepare_find_in_set_lookup_value(
+                            values.get(&needle, NativeValueRole::CharInput, needle_origin)?,
+                            &lookup,
+                            meta.collation,
+                        )
+                    };
+                    Ok(prepared.and_then(|args| {
+                        crate::builtin_ext::eval_find_in_set_prepared_values(
+                            args,
+                            true,
+                            self.context,
+                        )
+                        .and_then(|value| {
+                            coerce_cached_list_result(value, meta.result_type.as_ref())
+                        })
+                    }))
+                })()?;
                 store
                     .borrow()
                     .get(&needle, NativeValueRole::CharInput, needle_origin)?;
@@ -132,7 +126,7 @@ impl NativeBatchHosts<'_> {
                     Err(e) => return self.native_failure(e),
                 };
                 return self
-                    .finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+                    .finish_native_value(id, value, meta.output_node, meta.output_role, row)
                     .map(HostStep::Ready);
             }
             let initialization = match access {
@@ -164,62 +158,53 @@ impl NativeBatchHosts<'_> {
         if initialization.is_some() != meta.cacheable {
             return Err(binding("cached list initializer declaration differs"));
         }
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            maximum,
-            || -> LocalResult<std::result::Result<Datum, EvalError>> {
-                let prepared = if let Some(initialization) = initialization {
-                    let lookup = {
-                        let values = store.borrow();
-                        crate::scalar_function::eager_values::audit_work_result(
-                            crate::builtin_ext::build_find_in_set_lookup(
-                                values.get(token, NativeValueRole::CharInput, origin)?,
-                                meta.collation,
-                            ),
-                        )
-                    };
-                    let lookup = match lookup {
-                        Ok(value) => value,
-                        Err(error) => return Ok(Err(error)),
-                    };
-                    // Complete all original constructor work and authentication
-                    // before committing; lookup errors afterward still keep it warm.
-                    store
-                        .borrow()
-                        .get(token, NativeValueRole::CharInput, origin)?;
-                    store
-                        .borrow()
-                        .get(&needle, NativeValueRole::CharInput, needle_origin)?;
-                    let lookup = initialization.commit(lookup);
+        let result = (|| -> LocalResult<std::result::Result<Datum, EvalError>> {
+            let prepared = if let Some(initialization) = initialization {
+                let lookup = {
                     let values = store.borrow();
-                    crate::builtin_ext::prepare_find_in_set_lookup_value(
-                        values.get(&needle, NativeValueRole::CharInput, needle_origin)?,
-                        &lookup,
-                        meta.collation,
-                    )
-                } else {
-                    let values = store.borrow();
-                    crate::builtin_ext::prepare_find_in_set_tuple_values(
-                        values.get(&needle, NativeValueRole::CharInput, needle_origin)?,
+                    crate::builtin_ext::build_find_in_set_lookup(
                         values.get(token, NativeValueRole::CharInput, origin)?,
                         meta.collation,
                     )
                 };
-                // Both actual input borrows have ended before the Ready capability
-                // and its direct prepared kernel can observe the caller's context.
-                Ok(crate::scalar_function::eager_values::audit_work_result(
-                    prepared.and_then(|args| {
-                        crate::builtin_ext::eval_find_in_set_prepared_values(
-                            args,
-                            meta.cacheable,
-                            self.context,
-                        )
-                        .and_then(|value| {
-                            coerce_cached_list_result(value, meta.result_type.as_ref())
-                        })
-                    }),
-                ))
-            },
-        )?;
+                let lookup = match lookup {
+                    Ok(value) => value,
+                    Err(error) => return Ok(Err(error)),
+                };
+                // Complete all original constructor work and authentication
+                // before committing; lookup errors afterward still keep it warm.
+                store
+                    .borrow()
+                    .get(token, NativeValueRole::CharInput, origin)?;
+                store
+                    .borrow()
+                    .get(&needle, NativeValueRole::CharInput, needle_origin)?;
+                let lookup = initialization.commit(lookup);
+                let values = store.borrow();
+                crate::builtin_ext::prepare_find_in_set_lookup_value(
+                    values.get(&needle, NativeValueRole::CharInput, needle_origin)?,
+                    &lookup,
+                    meta.collation,
+                )
+            } else {
+                let values = store.borrow();
+                crate::builtin_ext::prepare_find_in_set_tuple_values(
+                    values.get(&needle, NativeValueRole::CharInput, needle_origin)?,
+                    values.get(token, NativeValueRole::CharInput, origin)?,
+                    meta.collation,
+                )
+            };
+            // Both actual input borrows have ended before the Ready capability
+            // and its direct prepared kernel can observe the caller's context.
+            Ok(prepared.and_then(|args| {
+                crate::builtin_ext::eval_find_in_set_prepared_values(
+                    args,
+                    meta.cacheable,
+                    self.context,
+                )
+                .and_then(|value| coerce_cached_list_result(value, meta.result_type.as_ref()))
+            }))
+        })()?;
         store
             .borrow()
             .get(token, NativeValueRole::CharInput, origin)?;
@@ -230,38 +215,19 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
     }
 }
 
 // ScalarFunction.Eval normalizes the returned family before Expression.Eval's
-// enum/set view. Keep that original owner under the remaining finite allowance.
+// enum/set view.
 fn coerce_cached_list_result(
     value: Datum,
     field: Option<&FieldType>,
 ) -> std::result::Result<Datum, EvalError> {
-    let maximum = tidb_query_expr::local::value_kernel_work_remaining()
-        .expect("cached list return runs inside its lexical work scope");
-    let retained = native_payload_bytes(&value)
-        .and_then(|bytes| {
-            bytes
-                .checked_mul(2)
-                .ok_or_else(|| resource("cached return size overflow"))
-        })
-        .map_err(|error| {
-            EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
-                error, None,
-            ))
-        })?;
-    let maximum = maximum.checked_sub(retained).ok_or_else(|| {
-        EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
-            resource("cached return allowance exhausted"),
-            None,
-        ))
-    })?;
     match field {
-        Some(field) => crate::tikv::coerce_result_bounded("find_in_set", field, value, maximum),
+        Some(field) => crate::tikv::coerce_result_bounded("find_in_set", field, value),
         None => Ok(value),
     }
 }

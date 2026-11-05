@@ -178,9 +178,6 @@ pub(super) fn kernel_error(error: LocalError) -> EvalError {
 impl PreparedArithmetic {
     /// Executes the same value helpers as the registered native kernels.
     pub(crate) fn compute(self, available: usize) -> Result<Datum, EvalError> {
-        if available == usize::MAX {
-            return Err(resource("arithmetic requires a finite value allowance"));
-        }
         use tidb_query_expr::impl_arithmetic::{
             binary_arithmetic_null_native_value, native_decimal_binary_value,
             native_integer_binary_value, native_real_binary_value,
@@ -519,19 +516,22 @@ pub(crate) mod tests {
 
     #[test]
     fn additive_value_budgets_preserve_resource_failures_and_actual_null() {
-        use crate::tikv::ExpressionRuntimeFailureClass;
         let context = Context::default();
         let vector = || Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 2.0]));
-        for available in [0, usize::MAX] {
-            let result = prepare(BinaryOp::Plus, vector(), vector(), [false; 2], &context)
-                .unwrap()
-                .compute(available);
-            let Err(EvalError::ExpressionRuntimeFailure(error)) = result else {
-                panic!("vector budget must be terminal: {result:?}")
-            };
-            assert_eq!(error.class(), ExpressionRuntimeFailureClass::ResourceLimit);
-        }
-        // NULL has no invented partner and does not read subtraction mode.
+        let error = prepare(BinaryOp::Plus, vector(), vector(), [false; 2], &context)
+            .unwrap()
+            .compute(0)
+            .unwrap_err();
+        assert!(matches!(error, EvalError::ExpressionRuntimeFailure(error)
+            if error.class() == crate::tikv::ExpressionRuntimeFailureClass::ResourceLimit));
+        let result = prepare(BinaryOp::Plus, vector(), vector(), [false; 2], &context)
+            .unwrap()
+            .compute(usize::MAX)
+            .unwrap();
+        assert_eq!(
+            result,
+            Datum::VectorFloat32(VectorFloat32::must_create(vec![2.0, 4.0]))
+        );
         assert_eq!(
             prepare(BinaryOp::Minus, Datum::Null, vector(), [true; 2], &context)
                 .unwrap()

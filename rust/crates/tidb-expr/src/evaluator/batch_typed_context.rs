@@ -97,12 +97,12 @@ impl NativeTypedDescriptor {
         row: InputRow,
     ) -> std::result::Result<crate::typed_context_value::TypedRead<'_>, EvalError> {
         let value = match self {
-            Self::Context(descriptor) => return descriptor.begin_bounded(ctx, target, maximum),
+            Self::Context(descriptor) => return descriptor.begin_bounded(ctx, target),
             Self::Literal { value, field } => {
                 let field = field
                     .as_ref()
                     .ok_or(EvalError::Unsupported("constant has no result type"))?;
-                let value = crate::tikv::identity_actual::copy_bounded(value, maximum)?;
+                let value = crate::tikv::identity_actual::copy(value)?;
                 crate::constant::typed_constant_value(field, ctx, target, value)?
             }
             Self::Column { index, field } => {
@@ -189,20 +189,18 @@ impl NativeTypedContext {
     }
 }
 impl<'a> NativeBatchHosts<'a> {
-    pub(in super::super) fn with_typed_cache_slots(mut self, count: usize) -> LocalResult<Self> {
+    pub(in super::super) fn validate_typed_cache_slots(
+        metadata: &[NativeHostMetadata],
+        count: usize,
+    ) -> LocalResult<()> {
         if count == 0 {
-            return Ok(self);
+            return Ok(());
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(array_bytes::<Option<Datum>>(count)?)
-                .and_then(|n| n.checked_add(count))
-                .ok_or_else(|| resource("typed cache layout overflow"))?,
-        )?;
+
         let mut seen = Vec::new();
         reserve(&mut seen, count)?;
         seen.resize(count, false);
-        for metadata in self.metadata {
+        for metadata in metadata {
             if let NativeHostMetadata::TypedContext(NativeTypedContext {
                 cache_slot: Some(index),
                 argument,
@@ -222,11 +220,14 @@ impl<'a> NativeBatchHosts<'a> {
         if seen.iter().any(|used| !*used) {
             return Err(binding("typed cache slot lacks its source"));
         }
+        Ok(())
+    }
+
+    pub(in super::super) fn with_typed_cache_slots(mut self, count: usize) -> LocalResult<Self> {
         let mut values = Vec::new();
         reserve(&mut values, count)?;
         values.resize_with(count, || None);
         self.typed_values = values.into_boxed_slice();
-        self.check_bytes(self.retained_bytes()?)?;
         Ok(self)
     }
     pub(super) fn validate_typed_context(
@@ -286,22 +287,13 @@ impl<'a> NativeBatchHosts<'a> {
             .native_values
             .ok_or_else(|| binding("typed context store absent"))?;
         let origin = meta.argument.map(|node| NativeValueOrigin { node, row });
-        let base = self.retained_bytes()?;
-        let copied = if let (Some(token), Some(origin)) = (token, origin) {
-            native_payload_bytes(
-                store
-                    .borrow()
-                    .get(token, NativeValueRole::CharInput, origin)?,
-            )?
-            .checked_mul(2)
-            .ok_or_else(|| resource("typed child copy extent overflow"))?
-        } else {
-            0
-        };
-        let live = base
-            .checked_add(copied)
-            .ok_or_else(|| resource("typed context live extent overflow"))?;
-        self.check_bytes(live)?;
+
+        if let (Some(token), Some(origin)) = (token, origin) {
+            store
+                .borrow()
+                .get(token, NativeValueRole::CharInput, origin)?;
+        }
+
         let SqlDemand::TypedContext { consumed } = &mut self.slots[id.slot]
             .task
             .as_mut()
@@ -311,11 +303,11 @@ impl<'a> NativeBatchHosts<'a> {
             unreachable!()
         };
         *consumed = true;
-        let maximum = self.max_retained_bytes - live;
+        let maximum = usize::MAX;
         let cached = meta.cache_slot.and_then(|i| self.typed_values[i].as_ref());
-        let value = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+        let value = (|| {
             let result = if let Some(cached) = cached {
-                crate::tikv::identity_actual::copy_bounded(cached, maximum)
+                crate::tikv::identity_actual::copy(cached)
             } else if let (Some(token), Some(origin)) = (token, origin) {
                 let value = store
                     .borrow()
@@ -354,8 +346,8 @@ impl<'a> NativeBatchHosts<'a> {
                     }
                 }
             };
-            crate::scalar_function::eager_values::audit_work_result(result)
-        });
+            result
+        })();
         if let (Some(token), Some(origin)) = (token, origin) {
             store
                 .borrow()
@@ -366,20 +358,9 @@ impl<'a> NativeBatchHosts<'a> {
             Err(error) => return self.native_failure(error),
         };
         let save = meta.cache_slot.filter(|&i| self.typed_values[i].is_none());
-        let extra = if save.is_some() {
-            native_payload_bytes(&value)?
-                .checked_mul(2)
-                .ok_or_else(|| resource("typed cache value extent overflow"))?
-        } else {
-            0
-        };
-        let held = live
-            .checked_add(extra)
-            .ok_or_else(|| resource("typed cache live extent overflow"))?;
-        self.check_bytes(held)?;
+
         let saved = if save.is_some() {
-            match crate::tikv::identity_actual::copy_bounded(&value, self.max_retained_bytes - held)
-            {
+            match crate::tikv::identity_actual::copy(&value) {
                 Ok(value) => Some(value),
                 Err(error) => return self.native_failure(error),
             }
@@ -387,11 +368,11 @@ impl<'a> NativeBatchHosts<'a> {
             None
         };
         let output =
-            self.finish_native_value(id, value, meta.output_node, meta.output_role, row, held)?;
+            self.finish_native_value(id, value, meta.output_node, meta.output_role, row)?;
         if let Some(index) = save {
             self.typed_values[index] = saved;
         }
-        self.check_bytes(self.retained_bytes()?)?;
+
         Ok(HostStep::Ready(output))
     }
 }

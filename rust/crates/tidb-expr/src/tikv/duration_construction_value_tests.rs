@@ -379,10 +379,10 @@ fn duration_construction_finite_work_preserves_demand_display_panic_and_later_re
         .borrow()
         .iter()
         .any(|v| v.contains("warning:1292:Truncated incorrect DOUBLE value")));
-    assert!(matches!(
+    assert_eq!(
         v::eval_bounded(O::Time, &[Datum::Null], &ctx, usize::MAX),
-        Err(EvalError::ExpressionRuntimeFailure(_))
-    ));
+        Ok(Datum::Null)
+    );
 }
 #[test]
 fn duration_construction_borrowed_format_lookup_keeps_large_identity_values_without_copy() {

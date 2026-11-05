@@ -7,22 +7,10 @@ fn copy_value(
     store: &RefCell<native_values::NativeValueStore>,
     token: &[u8],
     origin: NativeValueOrigin,
-    held: usize,
-    maximum: usize,
-) -> LocalResult<(Datum, usize)> {
-    let store = store.borrow();
-    let value = store.get(token, NativeValueRole::CharInput, origin)?;
-    let live = native_payload_bytes(value)?
-        .checked_mul(2)
-        .and_then(|n| held.checked_add(n))
-        .ok_or_else(|| resource("duration source clone extent overflow"))?;
-    if live > maximum {
-        return Err(resource("duration source clone allowance exhausted"));
-    }
-    Ok((
-        store.clone_for_kernel(token, NativeValueRole::CharInput, origin)?,
-        live,
-    ))
+) -> LocalResult<Datum> {
+    store
+        .borrow()
+        .clone_for_kernel(token, NativeValueRole::CharInput, origin)
 }
 impl NativeBatchHosts<'_> {
     pub(super) fn resume_duration_construction(
@@ -108,11 +96,8 @@ impl NativeBatchHosts<'_> {
                 )?;
             }
         }
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("duration work allowance exhausted"))?;
+
+        let maximum = usize::MAX;
         let outcome = if *operation == O::GetFormat {
             let source = store.borrow();
             values::get_format_source(
@@ -137,32 +122,25 @@ impl NativeBatchHosts<'_> {
                 maximum,
             )
         } else if *operation == O::DateFormat {
-            let (original, live) = copy_value(
+            let original = copy_value(
                 store,
                 token_for(0)?,
                 NativeValueOrigin {
                     node: arguments[0],
                     row,
                 },
-                base,
-                self.max_retained_bytes,
             )?;
             let cast = crate::tikv::calendar_value::cast_source(
                 tidb_query_expr::NativeCalendarOperation::Date,
                 &original,
                 &argument_types[0],
                 self.context,
-                self.max_retained_bytes - live,
+                usize::MAX,
             );
             drop(original);
             match cast {
                 Err(e) => Err(e),
                 Ok(date) => {
-                    let held = native_payload_bytes(&date)?
-                        .checked_mul(2)
-                        .and_then(|n| base.checked_add(n))
-                        .ok_or_else(|| resource("date format cast extent overflow"))?;
-                    self.check_bytes(held)?;
                     // This owner performs only strict pure text coercion and
                     // formatting. No context callback spans this format borrow;
                     // both text conversions remain demanded even after NULL.
@@ -179,7 +157,7 @@ impl NativeBatchHosts<'_> {
                         self.context,
                         &date,
                         format,
-                        self.max_retained_bytes - held,
+                        usize::MAX,
                     )
                 }
             }
@@ -190,34 +168,27 @@ impl NativeBatchHosts<'_> {
             converted
                 .try_reserve_exact(2)
                 .map_err(|_| resource("date diff conversion allocation failed"))?;
-            let mut held = base;
+
             let mut error = None;
             for index in 0..2 {
-                let (original, live) = copy_value(
+                let original = copy_value(
                     store,
                     token_for(index)?,
                     NativeValueOrigin {
                         node: arguments[index],
                         row,
                     },
-                    held,
-                    self.max_retained_bytes,
                 )?;
                 let cast = crate::tikv::calendar_value::cast_source(
                     tidb_query_expr::NativeCalendarOperation::Date,
                     &original,
                     &argument_types[index],
                     self.context,
-                    self.max_retained_bytes - live,
+                    usize::MAX,
                 );
                 drop(original);
                 match cast {
                     Ok(v) => {
-                        held = native_payload_bytes(&v)?
-                            .checked_mul(2)
-                            .and_then(|n| held.checked_add(n))
-                            .ok_or_else(|| resource("date diff cast extent overflow"))?;
-                        self.check_bytes(held)?;
                         converted.push(v);
                     }
                     Err(e) => {
@@ -228,34 +199,27 @@ impl NativeBatchHosts<'_> {
             }
             match error {
                 Some(e) => Err(e),
-                None => values::eval_bounded(
-                    *operation,
-                    &converted,
-                    self.context,
-                    self.max_retained_bytes - held,
-                ),
+                None => values::eval_bounded(*operation, &converted, self.context, usize::MAX),
             }
         } else {
             // TIMESTAMPADD's original ETDatetime cast of argument two precedes
             // body conversion of unit/amount, even after a NULL prefix. Keep
             // its actual converted value without copying either prefix early.
             let date = if *operation == O::TimestampAdd {
-                let (original, live) = copy_value(
+                let original = copy_value(
                     store,
                     token_for(2)?,
                     NativeValueOrigin {
                         node: arguments[2],
                         row,
                     },
-                    base,
-                    self.max_retained_bytes,
                 )?;
                 let cast = crate::tikv::calendar_value::cast_source(
                     tidb_query_expr::NativeCalendarOperation::Date,
                     &original,
                     &argument_types[2],
                     self.context,
-                    self.max_retained_bytes - live,
+                    usize::MAX,
                 );
                 drop(original);
                 match cast {
@@ -265,16 +229,8 @@ impl NativeBatchHosts<'_> {
             } else {
                 None
             };
-            let stage_base = date
-                .as_ref()
-                .map(native_payload_bytes)
-                .transpose()?
-                .unwrap_or(0)
-                .checked_mul(2)
-                .and_then(|n| base.checked_add(n))
-                .ok_or_else(|| resource("time arithmetic cast extent overflow"))?;
-            self.check_bytes(stage_base)?;
-            let maximum = self.max_retained_bytes - stage_base;
+
+            let maximum = usize::MAX;
             let start_calls_context = {
                 let source = store.borrow();
                 let value = source.get(
@@ -290,57 +246,36 @@ impl NativeBatchHosts<'_> {
             let first = if *operation == O::ConvertTz {
                 // Original first ETDatetime cast precedes all signature text
                 // coercions, carrying YEAR and other complete source metadata.
-                let (original, live) = copy_value(
+                let original = copy_value(
                     store,
                     token_for(0)?,
                     NativeValueOrigin {
                         node: arguments[0],
                         row,
                     },
-                    base,
-                    self.max_retained_bytes,
                 )?;
                 let cast = crate::tikv::calendar_value::cast_source(
                     tidb_query_expr::NativeCalendarOperation::Date,
                     &original,
                     &argument_types[0],
                     self.context,
-                    self.max_retained_bytes - live,
+                    usize::MAX,
                 );
                 drop(original);
                 match cast {
                     Err(e) => Err(e),
-                    Ok(value) => {
-                        let live = native_payload_bytes(&value)?
-                            .checked_mul(2)
-                            .and_then(|n| base.checked_add(n))
-                            .ok_or_else(|| resource("timezone cast extent overflow"))?;
-                        self.check_bytes(live)?;
-                        values::start(
-                            *operation,
-                            &value,
-                            self.context,
-                            self.max_retained_bytes - live,
-                        )
-                    }
+                    Ok(value) => values::start(*operation, &value, self.context, usize::MAX),
                 }
             } else if start_calls_context {
-                let (original, live) = copy_value(
+                let original = copy_value(
                     store,
                     token_for(0)?,
                     NativeValueOrigin {
                         node: arguments[0],
                         row,
                     },
-                    stage_base,
-                    self.max_retained_bytes,
                 )?;
-                values::start(
-                    *operation,
-                    &original,
-                    self.context,
-                    self.max_retained_bytes - live,
-                )
+                values::start(*operation, &original, self.context, usize::MAX)
             } else {
                 let source = store.borrow();
                 let original = source.get(
@@ -362,28 +297,23 @@ impl NativeBatchHosts<'_> {
                     if index >= arity {
                         return Err(binding("duration value stage exceeds original arity"));
                     }
-                    let held = stage_base
-                        .checked_add(prepared.retained_bytes())
-                        .ok_or_else(|| resource("duration continuation extent overflow"))?;
-                    self.check_bytes(held)?;
+
                     let next = if index == 2 && date.is_some() {
                         prepared.advance(
                             date.as_ref().expect("original date cast"),
                             self.context,
-                            self.max_retained_bytes - held,
+                            usize::MAX,
                         )
                     } else if callback {
-                        let (original, live) = copy_value(
+                        let original = copy_value(
                             store,
                             token_for(index)?,
                             NativeValueOrigin {
                                 node: arguments[index],
                                 row,
                             },
-                            held,
-                            self.max_retained_bytes,
                         )?;
-                        prepared.advance(&original, self.context, self.max_retained_bytes - live)
+                        prepared.advance(&original, self.context, usize::MAX)
                     } else {
                         let source = store.borrow();
                         let original = source.get(
@@ -394,7 +324,7 @@ impl NativeBatchHosts<'_> {
                                 row,
                             },
                         )?;
-                        prepared.advance(original, self.context, self.max_retained_bytes - held)
+                        prepared.advance(original, self.context, usize::MAX)
                     };
                     match next {
                         Ok(v) => prepared = v,
@@ -407,22 +337,18 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let live = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("duration result extent overflow"))?;
-        self.check_bytes(live)?;
+
         let result = match values::finish_source(
             *operation,
             result,
             result_type,
             self.context,
-            self.max_retained_bytes - live,
+            usize::MAX,
         ) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

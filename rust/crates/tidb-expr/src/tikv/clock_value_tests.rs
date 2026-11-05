@@ -279,8 +279,8 @@ fn clock_precision_borrows_unsupported_payloads_and_limits_only_demanded_work() 
         Err(EvalError::ExpressionRuntimeFailure(_))
     ));
     assert!(ctx.events.borrow().is_empty());
-    assert!(matches!(
+    assert_eq!(
         super::clock_value::eval_bounded(Op::UtcTime, &[Datum::Null], &ctx, usize::MAX),
-        Err(EvalError::ExpressionRuntimeFailure(_))
-    ));
+        Ok(Datum::Null)
+    );
 }

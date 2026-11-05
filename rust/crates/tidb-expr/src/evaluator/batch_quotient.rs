@@ -103,19 +103,7 @@ impl NativeBatchHosts<'_> {
                     {
                         // The original vector owner reports actual converted
                         // decimals. Formatting is charged only on this error.
-                        let bound = [a, b].into_iter().try_fold(1024usize, |bytes, value| {
-                            value
-                                .coefficient_bytes()
-                                .len()
-                                .checked_add(value.scale().max(value.storage_scale()) as usize)
-                                .and_then(|n| n.checked_add(4))
-                                .and_then(|n| n.checked_mul(4))
-                                .and_then(|n| bytes.checked_add(n))
-                                .ok_or_else(|| resource("DIV value diagnostic extent overflow"))
-                        })?;
-                        if bound > available {
-                            return Err(resource("DIV value diagnostic exceeds allowance"));
-                        }
+
                         EvalError::DataOutOfRange {
                             value: if unsigned[0] || unsigned[1] {
                                 "BIGINT UNSIGNED"
@@ -128,20 +116,7 @@ impl NativeBatchHosts<'_> {
                         let diagnostic = intdiv
                             .as_deref()
                             .ok_or_else(|| binding("row Decimal DIV lacks its diagnostic facts"))?;
-                        let bound = diagnostic.arguments.iter().flatten().try_fold(
-                            1024usize,
-                            |bytes, text| {
-                                text.len()
-                                    .checked_mul(4)
-                                    .and_then(|n| bytes.checked_add(n))
-                                    .ok_or_else(|| {
-                                        resource("DIV source diagnostic extent overflow")
-                                    })
-                            },
-                        )?;
-                        if bound > available {
-                            return Err(resource("DIV source diagnostic exceeds allowance"));
-                        }
+
                         diagnostic.decimal_overflow(
                             source_types,
                             [a, b],
@@ -207,7 +182,6 @@ impl NativeBatchHosts<'_> {
         &mut self,
         id: &HostTaskId,
         result: std::result::Result<Datum, EvalError>,
-        base: usize,
     ) -> LocalResult<HostStep> {
         let Some(NativeHostMetadata::Arithmetic {
             name,
@@ -256,7 +230,7 @@ impl NativeBatchHosts<'_> {
                 Err(error) => return self.native_failure(error),
             };
         let row = self.task(id)?.row;
-        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+        self.finish_native_value(id, value, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

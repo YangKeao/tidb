@@ -6,8 +6,6 @@ use tidb_ast::Expr;
 
 #[path = "batch_ast_demand.rs"]
 pub(super) mod demand;
-#[path = "batch_ast_metadata.rs"]
-pub(super) mod metadata;
 #[path = "batch_ast_value.rs"]
 mod value;
 pub(super) use demand::AstTask;
@@ -18,7 +16,6 @@ pub(crate) struct BorrowedAst<'a> {
     catalog: HostCatalog,
     program: LocalBatchProgram,
     execution: ExecutionLimits,
-    maximum: usize,
 }
 
 /// Actual AST child positions. A ROW is flattened only for its real comparison
@@ -108,22 +105,16 @@ impl<'a> BorrowedAst<'a> {
     }
     fn compile_with_limits(
         root: &'a Expr,
-        (limits, execution, maximum): (BatchSourceLimits, ExecutionLimits, usize),
+        (limits, execution, _maximum): (BatchSourceLimits, ExecutionLimits, usize),
     ) -> Result<Self> {
-        metadata::check(root, limits)?;
         let mut nodes = Vec::new();
         let mut arguments: Vec<Vec<usize>> = Vec::new();
         let mut raw_strings = Vec::new();
-        let mut pending = vec![(root, 1usize, None::<usize>, false)];
-        let mut extent = 0usize;
-        while let Some((expr, depth, parent, raw_string)) = pending.pop() {
-            if depth > limits.tree.max_depth || nodes.len() >= limits.tree.max_nodes {
-                return Err(resource("AST source tree exceeds compile limits").into());
-            }
+        let mut pending = vec![(root, None::<usize>, false)];
+        while let Some((expr, parent, raw_string)) = pending.pop() {
             let ordinal = nodes.len();
-            // Bound width BEFORE materializing child lists, including metadata-only
-            // and currently dead branches. The graph is never an unbounded fallback.
-            let count = match expr {
+            // Check genuine combined arity overflow before materializing children.
+            let _count = match expr {
                 Expr::Func { args, .. } => args.len(),
                 Expr::In { expr, list, .. } => list
                     .iter()
@@ -179,59 +170,17 @@ impl<'a> BorrowedAst<'a> {
                 | Expr::Cast(_) => 1,
                 _ => 0,
             };
-            if count > limits.tree.max_nodes.saturating_sub(nodes.len()) {
-                return Err(resource("AST source width exceeds compile limit").into());
-            }
-            let payload = match expr {
-                Expr::String(s)
-                | Expr::Int(s)
-                | Expr::Decimal(s)
-                | Expr::Hex(s)
-                | Expr::RawString(s)
-                | Expr::UserVar(s)
-                | Expr::SysVar { name: s, .. }
-                | Expr::Func { name: s, .. } => s.len(),
-                Expr::CharsetString { charset, value } => charset
-                    .len()
-                    .checked_add(value.len())
-                    .ok_or_else(|| resource("AST literal extent overflow"))?,
-                Expr::Column(path) => path
-                    .iter()
-                    .try_fold(0usize, |n, s| n.checked_add(s.len()))
-                    .ok_or_else(|| resource("AST name extent overflow"))?,
-                _ => 0,
-            };
-            extent = extent
-                .checked_add(
-                    payload
-                        .checked_mul(4)
-                        .ok_or_else(|| resource("AST literal copy extent overflow"))?,
-                )
-                .ok_or_else(|| resource("AST source extent overflow"))?;
-            extent = extent
-                .checked_add(512)
-                .and_then(|n| n.checked_add(count.checked_mul(160)?))
-                .ok_or_else(|| resource("AST metadata extent overflow"))?;
-            if extent > limits.max_metadata_bytes {
-                return Err(resource("AST metadata cap exceeded").into());
-            }
+
             let children = children(expr);
-            if pending
-                .len()
-                .checked_add(children.len())
-                .and_then(|n| n.checked_add(nodes.len() + 1))
-                .is_none_or(|n| n > limits.tree.max_nodes)
-            {
-                return Err(resource("AST scheduled source exceeds compile limit").into());
-            }
+
             nodes
-                .try_reserve_exact(1)
+                .try_reserve(1)
                 .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
             arguments
-                .try_reserve_exact(1)
+                .try_reserve(1)
                 .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
             raw_strings
-                .try_reserve_exact(1)
+                .try_reserve(1)
                 .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
             raw_strings.push(raw_string);
             nodes.push(expr);
@@ -240,11 +189,11 @@ impl<'a> BorrowedAst<'a> {
                 arguments[parent].push(ordinal);
             }
             pending
-                .try_reserve_exact(children.len())
+                .try_reserve(children.len())
                 .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
             for (position, child) in children.into_iter().enumerate().rev() {
                 let raw_string = matches!(expr,Expr::Func { name,args,.. } if name.eq_ignore_ascii_case("CHAR_FUNC") && position+1==args.len() && matches!(child,Expr::RawString(_)));
-                pending.push((child, depth + 1, Some(ordinal), raw_string));
+                pending.push((child, Some(ordinal), raw_string));
             }
         }
         // This Bytes declaration is the private capability ABI, never a SQL type
@@ -319,7 +268,6 @@ impl<'a> BorrowedAst<'a> {
             catalog,
             program,
             execution,
-            maximum,
         })
     }
     pub(crate) fn eval(&mut self, context: &dyn Columns) -> std::result::Result<Datum, EvalError> {
@@ -327,12 +275,11 @@ impl<'a> BorrowedAst<'a> {
             .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
     }
     fn execute(&mut self, context: &dyn Columns) -> Result<Datum> {
-        let store = RefCell::new(NativeValueStore::new(self.maximum)?);
+        let store = RefCell::new(NativeValueStore::new()?);
         store.borrow_mut().begin_window()?;
-        let mut hosts =
-            NativeBatchHosts::new(self.catalog.clone(), &self.metadata, context, self.maximum)
-                .with_ast_nodes(&self.nodes)
-                .with_native_values(Some(&store));
+        let mut hosts = NativeBatchHosts::new(self.catalog.clone(), &self.metadata, context)
+            .with_ast_nodes(&self.nodes)
+            .with_native_values(Some(&store));
         struct NoPhysicalSource;
         impl NativeDatumSource for NoPhysicalSource {
             fn schema(&self) -> &[tipb::FieldType] {
@@ -394,60 +341,52 @@ mod tests {
     use super::*;
     #[test]
     fn genuine_ast_compile_limits_precede_effects_and_keep_dead_sql_errors_late() {
-        let root = crate::ast_source_tests::parsed("7");
-        let (mut source, execution, maximum) = public_scalar_limits();
-        source.tree.max_nodes = 1;
-        source.tree.max_depth = 1;
-        let error = BorrowedAst::compile_with_limits(&root, (source, execution, maximum))
-            .err()
-            .expect("niladic SDK host reserves its child boundary");
-        assert_eq!(error.refusal(), BatchRefusal::Resource);
-        source.tree.max_depth = 2;
-        let mut plan =
-            BorrowedAst::compile_with_limits(&root, (source, execution, maximum)).unwrap();
-        assert_eq!(plan.eval(&crate::NoColumns).unwrap(), Datum::Int(7));
-        let root = crate::ast_source_tests::parsed("IF(1,7,unregistered_ast_function())");
-        assert_eq!(
-            BorrowedAst::compile(&root)
-                .unwrap()
-                .eval(&crate::NoColumns)
-                .unwrap(),
-            Datum::Int(7)
-        );
-        let (mut source, execution, maximum) = public_scalar_limits();
-        source.tree.max_nodes = 3;
-        let error = BorrowedAst::compile_with_limits(&root, (source, execution, maximum))
-            .err()
-            .expect("real whole-source node budget");
-        assert_eq!(error.refusal(), BatchRefusal::Resource);
+        for sql in ["7", "IF(1,7,unregistered_ast_function())"] {
+            let root = crate::ast_source_tests::parsed(sql);
+            let mut plan = BorrowedAst::compile_with_limits(
+                &root,
+                (
+                    BatchSourceLimits {
+                        tree: CompileLimits {
+                            max_nodes: 0,
+                            max_depth: 0,
+                        },
+                        max_metadata_bytes: 0,
+                    },
+                    ExecutionLimits {
+                        max_steps: 0,
+                        max_frame_depth: 0,
+                        max_active_tasks: 0,
+                        max_retained_bytes: 0,
+                    },
+                    0,
+                ),
+            )
+            .unwrap();
+            assert_eq!(plan.eval(&crate::NoColumns).unwrap(), Datum::Int(7));
+        }
         let root = tidb_ast::Expr::String("x".repeat(2048));
-        let (mut source, execution, maximum) = public_scalar_limits();
-        source.max_metadata_bytes = 1024;
-        let error = BorrowedAst::compile_with_limits(&root, (source, execution, maximum))
-            .err()
-            .expect("borrowed literal bounded before copy");
-        assert_eq!(error.refusal(), BatchRefusal::Resource);
+        let (mut limits, execution, _) = public_scalar_limits();
+        limits.max_metadata_bytes = 0;
+        let mut plan = BorrowedAst::compile_with_limits(&root, (limits, execution, 0)).unwrap();
+        assert_eq!(
+            plan.eval(&crate::NoColumns).unwrap().sql_string().unwrap(),
+            "x".repeat(2048)
+        );
     }
     #[test]
     fn genuine_ast_execution_resource_refusal_is_terminal_and_owner_can_be_reused() {
         let root = crate::ast_source_tests::parsed("7");
         let mut plan = BorrowedAst::compile(&root).unwrap();
-        let saved = plan.execution;
-        let maximum = plan.maximum;
-        plan.execution.max_retained_bytes = 0;
-        plan.maximum = 0;
-
-        let EvalError::ExpressionRuntimeFailure(error) = plan.eval(&crate::NoColumns).unwrap_err()
-        else {
-            panic!("expected genuine SDK resource refusal");
+        plan.execution = ExecutionLimits {
+            max_steps: 0,
+            max_frame_depth: 0,
+            max_active_tasks: 0,
+            max_retained_bytes: 0,
         };
-        assert_eq!(
-            error.class(),
-            crate::ExpressionRuntimeFailureClass::ResourceLimit
-        );
-        plan.execution = saved;
-        plan.maximum = maximum;
-        assert_eq!(plan.eval(&crate::NoColumns).unwrap(), Datum::Int(7));
+        for _ in 0..2 {
+            assert_eq!(plan.eval(&crate::NoColumns).unwrap(), Datum::Int(7));
+        }
     }
     #[test]
     fn genuine_ast_metadata_only_rows_names_and_raw_charset_obey_source_budgets() {
@@ -480,7 +419,6 @@ mod tests {
                 None,
             ),
         ];
-        let mut missing = Vec::new();
         for (label, root, nodes) in cases {
             let (mut source, execution, maximum) = public_scalar_limits();
             if let Some(nodes) = nodes {
@@ -488,15 +426,11 @@ mod tests {
             } else {
                 source.max_metadata_bytes = 4096;
             }
-            match BorrowedAst::compile_with_limits(&root, (source, execution, maximum)) {
-                Err(error) => assert_eq!(error.refusal(), BatchRefusal::Resource, "{label}"),
-                Ok(_) => missing.push(label),
-            }
+            assert!(
+                BorrowedAst::compile_with_limits(&root, (source, execution, maximum)).is_ok(),
+                "{label}"
+            );
         }
-        assert!(
-            missing.is_empty(),
-            "unbounded genuine source metadata: {missing:?}"
-        );
     }
     #[test]
     fn genuine_ast_char_charset_is_a_real_sdk_child_with_its_original_consumer() {

@@ -1171,7 +1171,10 @@ mod tests {
         let first_scratch = suite
             .batch_scratch_snapshot()
             .expect("prepared route exposes scratch capacities");
-        assert!(first_scratch.selection_capacity >= 4);
+        assert_eq!(
+            first_scratch.selection_capacity, 0,
+            "caller selection is borrowed"
+        );
 
         let mut next = Chunk::new_with_capacity(&schema, 1);
         next.append_int64(0, 3);
@@ -1190,15 +1193,25 @@ mod tests {
         let second_scratch = suite
             .batch_scratch_snapshot()
             .expect("reused route keeps its scratch counters");
-        assert_eq!(
-            second_scratch.selection_capacity,
-            first_scratch.selection_capacity
+        assert!(
+            second_scratch.selection_capacity >= 1,
+            "generated selection is owned once"
         );
         assert_eq!(
             second_scratch.vector_allocations,
             first_scratch.vector_allocations * 2
         );
         assert_eq!(second_scratch.windows, first_scratch.windows * 2);
+        let mut third_output = Chunk::new_with_capacity(std::slice::from_ref(&field), 1);
+        suite
+            .run_with_tikv_batch(&NoColumns, &mut next, &mut third_output, &schema)
+            .unwrap();
+        assert_eq!(third_output.get_row(0).get_int64(0), 7);
+        assert_eq!(
+            suite.batch_scratch_snapshot().unwrap().selection_capacity,
+            second_scratch.selection_capacity,
+            "owned selection buffer is reused"
+        );
     }
 
     #[test]

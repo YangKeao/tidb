@@ -63,11 +63,7 @@ impl NativeBatchHosts<'_> {
         {
             return Err(binding("fast decimal invocation differs from descriptor"));
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(array_bytes::<usize>(invocation.physical_rows.len())?)
-                .ok_or_else(|| resource("fast decimal row map allowance overflow"))?,
-        )?;
+
         let mut rows = Vec::new();
         rows.try_reserve_exact(invocation.physical_rows.len())
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
@@ -113,20 +109,12 @@ impl NativeBatchHosts<'_> {
             return Err(binding("fast decimal reply descriptor missing"));
         };
         let count = rows.len();
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(array_bytes::<Option<FastValue>>(count)?)
-                .ok_or_else(|| resource("fast decimal argument allowance overflow"))?,
-        )?;
+
         let mut values = Vec::new();
         values
             .try_reserve_exact(count)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(array_bytes::<Option<FastValue>>(values.capacity())?)
-                .ok_or_else(|| resource("fast decimal reserved argument allowance overflow"))?,
-        )?;
+
         let store = self
             .native_values
             .ok_or_else(|| binding("fast decimal store missing"))?;
@@ -187,7 +175,7 @@ impl NativeBatchHosts<'_> {
             };
             *next = 1;
             *left = values;
-            self.check_bytes(self.retained_bytes()?)?;
+
             return Ok(HostStep::NeedArg(HostArgRequest {
                 index: 1,
                 mode: ArgMode::Fresh,
@@ -275,32 +263,10 @@ impl NativeBatchHosts<'_> {
         let payload = count
             .checked_mul(native_values::HANDLE_BYTES)
             .ok_or_else(|| resource("fast decimal output bytes overflow"))?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(array_bytes::<Option<FastValue>>(
-                values.as_ref().map_or(0, Vec::capacity),
-            )?)
-            .ok_or_else(|| resource("fast decimal result allowance overflow"))?;
-        self.check_bytes(
-            base.checked_add(array_bytes::<usize>(
-                count
-                    .checked_add(1)
-                    .ok_or_else(|| resource("fast decimal offsets overflow"))?,
-            )?)
-            .and_then(|bytes| bytes.checked_add(payload))
-            .and_then(|bytes| bytes.checked_add(count))
-            .ok_or_else(|| resource("fast decimal result vector allowance overflow"))?,
-        )?;
+
         let mut output = ChunkedVecBytes::try_with_capacities(count, payload)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        self.check_bytes(
-            base.checked_add(
-                output
-                    .retained_heap_bytes()
-                    .ok_or_else(|| resource("fast decimal output capacity overflow"))?,
-            )
-            .ok_or_else(|| resource("fast decimal output capacity total overflow"))?,
-        )?;
+
         let store = self
             .native_values
             .ok_or_else(|| binding("fast decimal output store missing"))?;

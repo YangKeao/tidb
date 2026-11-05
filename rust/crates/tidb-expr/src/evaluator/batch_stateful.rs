@@ -28,6 +28,7 @@ impl StatefulTask {
             _ => 1,
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(match self {
@@ -93,10 +94,9 @@ impl NativeBatchHosts<'_> {
             } else {
                 false
             };
-        let base = self.retained_bytes()?;
-        let live = base; // Payload ownership is transferred, never cloned here.
-        self.check_bytes(live)?;
-        let maximum = self.max_retained_bytes - live;
+
+        // Payload ownership is transferred, never cloned here.
+
         let demand = std::mem::replace(
             &mut self.slots[id.slot]
                 .task
@@ -130,7 +130,7 @@ impl NativeBatchHosts<'_> {
         };
         // Neither this owned input nor the pending task borrows the store while
         // conversion or the actual session service can call back into it.
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+        let result = (|| {
             let result = (|| -> std::result::Result<Progress, EvalError> {
                 meta.descriptor.validate_arity()?;
                 let progress = match *state {
@@ -216,21 +216,16 @@ impl NativeBatchHosts<'_> {
                     }
                 };
                 match progress {
-                    Progress::Ready(value) => {
-                        let maximum = tidb_query_expr::local::value_kernel_work_remaining()
-                            .expect("stateful lexical work scope");
-                        Ok(Progress::Ready(coerce_optional_value_result(
-                            meta.descriptor.operation_name(),
-                            meta.result_type.as_ref(),
-                            value,
-                            maximum,
-                        )?))
-                    }
+                    Progress::Ready(value) => Ok(Progress::Ready(coerce_optional_value_result(
+                        meta.descriptor.operation_name(),
+                        meta.result_type.as_ref(),
+                        value,
+                    )?)),
                     more => Ok(more),
                 }
             })();
-            crate::scalar_function::eager_values::audit_work_result(result)
-        });
+            result
+        })();
         if let Some(token) = token {
             store
                 .borrow()
@@ -252,14 +247,11 @@ impl NativeBatchHosts<'_> {
         match result {
             Err(error) => self.native_failure(error),
             Ok(Progress::Ready(value)) => self
-                .finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+                .finish_native_value(id, value, meta.output_node, meta.output_role, row)
                 .map(HostStep::Ready),
             Ok(Progress::More(state)) => {
                 let next = state.next_argument();
-                let retained = base
-                    .checked_add(state.retained_bytes()?)
-                    .ok_or_else(|| resource("stateful continuation extent overflow"))?;
-                self.check_bytes(retained)?;
+
                 self.slots[id.slot]
                     .task
                     .as_mut()

@@ -278,17 +278,12 @@ fn misc_identity_never_requests_ready() {
 fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order() {
     for value in extra_values() {
         let extent = super::identity_actual::copy_extent(&value).unwrap();
-        let copy = super::identity_actual::copy_bounded(&value, extent).unwrap();
+        let copy = super::identity_actual::copy(&value).unwrap();
         assert_eq!(
             super::identity_value::encode(&value).unwrap(),
             super::identity_value::encode(&copy).unwrap()
         );
-        if extent > 0 {
-            assert!(matches!(
-                super::identity_actual::copy_bounded(&value, extent - 1),
-                Err(EvalError::ExpressionRuntimeFailure(_))
-            ));
-        }
+        assert_eq!(super::identity_actual::copy_extent(&copy).unwrap(), extent);
     }
     let huge_scale = Datum::Decimal(tidb_datatype::Decimal::from_raw_parts(
         false,
@@ -296,15 +291,9 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
         u32::MAX,
         1,
     ));
-    assert!(super::identity_actual::copy_bounded(&huge_scale, 1).is_ok());
-    assert!(matches!(
-        super::identity_actual::probe(Some(&huge_scale), 4096),
-        Err(EvalError::ExpressionRuntimeFailure(_))
-    ));
+    assert!(super::identity_actual::copy(&huge_scale).is_ok());
     let invalid = extra_values().remove(4);
-    assert!(
-        std::panic::catch_unwind(|| super::identity_actual::probe(Some(&invalid), 4096)).is_err()
-    );
+    assert!(std::panic::catch_unwind(|| super::identity_actual::probe(Some(&invalid))).is_err());
     for v in [
         Datum::new_string(vec![255; 1 << 20]),
         Datum::Enum(
@@ -316,10 +305,13 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
             Collation::Utf8Mb4Bin,
         ),
     ] {
-        assert!(super::identity_actual::copy_bounded(&v, 0).is_ok());
+        assert!(super::identity_actual::copy(&v).is_ok());
     }
-    assert!(super::identity_actual::probe(None, 0).is_ok());
-    assert!(super::identity_actual::copy_bounded(&Datum::Null, usize::MAX).is_err());
+    assert!(super::identity_actual::probe(None).is_ok());
+    assert_eq!(
+        super::identity_actual::copy(&Datum::Null).unwrap(),
+        Datum::Null
+    );
     assert_eq!(
         ScalarFunction::new(
             tidb_ast::CiString::new("any_value"),

@@ -6,6 +6,7 @@ pub(super) struct TypedWindowTask {
     rows: Vec<usize>,
 }
 impl TypedWindowTask {
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(array_bytes::<usize>(self.rows.capacity())?)
@@ -44,14 +45,7 @@ impl NativeBatchHosts<'_> {
         {
             return Err(binding("typed forward window declaration differs"));
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(std::mem::size_of::<TypedWindowTask>())
-                .and_then(|n| {
-                    n.checked_add(array_bytes::<usize>(invocation.physical_rows.len()).ok()?)
-                })
-                .ok_or_else(|| resource("typed forward window allocation overflow"))?,
-        )?;
+
         let mut rows = Vec::new();
         rows.try_reserve_exact(invocation.physical_rows.len())
             .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
@@ -113,16 +107,7 @@ impl NativeBatchHosts<'_> {
             )?;
         }
         let count = state.rows.len();
-        let base = self
-            .retained_bytes()?
-            .checked_add(array_bytes::<usize>(
-                count
-                    .checked_add(1)
-                    .ok_or_else(|| resource("typed forward output count overflow"))?,
-            )?)
-            .and_then(|n| n.checked_add(count.checked_mul(native_values::HANDLE_BYTES + 1)?))
-            .ok_or_else(|| resource("typed forward output extent overflow"))?;
-        self.check_bytes(base)?;
+
         let demand = std::mem::replace(
             &mut self.slots[id.slot]
                 .task
@@ -146,18 +131,10 @@ impl NativeBatchHosts<'_> {
                 input_row,
             };
             let origin = NativeValueOrigin { node, row };
-            let payload = native_payload_bytes(store.borrow().get(
-                token,
-                NativeValueRole::CharInput,
-                origin,
-            )?)?
-            .checked_mul(2)
-            .ok_or_else(|| resource("typed forward value copy extent overflow"))?;
-            self.check_bytes(
-                base.checked_add(payload)
-                    .and_then(|n| n.checked_add(output.retained_heap_bytes()?))
-                    .ok_or_else(|| resource("typed forward live extent overflow"))?,
-            )?;
+            store
+                .borrow()
+                .get(token, NativeValueRole::CharInput, origin)?;
+
             let value =
                 store
                     .borrow()
@@ -302,8 +279,8 @@ mod tests {
     {
         let field = projected(&native_bytes_type(), true).unwrap();
         let meta = metadata();
-        let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
-        let mut hosts = NativeBatchHosts::new(catalog(&field), &meta, &NoCallbacks, 2 << 20)
+        let store = RefCell::new(NativeValueStore::new().unwrap());
+        let mut hosts = NativeBatchHosts::new(catalog(&field), &meta, &NoCallbacks)
             .with_native_values(Some(&store));
         let mut eval = EvalContext::default();
         let args = [field.clone()];
@@ -372,7 +349,7 @@ mod tests {
                     occurrence: start + count - 1,
                     input_row: rows[count - 1],
                 };
-                let mut foreign = NativeValueStore::new(4096).unwrap();
+                let mut foreign = NativeValueStore::new().unwrap();
                 foreign.begin_window().unwrap();
                 let foreign = foreign
                     .insert_clone(
@@ -437,13 +414,13 @@ mod tests {
                     .insert_diagnostic_unavailable(NativeValueOrigin { node: 1, row: last })
                     .unwrap();
                 for token in [
-                    Some(foreign),
-                    Some(wrong_node),
-                    Some(wrong_role),
-                    Some(wrong_occurrence),
-                    Some(wrong_physical),
-                    Some(text),
-                    Some(unavailable),
+                    Some(foreign.to_vec()),
+                    Some(wrong_node.to_vec()),
+                    Some(wrong_role.to_vec()),
+                    Some(wrong_occurrence.to_vec()),
+                    Some(wrong_physical.to_vec()),
+                    Some(text.to_vec()),
+                    Some(unavailable.to_vec()),
                     Some(vec![0]),
                     None,
                 ] {
@@ -513,8 +490,8 @@ mod tests {
     fn typed_window_forward_resource_refusal_is_consuming_and_same_provider_recovers() {
         let field = projected(&native_bytes_type(), true).unwrap();
         let meta = metadata();
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
-        let mut hosts = NativeBatchHosts::new(catalog(&field), &meta, &NoCallbacks, 1024)
+        let store = RefCell::new(NativeValueStore::new().unwrap());
+        let mut hosts = NativeBatchHosts::new(catalog(&field), &meta, &NoCallbacks)
             .with_native_values(Some(&store));
         let mut eval = EvalContext::default();
         let args = [field.clone()];
@@ -540,10 +517,36 @@ mod tests {
             };
             let result =
                 hosts.resume_window(&mut eval, &task, reply(&field, &rows, start, &values));
-            if large {
-                assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
-            } else {
-                assert!(matches!(result.unwrap(), HostStep::Ready(_)));
+            let HostStep::Ready(output) = result.unwrap() else {
+                panic!("expected forwarded values")
+            };
+            assert_eq!(output.len(), rows.len());
+            for (p, &physical_row) in rows.iter().enumerate() {
+                let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(p) else {
+                    panic!("native output handle")
+                };
+                let expected = if large {
+                    Datum::new_string("x".repeat(4096))
+                } else {
+                    datum(p)
+                };
+                assert_eq!(
+                    *store
+                        .borrow()
+                        .get(
+                            token,
+                            NativeValueRole::Output,
+                            NativeValueOrigin {
+                                node: 0,
+                                row: InputRow {
+                                    occurrence: start + p,
+                                    input_row: physical_row
+                                }
+                            }
+                        )
+                        .unwrap(),
+                    expected
+                );
             }
             assert!(hosts.take_native_error().is_none());
             assert!(hosts

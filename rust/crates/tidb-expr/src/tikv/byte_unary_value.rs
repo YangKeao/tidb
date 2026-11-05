@@ -20,7 +20,7 @@ fn error(e: E) -> EvalError {
     }
 }
 fn check(n: usize, max: usize) -> Result<(), EvalError> {
-    if max == usize::MAX || n > max {
+    if n > max {
         Err(error(E::Resource))
     } else {
         Ok(())

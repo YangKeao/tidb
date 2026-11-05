@@ -463,9 +463,7 @@ pub(crate) fn cast_arg_as_string(
             | Datum::BinaryLiteral(_)
             | Datum::Enum(..)
             | Datum::Set(..)
-    ) {
-        crate::scalar_function::eager_values::charge_string_work(v)?;
-    }
+    ) {}
     crate::tikv::eval_cast_arg_as_string(v)
 }
 

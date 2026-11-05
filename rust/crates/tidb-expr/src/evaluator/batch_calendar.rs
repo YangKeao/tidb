@@ -78,38 +78,27 @@ impl NativeBatchHosts<'_> {
                 )?;
             }
         }
-        let base = self.retained_bytes()?;
+
         let owned = if arity > 0 {
             let values = store.borrow();
             let origin = NativeValueOrigin {
                 node: arguments[0],
                 row,
             };
-            let value = values.get(token_for(0)?, NativeValueRole::CharInput, origin)?;
-            let charge = native_payload_bytes(value)?
-                .checked_mul(2)
-                .and_then(|n| base.checked_add(n))
-                .ok_or_else(|| resource("calendar first clone extent overflow"))?;
-            self.check_bytes(charge)?;
-            Some((
-                values.clone_for_kernel(token_for(0)?, NativeValueRole::CharInput, origin)?,
-                charge,
-            ))
+            values.get(token_for(0)?, NativeValueRole::CharInput, origin)?;
+
+            Some(values.clone_for_kernel(token_for(0)?, NativeValueRole::CharInput, origin)?)
         } else {
             None
         };
-        let live = owned.as_ref().map_or(base, |(_, n)| *n);
-        let remaining = self
-            .max_retained_bytes
-            .checked_sub(live)
-            .ok_or_else(|| resource("calendar work allowance exhausted"))?;
+
+        let remaining = usize::MAX;
         let converted = if operation.datetime_argument() {
             match crate::tikv::calendar_value::cast_source(
                 *operation,
-                &owned
+                owned
                     .as_ref()
-                    .ok_or_else(|| binding("calendar source lost"))?
-                    .0,
+                    .ok_or_else(|| binding("calendar source lost"))?,
                 source_type,
                 self.context,
                 remaining,
@@ -127,10 +116,9 @@ impl NativeBatchHosts<'_> {
             0
         };
         let value = converted.as_ref().unwrap_or(
-            &owned
+            owned
                 .as_ref()
-                .ok_or_else(|| binding("calendar source lost"))?
-                .0,
+                .ok_or_else(|| binding("calendar source lost"))?,
         );
         let head = crate::tikv::calendar_value::head(*operation, value, self.context, remaining);
         drop(converted);
@@ -163,22 +151,18 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let live = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("calendar result extent overflow"))?;
-        self.check_bytes(live)?;
+
         let result = match crate::tikv::calendar_value::finish_source(
             *operation,
             result,
             result_type,
             self.context,
-            self.max_retained_bytes - live,
+            usize::MAX,
         ) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

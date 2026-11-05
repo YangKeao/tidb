@@ -202,9 +202,8 @@ impl NativeSourceFragment {
         self.source.facts.node_count()
     }
 
-    /// Original source preflight's conservative logical metadata charge. A
-    /// composer adds these across real fragments under its existing allowance;
-    /// this is not an allocator peak or total retained heap measurement.
+    /// Original source preflight's conservative logical metadata observation.
+    /// It imposes no allowance and does not measure allocator peaks or total heap.
     pub fn logical_metadata_bytes(&self) -> usize {
         self.source.logical_metadata_bytes
     }
@@ -273,19 +272,6 @@ impl NativeSourceFragment {
         ordinal_base
             .checked_add(count)
             .ok_or_else(|| resource("fragment ordinal overflow"))?;
-        // This bounded copy is derived metadata, separate from source owners,
-        // runtime values and the SDK's execution budget. Account logical copy
-        // payload and flat scaffolding before cloning any large literal.
-        let mut copy_budget = Budget {
-            used: 0,
-            max: self.source.limits.max_metadata_bytes,
-        };
-        copy_budget.array::<&LocalExpr>(
-            count
-                .checked_mul(2)
-                .ok_or_else(|| resource("fragment graph extent overflow"))?,
-        )?;
-        copy_budget.array::<LocalExpr>(count)?;
         let mut pending = Vec::new();
         let mut ordered = Vec::new();
         reserve(&mut pending, count)?;
@@ -294,17 +280,6 @@ impl NativeSourceFragment {
         while let Some(node) = pending.pop() {
             if ordered.len() >= count {
                 return Err(binding("fragment graph extent differs"));
-            }
-            copy_budget.add(node.field_type().compute_size() as usize)?;
-            if let LocalExpr::Constant { value, .. } = node {
-                let payload = match value {
-                    ScalarValue::Bytes(Some(v)) => v.len(),
-                    ScalarValue::Json(Some(v)) => v.as_ref().value().len(),
-                    ScalarValue::Decimal(Some(v)) => v.spill_capacity_bytes(),
-                    ScalarValue::VectorFloat32(Some(v)) => v.as_ref().encoded_len(),
-                    _ => 0,
-                };
-                copy_budget.add(payload)?;
             }
             ordered.push(node);
             if let LocalExpr::Call { args, .. } | LocalExpr::HostCall { args, .. } = node {
@@ -395,7 +370,7 @@ impl NativeSourceFragment {
 
     /// Create a fresh native value namespace with the existing scalar allowance.
     pub fn new_state(&self) -> LocalResult<NativeFragmentState> {
-        let mut values = NativeValueStore::new(public_scalar_limits().2)?;
+        let mut values = NativeValueStore::new()?;
         values.begin_window()?;
         Ok(NativeFragmentState {
             owner: Arc::clone(&self.owner),
@@ -431,18 +406,13 @@ impl NativeSourceFragment {
             .hosts
             .clone()
             .map(|catalog| {
-                let mut hosts = NativeBatchHosts::new(
-                    catalog,
-                    &source.host_metadata,
-                    context,
-                    public_scalar_limits().2,
-                )
-                .with_native_values(Some(&state.values))
-                .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
-                .with_constant_probes(&source.host_probes)
-                .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))?
-                .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
-                .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()))?;
+                let mut hosts = NativeBatchHosts::new(catalog, &source.host_metadata, context)
+                    .with_native_values(Some(&state.values))
+                    .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
+                    .with_constant_probes(&source.host_probes)
+                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))?
+                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
+                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()))?;
                 if let Some(input) = row.chunk() {
                     hosts = hosts.with_input(input);
                 }

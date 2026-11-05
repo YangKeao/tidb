@@ -46,11 +46,8 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         *consumed = true;
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("GROUPING work allowance exhausted"))?;
+
+        let maximum = usize::MAX;
         let result = {
             let values = store.borrow();
             let value = values.get(
@@ -69,25 +66,16 @@ impl NativeBatchHosts<'_> {
         };
         // The signature returns UInt bits, then ScalarFunction::eval applies
         // its ordinary return-family boundary once, outside that signature.
-        let held = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("GROUPING result extent overflow"))?;
-        self.check_bytes(held)?;
+
         let result = if let Some(result_type) = result_type {
-            match crate::tikv::coerce_result_bounded(
-                "grouping",
-                result_type,
-                result,
-                self.max_retained_bytes - held,
-            ) {
+            match crate::tikv::coerce_result_bounded("grouping", result_type, result) {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             }
         } else {
             result
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

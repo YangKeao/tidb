@@ -149,11 +149,7 @@ impl NativeBatchHosts<'_> {
             let owned = token
                 .try_into()
                 .map_err(|_| binding("PB eager capability width differs"))?;
-            self.check_bytes(
-                self.retained_bytes()?
-                    .checked_add(native_values::HANDLE_BYTES)
-                    .ok_or_else(|| resource("PB eager prefix extent overflow"))?,
-            )?;
+
             let SqlDemand::PbEagerValues { tokens } = &mut self.slots[id.slot]
                 .task
                 .as_mut()
@@ -166,7 +162,7 @@ impl NativeBatchHosts<'_> {
                 .try_reserve_exact(1)
                 .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
             tokens.push(owned);
-            self.check_bytes(self.retained_bytes()?)?;
+
             if !is_null && next + 1 < arity {
                 return Ok(HostStep::NeedArg(HostArgRequest {
                     index: next + 1,
@@ -174,7 +170,7 @@ impl NativeBatchHosts<'_> {
                 }));
             }
         }
-        let base = self.retained_bytes()?;
+
         let SqlDemand::PbEagerValues { tokens } = std::mem::replace(
             &mut self.slots[id.slot]
                 .task
@@ -186,39 +182,22 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         let demanded = if is_null { 1 } else { arity };
-        let copied = {
+        {
             let values = store.borrow();
-            tokens
+            for (index, token) in tokens
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| !is_null || *index == next)
-                .try_fold(0usize, |sum, (index, token)| {
-                    sum.checked_add(
-                        native_payload_bytes(values.get(
-                            token,
-                            NativeValueRole::CharInput,
-                            origin(index),
-                        )?)?
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("PB eager copy extent overflow"))?,
-                    )
-                    .ok_or_else(|| resource("PB eager input extent overflow"))
-                })?
-        };
-        let mut live = base
-            .checked_add(copied)
-            .and_then(|n| n.checked_add(array_bytes::<Datum>(demanded).ok()?))
-            .ok_or_else(|| resource("PB eager argument layout overflow"))?;
-        self.check_bytes(live)?;
+            {
+                values.get(token, NativeValueRole::CharInput, origin(index))?;
+            }
+        }
+
         let mut ready = Vec::new();
         ready
             .try_reserve_exact(demanded)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        live = base
-            .checked_add(copied)
-            .and_then(|n| n.checked_add(array_bytes::<Datum>(ready.capacity()).ok()?))
-            .ok_or_else(|| resource("PB eager argument capacity overflow"))?;
-        self.check_bytes(live)?;
+
         {
             let values = store.borrow();
             for (index, token) in tokens
@@ -240,9 +219,9 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let maximum = self.max_retained_bytes - live;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-            crate::scalar_function::eager_values::audit_work_result(if is_null {
+
+        let result = (|| {
+            (if is_null {
                 meta.kernel.null_result(
                     &ready[0],
                     arity,
@@ -254,7 +233,7 @@ impl NativeBatchHosts<'_> {
                 meta.kernel
                     .eval_values(&mut ready, self.context, meta.result_type.as_ref())
             })
-        });
+        })();
         check_tokens()?;
         let value = match result {
             Ok(value) => value,
@@ -263,32 +242,16 @@ impl NativeBatchHosts<'_> {
         drop(ready);
         let value =
             crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-        let held = base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("PB eager result allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("PB eager result extent overflow"))?;
-        self.check_bytes(held)?;
-        let result = coerce_optional_value_result(
-            &meta.name,
-            meta.result_type.as_ref(),
-            value,
-            self.max_retained_bytes - held,
-        );
+
+        let result = coerce_optional_value_result(&meta.name, meta.result_type.as_ref(), value);
         check_tokens()?;
         let value = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
         let value = if meta.integer_batch_result {
-            let result = present_integer_batch_value(
-                value,
-                meta.result_type.as_ref(),
-                self.context,
-                self.max_retained_bytes - held,
-            );
+            let result =
+                present_integer_batch_value(value, meta.result_type.as_ref(), self.context);
             check_tokens()?;
             match result {
                 Ok(value) => value,
@@ -297,7 +260,7 @@ impl NativeBatchHosts<'_> {
         } else {
             value
         };
-        self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
     }
 }

@@ -274,7 +274,7 @@ pub(crate) fn date_add_scalar_values_bounded(
         && fields[0].is_some_and(|f| f.code() == tidb_datatype::FieldTypeCode::Duration)
     {
         let work = datetime_cast_work(&values[0], fields[0])?;
-        if maximum == usize::MAX || work > maximum {
+        if work > maximum {
             return Err(value_resource());
         }
         values[0] = crate::cast::cast_arg_as_datetime(&values[0], fields[0], ctx)?;
@@ -302,7 +302,7 @@ pub(crate) fn date_add_scalar_values_bounded(
         .checked_mul(2)
         .and_then(|n| n.checked_add(work))
         .ok_or_else(value_resource)?;
-    if maximum == usize::MAX || total > maximum {
+    if total > maximum {
         return Err(value_resource());
     }
     crate::cast::parse_computed_time(&value, ctx, kind, fsp)

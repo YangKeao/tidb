@@ -89,7 +89,7 @@ pub(super) fn eval_with_policies(
     input: &Chunk,
     limits: BatchSourceLimits,
     execution: ExecutionLimits,
-    maximum: usize,
+    _maximum: usize,
 ) -> std::result::Result<Vec<Datum>, EvalError> {
     if input.num_rows() == 0 {
         return Ok(Vec::new());
@@ -130,7 +130,6 @@ pub(super) fn eval_with_policies(
         context,
         input,
         execution,
-        maximum,
         scalar_rows,
     )
     .map_err(|e| e.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
@@ -141,19 +140,13 @@ fn execute(
     context: &dyn Columns,
     input: &Chunk,
     execution: ExecutionLimits,
-    maximum: usize,
     scalar_rows: bool,
 ) -> Result<Vec<Datum>> {
     if source.nodes[0].view.value_role() != Some(NativeValueRole::Output) {
         return Err(binding("native candidate output role differs").into());
     }
     let rows = input.num_rows();
-    let header = array_bytes::<Datum>(rows)?
-        .checked_add(array_bytes::<usize>(rows)?)
-        .ok_or_else(|| resource("native candidate result extent overflow"))?;
-    if header > maximum {
-        return Err(resource("native candidate result extent exceeds policy").into());
-    }
+
     let mut selection = Vec::new();
     selection
         .try_reserve_exact(rows)
@@ -167,17 +160,15 @@ fn execute(
     output
         .try_reserve_exact(rows)
         .map_err(|_| resource("native candidate output allocation failed"))?;
-    let header = array_bytes::<Datum>(output.capacity())?
-        .checked_add(array_bytes::<usize>(selection.capacity())?)
-        .ok_or_else(|| resource("native candidate capacity extent overflow"))?;
-    let store = RefCell::new(NativeValueStore::new(maximum)?);
-    store.borrow().precheck_import(header)?;
+
+    let store = RefCell::new(NativeValueStore::new()?);
+    store.borrow().check_live()?;
     let policy = source.context_policy.as_deref();
     let mut hosts = source
         .hosts
         .clone()
         .map(|catalog| {
-            NativeBatchHosts::new(catalog, &source.host_metadata, context, maximum)
+            NativeBatchHosts::new(catalog, &source.host_metadata, context)
                 .with_native_values(Some(&store))
                 .with_coordinate_input(input)
                 .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
@@ -195,7 +186,6 @@ fn execute(
     } else {
         program.max_batch_size()
     };
-    let mut payload = 0usize;
     let mut start = 0usize;
     while start < selection.len() {
         let end = if whole {
@@ -233,9 +223,7 @@ fn execute(
         if values.len() != selected.len() {
             return Err(binding("native candidate output length differs").into());
         }
-        let token_bytes = values
-            .retained_heap_bytes()
-            .ok_or_else(|| resource("native candidate token extent overflow"))?;
+
         let store = store.borrow();
         for (occurrence, &input_row) in selected.iter().enumerate() {
             let token = values
@@ -265,14 +253,7 @@ fn execute(
                     },
                 },
             )?;
-            payload = payload
-                .checked_add(native_payload_bytes(value)?)
-                .ok_or_else(|| resource("native candidate payload extent overflow"))?;
-            let retained = header
-                .checked_add(token_bytes)
-                .and_then(|bytes| bytes.checked_add(payload))
-                .ok_or_else(|| resource("native candidate retained extent overflow"))?;
-            store.precheck_import(retained)?;
+
             output.push(value.clone());
         }
         start = end;

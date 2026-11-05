@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::control_value::{copy, default_budget, exhausted};
+use super::control_value::{copy, exhausted};
 use crate::{Columns, Datum, EvalError};
 use std::borrow::Borrow;
 
@@ -25,9 +25,7 @@ pub(crate) fn eval_coalesce_in<V: Borrow<Datum>>(
         let value = argument(index, ctx)?;
         let value = value.borrow();
         match tidb_query_expr::native_if_null_choose_first((!value.is_null()).then_some(value)) {
-            tidb_query_expr::NativeIfNullChoice::Done(value) => {
-                return copy(value, default_budget())
-            }
+            tidb_query_expr::NativeIfNullChoice::Done(value) => return copy(value),
             tidb_query_expr::NativeIfNullChoice::NeedSecond => {}
         }
     }

@@ -10,7 +10,7 @@ fn resource() -> EvalError {
     ))
 }
 fn work(maximum: usize, n: usize) -> Result<(), EvalError> {
-    if maximum == usize::MAX || n > maximum {
+    if n > maximum {
         Err(resource())
     } else {
         Ok(())
@@ -192,5 +192,5 @@ pub(crate) fn finish_source(
     } else {
         super::finish_temporal_values_bounded(ctx, result, field, maximum)?
     };
-    super::coerce_result_bounded(operation.name(), field, result, maximum)
+    super::coerce_result_bounded(operation.name(), field, result)
 }

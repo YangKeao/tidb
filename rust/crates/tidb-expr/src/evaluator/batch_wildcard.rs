@@ -51,11 +51,8 @@ impl NativeBatchHosts<'_> {
         // Take before any conversion, error or callback can unwind. Only a
         // successful Need step installs a new state. NULL/error cannot replay.
         let pending = pending.take().expect("validated pending LIKE state");
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("LIKE work allowance exhausted"))?;
+
+        let maximum = usize::MAX;
         let step = if index < 2 {
             // SQL byte conversion has no Columns callbacks. Retain only its
             // bounded actual output before demanding the following child.
@@ -82,37 +79,14 @@ impl NativeBatchHosts<'_> {
                         Ok(_) => Err(binding("unsupported LIKE escape unexpectedly accepted")),
                     };
                 }
-                let copy = if matches!(value, Datum::String(_) | Datum::Enum(..) | Datum::Set(..)) {
-                    std::mem::size_of::<Datum>()
-                } else {
-                    native_payload_bytes(value)?
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("LIKE escape copy extent overflow"))?
-                };
-                if pending
-                    .retained_bytes()
-                    .checked_add(copy)
-                    .is_none_or(|n| n > maximum)
-                {
-                    return Err(resource("LIKE escape copy allowance exhausted"));
-                }
-                (value.clone(), copy)
+                value.clone()
             };
             // The copied actual input remains owned while the callbacks run.
-            pending.advance(
-                &owned.0,
-                escape_type.as_ref(),
-                self.context,
-                maximum - owned.1,
-            )
+            pending.advance(&owned, escape_type.as_ref(), self.context, maximum)
         };
         let result = match step {
             Err(e) => return self.native_failure(e),
             Ok(Step::Need(next)) => {
-                self.check_bytes(
-                    base.checked_add(next.retained_bytes())
-                        .ok_or_else(|| resource("LIKE prefix extent overflow"))?,
-                )?;
                 let index = next.argument();
                 let SqlDemand::Like { pending } = &mut self.slots[id.slot]
                     .task
@@ -143,25 +117,16 @@ impl NativeBatchHosts<'_> {
                 }
             }
         };
-        let held = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("LIKE result extent overflow"))?;
-        self.check_bytes(held)?;
+
         let result = if let Some(result_type) = result_type {
-            match crate::tikv::coerce_result_bounded(
-                "like",
-                result_type,
-                result,
-                self.max_retained_bytes - held,
-            ) {
+            match crate::tikv::coerce_result_bounded("like", result_type, result) {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             }
         } else {
             result
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

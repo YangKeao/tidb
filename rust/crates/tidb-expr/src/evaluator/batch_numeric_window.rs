@@ -10,7 +10,6 @@ pub(in super::super) struct NumericWindowTask {
     computing: bool,
     presenting: bool,
     values: [Vec<Datum>; 2],
-    bytes: [usize; 2],
     pending: Option<Box<NumericTask>>,
     output: Option<ChunkedVecBytes>,
 }
@@ -18,11 +17,18 @@ impl NumericWindowTask {
     pub(in super::super) fn next_argument(&self) -> usize {
         self.pending.as_ref().map_or(self.index, |s| s.next)
     }
+    #[cfg(test)]
     pub(in super::super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(array_bytes::<usize>(self.rows.capacity())?)
-            .and_then(|n| n.checked_add(self.bytes[0]))
-            .and_then(|n| n.checked_add(self.bytes[1]))
+            .and_then(|n| {
+                self.values.iter().try_fold(n, |n, values| {
+                    values.iter().try_fold(
+                        n.checked_add(array_bytes::<Datum>(values.capacity()).ok()?)?,
+                        |n, value| n.checked_add(native_payload_bytes(value).ok()?.checked_mul(2)?),
+                    )
+                })
+            })
             .and_then(|n| {
                 n.checked_add(
                     self.pending
@@ -77,14 +83,7 @@ impl NativeBatchHosts<'_> {
         {
             return Err(binding("numeric window invocation differs"));
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(std::mem::size_of::<NumericWindowTask>())
-                .and_then(|n| {
-                    n.checked_add(array_bytes::<usize>(invocation.physical_rows.len()).ok()?)
-                })
-                .ok_or_else(|| resource("numeric window row map extent overflow"))?,
-        )?;
+
         let mut rows = Vec::new();
         rows.try_reserve_exact(invocation.physical_rows.len())
             .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
@@ -104,7 +103,6 @@ impl NativeBatchHosts<'_> {
                 computing: false,
                 presenting: false,
                 values: [Vec::new(), Vec::new()],
-                bytes: [0; 2],
                 pending: None,
                 output: None,
             })),
@@ -193,19 +191,8 @@ impl NativeBatchHosts<'_> {
                     input_row: reply.physical_rows[0],
                 },
             };
-            let length = store
-                .borrow()
-                .diagnostic_text(token, origin)?
-                .map_or(0, str::len);
-            self.check_bytes(
-                self.retained_bytes()?
-                    .checked_add(
-                        length
-                            .checked_mul(3)
-                            .ok_or_else(|| resource("numeric scoped text extent overflow"))?,
-                    )
-                    .ok_or_else(|| resource("numeric scoped allowance overflow"))?,
-            )?;
+            store.borrow().diagnostic_text(token, origin)?;
+
             store
                 .borrow()
                 .diagnostic_text(token, origin)?
@@ -248,7 +235,6 @@ impl NativeBatchHosts<'_> {
                     node,
                     target,
                 },
-                state.retained_bytes()?,
                 Some(&auth),
             );
             if let Err(error) = values {
@@ -259,30 +245,21 @@ impl NativeBatchHosts<'_> {
                     None => Err(error),
                 };
             }
-            let WindowSourceValues {
-                values,
-                retained_bytes,
-            } = values?;
+            let values = values?;
             state.values[state.index] = values;
-            state.bytes[state.index] = retained_bytes;
         }
-        let available = self.numeric_window_available(&state)?;
-        let transition = tidb_query_expr::local::with_value_kernel_work_limit(available, || {
+
+        let transition = (|| {
             let result = self.drive_numeric_window(slot, start, state, text.as_deref(), &auth);
-            tidb_query_expr::local::value_kernel_work_status()?;
             result
-        });
+        })();
         authenticate()?;
         match transition? {
             WindowTransition::Need(state) => {
                 let next = state.next_argument();
                 let scoped = state.pending.is_some();
                 let position = state.position;
-                self.check_bytes(
-                    self.retained_bytes()?
-                        .checked_add(state.retained_bytes()?)
-                        .ok_or_else(|| resource("numeric window continuation extent overflow"))?,
-                )?;
+
                 self.slots[id.slot]
                     .task
                     .as_mut()
@@ -307,13 +284,7 @@ impl NativeBatchHosts<'_> {
             }
         }
     }
-    fn numeric_window_available(&self, state: &NumericWindowTask) -> LocalResult<usize> {
-        self.max_retained_bytes
-            .checked_sub(self.retained_bytes()?)
-            .and_then(|n| n.checked_sub(state.retained_bytes().ok()?))
-            .and_then(|n| n.checked_sub(128))
-            .ok_or_else(|| resource("numeric window allowance exhausted"))
-    }
+
     fn drive_numeric_window(
         &self,
         slot: HostSlot,
@@ -352,10 +323,6 @@ impl NativeBatchHosts<'_> {
             _ => return Err(binding("numeric window operation differs")),
         };
         if let Some(mut pending) = task.pending.take() {
-            let available = self
-                .numeric_window_available(&task)?
-                .checked_sub(pending.retained_bytes()?)
-                .ok_or_else(|| resource("numeric scoped state allowance exhausted"))?;
             let Some(mut diag) = pending.diagnostic.take() else {
                 return Err(binding("numeric window diagnostic absent"));
             };
@@ -374,7 +341,7 @@ impl NativeBatchHosts<'_> {
                 Ok(step) => step,
                 Err(error) => return Ok(WindowTransition::Failure(error)),
             };
-            match self.numeric_diagnostic_step(pending, diag, step, slot, available, auth)? {
+            match self.numeric_diagnostic_step(pending, diag, step, slot, auth)? {
                 DiagnosticTransition::Need(pending) => {
                     task.pending = Some(pending);
                     return Ok(WindowTransition::Need(task));
@@ -394,7 +361,7 @@ impl NativeBatchHosts<'_> {
             }
         }
         loop {
-            let available = self.numeric_window_available(&task)?;
+            let available = usize::MAX;
             if !task.computing {
                 if task.position == task.rows.len() {
                     if task.index == 0 {
@@ -403,20 +370,7 @@ impl NativeBatchHosts<'_> {
                         return Ok(WindowTransition::Need(task));
                     }
                     let count = task.rows.len();
-                    let extent = array_bytes::<usize>(
-                        count
-                            .checked_add(1)
-                            .ok_or_else(|| resource("numeric window output count overflow"))?,
-                    )?
-                    .checked_add(
-                        count
-                            .checked_mul(native_values::HANDLE_BYTES + 1)
-                            .ok_or_else(|| resource("numeric window output payload overflow"))?,
-                    )
-                    .ok_or_else(|| resource("numeric window output allowance overflow"))?;
-                    if extent > available {
-                        return Err(resource("numeric window output exceeds allowance"));
-                    }
+
                     task.output = Some(
                         ChunkedVecBytes::try_with_capacities(
                             count,
@@ -435,12 +389,7 @@ impl NativeBatchHosts<'_> {
                     batch.domain,
                 );
                 let value = std::mem::replace(&mut task.values[index][task.position], Datum::Null);
-                let payload = native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("numeric window cast old payload overflow"))?;
-                task.bytes[index] = task.bytes[index]
-                    .checked_sub(payload)
-                    .ok_or_else(|| resource("numeric window cast ledger underflow"))?;
+
                 let step = crate::scalar_function::prepare_native_numeric_batch_cast(
                     arithmetic_typed_source(source_types, index)?,
                     source,
@@ -454,9 +403,6 @@ impl NativeBatchHosts<'_> {
                         Self::numeric_window_cast_value(&mut task, value)?;
                     }
                     Ok(NumericOperandStep::Subject(pending)) => {
-                        if std::mem::size_of::<NumericTask>() > available {
-                            return Err(resource("numeric window subject state exceeds allowance"));
-                        }
                         let NumericPlanBody::Subject(plan) = &parent.plans[index].body else {
                             unreachable!()
                         };
@@ -476,9 +422,7 @@ impl NativeBatchHosts<'_> {
                             left: None,
                             diagnostic: None,
                         });
-                        match self
-                            .numeric_diagnostic_step(row_task, diag, step, slot, available, auth)?
-                        {
+                        match self.numeric_diagnostic_step(row_task, diag, step, slot, auth)? {
                             DiagnosticTransition::Need(pending) => {
                                 task.pending = Some(pending);
                                 return Ok(WindowTransition::Need(task));
@@ -513,12 +457,7 @@ impl NativeBatchHosts<'_> {
             let position = task.position;
             if task.presenting {
                 let value = std::mem::replace(&mut task.values[0][position], Datum::Null);
-                let charge = native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("numeric window presented payload overflow"))?;
-                task.bytes[0] = task.bytes[0]
-                    .checked_sub(charge)
-                    .ok_or_else(|| resource("numeric window presented ledger underflow"))?;
+
                 let bits = match crate::scalar_function::native_batch_integer_bits(value) {
                     Ok(bits) => bits,
                     Err(error) => return Ok(WindowTransition::Failure(error)),
@@ -527,19 +466,12 @@ impl NativeBatchHosts<'_> {
                     bits,
                     result_type.is_unsigned(),
                 );
-                if native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .is_none_or(|n| n > available)
-                {
-                    return Err(resource(
-                        "numeric window integer collection exceeds allowance",
-                    ));
-                }
+
                 let store = self
                     .native_values
                     .ok_or_else(|| binding("numeric window store absent"))?;
-                let token = store.borrow_mut().insert_clone(
-                    &value,
+                let token = store.borrow_mut().insert_owned(
+                    value,
                     *output_role,
                     NativeValueOrigin {
                         node: *output_node,
@@ -608,9 +540,7 @@ impl NativeBatchHosts<'_> {
                         error => return Ok(WindowTransition::Failure(error)),
                     };
                     let plan_index = if matches!(kind, Overflow::Real) { 4 } else { 2 };
-                    if std::mem::size_of::<NumericTask>() > available {
-                        return Err(resource("numeric window overflow state exceeds allowance"));
-                    }
+
                     let NumericPlanBody::Argument(plan) = &parent.plans[plan_index].body else {
                         unreachable!()
                     };
@@ -625,7 +555,6 @@ impl NativeBatchHosts<'_> {
                     };
                     // Nothing from an unsuccessful batch may reach publication.
                     task.values = [Vec::new(), Vec::new()];
-                    task.bytes = [0; 2];
                     task.output = None;
                     let row_task = Box::new(NumericTask {
                         typed: false,
@@ -634,9 +563,7 @@ impl NativeBatchHosts<'_> {
                         left: None,
                         diagnostic: None,
                     });
-                    return match self
-                        .numeric_diagnostic_step(row_task, diag, step, slot, available, auth)?
-                    {
+                    return match self.numeric_diagnostic_step(row_task, diag, step, slot, auth)? {
                         DiagnosticTransition::Need(pending) => {
                             task.pending = Some(pending);
                             Ok(WindowTransition::Need(task))
@@ -661,15 +588,6 @@ impl NativeBatchHosts<'_> {
                 }
             };
             if batch.output_integer && !batch.integer {
-                let charge = native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("numeric window staged result payload overflow"))?;
-                if charge > available {
-                    return Err(resource("numeric window staged result exceeds allowance"));
-                }
-                task.bytes[0] = task.bytes[0]
-                    .checked_add(charge)
-                    .ok_or_else(|| resource("numeric window staged result ledger overflow"))?;
                 task.values[0][position] = value;
                 task.position += 1;
                 continue;
@@ -685,17 +603,12 @@ impl NativeBatchHosts<'_> {
             } else {
                 value
             };
-            if native_payload_bytes(&value)?
-                .checked_mul(2)
-                .is_none_or(|n| n > available)
-            {
-                return Err(resource("numeric window result exceeds allowance"));
-            }
+
             let store = self
                 .native_values
                 .ok_or_else(|| binding("numeric window store absent"))?;
-            let token = store.borrow_mut().insert_clone(
-                &value,
+            let token = store.borrow_mut().insert_owned(
+                value,
                 *output_role,
                 NativeValueOrigin {
                     node: *output_node,
@@ -713,13 +626,6 @@ impl NativeBatchHosts<'_> {
         }
     }
     fn numeric_window_cast_value(task: &mut NumericWindowTask, value: Datum) -> LocalResult<()> {
-        task.bytes[task.index] = task.bytes[task.index]
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("numeric window cast payload overflow"))?,
-            )
-            .ok_or_else(|| resource("numeric window cast ledger overflow"))?;
         task.values[task.index][task.position] = value;
         task.position += 1;
         Ok(())

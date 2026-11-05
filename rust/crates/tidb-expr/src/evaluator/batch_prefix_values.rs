@@ -34,20 +34,11 @@ impl NativeBatchHosts<'_> {
         let store = self
             .native_values
             .ok_or_else(|| binding("prefix value store absent"))?;
-        let base = self.retained_bytes()?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let live = base
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("prefix clone allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("prefix live extent overflow"))?;
-        self.check_bytes(live)?;
+
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -61,16 +52,7 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         *stage = PrefixPhase::Consumed;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            self.max_retained_bytes - live,
-            || {
-                crate::scalar_function::eager_values::audit_work_result(kernel.eval_prefix(
-                    phase,
-                    value,
-                    self.context,
-                ))
-            },
-        );
+        let result = (|| kernel.eval_prefix(phase, value, self.context))();
         // No Ref survives an original callback. Authenticate the actual reply
         // again before a fresh child request or output can cross this boundary.
         store
@@ -100,19 +82,10 @@ impl NativeBatchHosts<'_> {
                 }))
             }
             PrefixStep::Value(value) => {
-                let held = base
-                    .checked_add(
-                        native_payload_bytes(&value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("prefix result allowance overflow"))?,
-                    )
-                    .ok_or_else(|| resource("prefix result extent overflow"))?;
-                self.check_bytes(held)?;
                 let value = match coerce_optional_value_result(
                     kernel.name(),
                     result_type.as_ref(),
                     value,
-                    self.max_retained_bytes - held,
                 ) {
                     Ok(value) => value,
                     Err(error) => return self.native_failure(error),
@@ -120,7 +93,7 @@ impl NativeBatchHosts<'_> {
                 store
                     .borrow()
                     .get(token, NativeValueRole::CharInput, origin)?;
-                self.finish_native_value(id, value, *output_node, *output_role, row, base)
+                self.finish_native_value(id, value, *output_node, *output_role, row)
                     .map(HostStep::Ready)
             }
         }

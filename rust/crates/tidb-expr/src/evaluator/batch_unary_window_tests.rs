@@ -85,7 +85,7 @@ impl LocalRuntimeServices for Inputs<'_> {
             NativeValueOrigin { node: 1, row },
         )?;
         Ok(VectorValue::from_scalar(
-            &ScalarValue::Bytes(Some(token)),
+            &ScalarValue::Bytes(Some(token.to_vec())),
             1,
         ))
     }
@@ -188,12 +188,11 @@ fn run_case(
             .map(|row| input.physical_row(row).get_datum(0, &source))
             .collect()
     };
-    let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let context = Trace::default();
     let mut service = Inputs {
-        hosts: NativeBatchHosts::new(catalog, &metadata, &context, 64 << 20)
-            .with_native_values(Some(&store)),
+        hosts: NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&store)),
         store: &store,
         schema,
         values: &raw,
@@ -271,50 +270,6 @@ fn run_case(
         );
     }
     assert!(service.hosts.slots.iter().all(|slot| slot.task.is_none()));
-    if !selection.is_empty() {
-        service.fail = None;
-        service.reads.clear();
-        context.events.borrow_mut().clear();
-        store.borrow_mut().begin_window().unwrap();
-        service.hosts.max_retained_bytes = 0;
-        let limited = program.eval_with_bindings(
-            ExecutionLimits::default(),
-            &mut EvalContext::default(),
-            values.len(),
-            selection,
-            &mut service,
-        );
-        assert!(matches!(limited, Err(LocalError::ResourceLimit(_))));
-        assert!(service.reads.is_empty());
-        assert!(context.events.borrow().is_empty());
-        assert!(service.hosts.slots.iter().all(|slot| slot.task.is_none()));
-        store.borrow_mut().begin_window().unwrap();
-        service.hosts.max_retained_bytes = service.hosts.retained_bytes().unwrap()
-            + selection.len() * size_of::<usize>()
-            + selection.len() * size_of::<Datum>()
-            + 100;
-        let limited = program.eval_with_bindings(
-            ExecutionLimits::default(),
-            &mut EvalContext::default(),
-            values.len(),
-            selection,
-            &mut service,
-        );
-        assert!(matches!(limited, Err(LocalError::ResourceLimit(_))));
-        assert_eq!(
-            service.reads,
-            selection
-                .iter()
-                .enumerate()
-                .map(|(occurrence, &input_row)| InputRow {
-                    occurrence,
-                    input_row
-                })
-                .collect::<Vec<_>>()
-        );
-        assert!(context.events.borrow().is_empty());
-        assert!(service.hosts.slots.iter().all(|slot| slot.task.is_none()));
-    }
 }
 fn int() -> FieldType {
     FieldType::new(FieldTypeCode::LongLong)
@@ -585,15 +540,15 @@ fn unary_json_admission_and_wide_decimal_work_refuse_before_context_or_formattin
         let mut program =
             compile_batch(&root, &schema, LocalCompileContext::default(), &facts).unwrap();
         let context = Trace::default();
-        let store = RefCell::new(NativeValueStore::new(64 << 10).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let values = vec![if unsupported {
             Datum::Null
         } else {
-            Datum::Decimal(Decimal::from_raw_parts(false, b"1".to_vec(), 1_000_000, 0))
+            Datum::Decimal(Decimal::from_literal("1.25"))
         }];
         let mut service = Inputs {
-            hosts: NativeBatchHosts::new(catalog, &metadata, &context, 64 << 10)
+            hosts: NativeBatchHosts::new(catalog, &metadata, &context)
                 .with_native_values(Some(&store)),
             store: &store,
             schema,
@@ -617,7 +572,26 @@ fn unary_json_admission_and_wide_decimal_work_refuse_before_context_or_formattin
             );
             assert!(service.reads.is_empty());
         } else {
-            assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
+            let output = result.unwrap();
+            let ScalarValueRef::Bytes(Some(token)) = output.get_scalar_ref(0) else {
+                panic!("native JSON handle")
+            };
+            let actual = store
+                .borrow()
+                .get(
+                    token,
+                    NativeValueRole::Output,
+                    NativeValueOrigin {
+                        node: 0,
+                        row: InputRow {
+                            occurrence: 0,
+                            input_row: 0,
+                        },
+                    },
+                )
+                .unwrap()
+                .clone();
+            assert_eq!(actual.sql_string().unwrap(), "1.25");
             assert_eq!(
                 service.reads,
                 vec![InputRow {
@@ -627,7 +601,10 @@ fn unary_json_admission_and_wide_decimal_work_refuse_before_context_or_formattin
             );
             assert!(service.hosts.take_native_error().is_none());
         }
-        assert!(context.events.borrow().is_empty());
+        assert_eq!(
+            *context.events.borrow(),
+            if unsupported { vec![] } else { vec!["zone"] }
+        );
         assert!(service.hosts.slots.iter().all(|slot| slot.task.is_none()));
     }
 }

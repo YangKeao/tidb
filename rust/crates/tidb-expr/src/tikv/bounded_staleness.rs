@@ -66,7 +66,7 @@ pub(crate) fn bounded_staleness_bounded(
         NativeBoundedStalenessHeadResult::InvalidRight => Some(right),
         NativeBoundedStalenessHeadResult::RangeNull => return Ok(Datum::Null),
         NativeBoundedStalenessHeadResult::NeedSafe => {
-            if maximum == usize::MAX || maximum < 2 * std::mem::size_of::<tidb_datatype::Time>() {
+            if maximum < 2 * std::mem::size_of::<tidb_datatype::Time>() {
                 return Err(bounded_resource());
             }
             let safe = ctx.bounded_staleness_safe_time().map(shared_time);
@@ -82,7 +82,7 @@ pub(crate) fn bounded_staleness_bounded(
     if let Some(endpoint) = endpoint {
         // The calendar core has fixed-width fields. Reserve the diagnostic's
         // conservative display bound BEFORE formatting or statement callbacks.
-        if maximum == usize::MAX || maximum < 128 {
+        if maximum < 128 {
             return Err(bounded_resource());
         }
         let warning = format!("Incorrect datetime value: '{endpoint}'");
@@ -113,7 +113,7 @@ pub(crate) fn bounded_staleness_cast_arguments(
             }
             tidb_query_expr::NativeStringCoercionError::ResourceLimit => bounded_resource(),
         })?;
-        if maximum == usize::MAX || work > maximum {
+        if work > maximum {
             return Err(bounded_resource());
         }
         values[i] = crate::cast::cast_arg_as_datetime(value, Some(&fields[i]), ctx)?;

@@ -34,7 +34,7 @@ impl NativeBatchHosts<'_> {
         let store = self
             .native_values
             .ok_or_else(|| binding("JSON checksum store absent"))?;
-        let base = self.retained_bytes()?;
+
         let value = {
             let values = store.borrow();
             let value = values.get(
@@ -45,7 +45,7 @@ impl NativeBatchHosts<'_> {
                     row,
                 },
             )?;
-            crate::tikv::json_sum_crc32_bounded(value, self.max_retained_bytes - base)
+            crate::tikv::json_sum_crc32_bounded(value, usize::MAX)
         };
         let value = match value {
             Ok(value) => value,
@@ -61,7 +61,7 @@ impl NativeBatchHosts<'_> {
         };
         if let Some(role) = output_role {
             return self
-                .finish_native_value(id, value, *output_node, *role, row, base)
+                .finish_native_value(id, value, *output_node, *role, row)
                 .map(HostStep::Ready);
         }
         let value = crate::expression::apply_enum_set_integer_view(value, Some(result_type));
@@ -69,10 +69,7 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value.map(|value| value as i64),
             Err(error) => return self.native_failure(error),
         };
-        self.check_bytes(
-            base.checked_add(128)
-                .ok_or_else(|| resource("JSON checksum typed publication extent overflow"))?,
-        )?;
+
         let output = VectorValue::from_scalar(&ScalarValue::Int(bits), 1);
         self.slots[id.slot].task = None;
         Ok(HostStep::Ready(output))

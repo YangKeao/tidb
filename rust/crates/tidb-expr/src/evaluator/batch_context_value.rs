@@ -29,22 +29,13 @@ impl NativeBatchHosts<'_> {
             .native_values
             .ok_or_else(|| binding("context store absent"))?;
         let origin = argument.map(|node| NativeValueOrigin { node, row });
-        let base = self.retained_bytes()?;
-        let copied = if let (Some(token), Some(origin)) = (token, origin) {
-            native_payload_bytes(
-                store
-                    .borrow()
-                    .get(token, NativeValueRole::CharInput, origin)?,
-            )?
-            .checked_mul(2)
-            .ok_or_else(|| resource("context operand extent overflow"))?
-        } else {
-            0
-        };
-        let live = base
-            .checked_add(copied)
-            .ok_or_else(|| resource("context live extent overflow"))?;
-        self.check_bytes(live)?;
+
+        if let (Some(token), Some(origin)) = (token, origin) {
+            store
+                .borrow()
+                .get(token, NativeValueRole::CharInput, origin)?;
+        }
+
         let SqlDemand::ContextValue { consumed } = &mut self.slots[id.slot]
             .task
             .as_mut()
@@ -54,13 +45,12 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         *consumed = true;
-        let maximum = self.max_retained_bytes - live;
         let shortcut = diagnostic.is_none()
             && self.constant_root_shortcut
             && *output_node == 0
             && descriptor.root_broadcast;
         let value = if shortcut && self.root_value.is_some() {
-            crate::tikv::identity_actual::copy_bounded(self.root_value.as_ref().unwrap(), maximum)
+            crate::tikv::identity_actual::copy(self.root_value.as_ref().unwrap())
         } else if let (Some(token), Some(origin)) = (token, origin) {
             Ok(store
                 .borrow()
@@ -75,7 +65,7 @@ impl NativeBatchHosts<'_> {
                 {
                     Ok(Datum::UInt(integer))
                 } else {
-                    crate::tikv::identity_actual::copy_bounded(&raw, maximum)
+                    crate::tikv::identity_actual::copy(&raw)
                 }
             } else {
                 Ok(Datum::Null)
@@ -88,14 +78,12 @@ impl NativeBatchHosts<'_> {
             Err(error) => return self.native_failure(error),
         };
         if let Some(policy) = diagnostic {
-            let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                let value = crate::scalar_function::eager_values::audit_work_result(
-                    descriptor
-                        .finish_raw(value, self.context)
-                        .map_err(|(_, error)| error),
-                )?;
+            let result = (|| {
+                let value = descriptor
+                    .finish_raw(value, self.context)
+                    .map_err(|(_, error)| error)?;
                 policy.render(&value)
-            });
+            })();
             if let (Some(token), Some(origin)) = (token, origin) {
                 store
                     .borrow()
@@ -116,28 +104,21 @@ impl NativeBatchHosts<'_> {
             // The callback has supplied its owned value. Bound any additional
             // conversion/error-Datum copies before the original converter can
             // clone an unconverted payload into its failure pair.
-            let bytes = native_payload_bytes(&value)?
-                .checked_mul(3)
-                .and_then(|bytes| base.checked_add(bytes))
-                .ok_or_else(|| resource("context failure copy allowance overflow"))?;
-            self.check_bytes(bytes)?;
         }
         let mut error_value = None;
         let value = if shortcut {
             Ok(value)
         } else {
-            tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                crate::scalar_function::eager_values::audit_work_result(
-                    descriptor
-                        .finish_expression(value, self.context)
-                        .map_err(|(value, error)| {
-                            if capture_error_value {
-                                error_value = Some(value);
-                            }
-                            error
-                        }),
-                )
-            })
+            (|| {
+                descriptor
+                    .finish_expression(value, self.context)
+                    .map_err(|(value, error)| {
+                        if capture_error_value {
+                            error_value = Some(value);
+                        }
+                        error
+                    })
+            })()
         };
         if let (Some(token), Some(origin)) = (token, origin) {
             store
@@ -153,19 +134,11 @@ impl NativeBatchHosts<'_> {
                 return self.native_failure(error);
             }
         };
-        let held = base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(3)
-                    .ok_or_else(|| resource("context result extent overflow"))?,
-            )
-            .ok_or_else(|| resource("context result storage overflow"))?;
-        self.check_bytes(held)?;
+
         if shortcut && self.root_value.is_none() {
             self.root_value = Some(value.clone());
-            self.check_bytes(self.retained_bytes()?)?;
         }
-        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+        self.finish_native_value(id, value, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

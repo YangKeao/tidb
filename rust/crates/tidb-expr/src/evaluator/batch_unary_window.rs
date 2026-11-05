@@ -81,11 +81,7 @@ impl NativeBatchHosts<'_> {
                 return self.native_failure(error);
             }
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(array_bytes::<usize>(invocation.physical_rows.len())?)
-                .ok_or_else(|| resource("unary window row map allowance overflow"))?,
-        )?;
+
         let mut rows = Vec::new();
         rows.try_reserve_exact(invocation.physical_rows.len())
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
@@ -140,10 +136,7 @@ impl NativeBatchHosts<'_> {
         } else {
             NativeEvalType::Int
         };
-        let WindowSourceValues {
-            mut values,
-            retained_bytes,
-        } = self.collect_window_source(
+        let mut values = self.collect_window_source(
             &reply,
             WindowSourceFacts {
                 field: source_type,
@@ -153,53 +146,21 @@ impl NativeBatchHosts<'_> {
             },
         )?;
         let count = reply.physical_rows.len();
-        let base = self
-            .retained_bytes()?
-            .checked_add(retained_bytes)
-            .ok_or_else(|| resource("unary window argument size overflow"))?;
+
         let payload = count
             .checked_mul(native_values::HANDLE_BYTES)
             .ok_or_else(|| resource("unary window result payload overflow"))?;
-        self.check_bytes(
-            base.checked_add(array_bytes::<usize>(
-                count
-                    .checked_add(1)
-                    .ok_or_else(|| resource("unary window result offsets overflow"))?,
-            )?)
-            .and_then(|bytes| bytes.checked_add(payload))
-            .and_then(|bytes| bytes.checked_add(count))
-            .ok_or_else(|| resource("unary window result allowance overflow"))?,
-        )?;
+
         let mut output = ChunkedVecBytes::try_with_capacities(count, payload)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         let store = self
             .native_values
             .ok_or_else(|| binding("unary window store missing"))?;
         for (position, &input_row) in reply.physical_rows.iter().enumerate() {
-            let current = base
-                .checked_add(
-                    output
-                        .retained_heap_bytes()
-                        .ok_or_else(|| resource("unary window output capacity overflow"))?,
-                )
-                .ok_or_else(|| resource("unary window compute allowance overflow"))?;
-            self.check_bytes(current)?;
             let value = std::mem::replace(&mut values[position], Datum::Null);
             // Bound known formatting expansion before entering an opaque
             // native conversion, including a small Decimal with wide padding.
-            let conversion = window_values::conversion_work_bound(
-                &value,
-                if *operation == SqlBatchHostOperation::CastJsonWindowNative {
-                    128
-                } else {
-                    2
-                },
-            )?;
-            self.check_bytes(
-                current
-                    .checked_add(conversion)
-                    .ok_or_else(|| resource("unary window conversion allowance overflow"))?,
-            )?;
+
             let result = match operation {
                 SqlBatchHostOperation::AbsIntWindowNative => {
                     let bits = match crate::scalar_function::native_batch_integer_bits(value) {
@@ -245,15 +206,6 @@ impl NativeBatchHosts<'_> {
                                 );
                             }
                             let error = if let Some(expression) = overflow_expression {
-                                self.check_bytes(
-                                    current
-                                        .checked_add(expression.len().checked_mul(2).ok_or_else(
-                                            || resource("unary ABS diagnostic copy overflow"),
-                                        )?)
-                                        .ok_or_else(|| {
-                                            resource("unary ABS diagnostic size overflow")
-                                        })?,
-                                )?;
                                 EvalError::DataOutOfRange {
                                     value: "BIGINT",
                                     expression: expression.to_string(),
@@ -296,15 +248,7 @@ impl NativeBatchHosts<'_> {
                 }
                 _ => return Err(binding("unary window operation changed after demand")),
             };
-            self.check_bytes(
-                current
-                    .checked_add(
-                        native_payload_bytes(&result)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("unary window result copy overflow"))?,
-                    )
-                    .ok_or_else(|| resource("unary window result overlap overflow"))?,
-            )?;
+
             let token = store.borrow_mut().insert_clone(
                 &result,
                 *output_role,

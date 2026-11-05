@@ -98,7 +98,6 @@ enum Step<'a> {
     Visit {
         node: &'a Expression,
         wire: Option<&'a db_pb::Expr>,
-        depth: usize,
     },
     Finish {
         ordinal: usize,
@@ -115,9 +114,6 @@ fn lower_plus(
     source_unit: u64,
     limits: CompileLimits,
 ) -> SeedResult<Arc<LoweredIntPlusRow>> {
-    if limits.max_nodes == 0 || limits.max_depth == 0 {
-        return Err(LocalError::ResourceLimit("empty PLUS lowering budget".into()).into());
-    }
     if !matches!(root, Expression::ScalarFunction(_)) {
         return Err(SeedError::Admission("PLUS row requires a PLUS root"));
     }
@@ -129,9 +125,7 @@ fn lower_plus(
     let mut pending = vec![Step::Visit {
         node: root,
         wire: original_wire,
-        depth: 1,
     }];
-    let mut scheduled = 1usize;
     let mut built: Vec<(LocalExpr, usize)> = Vec::new();
     let mut nodes = Vec::new();
     let mut shapes = Vec::new();
@@ -167,12 +161,7 @@ fn lower_plus(
                     ordinal,
                 ));
             }
-            Step::Visit { node, wire, depth } => {
-                if depth > limits.max_depth {
-                    return Err(
-                        LocalError::ResourceLimit("PLUS lowering depth exceeded".into()).into(),
-                    );
-                }
+            Step::Visit { node, wire } => {
                 let ordinal = nodes.len();
                 let (sql, collation) = match node {
                     Expression::Constant(node) => (node.ret_type.as_ref(), &node.collation),
@@ -283,20 +272,6 @@ fn lower_plus(
                             ));
                         }
                         let selected = catalog::int_plus_row(function)?;
-                        scheduled = scheduled
-                            .checked_add(2)
-                            .filter(|count| *count <= limits.max_nodes)
-                            .ok_or_else(|| {
-                                LocalError::ResourceLimit(
-                                    "PLUS lowering node budget exceeded".into(),
-                                )
-                            })?;
-                        let next = depth
-                            .checked_add(1)
-                            .filter(|next| *next <= limits.max_depth)
-                            .ok_or_else(|| {
-                                LocalError::ResourceLimit("PLUS lowering depth exceeded".into())
-                            })?;
                         let field_type =
                             lower::projected_type(sql, origin.map(Arc::as_ref), new_collation)?;
                         let source = OrdinarySourceId::new(
@@ -339,7 +314,6 @@ fn lower_plus(
                             pending.push(Step::Visit {
                                 node: child,
                                 wire: child_wire,
-                                depth: next,
                             });
                         }
                         (

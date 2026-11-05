@@ -19,11 +19,7 @@ impl NativeBatchHosts<'_> {
         {
             return Err(binding("AST source declaration differs"));
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(size_of::<ast_source::AstTask>())
-                .ok_or_else(|| resource("AST task layout overflow"))?,
-        )?;
+
         let HostStart::Pending { task, .. } = self.install_task(
             invocation.slot,
             invocation.row,
@@ -113,31 +109,14 @@ impl NativeBatchHosts<'_> {
                 },
             )?;
         }
-        let payload = if let Some(token) = token {
-            native_payload_bytes(store.borrow().get(
+        if let Some(token) = token {
+            store.borrow().get(
                 token,
                 NativeValueRole::CharInput,
                 origin.expect("actual demanded coordinate"),
-            )?)?
-        } else {
-            0
-        };
-        let base = self.retained_bytes()?;
-        let live = base
-            .checked_add(
-                payload
-                    .checked_mul(4)
-                    .ok_or_else(|| resource("AST argument copy extent overflow"))?,
-            )
-            .and_then(|n| {
-                n.checked_add(
-                    size_of::<Datum>() * 2
-                        + size_of::<String>() * 2
-                        + size_of::<(usize, [u8; native_values::HANDLE_BYTES])>() * 2,
-                )
-            })
-            .ok_or_else(|| resource("AST live extent overflow"))?;
-        self.check_bytes(live)?;
+            )?;
+        }
+
         let incoming = if let Some(token) = token {
             Some(store.borrow().clone_for_kernel(
                 token,
@@ -168,15 +147,8 @@ impl NativeBatchHosts<'_> {
                     .map_err(|_| binding("AST capability width differs"))?,
             ));
         }
-        let maximum = self.max_retained_bytes - live;
-        let mut progress = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-            crate::scalar_function::eager_values::audit_work_result(state.advance(
-                root,
-                arity,
-                incoming,
-                self.context,
-            ))
-        });
+
+        let mut progress = (|| state.advance(root, arity, incoming, self.context))();
         if let Ok(AstProgress::Prepare { aes }) = progress {
             // Match the original cache selection before preparation/children;
             // no caller reference is retained in the owned AST continuation.
@@ -184,13 +156,7 @@ impl NativeBatchHosts<'_> {
                 .context
                 .ready_value_cache()
                 .map(|cache| cache.preparation_unwind_guard());
-            progress = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                crate::scalar_function::eager_values::audit_work_result(state.prepare(
-                    root,
-                    aes,
-                    self.context,
-                ))
-            });
+            progress = (|| state.prepare(root, aes, self.context))();
         }
         for (index, previous) in &state.tokens {
             store.borrow().get(
@@ -214,13 +180,11 @@ impl NativeBatchHosts<'_> {
                     .ready_preparation
                     .as_ref()
                     .map(|guard| guard.cache());
-                let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                    crate::scalar_function::eager_values::audit_work_result(
-                        crate::tikv::evaluate_closed_args(cache, operation, args)
-                            .and_then(|result| result.into_bytes())
-                            .map(|value| value.map_or(Datum::Null, Datum::new_string)),
-                    )
-                });
+                let result = (|| {
+                    crate::tikv::evaluate_closed_args(cache, operation, args)
+                        .and_then(|result| result.into_bytes())
+                        .map(|value| value.map_or(Datum::Null, Datum::new_string))
+                })();
                 match result {
                     Ok(v) => AstProgress::Ready(v),
                     Err(e) => return self.native_failure(e),
@@ -231,11 +195,7 @@ impl NativeBatchHosts<'_> {
                     .ready_preparation
                     .as_ref()
                     .map(|guard| guard.cache());
-                let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                    crate::scalar_function::eager_values::audit_work_result(
-                        crate::tikv::evaluate_closed_regexp_args(cache, args),
-                    )
-                });
+                let result = (|| crate::tikv::evaluate_closed_regexp_args(cache, args))();
                 match result {
                     Ok(v) => AstProgress::Ready(v),
                     Err(e) => return self.native_failure(e),
@@ -260,11 +220,7 @@ impl NativeBatchHosts<'_> {
                 if state.next != Some(index) || index >= arity {
                     return Err(binding("AST continuation demanded an undeclared child"));
                 }
-                self.check_bytes(
-                    self.retained_bytes()?
-                        .checked_add(state.retained_bytes()?)
-                        .ok_or_else(|| resource("AST suspended state extent overflow"))?,
-                )?;
+
                 self.slots[id.slot]
                     .task
                     .as_mut()
@@ -286,7 +242,6 @@ impl NativeBatchHosts<'_> {
                         NativeValueRole::CharInput
                     },
                     row,
-                    base,
                 )
                 .map(HostStep::Ready),
             _ => Err(binding("AST preparation did not finish")),
@@ -396,10 +351,10 @@ mod tests {
         let root = crate::ast_source_tests::parsed("IFNULL(c,d)");
         let plan = ast_source::BorrowedAst::compile(&root).unwrap();
         let (catalog, metadata, nodes) = plan.host_parts();
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = source(&store, true);
-        let mut hosts = NativeBatchHosts::new(catalog.clone(), metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), metadata, &ctx)
             .with_ast_nodes(nodes)
             .with_native_values(Some(&store));
         let mut sdk = EvalContext::default();
@@ -476,11 +431,11 @@ mod tests {
         let root = crate::ast_source_tests::parsed("@x:=c");
         let plan = ast_source::BorrowedAst::compile(&root).unwrap();
         let (catalog, metadata, nodes) = plan.host_parts();
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = source(&store, false);
         ctx.invalidate.set(true);
-        let mut hosts = NativeBatchHosts::new(catalog.clone(), metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), metadata, &ctx)
             .with_ast_nodes(nodes)
             .with_native_values(Some(&store));
         let mut sdk = EvalContext::default();

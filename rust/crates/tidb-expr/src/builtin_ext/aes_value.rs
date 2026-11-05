@@ -49,23 +49,7 @@ impl AesPreparation {
         ctx: &dyn Columns,
     ) -> Result<Option<(EvaluatedBytesOp, EvaluatedArgs)>, EvalError> {
         self.validate_arity()?;
-        let bytes = if let Some(remaining) = tidb_query_expr::local::value_kernel_work_remaining() {
-            let bytes = crate::tikv::crypto_value::input(value, false, remaining)?;
-            bytes
-                .map(|bytes| {
-                    tidb_query_expr::local::charge_value_kernel_work(bytes.len()).map_err(
-                        |error| {
-                            EvalError::ExpressionRuntimeFailure(
-                                crate::ExpressionRuntimeFailure::from_local_eval(error, None),
-                            )
-                        },
-                    )?;
-                    Ok(bytes.into_owned())
-                })
-                .transpose()?
-        } else {
-            sql_string_bytes(value)?
-        };
+        let bytes = sql_string_bytes(value)?;
         let Some(bytes) = bytes else {
             self.input = None;
             self.password = None;

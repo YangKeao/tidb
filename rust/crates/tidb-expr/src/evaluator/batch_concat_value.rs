@@ -42,23 +42,17 @@ impl NativeBatchHosts<'_> {
         let mut demand = pending
             .take()
             .ok_or_else(|| binding("CONCAT demand consumed"))?;
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("CONCAT conversion allowance exhausted"))?;
+
         let converted = {
             let values = store.borrow();
             let value = values.get(token, NativeValueRole::CharInput, origin)?;
-            tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-                crate::coerce::coerce_str_bytes(value)
-            })
+            (|| crate::coerce::coerce_str_bytes(value))()
         };
         let converted = match converted {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        let capacity = converted.as_ref().map_or(0, Vec::capacity);
+
         let length = converted.as_ref().map(Vec::len);
         let old = &self.slots[id.slot]
             .task
@@ -69,14 +63,7 @@ impl NativeBatchHosts<'_> {
             .len()
             .checked_add(1)
             .ok_or_else(|| resource("CONCAT prefix count overflow"))?;
-        let count = old.capacity().max(target);
-        let old_array = array_bytes::<Option<Vec<u8>>>(old.capacity())?;
-        self.check_bytes(
-            base.checked_sub(old_array)
-                .and_then(|n| n.checked_add(array_bytes::<Option<Vec<u8>>>(count).ok()?))
-                .and_then(|n| n.checked_add(capacity))
-                .ok_or_else(|| resource("CONCAT prefix allowance overflow"))?,
-        )?;
+
         let task = self.slots[id.slot]
             .task
             .as_mut()
@@ -87,7 +74,7 @@ impl NativeBatchHosts<'_> {
                 .map_err(|_| resource("CONCAT prefix reservation failed"))?;
         }
         task.values.push(converted);
-        self.check_bytes(self.retained_bytes()?)?;
+
         let action = demand.observe(length)?;
         // No NativeValueStore borrow spans either original callback.
         if action == ConcatDemandAction::ReadPacketLimit {
@@ -153,11 +140,8 @@ impl NativeBatchHosts<'_> {
             }
         }
         let terminal = demand.finish_terminal()?;
-        let base = self.retained_bytes()?;
-        let encode_cap = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("CONCAT encoder overlap allowance exhausted"))?;
+
+        let encode_cap = usize::MAX;
         let values = std::mem::take(
             &mut self.slots[id.slot]
                 .task
@@ -168,33 +152,19 @@ impl NativeBatchHosts<'_> {
         // This is the existing pure SDK codec and kernel, without a Ready frame.
         let prepared =
             tidb_query_expr::local::prepare_concat_args(kind, arity, values, terminal, encode_cap)?;
-        let output_cap = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .and_then(|n| n.checked_sub(prepared.retained_encoded_bytes()))
-            .ok_or_else(|| resource("CONCAT output overlap allowance exhausted"))?;
+        let output_cap = usize::MAX;
         let bytes = prepared.execute(output_cap)?;
         let value = bytes.map_or(Datum::Null, Datum::new_string);
-        let base = self.retained_bytes()?;
-        let held = native_payload_bytes(&value)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("CONCAT return allowance overflow"))?;
-        self.check_bytes(held)?;
+
         let name = match kind {
             ConcatKind::Concat => "concat",
             ConcatKind::ConcatWs => "concat_ws",
         };
-        let value = match coerce_optional_value_result(
-            name,
-            result_type.as_ref(),
-            value,
-            self.max_retained_bytes - held,
-        ) {
+        let value = match coerce_optional_value_result(name, result_type.as_ref(), value) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+        self.finish_native_value(id, value, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

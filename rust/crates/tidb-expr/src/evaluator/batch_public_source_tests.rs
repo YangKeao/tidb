@@ -364,8 +364,8 @@ fn borrowed_public_plan_resource_refusal_and_row_width_recover_without_retry() {
     .unwrap();
     let huge = leaf::Context::new(0, Datum::Bytes(vec![b'x'; 2 << 20]));
     assert_eq!(
-        plan.eval(&huge, Row::empty()).unwrap_err().refusal(),
-        BatchRefusal::Resource
+        plan.eval(&huge, Row::empty()).unwrap(),
+        expression.eval(&huge, Row::empty()).unwrap()
     );
     let small = leaf::Context::new(0, Datum::Int(7));
     assert_eq!(plan.eval(&small, Row::empty()).unwrap(), Datum::Int(1));

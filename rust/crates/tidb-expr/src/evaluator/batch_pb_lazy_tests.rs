@@ -1126,26 +1126,33 @@ fn pb_lazy_source_direct_consumers_and_fixed_cap_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 64 * 1024;
+
         let mut first = input(&Some(vec![0; 8193]));
         let mut output = output_for(&ty);
         output.append_null(0);
         let ctx = C::new(true, values.clone(), 0);
-        let failure = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(failure.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{sig:?}/{failure:?}"
-        );
-        assert_eq!(output.num_rows(), 1);
+        let native = C::new(true, values.clone(), 0);
+        let mut original_input = input(&Some(vec![0; 8193]));
+        let mut original_output = output_for(&ty);
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected, "large PB source/{sig:?}");
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         for null in [true, false, true] {
             let mut values = values.clone();
             if null && !values.is_empty() {
@@ -1175,10 +1182,6 @@ fn pb_lazy_source_direct_consumers_and_fixed_cap_recovery() {
             assert_eq!(got, expected, "recovery/{sig:?}/{null}");
             assert_eq!(right.column(0), left.column(0));
             assert_eq!(new.snapshot(), old.snapshot());
-            assert_eq!(
-                prepared.workers[0].max_materialization_retained_bytes,
-                64 * 1024
-            );
         }
     }
 }
@@ -1306,7 +1309,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
         output_node: 2,
         output_role: NativeValueRole::Output,
     }))];
-    let store = RefCell::new(NativeValueStore::new(256 << 10).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let insert = |value: &Datum, role, node, row| {
         store
@@ -1322,8 +1325,8 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
         panic: Cell::new(false),
         reads: Cell::new(0),
     };
-    let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 16 << 10)
-        .with_native_values(Some(&store));
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&store));
     let mut eval = EvalContext::default();
     let begin = |p: &mut NativeBatchHosts<'_>, e: &mut EvalContext| {
         let HostStart::Pending { task, .. } = p
@@ -1365,7 +1368,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
                     &mut eval,
                     &task,
                     0,
-                    Some(insert(&Datum::Int(0), NativeValueRole::CharInput, 3, row)),
+                    Some(insert(&Datum::Int(0), NativeValueRole::CharInput, 3, row).to_vec()),
                 )
                 .unwrap();
                 assert!(matches!(step,HostStep::NeedArg(request) if request.index==2));
@@ -1376,54 +1379,55 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
                     &mut eval,
                     &task,
                     2,
-                    Some(insert(&Datum::Int(1), NativeValueRole::CharInput, 5, row)),
+                    Some(insert(&Datum::Int(1), NativeValueRole::CharInput, 5, row).to_vec()),
                 )
                 .unwrap();
                 assert!(matches!(step,HostStep::NeedArg(request) if request.index==3));
             }
             let bad = match kind {
                 0 => None,
-                1 => Some(stale.clone()),
-                2 => Some(vec![0; 8]),
-                3 => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::Output,
-                    3 + index,
-                    row,
-                )),
-                4 => Some(insert(&Datum::Int(3), NativeValueRole::CharInput, 99, row)),
-                5 => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    InputRow {
-                        occurrence: 1,
-                        ..row
-                    },
-                )),
-                6 => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    InputRow {
-                        input_row: 1,
-                        ..row
-                    },
-                )),
-                7 => {
-                    store.borrow_mut().begin_window().unwrap();
-                    Some(insert(
+                1 => Some((stale.clone()).to_vec()),
+                2 => Some((vec![0; 8]).to_vec()),
+                3 => {
+                    Some((insert(&Datum::Int(3), NativeValueRole::Output, 3 + index, row)).to_vec())
+                }
+                4 => Some((insert(&Datum::Int(3), NativeValueRole::CharInput, 99, row)).to_vec()),
+                5 => Some(
+                    (insert(
                         &Datum::Int(3),
                         NativeValueRole::CharInput,
                         3 + index,
-                        row,
+                        InputRow {
+                            occurrence: 1,
+                            ..row
+                        },
                     ))
+                    .to_vec(),
+                ),
+                6 => Some(
+                    (insert(
+                        &Datum::Int(3),
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            input_row: 1,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
+                7 => {
+                    store.borrow_mut().begin_window().unwrap();
+                    Some(
+                        (insert(&Datum::Int(3), NativeValueRole::CharInput, 3 + index, row))
+                            .to_vec(),
+                    )
                 }
                 8 => {
-                    let mut foreign = NativeValueStore::new(16 << 10).unwrap();
+                    let mut foreign = NativeValueStore::new().unwrap();
                     foreign.begin_window().unwrap();
                     Some(
-                        foreign
+                        (foreign
                             .insert_clone(
                                 &Datum::Int(3),
                                 NativeValueRole::CharInput,
@@ -1432,15 +1436,13 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
                                     row,
                                 },
                             )
-                            .unwrap(),
+                            .unwrap())
+                        .to_vec(),
                     )
                 }
-                _ => Some(insert(
-                    &Datum::Int(3),
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    row,
-                )),
+                _ => Some(
+                    (insert(&Datum::Int(3), NativeValueRole::CharInput, 3 + index, row)).to_vec(),
+                ),
             };
             if kind == 7 && index == 0 {
                 provider.cancel(&task);
@@ -1476,7 +1478,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
             let task = begin(&mut provider, &mut eval);
             if stage == 2 {
                 assert!(
-                    matches!(reply(&mut provider,&mut eval,&task,0,Some(insert(&Datum::Int(0),NativeValueRole::CharInput,3,row))),Ok(HostStep::NeedArg(request)) if request.index==2)
+                    matches!(reply(&mut provider,&mut eval,&task,0,Some(insert(&Datum::Int(0),NativeValueRole::CharInput,3,row).to_vec())),Ok(HostStep::NeedArg(request)) if request.index==2)
                 );
             }
             context.reset.set(behavior == 1);
@@ -1487,12 +1489,15 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
                     &mut eval,
                     &task,
                     stage,
-                    Some(insert(
-                        &Datum::Bytes(b"invalid number".to_vec()),
-                        NativeValueRole::CharInput,
-                        3 + stage,
-                        row,
-                    )),
+                    Some(
+                        insert(
+                            &Datum::Bytes(b"invalid number".to_vec()),
+                            NativeValueRole::CharInput,
+                            3 + stage,
+                            row,
+                        )
+                        .to_vec(),
+                    ),
                 )
             }));
             match behavior {
@@ -1519,7 +1524,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
             &mut eval,
             &task,
             0,
-            Some(insert(&Datum::Int(0), NativeValueRole::CharInput, 3, row)),
+            Some(insert(&Datum::Int(0), NativeValueRole::CharInput, 3, row).to_vec()),
         )
         .unwrap();
         reply(
@@ -1527,13 +1532,13 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
             &mut eval,
             &task,
             2,
-            Some(insert(&Datum::Int(1), NativeValueRole::CharInput, 5, row)),
+            Some(insert(&Datum::Int(1), NativeValueRole::CharInput, 5, row).to_vec()),
         )
         .unwrap();
         provider.cancel(&task);
         provider.cancel(&task);
     }
-    // A refused selected payload must not poison the same finite host.
+    // A large selected payload and later NULL values reuse the same host.
     for value in [
         Datum::Bytes(vec![b'x'; 32768]),
         Datum::Null,
@@ -1547,7 +1552,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
             &mut eval,
             &task,
             0,
-            Some(insert(&Datum::Int(0), NativeValueRole::CharInput, 3, row)),
+            Some(insert(&Datum::Int(0), NativeValueRole::CharInput, 3, row).to_vec()),
         )
         .unwrap();
         reply(
@@ -1555,7 +1560,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
             &mut eval,
             &task,
             2,
-            Some(insert(&Datum::Int(1), NativeValueRole::CharInput, 5, row)),
+            Some(insert(&Datum::Int(1), NativeValueRole::CharInput, 5, row).to_vec()),
         )
         .unwrap();
         let result = reply(
@@ -1563,31 +1568,42 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
             &mut eval,
             &task,
             3,
-            Some(insert(&value, NativeValueRole::CharInput, 6, row)),
+            Some(insert(&value, NativeValueRole::CharInput, 6, row).to_vec()),
         );
-        if matches!(&value, Datum::Bytes(_)) {
-            assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
-        } else {
-            let HostStep::Ready(output) = result.unwrap() else {
-                panic!()
-            };
-            let tidb_query_datatype::codec::data_type::ScalarValueRef::Bytes(Some(token)) =
-                output.get_scalar_ref(0)
-            else {
-                panic!()
-            };
-            assert_eq!(
-                store
-                    .borrow()
-                    .get(
-                        token,
-                        NativeValueRole::Output,
-                        NativeValueOrigin { node: 2, row }
-                    )
-                    .unwrap(),
-                &value
-            );
-        }
+
+        let HostStep::Ready(output) = result.unwrap() else {
+            panic!()
+        };
+        let tidb_query_datatype::codec::data_type::ScalarValueRef::Bytes(Some(token)) =
+            output.get_scalar_ref(0)
+        else {
+            panic!()
+        };
+        let expected = function
+            .pb_lazy_values()
+            .unwrap()
+            .selected_value(value.clone())
+            .unwrap();
+        let expected =
+            crate::scalar_function::interpret_integer_result(expected, function.ret_type.as_ref());
+        let expected = crate::scalar_function::coerce_function_result(
+            function.func_name.lowercase(),
+            function.ret_type.as_ref(),
+            expected,
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .borrow()
+                .get(
+                    token,
+                    NativeValueRole::Output,
+                    NativeValueOrigin { node: 2, row }
+                )
+                .unwrap(),
+            &expected
+        );
+
         provider.cancel(&task);
         provider.cancel(&task);
     }

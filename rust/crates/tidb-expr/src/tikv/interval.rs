@@ -48,7 +48,7 @@ fn resource(reason: &'static str) -> EvalError {
     ))
 }
 fn budget(bytes: usize, maximum: usize) -> Result<(), EvalError> {
-    if maximum == usize::MAX || bytes > maximum {
+    if bytes > maximum {
         return Err(resource(
             "INTERVAL actual state/conversion allowance exceeded",
         ));

@@ -557,16 +557,12 @@ impl AstTask {
                         if args.len() != 2 {
                             return Err(EvalError::Unsupported("BENCHMARK arguments"));
                         }
-                        let field = |expr| {
-                            check_build_metadata(expr)?;
-                            match crate::rewriter::rewrite_expr(expr) {
-                                Ok(expr) => Ok(expr.static_type().cloned()),
-                                Err(
-                                    EvalError::UnknownColumn(_)
-                                    | EvalError::UnknownColumnInClause(..),
-                                ) => Ok(None),
-                                Err(error) => Err(error),
-                            }
+                        let field = |expr| match crate::rewriter::rewrite_expr(expr) {
+                            Ok(expr) => Ok(expr.static_type().cloned()),
+                            Err(
+                                EvalError::UnknownColumn(_) | EvalError::UnknownColumnInClause(..),
+                            ) => Ok(None),
+                            Err(error) => Err(error),
                         };
                         let count = field(&args[0])?;
                         let expression = field(&args[1])?;
@@ -578,7 +574,6 @@ impl AstTask {
                                 "CHARSET/COLLATION/COERCIBILITY arguments",
                             ));
                         }
-                        check_build_metadata(&args[0])?;
                         let arg = crate::rewriter::rewrite_expr(&args[0])?;
                         return Ok(self.ready(
                             crate::collation_derive::info_metadata_value(
@@ -730,24 +725,4 @@ impl AstTask {
             ));
         }
     }
-}
-
-// Bound original metadata-builder copies against the current invocation's
-// remaining allowance, after retained runtime inputs have been charged. This
-// pure preflight performs neither SQL name lookup nor value evaluation.
-fn check_build_metadata(root: &Expr) -> std::result::Result<(), EvalError> {
-    let maximum = tidb_query_expr::local::value_kernel_work_remaining()
-        .unwrap_or_else(|| ExecutionLimits::default().max_retained_bytes);
-    super::metadata::check(
-        root,
-        BatchSourceLimits {
-            tree: CompileLimits::default(),
-            max_metadata_bytes: maximum,
-        },
-    )
-    .map_err(|error| {
-        EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
-            error, None,
-        ))
-    })
 }

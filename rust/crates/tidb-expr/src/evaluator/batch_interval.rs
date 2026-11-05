@@ -74,20 +74,10 @@ impl NativeBatchHosts<'_> {
         let store = self
             .native_values
             .ok_or_else(|| binding("INTERVAL value store absent"))?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("INTERVAL source clone allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("INTERVAL source live bytes overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -98,7 +88,7 @@ impl NativeBatchHosts<'_> {
             &value,
             argument.field.as_ref(),
             cast,
-            self.max_retained_bytes - base,
+            usize::MAX,
         ) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
@@ -132,15 +122,8 @@ impl NativeBatchHosts<'_> {
                     Ok(value) => value,
                     Err(error) => return self.native_failure(error),
                 };
-                self.finish_native_value(
-                    id,
-                    value,
-                    metadata.output_node,
-                    metadata.output_role,
-                    row,
-                    base,
-                )
-                .map(HostStep::Ready)
+                self.finish_native_value(id, value, metadata.output_node, metadata.output_role, row)
+                    .map(HostStep::Ready)
             }
         }
     }

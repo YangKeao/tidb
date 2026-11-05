@@ -109,33 +109,7 @@ pub(crate) fn finish_deferred_value(
     if let Datum::Decimal(value) = value {
         return Ok(Datum::Decimal(
             if i64::from(value.precision_and_frac().1) < target.decimal() {
-                if let Some(limit) = tidb_query_expr::local::value_kernel_work_remaining() {
-                    let rounded = value.try_round_to_scale(target.decimal() as i32, limit);
-                    if let Err(
-                        tidb_query_datatype::codec::mysql::decimal::NativeDecimalError::Resource(
-                            reason,
-                        ),
-                    ) = &rounded
-                    {
-                        // The shared kernel checks its real native work before
-                        // allocation. Keep the original panic for malformed input.
-                        let _ = tidb_query_expr::local::charge_value_kernel_work(usize::MAX);
-                        return Err((
-                            Datum::Decimal(value),
-                            EvalError::ExpressionRuntimeFailure(
-                                crate::tikv::ExpressionRuntimeFailure::from_local_eval(
-                                    tidb_query_expr::local::LocalError::ResourceLimit(
-                                        (*reason).into(),
-                                    ),
-                                    None,
-                                ),
-                            ),
-                        ));
-                    }
-                    rounded.expect("shared native decimal rounding failed")
-                } else {
-                    value.round_to_scale(target.decimal() as i32)
-                }
+                value.round_to_scale(target.decimal() as i32)
             } else {
                 value
             },
@@ -170,9 +144,7 @@ pub(crate) fn read_parameter_type(order: i64, ctx: &dyn Columns) -> Result<Field
     let value = ctx.param_value(order)?;
     // Type inference formats Decimal and Duration to obtain their display
     // width. Charge that actual phase after the original parameter callback.
-    if matches!(&value, Datum::Decimal(_) | Datum::Duration(_)) {
-        crate::scalar_function::eager_values::charge_string_work(&value)?;
-    }
+    if matches!(&value, Datum::Decimal(_) | Datum::Duration(_)) {}
     Ok(tidb_datatype::infer_param_type_from_datum(&value))
 }
 pub(crate) fn probe_parameter_type(order: i64, ctx: &dyn Columns) -> Result<(), EvalError> {

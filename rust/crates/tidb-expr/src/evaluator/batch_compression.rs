@@ -43,11 +43,8 @@ impl NativeBatchHosts<'_> {
         };
         // Consume before all fallible body work, result conversion and publication.
         *consumed = true;
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("compression work allowance exhausted"))?;
+
+        let maximum = usize::MAX;
         let report = {
             let values = store.borrow();
             crate::tikv::compression_value::body(
@@ -70,21 +67,13 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let held = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("compression result extent overflow"))?;
-        self.check_bytes(held)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            operation.name(),
-            result_type,
-            result,
-            self.max_retained_bytes - held,
-        ) {
+
+        let result = match crate::tikv::coerce_result_bounded(operation.name(), result_type, result)
+        {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

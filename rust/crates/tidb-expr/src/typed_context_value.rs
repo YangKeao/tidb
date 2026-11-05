@@ -61,7 +61,6 @@ impl TypedContextValue {
         &self,
         ctx: &dyn Columns,
         target: EvalType,
-        maximum: usize,
     ) -> Result<TypedRead<'_>, EvalError> {
         if !self.correlated {
             return self.begin(ctx, Some(target));
@@ -71,7 +70,7 @@ impl TypedContextValue {
                 let value = binding
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                crate::tikv::identity_actual::copy_bounded(&value, maximum)?
+                crate::tikv::identity_actual::copy(&value)?
             } else {
                 Datum::Null
             }
@@ -110,62 +109,7 @@ impl TypedContextValue {
         )
     }
 }
-/// Budget only the actual typed numeric parsing/diagnostic routes. Decimal
-/// integer projection and Enum/Set ordinals do not use visible scale or names.
-pub(crate) fn charge_numeric_value_work(value: &Datum) -> Result<(), EvalError> {
-    if tidb_query_expr::local::value_kernel_work_remaining().is_none() {
-        return Ok(());
-    }
-    let bytes = match value {
-        Datum::BinaryLiteral(value) | Datum::Bit(value) => {
-            return charge_binary_numeric_work(value)
-        }
-        Datum::String(value) => value.bytes().len(),
-        Datum::Bytes(value) => value.len(),
-        Datum::Json(json) => {
-            // The shared JSON writer bound also covers nested/escaped output,
-            // before the original numeric owner can embed it in an error.
-            crate::scalar_function::eager_values::charge_string_work(value)?;
-            json.value().len()
-        }
-        _ => return Ok(()),
-    };
-    charge_numeric_bytes(
-        bytes
-            .checked_mul(16)
-            .and_then(|n| n.checked_add(1024))
-            .unwrap_or(usize::MAX),
-    )
-}
-fn charge_numeric_bytes(bytes: usize) -> Result<(), EvalError> {
-    tidb_query_expr::local::charge_value_kernel_work(bytes).map_err(|error| {
-        EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
-            error, None,
-        ))
-    })
-}
-pub(crate) fn charge_binary_numeric_work(
-    value: &tidb_datatype::BinaryLiteral,
-) -> Result<(), EvalError> {
-    if tidb_query_expr::local::value_kernel_work_remaining().is_none()
-        || value.as_bytes().len() <= 8
-    {
-        return Ok(());
-    }
-    // Leading zeroes require a scan but no error text. The genuine truncated
-    // outcome renders a hex literal and retains owned error/warning copies.
-    let bytes = value.as_bytes().len();
-    charge_numeric_bytes(bytes)?;
-    if value.to_int().is_truncated() {
-        charge_numeric_bytes(
-            bytes
-                .checked_mul(16)
-                .and_then(|n| n.checked_add(1024))
-                .unwrap_or(usize::MAX),
-        )?;
-    }
-    Ok(())
-}
+
 /// Borrow ordinary caller facts; only a genuinely inferred parameter type is
 /// owned. Preparing a source descriptor still snapshots these facts once.
 pub(crate) fn begin_constant<'a>(
@@ -242,13 +186,12 @@ pub(crate) fn typed_correlated_value(
         // ToInt64's MysqlBit case reinterprets the unsigned result. Other
         // hybrids use the signed conversion's normal bounds and errors.
         if let Datum::Bit(value) = value {
-            charge_binary_numeric_work(&value)?;
             let (integer, error) = value.to_int_with_context(&context);
             return error.map_or(Ok(Datum::Int(integer as i64)), |error| {
                 Err(EvalError::Conversion(error))
             });
         }
-        charge_numeric_value_work(&value)?;
+
         let converted = value
             .convert_to_in_context(&FieldType::new(FieldTypeCode::LongLong), &context, &zone)
             .map_err(|_| EvalError::Unsupported("correlated integer conversion failed"))?;
@@ -260,18 +203,15 @@ pub(crate) fn typed_correlated_value(
         (EvalType::Int, Datum::Int(value)) => Ok(Datum::Int(value)),
         (EvalType::Int, Datum::UInt(value)) => Ok(Datum::Int(value as i64)),
         (EvalType::Real, Datum::Real(value) | Datum::Float32(value)) => Ok(Datum::Real(value)),
-        (EvalType::String, value) => {
-            crate::scalar_function::eager_values::charge_string_work(&value)?;
-            Ok(Datum::String(StringDatum::new(
-                value.sql_bytes().map_err(|_| {
-                    EvalError::Unsupported("correlated value cannot be converted to string")
-                })?,
-                field
-                    .runtime_collator_with_mode(true)
-                    .new_collation()
-                    .unwrap_or(tidb_datatype::Collation::Binary),
-            )))
-        }
+        (EvalType::String, value) => Ok(Datum::String(StringDatum::new(
+            value.sql_bytes().map_err(|_| {
+                EvalError::Unsupported("correlated value cannot be converted to string")
+            })?,
+            field
+                .runtime_collator_with_mode(true)
+                .new_collation()
+                .unwrap_or(tidb_datatype::Collation::Binary),
+        ))),
         (EvalType::Decimal, value @ Datum::Decimal(_))
         | (EvalType::Datetime | EvalType::Timestamp, value @ Datum::Time(_))
         | (EvalType::Duration, value @ Datum::Duration(_))
@@ -315,8 +255,7 @@ mod work_tests {
                     }
                 })
             }));
-            if !matches!(result,Ok(Err(EvalError::ExpressionRuntimeFailure(ref e))) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
-            {
+            if !result.is_err() {
                 failures.push(format!(
                     "typed formatting correlated={correlated} target={target:?} {result:?}"
                 ));
@@ -339,6 +278,18 @@ mod work_tests {
         let json =
             tidb_datatype::BinaryJSON::parse(&format!("[\"{}\"]", "x".repeat(32768))).unwrap();
         let mut gaps = vec![];
+        let describe =
+            |result: std::thread::Result<std::result::Result<Datum, EvalError>>| match result {
+                Ok(value) => format!("RESULT:{value:?}"),
+                Err(payload) => format!(
+                    "PANIC:{:?}",
+                    payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                ),
+            };
+
         for (label, value, field, target, correlated) in [
             (
                 "binary_int",
@@ -377,6 +328,15 @@ mod work_tests {
             ),
         ] {
             let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+            let native = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
+            let native_value = value.clone();
+            let expected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if correlated {
+                    typed_correlated_value(Some(&field), &native, target, native_value)
+                } else {
+                    crate::constant::typed_constant_value(&field, &native, target, native_value)
+                }
+            }));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 tidb_query_expr::local::with_value_kernel_work_limit(65536, || {
                     if correlated {
@@ -386,18 +346,15 @@ mod work_tests {
                     }
                 })
             }));
-            if !matches!(result,Ok(Err(EvalError::ExpressionRuntimeFailure(ref e))) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
-            {
+            if describe(result) != describe(expected) {
                 gaps.push(label);
             }
             assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
-            if gaps.is_empty() {
-                assert_eq!(*ctx.events.borrow(), ["zone", "flags"]);
-            }
+            assert_eq!(*ctx.events.borrow(), *native.events.borrow(), "{label}");
         }
         assert!(
             gaps.is_empty(),
-            "unbounded typed numeric diagnostics: {gaps:?}"
+            "removed work policy changed native diagnostics: {gaps:?}"
         );
         let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
         let null = tidb_query_expr::local::with_value_kernel_work_limit(1, || {

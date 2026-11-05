@@ -71,11 +71,8 @@ impl NativeBatchHosts<'_> {
                 values.get(token_for(i)?, NativeValueRole::CharInput, origin(i))?;
             }
         }
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("misc work allowance exhausted"))?;
+
+        let maximum = usize::MAX;
         let result = match operation {
             O::TidbShard | O::VitessHash => {
                 let borrowed = {
@@ -104,10 +101,11 @@ impl NativeBatchHosts<'_> {
                 } else {
                     let owned = {
                         let values = store.borrow();
-                        crate::tikv::identity_actual::copy_bounded(
-                            values.get(token_for(0)?, NativeValueRole::CharInput, origin(0))?,
-                            maximum,
-                        )
+                        crate::tikv::identity_actual::copy(values.get(
+                            token_for(0)?,
+                            NativeValueRole::CharInput,
+                            origin(0),
+                        )?)
                     };
                     let owned = match owned {
                         Ok(v) => v,
@@ -129,10 +127,11 @@ impl NativeBatchHosts<'_> {
                 let flag = if callback_flag {
                     let owned = {
                         let values = store.borrow();
-                        crate::tikv::identity_actual::copy_bounded(
-                            values.get(token_for(1)?, NativeValueRole::CharInput, origin(1))?,
-                            maximum,
-                        )
+                        crate::tikv::identity_actual::copy(values.get(
+                            token_for(1)?,
+                            NativeValueRole::CharInput,
+                            origin(1),
+                        )?)
                     };
                     let owned = match owned {
                         Ok(v) => v,
@@ -208,21 +207,13 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let held = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("misc result extent overflow"))?;
-        self.check_bytes(held)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            operation.name(),
-            result_type,
-            result,
-            self.max_retained_bytes - held,
-        ) {
+
+        let result = match crate::tikv::coerce_result_bounded(operation.name(), result_type, result)
+        {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

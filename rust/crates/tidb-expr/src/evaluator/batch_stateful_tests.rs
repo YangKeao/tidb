@@ -600,15 +600,15 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                 output_node: 2,
                 output_role: NativeValueRole::Output,
             }))];
-            let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let ctx = D {
                 store: &store,
                 action: Cell::new(0),
                 events: RefCell::new(vec![]),
             };
-            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 16384)
-                .with_native_values(Some(&store));
+            let mut p =
+                NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
             let mut eval = EvalContext::default();
             let row = InputRow {
                 occurrence: 2,
@@ -678,13 +678,13 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
             let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             let mut corrupt = good.clone();
             corrupt[0] ^= 1;
-            let mut short = good.clone();
+            let mut short = good.to_vec();
             short.pop();
-            let mut long = good;
+            let mut long = good.to_vec();
             long.push(0);
             let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             store.borrow_mut().begin_window().unwrap();
-            let mut foreign = NativeValueStore::new(4096).unwrap();
+            let mut foreign = NativeValueStore::new().unwrap();
             foreign.begin_window().unwrap();
             let foreign = foreign
                 .insert_clone(
@@ -695,36 +695,42 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                 .unwrap();
             for bad in [
                 None,
-                Some(corrupt),
-                Some(short),
-                Some(long),
-                Some(stale),
-                Some(foreign),
-                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
-                Some(insert(&Datum::Null, NativeValueRole::CharInput, 4, row)),
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3,
-                    InputRow {
-                        occurrence: 3,
-                        ..row
-                    },
-                )),
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3,
-                    InputRow {
-                        input_row: 8,
-                        ..row
-                    },
-                )),
+                Some((corrupt).to_vec()),
+                Some((short).to_vec()),
+                Some((long).to_vec()),
+                Some((stale).to_vec()),
+                Some((foreign).to_vec()),
+                Some((insert(&Datum::Null, NativeValueRole::Output, 3, row)).to_vec()),
+                Some((insert(&Datum::Null, NativeValueRole::CharInput, 4, row)).to_vec()),
+                Some(
+                    (insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 3,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
+                Some(
+                    (insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            input_row: 8,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
             ] {
                 let task = begin(&mut p, &mut eval);
                 assert!(
                     matches!(
-                        reply(&mut p, &mut eval, &task, 0, bad),
+                        reply(&mut p, &mut eval, &task, 0, bad.map(|bytes| bytes.to_vec())),
                         Err(LocalError::BindingContract(_))
                     ),
                     "{name}"
@@ -745,10 +751,16 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                 };
                 let token = insert(&first, NativeValueRole::CharInput, 3, row);
                 let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let result = reply(&mut p, &mut eval, &task, 0, Some(token.clone()));
+                    let result = reply(&mut p, &mut eval, &task, 0, Some(token.to_vec()));
                     if let Ok(HostStep::NeedArg(request)) = result {
                         let second = insert(&Datum::Int(1), NativeValueRole::CharInput, 4, row);
-                        reply(&mut p, &mut eval, &task, request.index, Some(second))
+                        reply(
+                            &mut p,
+                            &mut eval,
+                            &task,
+                            request.index,
+                            Some(second.to_vec()),
+                        )
                     } else {
                         result
                     }
@@ -759,7 +771,7 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                     assert!(got.unwrap().is_err(), "generation {name}");
                 }
                 let before = ctx.events.borrow().clone();
-                assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
+                assert!(reply(&mut p, &mut eval, &task, 0, Some(token.to_vec())).is_err());
                 assert_eq!(*ctx.events.borrow(), before);
                 p.cancel(&task);
             }
@@ -775,12 +787,12 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                 Datum::new_string(if name == "benchmark" { "3" } else { "L" })
             };
             let first = insert(&first, NativeValueRole::CharInput, 3, row);
-            let mut step = reply(&mut p, &mut eval, &task, 0, Some(first.clone())).unwrap();
+            let mut step = reply(&mut p, &mut eval, &task, 0, Some(first.to_vec())).unwrap();
             let mut count = 0;
             while let HostStep::NeedArg(request) = step {
                 assert_eq!(request.index, 1);
                 let token = insert(&Datum::Int(1), NativeValueRole::CharInput, 4, row);
-                step = reply(&mut p, &mut eval, &task, 1, Some(token.clone())).unwrap();
+                step = reply(&mut p, &mut eval, &task, 1, Some(token.to_vec())).unwrap();
                 count += 1;
                 if name == "benchmark" {
                     assert!(store
@@ -801,7 +813,7 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                 assert_eq!(count, 0);
             }
             let before = ctx.events.borrow().clone();
-            assert!(reply(&mut p, &mut eval, &task, 0, Some(first)).is_err());
+            assert!(reply(&mut p, &mut eval, &task, 0, Some(first.to_vec())).is_err());
             assert_eq!(*ctx.events.borrow(), before);
             p.cancel(&task);
             if matches!(name, "benchmark" | "get_lock") {
@@ -815,7 +827,7 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                     };
                     let first = insert(&first, NativeValueRole::CharInput, 3, row);
                     assert!(matches!(
-                        reply(&mut p, &mut eval, &abandoned, 0, Some(first)),
+                        reply(&mut p, &mut eval, &abandoned, 0, Some(first.to_vec())),
                         Ok(HostStep::NeedArg(_))
                     ));
                     p.cancel(&abandoned); // Repeated body / owned-name timeout is pending.
@@ -823,7 +835,9 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                     p.cancel(&abandoned); // Its reused slot now belongs to this call.
                     let before = ctx.events.borrow().clone();
                     let unused = insert(&Datum::Int(0), NativeValueRole::CharInput, 4, row);
-                    assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused)).is_err());
+                    assert!(
+                        reply(&mut p, &mut eval, &abandoned, 1, Some(unused.to_vec())).is_err()
+                    );
                     assert_eq!(*ctx.events.borrow(), before);
                     let first = if name == "benchmark" {
                         Datum::Null
@@ -831,11 +845,13 @@ fn stateful_host_capabilities_consumption_callbacks_and_recovery() {
                         Datum::new_string("L")
                     };
                     let first = insert(&first, NativeValueRole::CharInput, 3, row);
-                    let mut step = reply(&mut p, &mut eval, &current, 0, Some(first)).unwrap();
+                    let mut step =
+                        reply(&mut p, &mut eval, &current, 0, Some(first.to_vec())).unwrap();
                     if name == "get_lock" {
                         assert!(matches!(step, HostStep::NeedArg(_)));
                         let timeout = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-                        step = reply(&mut p, &mut eval, &current, 1, Some(timeout)).unwrap();
+                        step =
+                            reply(&mut p, &mut eval, &current, 1, Some(timeout.to_vec())).unwrap();
                     }
                     assert!(matches!(step, HostStep::Ready(_)));
                     p.cancel(&current);
@@ -3207,6 +3223,21 @@ fn optional_wildcard_full_actual_values_in_each_operand() {
         return;
     }
     std::panic::set_hook(Box::new(|_| {}));
+    // Independent capture: pin all newly executed malformed-Decimal rows,
+    // and preserve the original digest for the unchanged native observations.
+    let policy: Vec<(String, String)> =
+        serde_json::from_str(include_str!("batch_wildcard_policy.json")).unwrap();
+    assert_eq!(policy.len(), 128);
+    let mut policy: std::collections::BTreeMap<_, _> = policy
+        .into_iter()
+        .map(|(before, after)| {
+            (
+                before.split('|').next().unwrap().to_owned(),
+                (before, after),
+            )
+        })
+        .collect();
+
     let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
     for name in ["like", "ilike"] {
         for position in 0..3 {
@@ -3291,13 +3322,18 @@ fn optional_wildcard_full_actual_values_in_each_operand() {
                                     (0, 0),
                                     "{label} {route:?}"
                                 );
-                                for byte in format!(
+                                let record = format!(
                                     "{label}|{expected}|{:?}|{}",
                                     left.column(0),
                                     old.snapshot()
-                                )
-                                .bytes()
-                                {
+                                );
+                                let record = if let Some((before, after)) = policy.remove(&label) {
+                                    assert_eq!(record, after, "quota cancellation {label}");
+                                    before
+                                } else {
+                                    record
+                                };
+                                for byte in record.bytes() {
                                     hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
                                 }
                                 count += 1;
@@ -3308,6 +3344,7 @@ fn optional_wildcard_full_actual_values_in_each_operand() {
             }
         }
     }
+    assert!(policy.is_empty());
     assert_eq!((count, hash), (42912, 0x65B1761CB7A9C6A1));
     eprintln!("OPTIONAL WILDCARD FULL {count}/{hash:016X}");
 }
@@ -4607,7 +4644,7 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
     tidb_datatype::with_test_conversion_clock(now, || {
         let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
         let mut gaps = vec![];
-        let mut resources = 0;
+        let mut preparation_panics = 0;
         let fields = [
             ty(),
             ty().with_unsigned(true),
@@ -4654,52 +4691,42 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
                         };
                         if compare {
                             let actual = suite(Expression::ScalarFunction(function.clone()));
-                            let before_compile =
-                                crate::scalar_function::static_numeric_formats_for_test();
-                            match PreparedBatch::compile(
-                                &actual,
-                                &[],
-                                true,
-                                319,
-                                limits(),
-                                ExecutionLimits::default(),
-                                1 << 24,
-                            ) {
-                                Err(error) => {
-                                    if matches!(
-                                        error.local_error(),
-                                        Some(LocalError::ResourceLimit(_))
-                                    ) {
-                                        assert!(
-                                            matches!(&value,Datum::Decimal(d) if d.scale()==u32::MAX && d.storage_scale()==3 && d.is_negative() && d.coefficient_bytes()==[0,255,b'0'] && d.declared_shape()==Some((-1,i64::MAX))),
-                                            "unexpected resource {label}: {error:?}"
-                                        );
-                                        assert_eq!(
-                                            crate::scalar_function::static_numeric_formats_for_test(
-                                            ),
-                                            before_compile,
-                                            "resource gate must precede formatting {label}"
-                                        );
-                                        eprintln!("ARITHMETIC ABSENT RESOURCE {label}");
-                                        resources += 1;
-                                    } else if gaps.len() < 20 {
-                                        gaps.push(format!("{label}:{error:?}"));
-                                    }
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                PreparedBatch::compile(
+                                    &actual,
+                                    &[],
+                                    true,
+                                    319,
+                                    limits(),
+                                    ExecutionLimits::default(),
+                                    1 << 24,
+                                )
+                            })) {
+                                Err(payload) => {
+                                    assert_eq!(vi, 110, "unexpected preparation panic {label}");
+                                    let message = payload
+                                        .downcast_ref::<String>()
+                                        .map(String::as_str)
+                                        .or_else(|| payload.downcast_ref::<&str>().copied());
+                                    assert_eq!(message, Some("decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }"));
+                                    assert_eq!(old.snapshot(), "0:0|[]");
+                                    preparation_panics += 1;
                                 }
-                                Ok(compiled) => {
+                                Ok(Err(error)) => {
+                                    gaps.push(format!("{label}:{error:?}"));
+                                }
+                                Ok(Ok(compiled)) => {
                                     let source = &compiled.source;
                                     assert_eq!(source.host_metadata.len(), 1);
                                     let new =
                                         ArithmeticAbsentContext::new(0, false, values.clone());
-                                    let store =
-                                        RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                    let store = RefCell::new(NativeValueStore::new().unwrap());
                                     store.borrow_mut().begin_window().unwrap();
                                     let catalog = source.hosts.as_ref().unwrap().clone();
                                     let mut hosts = NativeBatchHosts::new(
                                         catalog.clone(),
                                         &source.host_metadata,
                                         &new,
-                                        1 << 24,
                                     )
                                     .with_native_values(Some(&store));
                                     let slot = catalog.slot(0).unwrap();
@@ -4743,7 +4770,7 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
                                                     )
                                                     .unwrap();
                                                 let fetched = VectorValue::from_scalar(
-                                                    &ScalarValue::Bytes(Some(token)),
+                                                    &ScalarValue::Bytes(Some(token.to_vec())),
                                                     1,
                                                 );
                                                 match hosts.resume(
@@ -4813,8 +4840,8 @@ fn run_arithmetic_absent_raw_datums(compare: bool) {
         assert_eq!((count, hash), (8940, 0x07DA_5D6E_BAB0_FE48));
         eprintln!("ARITHMETIC ABSENT RAW ORIGINAL {count}/{hash:016X}");
         if compare {
-            assert_eq!(resources, 60);
-            eprintln!("ARITHMETIC ABSENT RAW actual8880/terminal_resource60/before_formatting60");
+            assert_eq!(preparation_panics, 60);
+            eprintln!("ARITHMETIC ABSENT RAW actual8880/native_malformed_diagnostic_panics60");
         }
         if !gaps.is_empty() {
             eprintln!("ARITHMETIC ABSENT RAW ADMISSION RED {gaps:?}");
@@ -4849,7 +4876,7 @@ fn arithmetic_absent_result_resource_failure_keeps_same_owner_reusable() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = ArithmeticAbsentContext::new(
             0,
             true,
@@ -4868,22 +4895,32 @@ fn arithmetic_absent_result_resource_failure_keeps_same_owner_reusable() {
         let mut first = input();
         let mut output = output_for(&storage);
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{name}: {error:?}"
+        let old_large = ArithmeticAbsentContext::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
         );
-        assert_eq!(output.num_rows(), 1);
-        assert!(!ctx.base.events.borrow().iter().any(|e| e == "precision"));
+        let mut native_input = input();
+        let mut native_output = output_for(&storage);
+        native_output.append_null(0);
+        let expected_large = original_session_read_outcome(|| {
+            owner.run(&old_large, &mut native_input, &mut native_output)
+        });
+        let got_large = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got_large, expected_large, "{name}/large");
+        assert_eq!(output.column(0), native_output.column(0), "{name}/large");
+        assert_eq!(ctx.snapshot(), old_large.snapshot(), "{name}/large");
         ctx.base.values[0] = Datum::Null;
         ctx.base.enabled = false;
         ctx.base.events.borrow_mut().clear();
@@ -4910,10 +4947,6 @@ fn arithmetic_absent_result_resource_failure_keeps_same_owner_reusable() {
             .unwrap();
         assert_eq!(got.column(0), expected.column(0), "{name}");
         assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 
@@ -5398,15 +5431,13 @@ fn run_arithmetic_missing_raw_datums(compare: bool) {
                                         assert_eq!(source.host_metadata.len(), 1);
                                         let new =
                                             ArithmeticMissingContext::new(0, false, values.clone());
-                                        let store =
-                                            RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                        let store = RefCell::new(NativeValueStore::new().unwrap());
                                         store.borrow_mut().begin_window().unwrap();
                                         let catalog = source.hosts.as_ref().unwrap().clone();
                                         let mut hosts = NativeBatchHosts::new(
                                             catalog.clone(),
                                             &source.host_metadata,
                                             &new,
-                                            1 << 24,
                                         )
                                         .with_native_values(Some(&store))
                                         .with_numeric_parents(
@@ -5467,7 +5498,7 @@ fn run_arithmetic_missing_raw_datums(compare: bool) {
                                                         )
                                                         .unwrap();
                                                     let fetched = VectorValue::from_scalar(
-                                                        &ScalarValue::Bytes(Some(token)),
+                                                        &ScalarValue::Bytes(Some(token.to_vec())),
                                                         1,
                                                     );
                                                     match hosts.resume(
@@ -5580,7 +5611,7 @@ fn arithmetic_missing_argument_resource_failure_keeps_same_owner_reusable() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = ArithmeticMissingContext::new(
             0,
             true,
@@ -5599,28 +5630,32 @@ fn arithmetic_missing_argument_resource_failure_keeps_same_owner_reusable() {
         let mut first = input();
         let mut output = output_for(&storage);
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{name}: {error:?}"
+        let old_large = ArithmeticMissingContext::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
         );
-        assert_eq!(output.num_rows(), 1);
-        assert!(!ctx
-            .base
-            .base
-            .events
-            .borrow()
-            .iter()
-            .any(|e| e == "precision"));
+        let mut native_input = input();
+        let mut native_output = output_for(&storage);
+        native_output.append_null(0);
+        let expected_large = original_session_read_outcome(|| {
+            owner.run(&old_large, &mut native_input, &mut native_output)
+        });
+        let got_large = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got_large, expected_large, "{name}/large");
+        assert_eq!(output.column(0), native_output.column(0), "{name}/large");
+        assert_eq!(ctx.snapshot(), old_large.snapshot(), "{name}/large");
         ctx.base.base.values[0] = Datum::Null;
         ctx.base.base.enabled = false;
         ctx.base.base.events.borrow_mut().clear();
@@ -5647,10 +5682,6 @@ fn arithmetic_missing_argument_resource_failure_keeps_same_owner_reusable() {
             .unwrap();
         assert_eq!(got.column(0), expected.column(0), "{name}");
         assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 
@@ -5806,6 +5837,15 @@ fn optional_membership_full_values_match_frozen_admitted_results() {
             FieldType::new(FieldTypeCode::Duration).with_decimal(3),
             FieldType::new(FieldTypeCode::Json),
         ];
+        // The old 2720 Demo refusals now execute. Pin each actual result,
+        // output prefix and context effect, then retain the admitted old gold.
+        let policy: Vec<String> =
+            serde_json::from_str(include_str!("batch_membership_policy_admissions.json")).unwrap();
+        assert_eq!(policy.len(), 2720);
+        let mut policy: std::collections::BTreeMap<_, _> = policy
+            .into_iter()
+            .map(|record| (record.split('|').next().unwrap().to_owned(), record))
+            .collect();
         let (mut count, mut admitted, mut resources, mut hash) =
             (0usize, 0usize, 0usize, 0xcbf29ce484222325u64);
         for name in ["in", "interval", "greatest", "least"] {
@@ -5869,28 +5909,19 @@ fn optional_membership_full_values_match_frozen_admitted_results() {
                                                 "{label}: {route:?}"
                                             );
                                             count += 1;
-                                            if got.contains("class: ResourceLimit") {
+                                            let record = format!(
+                                                "{label}|{got}|{:?}|{}",
+                                                output.column(0),
+                                                context.snapshot()
+                                            );
+                                            if let Some(expected) = policy.remove(&label) {
                                                 assert_eq!(
-                                                    vi, 110,
-                                                    "unexpected resource refusal {label}: {got}"
-                                                );
-                                                assert!(selection
-                                                    .as_ref()
-                                                    .is_none_or(|s| !s.is_empty()));
-                                                assert_eq!(
-                                                    output.num_rows(),
-                                                    1,
-                                                    "resource output {label}"
+                                                    record, expected,
+                                                    "quota cancellation {label}"
                                                 );
                                                 resources += 1;
                                             } else {
-                                                for byte in format!(
-                                                    "{label}|{got}|{:?}|{}",
-                                                    output.column(0),
-                                                    context.snapshot()
-                                                )
-                                                .bytes()
-                                                {
+                                                for byte in record.bytes() {
                                                     hash = (hash ^ u64::from(byte))
                                                         .wrapping_mul(0x100000001b3);
                                                 }
@@ -5905,6 +5936,7 @@ fn optional_membership_full_values_match_frozen_admitted_results() {
                 }
             }
         }
+        assert!(policy.is_empty());
         assert_eq!((count, resources), (1144320, 2720));
         // Captured from pre-deletion SDK results after strict old comparisons.
         // The retired whole unbounded reference was 1144320/0926C1DF1FCFFBE1.
@@ -5924,6 +5956,15 @@ fn optional_membership_actual_raw_datums() {
 fn run_optional_membership_raw_datums(compare: bool) {
     use tidb_query_datatype::codec::data_type::ScalarValueRef;
     use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, HostStep};
+    // Independent direct-host capture: 79 old Demo refusals now execute.
+    // Keep the historical native digest and check every actual changed outcome.
+    let policy: Vec<(String, String)> =
+        serde_json::from_str(include_str!("batch_membership_raw_policy.json")).unwrap();
+    assert_eq!(policy.len(), 79);
+    let mut policy: std::collections::BTreeMap<_, _> = policy
+        .into_iter()
+        .map(|(before, after)| (before.split('|').next().unwrap().to_owned(), after))
+        .collect();
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -5998,9 +6039,7 @@ fn run_optional_membership_raw_datums(compare: bool) {
                                             &[],
                                             true,
                                             319,
-                                            limits(),
                                             ExecutionLimits::default(),
-                                            1 << 24,
                                             true,
                                         )
                                     }));
@@ -6030,15 +6069,13 @@ fn run_optional_membership_raw_datums(compare: bool) {
                                         }
                                         assert_eq!(source.host_metadata.len(), 1);
                                         let new = C::new(0, false, values.clone());
-                                        let store =
-                                            RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                        let store = RefCell::new(NativeValueStore::new().unwrap());
                                         store.borrow_mut().begin_window().unwrap();
                                         let catalog = source.hosts.as_ref().unwrap().clone();
                                         let mut hosts = NativeBatchHosts::new(
                                             catalog.clone(),
                                             &source.host_metadata,
                                             &new,
-                                            1 << 24,
                                         )
                                         .with_native_values(Some(&store))
                                         .with_constant_probes(&source.host_probes)
@@ -6103,7 +6140,7 @@ fn run_optional_membership_raw_datums(compare: bool) {
                                                         )
                                                         .unwrap();
                                                     let fetched = VectorValue::from_scalar(
-                                                        &ScalarValue::Bytes(Some(token)),
+                                                        &ScalarValue::Bytes(Some(token.to_vec())),
                                                         1,
                                                     );
                                                     match hosts.resume(
@@ -6162,7 +6199,13 @@ fn run_optional_membership_raw_datums(compare: bool) {
                                                 panic!("arithmetic demand did not terminate")
                                             },
                                         );
-                                        if got.contains("class: ResourceLimit") {
+                                        if let Some(after) = policy.remove(&label) {
+                                            assert_eq!(
+                                                format!("{label}|{got}|{}", new.snapshot()),
+                                                after,
+                                                "quota cancellation {label}"
+                                            );
+                                        } else if got.contains("class: ResourceLimit") {
                                             assert_eq!(
                                                 vi, 110,
                                                 "unexpected direct resource {label}: {got}"
@@ -6192,7 +6235,10 @@ fn run_optional_membership_raw_datums(compare: bool) {
         assert_eq!(count, 29800);
         assert_eq!(hash, 0x0BBCF87024DEBD9F);
         eprintln!("MEMBERSHIP RAW BOUNDED RESOURCES {bounded_resources}");
-        assert_eq!(bounded_resources, if compare { 79 } else { 0 });
+        assert_eq!(bounded_resources, 0);
+        if compare {
+            assert!(policy.is_empty());
+        }
         eprintln!("MEMBERSHIP RAW ORIGINAL {count}/{hash:016X}");
         if !gaps.is_empty() {
             eprintln!("MEMBERSHIP RAW ADMISSION RED {gaps:?}");
@@ -6224,7 +6270,7 @@ fn optional_membership_resource_failure_keeps_same_owner_reusable() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = C::new(
             0,
             true,
@@ -6243,21 +6289,32 @@ fn optional_membership_resource_failure_keeps_same_owner_reusable() {
         let mut first = input();
         let mut output = output_for(&ty());
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{name}: {error:?}"
+        let old_large = C::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
         );
-        assert_eq!(output.num_rows(), 1);
+        let mut native_input = input();
+        let mut native_output = output_for(&ty());
+        native_output.append_null(0);
+        let expected_large = original_session_read_outcome(|| {
+            owner.run(&old_large, &mut native_input, &mut native_output)
+        });
+        let got_large = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got_large, expected_large, "{name}/large");
+        assert_eq!(output.column(0), native_output.column(0), "{name}/large");
+        assert_eq!(ctx.snapshot(), old_large.snapshot(), "{name}/large");
         ctx.values[0] = Datum::Null;
         ctx.enabled = false;
         ctx.events.borrow_mut().clear();
@@ -6284,10 +6341,6 @@ fn optional_membership_resource_failure_keeps_same_owner_reusable() {
             .unwrap();
         assert_eq!(got.column(0), expected.column(0), "{name}");
         assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 
@@ -7103,6 +7156,19 @@ fn optional_reserved_prefix_dates_actual_all_actual_values() {
     run_optional_reserved_prefix_dates_all_actual_values(true);
 }
 fn run_optional_reserved_prefix_dates_all_actual_values(compare: bool) {
+    // Independently captured old quota refusals; preserve the original gold.
+    let changes: Vec<(String, String)> =
+        serde_json::from_str(include_str!("batch_reserved_dates_policy.json")).unwrap();
+    assert_eq!(changes.len(), 296);
+    let mut changes: std::collections::BTreeMap<_, _> = changes
+        .into_iter()
+        .map(|(before, after)| {
+            (
+                before.split('|').next().unwrap().to_owned(),
+                (before, after),
+            )
+        })
+        .collect();
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -7215,14 +7281,24 @@ fn run_optional_reserved_prefix_dates_all_actual_values(compare: bool) {
                                                     gaps.push(format!("{label}: {route:?}"));
                                                 }
                                             }
-                                            for b in format!(
+                                            let record = format!(
                                                 "{label}|{expected}|{:?}|{}",
                                                 left.column(0),
                                                 old.snapshot()
-                                            )
-                                            .bytes()
+                                            );
+                                            let record = if let Some((before, after)) =
+                                                changes.remove(&label)
                                             {
-                                                hash = (hash ^ u64::from(b))
+                                                assert_eq!(
+                                                    record, after,
+                                                    "quota cancellation {label}"
+                                                );
+                                                before
+                                            } else {
+                                                record
+                                            };
+                                            for byte in record.bytes() {
+                                                hash = (hash ^ u64::from(byte))
                                                     .wrapping_mul(0x100000001b3);
                                             }
                                             count += 1;
@@ -7241,6 +7317,7 @@ fn run_optional_reserved_prefix_dates_all_actual_values(compare: bool) {
             eprintln!("RESERVED PREFIX DATES FULL ADMISSION RED {gaps:?}");
         }
         assert!(gaps.is_empty());
+        assert!(changes.is_empty());
     });
 }
 #[test]
@@ -7264,6 +7341,19 @@ fn optional_reserved_prefix_actual_raw_datums() {
 fn run_optional_reserved_prefix_raw_datums(compare: bool) {
     use tidb_query_datatype::codec::data_type::ScalarValueRef;
     use tidb_query_expr::local::{HostArgReply, HostInvocation, HostStart, HostStep};
+    // Independently captured old quota refusals; preserve the original gold.
+    let changes: Vec<(String, String)> =
+        serde_json::from_str(include_str!("batch_reserved_raw_policy.json")).unwrap();
+    assert_eq!(changes.len(), 37);
+    let mut changes: std::collections::BTreeMap<_, _> = changes
+        .into_iter()
+        .map(|(before, after)| {
+            (
+                before.split('|').next().unwrap().to_owned(),
+                (before, after),
+            )
+        })
+        .collect();
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -7344,9 +7434,7 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                                             &[],
                                             true,
                                             319,
-                                            limits(),
                                             ExecutionLimits::default(),
-                                            1 << 24,
                                             true,
                                         )
                                     }));
@@ -7373,15 +7461,13 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                                         }
                                         assert_eq!(source.host_metadata.len(), 1);
                                         let new = C::new(0, false, values.clone());
-                                        let store =
-                                            RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                                        let store = RefCell::new(NativeValueStore::new().unwrap());
                                         store.borrow_mut().begin_window().unwrap();
                                         let catalog = source.hosts.as_ref().unwrap().clone();
                                         let mut hosts = NativeBatchHosts::new(
                                             catalog.clone(),
                                             &source.host_metadata,
                                             &new,
-                                            1 << 24,
                                         )
                                         .with_native_values(Some(&store))
                                         .with_constant_probes(&source.host_probes)
@@ -7454,7 +7540,7 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                                                         )
                                                         .unwrap();
                                                     let fetched = VectorValue::from_scalar(
-                                                        &ScalarValue::Bytes(Some(token)),
+                                                        &ScalarValue::Bytes(Some(token.to_vec())),
                                                         1,
                                                     );
                                                     match hosts.resume(
@@ -7521,7 +7607,14 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                                     }
                                 }
                             }
-                            for byte in format!("{label}|{expected}|{}", old.snapshot()).bytes() {
+                            let record = format!("{label}|{expected}|{}", old.snapshot());
+                            let record = if let Some((before, after)) = changes.remove(&label) {
+                                assert_eq!(record, after, "quota cancellation {label}");
+                                before
+                            } else {
+                                record
+                            };
+                            for byte in record.bytes() {
                                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
                             }
                             count += 1;
@@ -7537,6 +7630,7 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
             eprintln!("RESERVED PREFIX RAW ADMISSION RED {gaps:?}");
         }
         assert!(gaps.is_empty());
+        assert!(changes.is_empty());
     });
 }
 
@@ -7583,9 +7677,7 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                 &[],
                 true,
                 919,
-                limits(),
                 ExecutionLimits::default(),
-                1 << 20,
                 true,
             )
             .unwrap();
@@ -7598,7 +7690,7 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
             };
             assert!(kernel.prefix_phase().is_some());
             let node = arguments[0];
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
                 occurrence: 7,
@@ -7618,10 +7710,9 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
             let catalog = source.hosts.as_ref().unwrap().clone();
             let slot = catalog.slot(0).unwrap();
             let sig = catalog.signature(slot).unwrap();
-            let mut hosts =
-                NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context, 8192)
-                    .with_native_values(Some(&store))
-                    .with_constant_probes(&source.host_probes);
+            let mut hosts = NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context)
+                .with_native_values(Some(&store))
+                .with_constant_probes(&source.host_probes);
             let mut eval = EvalContext::default();
             let insert = |value: &Datum, role, node, row| {
                 store
@@ -7640,19 +7731,8 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                     input_row: 0,
                 },
             );
-            let large = insert(
-                &Datum::Bytes(vec![b'X'; 16384]),
-                NativeValueRole::CharInput,
-                node,
-                row,
-            );
-            for (token, resource) in [
-                (stale, false),
-                (wrong_role, false),
-                (wrong_node, false),
-                (wrong_row, false),
-                (large, true),
-            ] {
+
+            for token in [stale, wrong_role, wrong_node, wrong_row] {
                 let HostStart::Pending { task, request } = hosts
                     .start(
                         &mut eval,
@@ -7668,7 +7748,7 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                     panic!("prefix pending")
                 };
                 assert_eq!(request.index, 0);
-                let value = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let value = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 let error = hosts
                     .resume(
                         &mut eval,
@@ -7681,11 +7761,7 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                     )
                     .unwrap_err();
                 assert!(
-                    if resource {
-                        matches!(error, LocalError::ResourceLimit(_))
-                    } else {
-                        matches!(error, LocalError::BindingContract(_))
-                    },
+                    matches!(error, LocalError::BindingContract(_)),
                     "{name}/{mask}: {error:?}"
                 );
                 assert_eq!(context.warnings.get(), 0);
@@ -7718,7 +7794,7 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                 panic!("prefix pending")
             };
             let token = insert(&Datum::Int(1), NativeValueRole::CharInput, node, row);
-            let fetched = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let fetched = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
             let first = hosts
                 .resume(
                     &mut eval,
@@ -7740,7 +7816,7 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                     tidb_query_expr::local::ArgMode::Fresh
                 ));
                 let token = insert(&Datum::Null, NativeValueRole::CharInput, node, row);
-                let value = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let value = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 assert!(matches!(
                     hosts
                         .resume(
@@ -7781,7 +7857,8 @@ fn optional_reserved_prefix_host_auth_callbacks_and_reuse() {
                         node,
                         row,
                     );
-                    let fetched = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let fetched =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     let HostStart::Pending { task, .. } = hosts
                         .start(
                             &mut eval,
@@ -7857,7 +7934,7 @@ fn optional_reserved_prefix_resources_long_reuse_and_flags() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = PrefixContext::new(
             0,
             true,
@@ -7876,21 +7953,32 @@ fn optional_reserved_prefix_resources_long_reuse_and_flags() {
         let mut first = input();
         let mut output = output_for(&string_ty());
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{name}: {error:?}"
+        let old_large = PrefixContext::new(
+            0,
+            true,
+            [Datum::new_string("1".repeat(32768)), Datum::Int(1)],
         );
-        assert_eq!(output.num_rows(), 1);
+        let mut native_input = input();
+        let mut native_output = output_for(&string_ty());
+        native_output.append_null(0);
+        let want = original_session_read_outcome(|| {
+            owner.run(&old_large, &mut native_input, &mut native_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, want, "{name}/large");
+        assert_eq!(output.column(0), native_output.column(0), "{name}/large");
+        assert_eq!(ctx.snapshot(), old_large.snapshot(), "{name}/large");
         ctx.base.values[0] = Datum::Null;
         ctx.base.enabled = false;
         ctx.base.events.borrow_mut().clear();
@@ -7920,10 +8008,7 @@ fn optional_reserved_prefix_resources_long_reuse_and_flags() {
         assert_eq!(got, expected, "{name}");
         assert_eq!(right.column(0), left.column(0), "{name}");
         assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
+
         for mask in [0, 1, 2, 4, 7] {
             for rows in [0usize, 3, 2051] {
                 let original = make(mask);
@@ -8016,9 +8101,9 @@ fn optional_reserved_prefix_date_typed_claims_require_genuine_fields() {
                 output_role: (output == Output::Value).then_some(NativeValueRole::Output),
                 output,
             }];
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
-            let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context, 1 << 20)
+            let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context)
                 .with_native_values(Some(&store));
             let start = hosts.start(
                 &mut EvalContext::default(),
@@ -8455,9 +8540,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
         &[],
         true,
         919,
-        limits(),
         ExecutionLimits::default(),
-        1 << 20,
         true,
     )
     .unwrap();
@@ -8474,7 +8557,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
     let slot = catalog.slot(0).unwrap();
     let sig = catalog.signature(slot).unwrap();
     for mode in 0..5 {
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let context = Context {
             store: &store,
@@ -8489,10 +8572,9 @@ fn weight_source_host_auth_callbacks_and_recovery() {
                 .insert_clone(value, role, NativeValueOrigin { node, row })
                 .unwrap()
         };
-        let mut hosts =
-            NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context, 8192)
-                .with_native_values(Some(&store))
-                .with_constant_probes(&source.host_probes);
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context)
+            .with_native_values(Some(&store))
+            .with_constant_probes(&source.host_probes);
         let mut eval = EvalContext::default();
         let start = |hosts: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
             let HostStart::Pending { task, request } = hosts
@@ -8554,7 +8636,8 @@ fn weight_source_host_auth_callbacks_and_recovery() {
                             row,
                         );
                         assert!(matches!(
-                            feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap(),
+                            feed(&mut hosts, &mut eval, &task, index, Some(token.to_vec()))
+                                .unwrap(),
                             HostStep::NeedArg(_)
                         ));
                     }
@@ -8579,7 +8662,13 @@ fn weight_source_host_auth_callbacks_and_recovery() {
                         _ => None,
                     };
                     assert!(matches!(
-                        feed(&mut hosts, &mut eval, &task, stage, token),
+                        feed(
+                            &mut hosts,
+                            &mut eval,
+                            &task,
+                            stage,
+                            token.map(|bytes| bytes.to_vec())
+                        ),
                         Err(LocalError::BindingContract(_))
                     ));
                     hosts.cancel(&task);
@@ -8596,7 +8685,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
                 row,
             );
             assert!(matches!(
-                feed(&mut hosts, &mut eval, &task, 1, Some(kind)).unwrap(),
+                feed(&mut hosts, &mut eval, &task, 1, Some(kind.to_vec())).unwrap(),
                 HostStep::NeedArg(_)
             ));
             let length = insert(
@@ -8605,10 +8694,17 @@ fn weight_source_host_auth_callbacks_and_recovery() {
                 meta.arguments[2],
                 row,
             );
-            assert!(matches!(
-                feed(&mut hosts, &mut eval, &task, 2, Some(length)),
-                Err(LocalError::ResourceLimit(_))
-            ));
+            let expected = crate::scalar_function::weight_value::padding(
+                &Datum::Bytes(vec![b'X'; 16384]),
+                &Datum::Int(2),
+            )
+            .unwrap();
+            assert_eq!(expected, (false, 2));
+            assert!(
+                matches!(feed(&mut hosts, &mut eval, &task, 2, Some(length.to_vec())),
+                Ok(HostStep::NeedArg(request)) if request.index == 0)
+            );
+            assert!(hosts.take_native_error().is_none());
             hosts.cancel(&task);
         }
         context.mode.set(mode);
@@ -8621,7 +8717,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
                 row,
             );
             assert!(matches!(
-                feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap(),
+                feed(&mut hosts, &mut eval, &task, index, Some(token.to_vec())).unwrap(),
                 HostStep::NeedArg(_)
             ));
         }
@@ -8632,7 +8728,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
             row,
         );
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            feed(&mut hosts, &mut eval, &task, 0, Some(token.clone()))
+            feed(&mut hosts, &mut eval, &task, 0, Some(token.to_vec()))
         }));
         match mode {
             1 | 3 => assert!(matches!(result, Ok(Err(LocalError::BindingContract(_))))),
@@ -8640,7 +8736,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
             _ => assert!(matches!(result, Ok(Ok(HostStep::Ready(_))))),
         }
         hosts.cancel(&task);
-        assert!(feed(&mut hosts, &mut eval, &task, 0, Some(token)).is_err());
+        assert!(feed(&mut hosts, &mut eval, &task, 0, Some(token.to_vec())).is_err());
         assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
     }
 }
@@ -8652,7 +8748,6 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
     ) {
         return;
     }
-    std::panic::set_hook(Box::new(|_| {}));
     for arity in [1, 3, 6] {
         let make = |mask| {
             let mut root = call(
@@ -8691,7 +8786,7 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = WeightContext::new(
             true,
             [
@@ -8715,21 +8810,28 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
         let mut first = input();
         let mut output = output_for(&native_bytes_type());
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[ty()],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error.local_error(),
-            Some(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(output.num_rows(), 1);
+        let native = WeightContext::new(true, ctx.base.values.clone(), 1024, 0);
+        let mut original_input = input();
+        let mut original_output = output_for(&native_bytes_type());
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         ctx.base.values[0] = Datum::Null;
         ctx.base.enabled.set(false);
         ctx.base.events.borrow_mut().clear();
@@ -8759,11 +8861,14 @@ fn weight_source_resources_long_reuse_and_skipped_bindings() {
         });
         assert_eq!(got, expected);
         assert_eq!(right.column(0), left.column(0));
-        assert_eq!(ctx.snapshot(), old.snapshot());
+        // Public run owns a fresh outer Ready scope; the explicit prepared
+        // entry keeps the caller's prior worker as well as the new row worker.
+        assert_eq!(ctx.base.snapshot(), old.base.snapshot());
         assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
+            ctx.base.ready.prepared_worker_count(),
+            old.base.ready.prepared_worker_count() + 1
         );
+
         for mask in [0, 1, 2, 4, 7] {
             for rows in [0usize, 3, 2051] {
                 let original = make(mask);
@@ -9280,7 +9385,7 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = StringRowContext::new(
             true,
             [
@@ -9303,21 +9408,28 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
         let mut first = input();
         let mut output = output_for(&string_ty());
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(error.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{name}: {error:?}"
-        );
-        assert_eq!(output.num_rows(), 1);
+        let native = StringRowContext::new(true, ctx.base.values.clone(), 0);
+        let mut original_input = input();
+        let mut original_output = output_for(&string_ty());
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         ctx.base.values[0] = Datum::Null;
         ctx.base.enabled.set(false);
         ctx.base.events.borrow_mut().clear();
@@ -9347,10 +9459,6 @@ fn string_row_batch_same_cap_recovery_and_template_guards() {
         assert_eq!(got, expected, "{name}");
         assert_eq!(right.column(0), left.column(0), "{name}");
         assert_eq!(ctx.snapshot(), old.snapshot(), "{name}");
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 
@@ -9935,9 +10043,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
             &[],
             true,
             939,
-            limits(),
             ExecutionLimits::default(),
-            1 << 20,
             true,
         )
         .unwrap();
@@ -9954,7 +10060,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
         let slot = catalog.slot(0).unwrap();
         let sig = catalog.signature(slot).unwrap();
         for mode in 0..3 {
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let context = Context {
                 store: &store,
@@ -9968,10 +10074,9 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                     .insert_clone(value, role, NativeValueOrigin { node, row })
                     .unwrap()
             };
-            let mut hosts =
-                NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context, 8192)
-                    .with_native_values(Some(&store))
-                    .with_constant_probes(&source.host_probes);
+            let mut hosts = NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &context)
+                .with_native_values(Some(&store))
+                .with_constant_probes(&source.host_probes);
             let mut eval = EvalContext::default();
             let start = |hosts: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
                 let HostStart::Pending { task, request } = hosts
@@ -10029,7 +10134,8 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                                 row,
                             );
                             let step =
-                                feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap();
+                                feed(&mut hosts, &mut eval, &task, index, Some(token.to_vec()))
+                                    .unwrap();
                             assert!(
                                 matches!(step,HostStep::NeedArg(request) if request.index==index+1)
                             );
@@ -10061,7 +10167,13 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                             )),
                         };
                         let index = if bad == 5 { (stage + 1) % arity } else { stage };
-                        let denied = feed(&mut hosts, &mut eval, &task, index, token);
+                        let denied = feed(
+                            &mut hosts,
+                            &mut eval,
+                            &task,
+                            index,
+                            token.map(|bytes| bytes.to_vec()),
+                        );
                         if bad == 5 {
                             assert!(
                                 matches!(denied, Err(LocalError::HostContract(_))),
@@ -10088,7 +10200,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                         row,
                     );
                     assert!(matches!(
-                        feed(&mut hosts, &mut eval, &task, 0, Some(first)).unwrap(),
+                        feed(&mut hosts, &mut eval, &task, 0, Some(first.to_vec())).unwrap(),
                         HostStep::NeedArg(_)
                     ));
                     let null = insert(
@@ -10098,7 +10210,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                         row,
                     );
                     assert!(matches!(
-                        feed(&mut hosts, &mut eval, &task, 1, Some(null)).unwrap(),
+                        feed(&mut hosts, &mut eval, &task, 1, Some(null.to_vec())).unwrap(),
                         HostStep::Ready(_)
                     ));
                     // The retained first capability must be reauthenticated.
@@ -10109,7 +10221,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                         meta.arguments[0],
                         row,
                     );
-                    feed(&mut hosts, &mut eval, &task, 0, Some(first)).unwrap();
+                    feed(&mut hosts, &mut eval, &task, 0, Some(first.to_vec())).unwrap();
                     store.borrow_mut().begin_window().unwrap();
                     let null = insert(
                         &Datum::Null,
@@ -10118,7 +10230,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                         row,
                     );
                     assert!(matches!(
-                        feed(&mut hosts, &mut eval, &task, 1, Some(null)),
+                        feed(&mut hosts, &mut eval, &task, 1, Some(null.to_vec())),
                         Err(LocalError::BindingContract(_))
                     ));
                     hosts.cancel(&task);
@@ -10133,7 +10245,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                             meta.arguments[index],
                             row,
                         );
-                        feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap();
+                        feed(&mut hosts, &mut eval, &task, index, Some(token.to_vec())).unwrap();
                     }
                     hosts.cancel(&task);
                     let token = insert(
@@ -10142,7 +10254,9 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                         meta.arguments[stage],
                         row,
                     );
-                    assert!(feed(&mut hosts, &mut eval, &task, stage, Some(token)).is_err());
+                    assert!(
+                        feed(&mut hosts, &mut eval, &task, stage, Some(token.to_vec())).is_err()
+                    );
                 }
             }
             context.mode.set(mode);
@@ -10154,7 +10268,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                     meta.arguments[index],
                     row,
                 );
-                feed(&mut hosts, &mut eval, &task, index, Some(token)).unwrap();
+                feed(&mut hosts, &mut eval, &task, index, Some(token.to_vec())).unwrap();
             }
             let index = arity - 1;
             let token = insert(
@@ -10179,7 +10293,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                     hosts: &mut hosts,
                     task: &task,
                 };
-                feed(guard.hosts, &mut eval, &task, index, Some(token.clone()))
+                feed(guard.hosts, &mut eval, &task, index, Some(token.to_vec()))
             }));
             match mode {
                 1 => assert!(matches!(result, Ok(Err(LocalError::BindingContract(_))))),
@@ -10187,7 +10301,7 @@ fn regexp_source_host_auth_callbacks_cancel_and_recovery() {
                 _ => assert!(matches!(result, Ok(Ok(HostStep::Ready(_))))),
             }
             hosts.cancel(&task);
-            assert!(feed(&mut hosts, &mut eval, &task, index, Some(token)).is_err());
+            assert!(feed(&mut hosts, &mut eval, &task, index, Some(token.to_vec())).is_err());
             assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
             if mode == 2 {
                 assert!(context.ready.original_scope_status().is_err());
@@ -10222,7 +10336,7 @@ fn regexp_source_same_cap_resource_then_null_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = RegexpSourceContext::new(
             true,
             [
@@ -10245,21 +10359,28 @@ fn regexp_source_same_cap_resource_then_null_recovery() {
         let mut first = input();
         let mut output = output_for(&ty());
         output.append_null(0);
-        let error = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error.local_error(),
-            Some(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(output.num_rows(), 1);
+        let native = RegexpSourceContext::new(true, ctx.base.values.clone(), 0);
+        let mut original_input = input();
+        let mut original_output = output_for(&ty());
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         ctx.base.values[0] = Datum::Null;
         ctx.base.enabled.set(false);
         ctx.base.events.borrow_mut().clear();
@@ -10290,10 +10411,6 @@ fn regexp_source_same_cap_resource_then_null_recovery() {
         assert_eq!(got, expected);
         assert_eq!(right.column(0), left.column(0));
         assert_eq!(ctx.snapshot(), old.snapshot());
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 

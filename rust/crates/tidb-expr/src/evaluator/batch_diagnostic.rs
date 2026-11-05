@@ -53,6 +53,7 @@ impl DiagnosticTask {
             })
             .transpose()
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(match &self.state {
@@ -269,20 +270,22 @@ impl NativeHostMetadata {
     }
 }
 impl<'a> NativeBatchHosts<'a> {
-    pub(in super::super) fn with_diagnostic_slots(
-        mut self,
-        slots: &'a [usize],
-    ) -> LocalResult<Self> {
+    pub(in super::super) fn validate_diagnostic_slots(
+        catalog: &HostCatalog,
+        metadata: &[NativeHostMetadata],
+        numerics: &[CompiledNumericParent],
+        diagnostics: &[CompiledDiagnosticParent],
+        slots: &[usize],
+    ) -> LocalResult<()> {
         if slots.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(binding("diagnostic slots must be strictly increasing"));
         }
         for &index in slots {
-            let slot = self.catalog.slot(index)?;
-            if self.catalog.sql_batch_operation(slot)?.is_windowed() {
+            let slot = catalog.slot(index)?;
+            if catalog.sql_batch_operation(slot)?.is_windowed() {
                 return Err(binding("diagnostic subtree must use row demand"));
             }
-            let meta = self
-                .metadata
+            let meta = metadata
                 .get(index)
                 .ok_or_else(|| binding("diagnostic metadata absent"))?;
             if !matches!(meta.native_output(), Some((_, NativeValueRole::CharInput))) {
@@ -299,13 +302,28 @@ impl<'a> NativeBatchHosts<'a> {
                     "diagnostic typed reads cannot use invocation broadcasts",
                 ));
             }
-            let signature = self.catalog.signature(slot)?;
+            let signature = catalog.signature(slot)?;
             for argument in 0..signature.arg_types.len() {
-                if self.diagnostic_argument_node(slot, argument).is_none() {
+                if Self::diagnostic_argument_node_from(
+                    metadata,
+                    numerics,
+                    diagnostics,
+                    slot,
+                    argument,
+                )
+                .is_none()
+                {
                     return Err(binding("diagnostic argument provenance absent"));
                 }
             }
         }
+        Ok(())
+    }
+
+    pub(in super::super) fn with_diagnostic_slots(
+        mut self,
+        slots: &'a [usize],
+    ) -> LocalResult<Self> {
         self.diagnostic_slots = slots;
         Ok(self)
     }
@@ -328,17 +346,6 @@ impl<'a> NativeBatchHosts<'a> {
         node: usize,
         row: InputRow,
     ) -> LocalResult<VectorValue> {
-        let bytes = text
-            .as_ref()
-            .map_or(0, String::capacity)
-            .checked_mul(3)
-            .and_then(|n| n.checked_add(128))
-            .ok_or_else(|| resource("diagnostic result allowance overflow"))?;
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(bytes)
-                .ok_or_else(|| resource("diagnostic result allowance overflow"))?,
-        )?;
         let store = self
             .native_values
             .ok_or_else(|| binding("diagnostic store absent"))?;
@@ -461,28 +468,29 @@ impl<'a> NativeBatchHosts<'a> {
 }
 
 impl<'a> NativeBatchHosts<'a> {
-    pub(in super::super) fn with_diagnostic_parents(
-        mut self,
-        parents: &'a [CompiledDiagnosticParent],
-    ) -> LocalResult<Self> {
+    pub(in super::super) fn validate_diagnostic_parents(
+        catalog: &HostCatalog,
+        metadata: &[NativeHostMetadata],
+        parents: &[CompiledDiagnosticParent],
+    ) -> LocalResult<()> {
         if parents.windows(2).any(|p| p[0].slot >= p[1].slot) {
             return Err(binding("diagnostic parents must be strictly increasing"));
         }
         for p in parents {
-            let slot = self.catalog.slot(p.slot)?;
-            let (main_arity, valid_operation) = match self.metadata.get(p.slot) {
+            let slot = catalog.slot(p.slot)?;
+            let (main_arity, valid_operation) = match metadata.get(p.slot) {
                 Some(NativeHostMetadata::EagerValues {
                     arguments, kernel, ..
                 }) => (
                     arguments.len(),
                     matches!(kernel.name(), "cot" | "exp" | "pow" | "power" | "abs")
-                        && self.catalog.sql_batch_operation(slot)?
+                        && catalog.sql_batch_operation(slot)?
                             == SqlBatchHostOperation::EagerValuesNative,
                 ),
                 Some(NativeHostMetadata::Math { name, .. }) => (
                     1,
                     name.as_ref() == "abs"
-                        && self.catalog.sql_batch_operation(slot)?
+                        && catalog.sql_batch_operation(slot)?
                             == SqlBatchHostOperation::EagerValuesNative,
                 ),
                 Some(NativeHostMetadata::UnaryWindow {
@@ -490,7 +498,7 @@ impl<'a> NativeBatchHosts<'a> {
                     ..
                 }) => (
                     1,
-                    self.catalog.sql_batch_operation(slot)?
+                    catalog.sql_batch_operation(slot)?
                         == SqlBatchHostOperation::EagerValuesWindowNative,
                 ),
                 _ => {
@@ -502,11 +510,18 @@ impl<'a> NativeBatchHosts<'a> {
             if !valid_operation
                 || main_arity != p.main_arity
                 || main_arity.checked_add(p.arguments.len())
-                    != Some(self.catalog.signature(slot)?.arg_types.len())
+                    != Some(catalog.signature(slot)?.arg_types.len())
             {
                 return Err(binding("diagnostic parent graph differs"));
             }
         }
+        Ok(())
+    }
+
+    pub(in super::super) fn with_diagnostic_parents(
+        mut self,
+        parents: &'a [CompiledDiagnosticParent],
+    ) -> LocalResult<Self> {
         self.diagnostic_parents = parents;
         Ok(self)
     }
@@ -516,21 +531,42 @@ impl<'a> NativeBatchHosts<'a> {
             .ok()
             .map(|i| &self.diagnostic_parents[i])
     }
-    fn diagnostic_argument_node(&self, slot: HostSlot, index: usize) -> Option<usize> {
-        self.metadata
+    fn diagnostic_argument_node_from(
+        metadata: &[NativeHostMetadata],
+        numerics: &[CompiledNumericParent],
+        diagnostics: &[CompiledDiagnosticParent],
+        slot: HostSlot,
+        index: usize,
+    ) -> Option<usize> {
+        metadata
             .get(slot.index())
             .and_then(|m| m.native_argument_node(index))
             .or_else(|| {
-                self.numeric_parent(slot)
-                    .and_then(|p| p.arguments.get(index).copied())
+                numerics
+                    .binary_search_by_key(&slot.index(), |p| p.slot)
+                    .ok()
+                    .and_then(|i| numerics[i].arguments.get(index).copied())
             })
             .or_else(|| {
-                self.diagnostic_parent(slot).and_then(|p| {
-                    index
-                        .checked_sub(p.main_arity)
-                        .and_then(|i| p.arguments.get(i).copied())
-                })
+                diagnostics
+                    .binary_search_by_key(&slot.index(), |p| p.slot)
+                    .ok()
+                    .and_then(|i| {
+                        index
+                            .checked_sub(diagnostics[i].main_arity)
+                            .and_then(|arg| diagnostics[i].arguments.get(arg).copied())
+                    })
             })
+    }
+
+    fn diagnostic_argument_node(&self, slot: HostSlot, index: usize) -> Option<usize> {
+        Self::diagnostic_argument_node_from(
+            self.metadata,
+            self.numeric_parents,
+            self.diagnostic_parents,
+            slot,
+            index,
+        )
     }
     pub(super) fn begin_math_diagnostic(
         &mut self,
@@ -593,11 +629,7 @@ impl<'a> NativeBatchHosts<'a> {
             ("abs", EvalError::IntOverflow) => MathOverflow::BigInt,
             _ => return self.native_failure(error),
         };
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(std::mem::size_of::<DiagnosticTask>())
-                .ok_or_else(|| resource("diagnostic task allocation overflow"))?,
-        )?;
+
         let state = parent.plan.state();
         self.slots[id.slot]
             .task
@@ -670,19 +702,8 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("diagnostic store absent"))?;
-        let length = store
-            .borrow()
-            .diagnostic_text(token, origin)?
-            .map_or(0, str::len);
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(
-                    length
-                        .checked_mul(3)
-                        .ok_or_else(|| resource("diagnostic text copy overflow"))?,
-                )
-                .ok_or_else(|| resource("diagnostic text live bytes overflow"))?,
-        )?;
+        store.borrow().diagnostic_text(token, origin)?;
+
         // No source capability or callback is replayed. The diagnostic state
         // is consumed by drive before a formatter can unwind.
         let text = store
@@ -702,11 +723,7 @@ impl<'a> NativeBatchHosts<'a> {
         let parent = self
             .diagnostic_parent(task.slot)
             .ok_or_else(|| binding("diagnostic parent absent"))?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(self.retained_bytes()?)
-            .and_then(|n| n.checked_sub(text.flatten().map_or(0, str::len)))
-            .ok_or_else(|| resource("diagnostic work allowance exhausted"))?;
+
         let SqlDemand::Diagnostic(task) = &mut self.slots[id.slot]
             .task
             .as_mut()
@@ -720,7 +737,7 @@ impl<'a> NativeBatchHosts<'a> {
         };
         let overflow = task.overflow;
         let window = task.window;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+        let result = (|| {
             if let Some(text) = text {
                 let index = state
                     .pending_constant()
@@ -729,7 +746,7 @@ impl<'a> NativeBatchHosts<'a> {
             } else {
                 parent.plan.step(&mut state)
             }
-        });
+        })();
         let result = match result {
             Ok(step) => step,
             Err(error) => return self.native_failure(error),
@@ -748,7 +765,7 @@ impl<'a> NativeBatchHosts<'a> {
                     unreachable!()
                 };
                 task.state = Some(state);
-                self.check_bytes(self.retained_bytes()?)?;
+
                 Ok(if let Some(window) = window {
                     HostStep::NeedArgRow {
                         index: parent.main_arity + index,

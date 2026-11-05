@@ -23,6 +23,7 @@ impl PbBooleanTask {
             left: None,
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
@@ -65,29 +66,16 @@ impl NativeBatchHosts<'_> {
             node: meta.arguments[index],
             row,
         };
-        let (is_null, copied) = {
+        let is_null = {
             let values = store.borrow();
             for (index, held) in state.tokens.iter().enumerate() {
                 values.get(held, NativeValueRole::CharInput, origin(index))?;
             }
-            let value = values.get(token, NativeValueRole::CharInput, origin(next))?;
-            (
-                value.is_null(),
-                if meta.kernel.observes_null_only() {
-                    0
-                } else {
-                    native_payload_bytes(value)?
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("PB Boolean copy extent overflow"))?
-                },
-            )
+            values
+                .get(token, NativeValueRole::CharInput, origin(next))?
+                .is_null()
         };
-        let base = self.retained_bytes()?;
-        let live = base
-            .checked_add(copied)
-            .and_then(|n| n.checked_add(native_values::HANDLE_BYTES))
-            .ok_or_else(|| resource("PB Boolean live extent overflow"))?;
-        self.check_bytes(live)?;
+
         // Presence checks never clone or format an unused payload.
         let value = if meta.kernel.observes_null_only() {
             None
@@ -108,7 +96,7 @@ impl NativeBatchHosts<'_> {
         ) else {
             unreachable!()
         };
-        let old_capacity = state.tokens.capacity();
+
         state
             .tokens
             .try_reserve_exact(1)
@@ -118,15 +106,7 @@ impl NativeBatchHosts<'_> {
                 .try_into()
                 .map_err(|_| binding("PB Boolean capability width differs"))?,
         );
-        let live = base
-            .checked_add(copied)
-            .and_then(|n| {
-                n.checked_add(
-                    (state.tokens.capacity() - old_capacity) * native_values::HANDLE_BYTES,
-                )
-            })
-            .ok_or_else(|| resource("PB Boolean prefix capacity overflow"))?;
-        self.check_bytes(live)?;
+
         let check = || -> LocalResult<()> {
             let values = store.borrow();
             for (index, token) in state.tokens.iter().enumerate() {
@@ -134,19 +114,14 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            self.max_retained_bytes - live,
-            || {
-                crate::scalar_function::eager_values::audit_work_result(
-                    if meta.kernel.observes_null_only() {
-                        Ok(meta.kernel.nullness(is_null))
-                    } else {
-                        meta.kernel
-                            .truth(value.as_ref().expect("actual truth input"), self.context)
-                    },
-                )
-            },
-        );
+        let result = (|| {
+            (if meta.kernel.observes_null_only() {
+                Ok(meta.kernel.nullness(is_null))
+            } else {
+                meta.kernel
+                    .truth(value.as_ref().expect("actual truth input"), self.context)
+            })
+        })();
         drop(value);
         check()?;
         let truth = match result {
@@ -165,65 +140,43 @@ impl NativeBatchHosts<'_> {
                 .as_mut()
                 .expect("live PB Boolean task")
                 .demand = SqlDemand::PbBoolean(state);
-            self.check_bytes(self.retained_bytes()?)?;
+
             return Ok(HostStep::NeedArg(HostArgRequest {
                 index: 1,
                 mode: ArgMode::Fresh,
             }));
         }
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            self.max_retained_bytes - live,
-            || {
-                crate::scalar_function::eager_values::audit_work_result(
-                    if meta.kernel.logical_function().is_some() {
-                        let arguments = if next == 0 {
-                            crate::LogicalArgs::UndemandedRight { left: truth }
-                        } else {
-                            crate::LogicalArgs::Both(
-                                state.left.expect("actual consumed logical left"),
-                                truth,
-                            )
-                        };
-                        meta.kernel.logical_value(arguments, self.context)
-                    } else {
-                        meta.kernel.unary_value(truth, self.context)
-                    },
-                )
-            },
-        );
+        let result = (|| {
+            (if meta.kernel.logical_function().is_some() {
+                let arguments = if next == 0 {
+                    crate::LogicalArgs::UndemandedRight { left: truth }
+                } else {
+                    crate::LogicalArgs::Both(
+                        state.left.expect("actual consumed logical left"),
+                        truth,
+                    )
+                };
+                meta.kernel.logical_value(arguments, self.context)
+            } else {
+                meta.kernel.unary_value(truth, self.context)
+            })
+        })();
         check()?;
         let value = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        let held = base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("PB Boolean result allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("PB Boolean result extent overflow"))?;
-        self.check_bytes(held)?;
+
         let value =
             crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-        let result = coerce_optional_value_result(
-            &meta.name,
-            meta.result_type.as_ref(),
-            value,
-            self.max_retained_bytes - held,
-        );
+        let result = coerce_optional_value_result(&meta.name, meta.result_type.as_ref(), value);
         check()?;
         let value = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
         let result = if meta.integer_batch_result {
-            present_integer_batch_value(
-                value,
-                meta.result_type.as_ref(),
-                self.context,
-                self.max_retained_bytes - held,
-            )
+            present_integer_batch_value(value, meta.result_type.as_ref(), self.context)
         } else {
             Ok(value)
         };
@@ -232,7 +185,7 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
     }
 }

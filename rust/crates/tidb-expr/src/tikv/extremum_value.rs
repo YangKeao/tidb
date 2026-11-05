@@ -35,7 +35,7 @@ fn value_error(error: ValueError) -> EvalError {
     }
 }
 fn check(bytes: usize, maximum: usize) -> Result<(), EvalError> {
-    if maximum == usize::MAX || bytes > maximum {
+    if bytes > maximum {
         Err(resource("extremum actual value/work allowance exceeded"))
     } else {
         Ok(())

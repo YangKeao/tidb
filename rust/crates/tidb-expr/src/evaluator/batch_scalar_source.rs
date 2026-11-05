@@ -20,7 +20,6 @@ struct ScalarPlan {
     source: SourcePlan,
     program: LocalBatchProgram,
     execution: ExecutionLimits,
-    maximum: usize,
 }
 pub(super) struct PhysicalRow<'a> {
     pub(super) source: &'a SourcePlan,
@@ -51,6 +50,30 @@ impl NativeDatumSource for PhysicalRow<'_> {
             .ok_or_else(|| binding("unknown scalar slot"))?;
         read_source_row(self.source, Some(self.values), self.native, ordinal, row)
     }
+    fn read_handle(
+        &mut self,
+        _: &mut EvalContext,
+        slot: usize,
+        row: InputRow,
+        expected: &tipb::FieldType,
+    ) -> LocalResult<Option<native_values::NativeValueHandle>> {
+        let Some(&ordinal) = self.source.bindings.get(slot) else {
+            return Ok(None);
+        };
+        let node = &self.source.nodes[ordinal];
+        if node.view.value_role().is_none()
+            && !matches!(&node.kind, SourceKind::DecimalFastInput(_))
+        {
+            return Ok(None);
+        }
+        if self.source.schema.get(slot) != Some(expected)
+            || row.occurrence != 0
+            || row.input_row != self.native.idx()
+        {
+            return Err(binding("scalar demanded occurrence/type differs"));
+        }
+        read_source_handle(self.source, Some(self.values), self.native, ordinal, row).map(Some)
+    }
 }
 impl<'a> BorrowedExpression<'a> {
     pub(super) fn compile(
@@ -59,7 +82,7 @@ impl<'a> BorrowedExpression<'a> {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        maximum: usize,
+        _maximum: usize,
     ) -> Result<Self> {
         Self::compile_root(
             root.into(),
@@ -68,7 +91,6 @@ impl<'a> BorrowedExpression<'a> {
             new_collation,
             limits,
             execution,
-            maximum,
         )
     }
     pub(super) fn compile_function(
@@ -77,7 +99,7 @@ impl<'a> BorrowedExpression<'a> {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        maximum: usize,
+        _maximum: usize,
     ) -> Result<Self> {
         Self::compile_root(
             root.into(),
@@ -86,7 +108,6 @@ impl<'a> BorrowedExpression<'a> {
             new_collation,
             limits,
             execution,
-            maximum,
         )
     }
     fn compile_root(
@@ -96,10 +117,8 @@ impl<'a> BorrowedExpression<'a> {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        maximum: usize,
     ) -> Result<Self> {
-        let plan =
-            ScalarPlan::compile(root, view, width, new_collation, limits, execution, maximum)?;
+        let plan = ScalarPlan::compile(root, view, width, new_collation, limits, execution)?;
         Ok(Self { root, plan })
     }
     pub(super) fn eval(&mut self, context: &dyn Columns, row: Row<'_>) -> Result<Datum> {
@@ -120,7 +139,7 @@ impl OwnedExpression {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        maximum: usize,
+        _maximum: usize,
     ) -> Result<Self> {
         let plan = ScalarPlan::compile(
             root.as_ref().into(),
@@ -129,7 +148,6 @@ impl OwnedExpression {
             new_collation,
             limits,
             execution,
-            maximum,
         )?;
         Ok(Self { plan, root })
     }
@@ -148,7 +166,6 @@ impl ScalarPlan {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        maximum: usize,
     ) -> Result<Self> {
         #[cfg(test)]
         crate::test_evaluation::note_scalar_preparation();
@@ -174,7 +191,6 @@ impl ScalarPlan {
             source,
             program,
             execution,
-            maximum,
         })
     }
     pub(super) fn eval(&mut self, context: &dyn Columns, row: Row<'_>) -> Result<Datum> {
@@ -198,10 +214,7 @@ impl ScalarPlan {
                 // with no new evaluation or replacement expression.
                 let value = match root.kind() {
                     BorrowedNodeKind::Constant(constant) => {
-                        match crate::tikv::identity_actual::copy_bounded(
-                            &constant.value,
-                            self.maximum,
-                        ) {
+                        match crate::tikv::identity_actual::copy(&constant.value) {
                             Ok(value) => value,
                             Err(error) => return Err((Datum::Null, error.into())),
                         }
@@ -222,7 +235,7 @@ impl ScalarPlan {
         if self.width != row.len() {
             return Err(binding("scalar physical row width differs from preparation").into());
         }
-        let store = RefCell::new(NativeValueStore::new(self.maximum)?);
+        let store = RefCell::new(NativeValueStore::new()?);
         store.borrow_mut().begin_window()?;
         let source = &self.source;
         let policy = source.context_policy.as_deref();
@@ -230,19 +243,14 @@ impl ScalarPlan {
             .hosts
             .clone()
             .map(|catalog| {
-                let mut hosts =
-                    NativeBatchHosts::new(catalog, &source.host_metadata, context, self.maximum)
-                        .with_root_error_values(capture_error_value)
-                        .with_native_values(Some(&store))
-                        .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
-                        .with_constant_probes(&source.host_probes)
-                        .with_diagnostic_parents(
-                            policy.map_or(&[], |p| p.diagnostic_parents.as_ref()),
-                        )?
-                        .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
-                        .with_diagnostic_slots(
-                            policy.map_or(&[], |p| p.diagnostic_slots.as_ref()),
-                        )?;
+                let mut hosts = NativeBatchHosts::new(catalog, &source.host_metadata, context)
+                    .with_root_error_values(capture_error_value)
+                    .with_native_values(Some(&store))
+                    .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
+                    .with_constant_probes(&source.host_probes)
+                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))?
+                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
+                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()))?;
                 if let Some(input) = row.chunk() {
                     hosts = hosts.with_input(input);
                 }

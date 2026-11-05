@@ -75,12 +75,11 @@ impl NativeBatchHosts<'_> {
                 .as_slice(),
             token,
         ];
-        let base = self.retained_bytes()?;
-        let mut live = base;
+
         {
             let values = store.borrow();
             for i in 0..2 {
-                let value = values.get(
+                values.get(
                     tokens[i],
                     NativeValueRole::CharInput,
                     NativeValueOrigin {
@@ -88,16 +87,9 @@ impl NativeBatchHosts<'_> {
                         row,
                     },
                 )?;
-                live = live
-                    .checked_add(
-                        native_payload_bytes(value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("date arithmetic clone allowance overflow"))?,
-                    )
-                    .ok_or_else(|| resource("date arithmetic source extent overflow"))?;
             }
         }
-        self.check_bytes(live)?;
+
         let mut owned = {
             let values = store.borrow();
             let get = |i: usize| {
@@ -114,7 +106,7 @@ impl NativeBatchHosts<'_> {
         };
         // Bounded payload ownership is detached before any original cast, warning,
         // overflow-policy or result callback can access the value store.
-        let remaining = self.max_retained_bytes - live;
+        let remaining = usize::MAX;
         let value = crate::tikv::date_add_scalar_values_bounded(
             self.context,
             unit,
@@ -130,23 +122,18 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        let live = native_payload_bytes(&value)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("date return coercion extent overflow"))?;
-        self.check_bytes(live)?;
+
         let value = match coerce_optional_value_result(
             if *sign < 0 { "date_sub" } else { "date_add" },
             result_type.as_ref(),
             value,
-            self.max_retained_bytes - live,
         ) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
         if let Some(role) = output_role {
             return self
-                .finish_native_value(id, value, *output_node, *role, row, base)
+                .finish_native_value(id, value, *output_node, *role, row)
                 .map(HostStep::Ready);
         }
         let value = crate::expression::apply_enum_set_integer_view(value, result_type.as_ref());
@@ -160,34 +147,14 @@ impl NativeBatchHosts<'_> {
                     Err(error) => return self.native_failure(error),
                 };
                 let length = bytes.map_or(0, <[u8]>::len);
-                self.check_bytes(
-                    base.checked_add(
-                        length
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("date byte overlap overflow"))?,
-                    )
-                    .and_then(|n| n.checked_add(256))
-                    .ok_or_else(|| resource("date byte publication overflow"))?,
-                )?;
+
                 let mut output = ChunkedVecBytes::try_with_capacities(1, length)
                     .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
                 output.push_ref(bytes);
-                self.check_bytes(
-                    base.checked_add(length)
-                        .and_then(|n| {
-                            output
-                                .retained_heap_bytes()
-                                .and_then(|more| n.checked_add(more))
-                        })
-                        .ok_or_else(|| resource("date byte actual capacity overflow"))?,
-                )?;
+
                 VectorValue::Bytes(output)
             }
             tidb_query_expr::local::SqlTemporalOutput::DateTime => {
-                self.check_bytes(
-                    base.checked_add(128)
-                        .ok_or_else(|| resource("date typed publication overflow"))?,
-                )?;
                 let value = match value {
                     Datum::Null => None,
                     Datum::Time(value) => Some(TikvDateTime::from_go_raw_like_go(value.go_raw())),
@@ -200,10 +167,6 @@ impl NativeBatchHosts<'_> {
                 VectorValue::from_scalar(&ScalarValue::DateTime(value), 1)
             }
             tidb_query_expr::local::SqlTemporalOutput::Duration => {
-                self.check_bytes(
-                    base.checked_add(128)
-                        .ok_or_else(|| resource("duration typed publication overflow"))?,
-                )?;
                 let value = match value {
                     Datum::Null => None,
                     Datum::Duration(value) => Some(

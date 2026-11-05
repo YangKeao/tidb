@@ -514,12 +514,8 @@ mod tests {
             0,
             context,
         );
-        for result in [
-            dense(BinaryOp::Mod),
-            dense(BinaryOp::Div),
-            real,
-            decimal_div,
-        ] {
+        assert_eq!(real, Ok(Datum::Real(7.0 / 3.0)));
+        for result in [dense(BinaryOp::Mod), dense(BinaryOp::Div), decimal_div] {
             let Err(crate::EvalError::ExpressionRuntimeFailure(failure)) = result else {
                 panic!("quotient budget must remain an actual terminal cause");
             };

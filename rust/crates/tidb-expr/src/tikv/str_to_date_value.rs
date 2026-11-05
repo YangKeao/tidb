@@ -84,7 +84,7 @@ pub(crate) fn compute(
                         "STR_TO_DATE text publication extent overflow",
                     ))
                 })?;
-            if maximum == usize::MAX || live > maximum {
+            if live > maximum {
                 return Err(value_error(Error::ResourceLimit(
                     "STR_TO_DATE text publication overlap exceeds allowance",
                 )));

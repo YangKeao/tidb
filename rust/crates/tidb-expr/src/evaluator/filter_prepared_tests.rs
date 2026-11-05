@@ -208,7 +208,7 @@ fn filter_prepares_each_demanded_scalar_root_once() {
 
 #[test]
 fn filter_only_prepares_demanded_roots_and_resource_never_replays() {
-    let count = CompileLimits::default().max_nodes;
+    let count = 512;
     let oversized = || call("coalesce", (0..count).map(|_| parameter()).collect());
     for entry in 0..4 {
         let context = leaf::Context::new(2, Datum::Int(1)); // Panics on any live parameter read.
@@ -233,10 +233,17 @@ fn filter_only_prepares_demanded_roots_and_resource_never_replays() {
         );
         assert_eq!(context.calls.get(), 0);
         let demanded = vec![int(1), oversized()];
-        let error = evaluate(entry, &context, &demanded, &chunk).unwrap_err();
-        assert!(matches!(error, EvalError::ExpressionRuntimeFailure(error)
-            if error.class() == crate::ExpressionRuntimeFailureClass::ResourceLimit));
-        assert_eq!(context.calls.get(), 0, "preparation demanded a live value");
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| evaluate(
+                entry, &context, &demanded, &chunk
+            )))
+            .is_err()
+        );
+        assert_eq!(
+            context.calls.get(),
+            1,
+            "demanded callback must not replay after unwind"
+        );
     }
 }
 

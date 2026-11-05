@@ -41,13 +41,7 @@ fn runtime_resource(message: &'static str) -> EvalError {
         None,
     ))
 }
-fn charge(bytes: usize) -> Result<(), EvalError> {
-    tidb_query_expr::local::charge_value_kernel_work(bytes).map_err(|e| {
-        EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
-            e, None,
-        ))
-    })
-}
+
 impl LiteralPolicy {
     pub(crate) fn render(self, value: &Datum) -> Result<Option<String>, EvalError> {
         let supported = match self {
@@ -79,17 +73,12 @@ impl LiteralPolicy {
         }
         // The original formatter remains the owner of literal spelling and
         // malformed-prefix panics. Bound only genuinely demanded formatting.
-        eager_values::charge_string_work(value)?;
-        charge(128)?;
+
         let text = match self {
             Self::Numeric(float) => numeric_diagnostic_literal(value, float),
             Self::Math => math_diagnostic_literal(value),
         };
-        tidb_query_expr::local::value_kernel_work_status().map_err(|e| {
-            EvalError::ExpressionRuntimeFailure(crate::ExpressionRuntimeFailure::from_local_eval(
-                e, None,
-            ))
-        })?;
+
         Ok(text)
     }
 }
@@ -203,25 +192,20 @@ impl DynamicDiagnostic {
         expression: Option<&'a Expression>,
         root: Option<&'a ScalarFunction>,
         policy: LiteralPolicy,
-        max_nodes: usize,
-        max_bytes: usize,
+        _max_nodes: usize,
+        _max_bytes: usize,
     ) -> Result<DiagnosticRecipe<'a>, EvalError> {
-        let resource = || runtime_resource("diagnostic metadata policy exceeded");
+        let resource = || runtime_resource("diagnostic metadata extent overflow");
         let mut bytes = 0usize;
         let mut claim = |n: usize| -> Result<(), EvalError> {
-            bytes = bytes
-                .checked_add(n)
-                .filter(|n| *n <= max_bytes)
-                .ok_or_else(&resource)?;
+            bytes = bytes.checked_add(n).ok_or_else(&resource)?;
             Ok(())
         };
         let mut pending = Vec::new();
         let mut parts = Vec::new();
         let mut bindings = Vec::new();
-        let mut scheduled = root.map_or(1, |f| f.args.len());
-        if max_nodes == 0 || scheduled > max_nodes {
-            return Err(resource());
-        }
+        let scheduled = root.map_or(1, |f| f.args.len());
+
         // Bound scaffolding before reserving. No source payload/type/name is
         // cloned or rendered until the complete survey has been accepted.
         claim(
@@ -262,10 +246,6 @@ impl DynamicDiagnostic {
                     Expression::Column(c) => {
                         if matches!(policy, LiteralPolicy::Numeric(_)) && c.is_hidden {
                             if let Some(child) = c.virtual_expr.as_deref() {
-                                scheduled = scheduled
-                                    .checked_add(1)
-                                    .filter(|n| *n <= max_nodes)
-                                    .ok_or_else(&resource)?;
                                 claim(std::mem::size_of::<Work<'_>>())?;
                                 pending.try_reserve_exact(1).map_err(|_| resource())?;
                                 pending.push(Work::Expression(child));
@@ -313,10 +293,7 @@ impl DynamicDiagnostic {
                         } else {
                             Part::Stop
                         };
-                        scheduled = scheduled
-                            .checked_add(children.len())
-                            .filter(|n| *n <= max_nodes)
-                            .ok_or_else(&resource)?;
+
                         let count = children.len().checked_add(1).ok_or_else(&resource)?;
                         claim(
                             count
@@ -396,7 +373,6 @@ impl DynamicDiagnostic {
                 Instruction::Stop => return Ok(state.unavailable()),
                 Instruction::Literal(value, policy) => policy.render(value)?,
                 Instruction::SavedBinary(value, mode) => {
-                    charge(value.as_bytes().len().saturating_mul(2).saturating_add(128))?;
                     let value = value.to_int().value();
                     Some(match mode {
                         NativeBinaryLiteralRender::Signed => (value as i64).to_string(),
@@ -406,23 +382,12 @@ impl DynamicDiagnostic {
                         NativeBinaryLiteralRender::Unsigned => value.to_string(),
                     })
                 }
-                Instruction::Text(text) => {
-                    charge(text.len().saturating_mul(4))?;
-                    Some(text.to_string())
-                }
-                Instruction::Column(name, id) => {
-                    charge(name.len().saturating_add(64).saturating_mul(4))?;
-                    Some(native_render_column_reference(name, *id))
-                }
+                Instruction::Text(text) => Some(text.to_string()),
+                Instruction::Column(name, id) => Some(native_render_column_reference(name, *id)),
                 Instruction::Binary(op) => {
                     let right = state.stack.pop().expect("diagnostic right");
                     let left = state.stack.pop().expect("diagnostic left");
-                    charge(
-                        left.len()
-                            .saturating_add(right.len())
-                            .saturating_add(16)
-                            .saturating_mul(4),
-                    )?;
+
                     Some(native_render_binary_expression(&left, *op, &right))
                 }
                 Instruction::Function(name, arity) => {
@@ -431,13 +396,7 @@ impl DynamicDiagnostic {
                         .len()
                         .checked_sub(*arity)
                         .expect("diagnostic function arity");
-                    let bytes = state.stack[begin..].iter().fold(
-                        name.len()
-                            .saturating_add(arity.saturating_mul(2))
-                            .saturating_add(2),
-                        |n, t| n.saturating_add(t.len()),
-                    );
-                    charge(bytes.saturating_mul(4))?;
+
                     let text = native_render_function_expression(name, &state.stack[begin..]);
                     state.stack.truncate(begin);
                     Some(text)
@@ -445,13 +404,6 @@ impl DynamicDiagnostic {
                 Instruction::CastJson(target) => {
                     let child = state.stack.pop().expect("diagnostic cast child");
                     if let Some(target) = target {
-                        charge(
-                            target
-                                .checked_snapshot_payload_bytes()
-                                .unwrap_or(usize::MAX)
-                                .saturating_mul(16)
-                                .saturating_add(child.len().saturating_mul(4)),
-                        )?;
                         Some(native_render_cast_expression(
                             &child,
                             &target.source_string(),
@@ -496,7 +448,7 @@ impl DynamicDiagnostic {
         let Some(text) = text else {
             return Ok(state.unavailable());
         };
-        charge(text.len().saturating_mul(2))?;
+
         state.push(text.to_owned())?;
         self.step(state)
     }
@@ -535,7 +487,6 @@ impl DiagnosticState {
         Ok(policy)
     }
     fn push(&mut self, text: String) -> Result<(), EvalError> {
-        charge(std::mem::size_of::<String>().saturating_add(text.capacity()))?;
         self.stack
             .try_reserve_exact(1)
             .map_err(|_| runtime_resource("diagnostic stack allocation failed"))?;
@@ -560,11 +511,14 @@ mod tests {
             LiteralPolicy::Numeric(false),
             LiteralPolicy::Numeric(true),
         ] {
-            let result = tidb_query_expr::local::with_value_kernel_work_limit(65536, || {
-                policy.render(&value)
-            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tidb_query_expr::local::with_value_kernel_work_limit(65536, || {
+                    policy.render(&value)
+                })
+            }));
             assert!(
-                matches!(result,Err(EvalError::ExpressionRuntimeFailure(ref error)) if error.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
+                result.is_err(),
+                "the malformed native Decimal formatter must unwind"
             );
         }
         assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
@@ -649,11 +603,6 @@ impl ArgumentDiagnostic {
         max_nodes: usize,
         max_bytes: usize,
     ) -> Result<ArgumentRecipe<'a>, EvalError> {
-        if max_nodes == 0 {
-            return Err(runtime_resource(
-                "numeric argument diagnostic node policy is zero",
-            ));
-        }
         let policy = LiteralPolicy::Numeric(float);
         let field = expression.static_type();
         let special = if field.is_none() {
@@ -681,15 +630,10 @@ impl ArgumentDiagnostic {
                 .checked_add(std::mem::size_of::<Instruction>())
                 .and_then(|n| n.checked_add(std::mem::size_of::<Work<'_>>()))
                 .and_then(|n| n.checked_add(payload))
-                .filter(|n| *n <= max_bytes)
                 .ok_or_else(|| {
-                    runtime_resource("numeric argument diagnostic metadata policy exceeded")
+                    runtime_resource("numeric argument diagnostic metadata extent overflow")
                 })?;
-            if max_nodes == 0 {
-                return Err(runtime_resource(
-                    "numeric argument diagnostic node policy is zero",
-                ));
-            }
+
             DiagnosticRecipe {
                 parts: vec![part],
                 bindings: vec![],
@@ -721,8 +665,7 @@ impl ArgumentDiagnostic {
                     Some(n)
                 }
             })
-            .filter(|n| *n <= max_bytes)
-            .ok_or_else(|| runtime_resource("numeric argument wrapper metadata policy exceeded"))?;
+            .ok_or_else(|| runtime_resource("numeric argument wrapper metadata extent overflow"))?;
         Ok(ArgumentRecipe { plan, wrap, bytes })
     }
     pub(crate) fn state(&self) -> DiagnosticState {
@@ -734,22 +677,9 @@ impl ArgumentDiagnostic {
         decimal: Option<&tidb_datatype::Decimal>,
     ) -> Result<DiagnosticStep, EvalError> {
         match (step, &self.wrap) {
-            (DiagnosticStep::Done(Some(text)), Some((field, refine))) => {
-                let scan = if *refine {
-                    decimal.map_or(0, |d| d.coefficient_bytes().len())
-                } else {
-                    0
-                };
-                charge(
-                    text.len()
-                        .saturating_mul(4)
-                        .saturating_add(scan.saturating_mul(4))
-                        .saturating_add(256),
-                )?;
-                Ok(DiagnosticStep::Done(Some(native_intdiv_argument_text(
-                    text, field, *refine, decimal,
-                ))))
-            }
+            (DiagnosticStep::Done(Some(text)), Some((field, refine))) => Ok(DiagnosticStep::Done(
+                Some(native_intdiv_argument_text(text, field, *refine, decimal)),
+            )),
             (step, _) => Ok(step),
         }
     }
@@ -801,9 +731,10 @@ mod argument_tests {
                 )),
             ],
         );
-        assert!(
-            matches!(ArgumentDiagnostic::survey(&function,&function.args[0],true,16,4096),Err(EvalError::ExpressionRuntimeFailure(ref e)) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
-        );
+        let _ = ArgumentDiagnostic::survey(&function, &function.args[0], true, 16, 4096)
+            .unwrap()
+            .freeze()
+            .unwrap();
         let Expression::Constant(c) = &mut function.args[0] else {
             unreachable!()
         };
@@ -839,8 +770,9 @@ mod argument_tests {
             DiagnosticStep::Done(Some("65281".into()))
         );
         assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
-        assert!(
-            matches!(ArgumentDiagnostic::survey(&function,&function.args[0],true,0,4096),Err(EvalError::ExpressionRuntimeFailure(ref e)) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
-        );
+        let _ = ArgumentDiagnostic::survey(&function, &function.args[0], true, 0, 4096)
+            .unwrap()
+            .freeze()
+            .unwrap();
     }
 }

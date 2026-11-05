@@ -80,7 +80,7 @@ pub(crate) fn timestamp_diff_cast_arguments_bounded(
             Some(fields[i].code().as_shared_type_name_code()),
         )
         .map_err(string_error)?;
-        if maximum == usize::MAX || work > maximum {
+        if work > maximum {
             return Err(string_error(
                 tidb_query_expr::NativeStringCoercionError::ResourceLimit,
             ));

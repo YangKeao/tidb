@@ -80,15 +80,7 @@ pub(super) fn read_batch(
     let payload = count
         .checked_mul(native_values::HANDLE_BYTES)
         .ok_or_else(|| resource("fast input vector bytes overflow"))?;
-    store.borrow().precheck_import(
-        payload
-            .checked_add(array_bytes::<usize>(
-                count
-                    .checked_add(1)
-                    .ok_or_else(|| resource("fast input offsets overflow"))?,
-            )?)
-            .ok_or_else(|| resource("fast input vector allowance overflow"))?,
-    )?;
+    store.borrow().check_live()?;
     let mut output = ChunkedVecBytes::try_with_capacities(count, payload)
         .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
     let mut unsupported = false;
@@ -319,15 +311,21 @@ pub(super) fn compile(
         unit,
         limits,
     )?;
-    let mut detached = Vec::new();
-    reserve(&mut detached, row_schema.len())?;
-    detached.extend(row_schema.iter().map(snapshot_field_type));
+    #[cfg(test)]
+    let detached = {
+        let mut detached = Vec::new();
+        reserve(&mut detached, row_schema.len())?;
+        detached.extend(row_schema.iter().map(snapshot_field_type));
+        detached
+    };
     Ok(PreparedFast {
         source: Arc::new(BatchSource {
             owner: Arc::clone(&suite.program),
+            #[cfg(test)]
             root_identity: root as *const Expression as usize,
             calculated_slot,
             output_index: suite.program.calculated_output_indexes[calculated_slot],
+            #[cfg(test)]
             row_schema: detached.into_boxed_slice(),
             plan: prepared.source,
         }),
@@ -351,10 +349,7 @@ fn compile_plan<'a, N: SourceReference<'a>>(
         return Err(binding("fast root is outside the priority arithmetic shape").into());
     }
     profile_shape(root, limits)?;
-    let mut budget = Budget {
-        used: 0,
-        max: limits.max_metadata_bytes,
-    };
+    let mut budget = Budget { used: 0 };
     if let Storage::Schema(fields) = storage {
         for field in fields {
             budget.field(field, 1)?;
@@ -376,9 +371,6 @@ fn compile_plan<'a, N: SourceReference<'a>>(
         force_input,
     }) = pending.pop()
     {
-        if depth > limits.tree.max_depth || arena.len() >= limits.tree.max_nodes {
-            return Err(resource("fast source tree policy exceeded").into());
-        }
         budget.array::<Arena>(1)?;
         budget.array::<NodeRecord>(1)?;
         budget.array::<LocalExpr>(1)?;
@@ -584,7 +576,7 @@ fn compile_plan<'a, N: SourceReference<'a>>(
         return Err(binding("fast source is not one tree").into());
     }
     let expr = stack.pop().expect("one root");
-    let sites = lowered_call_sites(&expr, sites, limits.tree)?;
+    let sites = lowered_call_sites(&expr, sites)?;
     let facts =
         BatchFacts::sql_native_batch_with_hosts(&expr, &schema, sites, limits.tree, &hosts)?;
     let program = compile_batch(
@@ -645,7 +637,7 @@ pub(super) fn eval_function_with_policies(
     output_index: usize,
     limits: BatchSourceLimits,
     execution: ExecutionLimits,
-    maximum: usize,
+    _maximum: usize,
 ) -> std::result::Result<bool, EvalError> {
     if !function
         .get_static_type()
@@ -666,7 +658,6 @@ pub(super) fn eval_function_with_policies(
         output,
         output_index,
         execution,
-        maximum,
     )
     .map_err(|e| e.into_public_error(crate::ExpressionRuntimeFailurePhase::Invoke))
 }
@@ -677,18 +668,12 @@ fn execute_function(
     output: &mut Chunk,
     output_index: usize,
     execution: ExecutionLimits,
-    maximum: usize,
 ) -> Result<bool> {
     if input.num_rows() == 0 {
         return Ok(prepared.empty_supported);
     }
     let count = input.num_rows();
-    let extent = array_bytes::<usize>(count)?
-        .checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(count)?)
-        .ok_or_else(|| resource("native fast result extent overflow"))?;
-    if extent > maximum {
-        return Err(resource("native fast result extent exceeds policy").into());
-    }
+
     let mut selection = Vec::new();
     selection
         .try_reserve_exact(count)
@@ -702,13 +687,9 @@ fn execute_function(
     cells
         .try_reserve_exact(count)
         .map_err(|_| resource("native fast output allocation failed"))?;
-    let extent = array_bytes::<usize>(selection.capacity())?
-        .checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(
-            cells.capacity(),
-        )?)
-        .ok_or_else(|| resource("native fast reserved extent overflow"))?;
-    let store = RefCell::new(NativeValueStore::new(maximum)?);
-    store.borrow().precheck_import(extent)?;
+
+    let store = RefCell::new(NativeValueStore::new()?);
+    store.borrow().check_live()?;
     store.borrow_mut().begin_window()?;
     let source = &prepared.source;
     if source.nodes[0].view != NativeView::DecimalFast
@@ -720,7 +701,7 @@ fn execute_function(
         .hosts
         .clone()
         .ok_or_else(|| binding("native fast host catalog missing"))?;
-    let mut hosts = NativeBatchHosts::new(catalog, &source.host_metadata, context, maximum)
+    let mut hosts = NativeBatchHosts::new(catalog, &source.host_metadata, context)
         .with_native_values(Some(&store));
     let mut native = native_source::Coordinates {
         inner: NativeChunk {
@@ -750,15 +731,8 @@ fn execute_function(
     if values.len() != selection.len() {
         return Err(binding("native fast result length differs").into());
     }
-    let retained = extent
-        .checked_add(
-            values
-                .retained_heap_bytes()
-                .ok_or_else(|| resource("native fast token extent overflow"))?,
-        )
-        .ok_or_else(|| resource("native fast retained extent overflow"))?;
+
     let stored = store.borrow();
-    stored.precheck_import(retained)?;
     let mut unsupported = false;
     for (occurrence, &input_row) in selection.iter().enumerate() {
         let token = values
@@ -815,6 +789,7 @@ impl PreparedBatch {
     /// Execute native's priority coefficient stage before the vector flag.
     /// false is exclusively the stage's typed Unsupported outcome. Every
     /// SDK/resource error returns Err and cannot select a different program.
+    #[cfg(test)]
     pub(super) fn execute_decimal_priority(
         &mut self,
         native_ctx: &dyn Columns,
@@ -822,36 +797,40 @@ impl PreparedBatch {
         input: &Chunk,
         output: &mut Chunk,
     ) -> Result<bool> {
+        let selection = self.selection.clone();
+        self.execute_selected_decimal_priority(native_ctx, ctx, input, output, &selection)
+    }
+    pub(super) fn execute_selected_decimal_priority(
+        &mut self,
+        native_ctx: &dyn Columns,
+        ctx: &mut EvalContext,
+        input: &Chunk,
+        output: &mut Chunk,
+        selection: &[usize],
+    ) -> Result<bool> {
         let Some(profile) = self.fast_profile.as_ref() else {
             return Ok(false);
         };
-        if self.selection.is_empty() {
+        if selection.is_empty() {
             return Ok(profile.empty_supported);
         }
         let source = Arc::clone(&profile.source);
         if !profile.program.requires_whole_selection() {
             return Err(binding("fast priority program lost its whole-selection contract").into());
         }
-        let store = RefCell::new(NativeValueStore::new(
-            self.max_materialization_retained_bytes,
-        )?);
+        let store = RefCell::new(NativeValueStore::new()?);
         store.borrow_mut().begin_window()?;
         let catalog = source
             .hosts
             .clone()
             .ok_or_else(|| binding("fast priority host catalog missing"))?;
-        let mut hosts = NativeBatchHosts::new(
-            catalog,
-            &source.host_metadata,
-            native_ctx,
-            self.max_materialization_retained_bytes,
-        )
-        .with_native_values(Some(&store));
+        let mut hosts = NativeBatchHosts::new(catalog, &source.host_metadata, native_ctx)
+            .with_native_values(Some(&store));
         let mut native = NativeChunk {
             source: &source,
             native_values: Some(&store),
             input,
-            selection: &self.selection,
+            selection: selection,
         };
         let mut checked = CheckedInputs {
             source: &mut native,
@@ -866,7 +845,7 @@ impl PreparedBatch {
                 self.limits,
                 ctx,
                 input.physical_rows(),
-                &self.selection,
+                selection,
                 &mut checked,
             );
         drop(checked);
@@ -876,7 +855,7 @@ impl PreparedBatch {
         let VectorValue::Bytes(values) = result.map_err(BatchFailure::from)? else {
             return Err(binding("fast priority result is not a capability vector").into());
         };
-        if values.len() != self.selection.len() {
+        if values.len() != selection.len() {
             return Err(binding("fast priority result length differs").into());
         }
         self.windows = self.windows.saturating_add(1);
@@ -889,16 +868,12 @@ impl PreparedBatch {
             )
             .unwrap_or(u64::MAX),
         );
-        let base = values
-            .retained_heap_bytes()
-            .ok_or_else(|| resource("fast priority vector size overflow"))?
-            .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-            .ok_or_else(|| resource("fast priority selection allowance overflow"))?;
-        let count = self.selection.len();
+
+        let count = selection.len();
         let mut unsupported = false;
         {
             let stored = store.borrow();
-            for (occurrence, &input_row) in self.selection.iter().enumerate() {
+            for (occurrence, &input_row) in selection.iter().enumerate() {
                 let token = values
                     .get(occurrence)
                     .ok_or_else(|| binding("fast priority wire NULL is not a result"))?;
@@ -920,20 +895,12 @@ impl PreparedBatch {
         if unsupported {
             return Ok(false);
         }
-        self.accept_retained(
-            base.checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(count)?)
-                .ok_or_else(|| resource("fast priority output allowance overflow"))?,
-        )?;
+
         let mut cells = Vec::new();
         reserve(&mut cells, count)?;
-        self.accept_retained(
-            base.checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(
-                cells.capacity(),
-            )?)
-            .ok_or_else(|| resource("fast priority reserved output allowance overflow"))?,
-        )?;
+
         let stored = store.borrow();
-        for (occurrence, &input_row) in self.selection.iter().enumerate() {
+        for (occurrence, &input_row) in selection.iter().enumerate() {
             let token = values
                 .get(occurrence)
                 .ok_or_else(|| binding("fast priority wire NULL is not a result"))?;
@@ -1059,7 +1026,7 @@ mod tests {
                             },
                         )
                         .unwrap();
-                        let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+                        let store = RefCell::new(NativeValueStore::new().unwrap());
                         store.borrow_mut().begin_window().unwrap();
                         let source = &prepared.source;
                         let context = Context;
@@ -1067,7 +1034,6 @@ mod tests {
                             source.hosts.clone().unwrap(),
                             &source.host_metadata,
                             &context,
-                            64 << 20,
                         )
                         .with_native_values(Some(&store));
                         let mut native = NativeChunk {
@@ -1235,15 +1201,7 @@ mod tests {
             input.set_sel(Some(selection));
             let mut output = Chunk::new_with_capacity(std::slice::from_ref(&decimal), 0);
             let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                execute_function(
-                    &mut prepared,
-                    &Context,
-                    &input,
-                    &mut output,
-                    0,
-                    execution,
-                    maximum,
-                )
+                execute_function(&mut prepared, &Context, &input, &mut output, 0, execution)
             }));
             if input.sel().unwrap() == [usize::MAX] {
                 assert!(actual.is_err());

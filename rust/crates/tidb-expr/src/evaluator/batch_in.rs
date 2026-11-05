@@ -106,11 +106,6 @@ impl NativeBatchHosts<'_> {
         let typed = metadata.domain().is_some();
         let mut state = state;
         if index == 0 || typed {
-            let bytes = self
-                .retained_bytes()?
-                .checked_add(native_values::HANDLE_BYTES)
-                .ok_or_else(|| resource("IN capability reserve overflow"))?;
-            self.check_bytes(bytes)?;
             let handle = token
                 .try_into()
                 .map_err(|_| binding("IN token width differs"))?;
@@ -126,20 +121,12 @@ impl NativeBatchHosts<'_> {
                 .try_reserve_exact(1)
                 .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
             tokens.push(handle);
-            self.check_bytes(self.retained_bytes()?)?;
         }
         if !typed && index == 0 {
-            let base = self.retained_bytes()?;
-            let work = window_values::conversion_work_bound(
-                store
-                    .borrow()
-                    .get(token, NativeValueRole::CharInput, origin)?,
-                16,
-            )?;
-            self.check_bytes(
-                base.checked_add(work)
-                    .ok_or_else(|| resource("IN probe allowance overflow"))?,
-            )?;
+            store
+                .borrow()
+                .get(token, NativeValueRole::CharInput, origin)?;
+
             let value =
                 store
                     .borrow()
@@ -171,23 +158,13 @@ impl NativeBatchHosts<'_> {
                 node: metadata.arguments[0].node,
                 row,
             };
-            let base = self.retained_bytes()?;
-            let work = {
-                let store = store.borrow();
-                window_values::conversion_work_bound(
-                    store.get(&left_token, NativeValueRole::CharInput, left_origin)?,
-                    16,
-                )?
-                .checked_add(window_values::conversion_work_bound(
-                    store.get(token, NativeValueRole::CharInput, origin)?,
-                    16,
-                )?)
-                .ok_or_else(|| resource("IN comparison allowance overflow"))?
-            };
-            let live = base
-                .checked_add(work)
-                .ok_or_else(|| resource("IN comparison live bytes overflow"))?;
-            self.check_bytes(live)?;
+
+            {
+                let values = store.borrow();
+                values.get(&left_token, NativeValueRole::CharInput, left_origin)?;
+                values.get(token, NativeValueRole::CharInput, origin)?;
+            }
+
             let (left, right) = {
                 let store = store.borrow();
                 (
@@ -208,7 +185,7 @@ impl NativeBatchHosts<'_> {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
-            let compared = prepared.compute(self.max_retained_bytes - live)?;
+            let compared = prepared.compute(usize::MAX)?;
             let mut actual = state.ok_or_else(|| binding("IN membership state absent"))?;
             actual.observe(compared.map_or(
                 tidb_query_expr::NativeInControlValue::Null,
@@ -257,15 +234,8 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(
-            id,
-            result,
-            metadata.output_node,
-            metadata.output_role,
-            row,
-            self.retained_bytes()?,
-        )
-        .map(HostStep::Ready)
+        self.finish_native_value(id, result, metadata.output_node, metadata.output_role, row)
+            .map(HostStep::Ready)
     }
     fn finish_typed_in(
         &mut self,
@@ -285,12 +255,7 @@ impl NativeBatchHosts<'_> {
         let store = self
             .native_values
             .ok_or_else(|| binding("typed IN store absent"))?;
-        let base = self.retained_bytes()?;
-        let mut retained = array_bytes::<Datum>(tokens.len())?;
-        self.check_bytes(
-            base.checked_add(retained)
-                .ok_or_else(|| resource("typed IN vector size overflow"))?,
-        )?;
+
         let mut values = Vec::new();
         values
             .try_reserve_exact(tokens.len())
@@ -300,21 +265,6 @@ impl NativeBatchHosts<'_> {
                 node: argument.node,
                 row: task.row,
             };
-            let payload = native_payload_bytes(store.borrow().get(
-                token,
-                NativeValueRole::CharInput,
-                origin,
-            )?)?;
-            let charge = payload
-                .checked_mul(2)
-                .ok_or_else(|| resource("typed IN copy allowance overflow"))?;
-            retained = retained
-                .checked_add(charge)
-                .ok_or_else(|| resource("typed IN retained size overflow"))?;
-            self.check_bytes(
-                base.checked_add(retained)
-                    .ok_or_else(|| resource("typed IN live size overflow"))?,
-            )?;
             values.push(store.borrow().clone_for_kernel(
                 token,
                 NativeValueRole::CharInput,
@@ -324,12 +274,6 @@ impl NativeBatchHosts<'_> {
         // Every real source is now available. Only now perform ALL casts in
         // order, even if the first is NULL or an earlier value would match.
         for (index, (value, argument)) in values.iter_mut().zip(&metadata.arguments).enumerate() {
-            let work = window_values::conversion_work_bound(value, 16)?;
-            self.check_bytes(
-                base.checked_add(retained)
-                    .and_then(|n| n.checked_add(work))
-                    .ok_or_else(|| resource("typed IN cast allowance overflow"))?,
-            )?;
             let converted = match domain {
                 NativeInTypedDomain::Datetime | NativeInTypedDomain::Timestamp => {
                     crate::cast::cast_arg_as_datetime(value, argument.field.as_ref(), self.context)
@@ -348,18 +292,7 @@ impl NativeBatchHosts<'_> {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
-            retained = retained
-                .checked_sub(
-                    native_payload_bytes(value)?
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("typed IN old charge overflow"))?,
-                )
-                .and_then(|n| n.checked_add(native_payload_bytes(&converted).ok()?.checked_mul(2)?))
-                .ok_or_else(|| resource("typed IN converted retention overflow"))?;
-            self.check_bytes(
-                base.checked_add(retained)
-                    .ok_or_else(|| resource("typed IN converted size overflow"))?,
-            )?;
+
             *value = converted;
         }
         match crate::tikv::eval_in_typed_values_in(self.context, domain, &values) {

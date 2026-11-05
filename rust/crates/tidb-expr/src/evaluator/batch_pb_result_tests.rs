@@ -479,7 +479,6 @@ fn effective_parameter_owner(
 #[test]
 fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
     if isolate_common_corpus("stateful_tests::pb_regexp_tests::result_tests::pb_result_source_ordinary_controls_and_same_cap_recovery"){return;}
-    std::panic::set_hook(Box::new(|_| {}));
     let mut count = 0;
     for (name, arity) in [("regexp", 2), ("regexp_like", 2), ("regexp_like", 3)] {
         for result in [8, 5, 246, 245, 253, 6, 13, 16, 247, 248] {
@@ -583,7 +582,7 @@ fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = RegexpSourceContext::new(
             true,
             [
@@ -596,21 +595,49 @@ fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
         let mut first = input(&None);
         let mut output = output_for(&field);
         output.append_null(0);
-        let failure = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            failure.local_error(),
-            Some(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(output.num_rows(), 1);
+        let native = RegexpSourceContext::new(true, ctx.base.values.clone(), 0);
+        let mut original_input = input(&None);
+        let mut original_output = output_for(&field);
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
+        if got.starts_with("PANIC:") {
+            // The native BIT presentation panic poisons this explicit Ready
+            // scope. Keep that failure, then reuse the program in a new scope.
+            ctx.base.values[0] = Datum::Null;
+            let mut retry_input = input(&None);
+            let mut retry_output = output_for(&field);
+            let retry = session_read_outcome(|| {
+                prepared
+                    .run(
+                        &owner,
+                        &ctx,
+                        &mut EvalContext::default(),
+                        &mut retry_input,
+                        &mut retry_output,
+                        &[string_ty()],
+                    )
+                    .map_err(BatchFailure::into_evaluator_error)
+            });
+            assert!(retry.contains("class: ScopePoisoned"), "{retry}");
+            ctx = RegexpSourceContext::new(true, native.base.values.clone(), 0);
+        }
         for value in [Datum::Null, Datum::new_string("abc")] {
             ctx.base.values[0] = value;
             ctx.base.values[1] = Datum::new_string("^a");
@@ -628,7 +655,6 @@ fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
             let mut b = input(&None);
             let mut right = output_for(&field);
             right.append_null(0);
-            let mut resource = false;
             let got = session_read_outcome(|| {
                 prepared
                     .run(
@@ -639,30 +665,12 @@ fn pb_result_source_ordinary_controls_and_same_cap_recovery() {
                         &mut right,
                         &[string_ty()],
                     )
-                    .map_err(|error| {
-                        resource = error.refusal() == BatchRefusal::Resource;
-                        error.into_evaluator_error()
-                    })
+                    .map_err(BatchFailure::into_evaluator_error)
             });
-            if result == 16 && !ctx.base.values[0].is_null() {
-                // The existing BIT return formatter reserves 255 bytes of
-                // padding work. Its fixed 16KiB allowance still refuses this
-                // non-NULL conversion; NULL recovery above remains exact.
-                assert!(resource);
-                assert_eq!(right.num_rows(), 1);
-                assert_eq!(
-                    prepared.workers[0].max_materialization_retained_bytes,
-                    16 * 1024
-                );
-                continue;
-            }
+
             assert_eq!(got, expected);
             assert_eq!(right.column(0), left.column(0));
             assert_eq!(ctx.snapshot(), old.snapshot());
-            assert_eq!(
-                prepared.workers[0].max_materialization_retained_bytes,
-                16 * 1024
-            );
         }
     }
 }
@@ -692,9 +700,7 @@ fn pb_result_source_presentation_auth_callbacks_and_cleanup() {
         &[],
         true,
         941,
-        limits(),
         ExecutionLimits::default(),
-        1 << 20,
         true,
     )
     .unwrap();
@@ -753,9 +759,9 @@ fn pb_result_source_presentation_auth_callbacks_and_cleanup() {
             _ => forged.result_type = Some(FieldType::new(FieldTypeCode::Json)),
         };
         let metadata = vec![NativeHostMetadata::RegexpValues(Box::new(forged))];
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
-        let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &NoReady, 8192)
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &NoReady)
             .with_native_values(Some(&store))
             .with_constant_probes(&source.host_probes);
         assert!(matches!(
@@ -811,7 +817,7 @@ fn pb_result_source_presentation_auth_callbacks_and_cleanup() {
         }
     }
     for mode in 0..5 {
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = Ctx {
             store: &store,
@@ -819,10 +825,9 @@ fn pb_result_source_presentation_auth_callbacks_and_cleanup() {
             mode,
             calls: Cell::new(0),
         };
-        let mut hosts =
-            NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &ctx, 64 * 1024)
-                .with_native_values(Some(&store))
-                .with_constant_probes(&source.host_probes);
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &ctx)
+            .with_native_values(Some(&store))
+            .with_constant_probes(&source.host_probes);
         let mut eval = EvalContext::default();
         let HostStart::Pending { task, request } = hosts
             .start(
@@ -850,7 +855,7 @@ fn pb_result_source_presentation_auth_callbacks_and_cleanup() {
                 },
             )
             .unwrap();
-        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
         assert!(
             matches!(hosts.resume(&mut eval,&task,HostArgReply{index:0,field_type:&sig.arg_types[0],values:&input}).unwrap(),HostStep::NeedArg(request)if request.index==1)
         );
@@ -865,7 +870,7 @@ fn pb_result_source_presentation_auth_callbacks_and_cleanup() {
                 },
             )
             .unwrap();
-        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
         struct Cancel<'a, 'b> {
             hosts: &'a mut NativeBatchHosts<'b>,
             task: &'a tidb_query_expr::local::HostTaskId,

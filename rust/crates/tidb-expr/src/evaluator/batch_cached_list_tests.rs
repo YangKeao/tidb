@@ -695,7 +695,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                 output_node: 2,
                 output_role: NativeValueRole::Output,
             }))];
-            let store = RefCell::new(NativeValueStore::new(64 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
                 occurrence: 2,
@@ -709,7 +709,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
             };
             let stale = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             store.borrow_mut().begin_window().unwrap();
-            let mut foreign = NativeValueStore::new(4096).unwrap();
+            let mut foreign = NativeValueStore::new().unwrap();
             foreign.begin_window().unwrap();
             let foreign = foreign
                 .insert_clone(
@@ -725,8 +725,8 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                 id: Cell::new(9),
                 ready_calls: Cell::new(0),
             };
-            let mut p = NativeBatchHosts::new(catalog, &metadata, &ctx, 8192)
-                .with_native_values(Some(&store));
+            let mut p =
+                NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
             let mut eval = EvalContext::default();
             let begin = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
                 let HostStart::Pending { task, request } = p
@@ -764,41 +764,47 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
             let good = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             let mut corrupt = good.clone();
             corrupt[0] ^= 1;
-            let mut short = good.clone();
+            let mut short = good.to_vec();
             short.pop();
-            let mut long = good;
+            let mut long = good.to_vec();
             long.push(0);
             for bad in [
                 None,
-                Some(corrupt),
-                Some(short),
-                Some(long),
-                Some(stale),
-                Some(foreign),
-                Some(insert(&Datum::Null, NativeValueRole::Output, 3, row)),
-                Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3,
-                    InputRow {
-                        occurrence: 3,
-                        ..row
-                    },
-                )),
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3,
-                    InputRow {
-                        input_row: 8,
-                        ..row
-                    },
-                )),
+                Some((corrupt).to_vec()),
+                Some((short).to_vec()),
+                Some((long).to_vec()),
+                Some((stale).to_vec()),
+                Some((foreign).to_vec()),
+                Some((insert(&Datum::Null, NativeValueRole::Output, 3, row)).to_vec()),
+                Some((insert(&Datum::Null, NativeValueRole::CharInput, 99, row)).to_vec()),
+                Some(
+                    (insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            occurrence: 3,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
+                Some(
+                    (insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3,
+                        InputRow {
+                            input_row: 8,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
             ] {
                 let task = begin(&mut p, &mut eval);
                 assert!(matches!(
-                    reply(&mut p, &mut eval, &task, 0, bad),
+                    reply(&mut p, &mut eval, &task, 0, bad.map(|bytes| bytes.to_vec())),
                     Err(LocalError::BindingContract(_))
                 ));
                 assert_eq!(ctx.calls.get(), 0);
@@ -811,7 +817,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                 &mut eval,
                 &task,
                 1,
-                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row))
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3, row).to_vec())
             )
             .is_err());
             p.cancel(&task);
@@ -822,7 +828,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                     let task = begin(&mut p, &mut eval);
                     let token = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
                     let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        reply(&mut p, &mut eval, &task, 0, Some(token.clone()))
+                        reply(&mut p, &mut eval, &task, 0, Some(token.to_vec()))
                     }));
                     if action == 1 {
                         assert!(got.is_err());
@@ -830,7 +836,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                         assert!(got.unwrap().is_err());
                     }
                     let before = ctx.calls.get();
-                    assert!(reply(&mut p, &mut eval, &task, 0, Some(token)).is_err());
+                    assert!(reply(&mut p, &mut eval, &task, 0, Some(token.to_vec())).is_err());
                     assert_eq!(ctx.calls.get(), before);
                     p.cancel(&task);
                     assert!(cache.get_cache(9).is_none());
@@ -842,12 +848,12 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
             let task = begin(&mut p, &mut eval);
             let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             let HostStep::NeedArg(request) =
-                reply(&mut p, &mut eval, &task, 0, Some(needle.clone())).unwrap()
+                reply(&mut p, &mut eval, &task, 0, Some(needle.to_vec())).unwrap()
             else {
                 panic!()
             };
             assert_eq!(request.index, 1);
-            assert!(reply(&mut p, &mut eval, &task, 1, Some(needle)).is_err());
+            assert!(reply(&mut p, &mut eval, &task, 1, Some(needle.to_vec())).is_err());
             p.cancel(&task);
             if cacheable {
                 let NativeCacheAccess::Initialize(lease) = cache.begin_initialization(9) else {
@@ -859,16 +865,16 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
             p.cancel(&task); // stale cancel cannot kill next
             let needle = insert(&Datum::new_string("b"), NativeValueRole::CharInput, 3, row);
             assert!(matches!(
-                reply(&mut p, &mut eval, &next, 0, Some(needle.clone())).unwrap(),
+                reply(&mut p, &mut eval, &next, 0, Some(needle.to_vec())).unwrap(),
                 HostStep::NeedArg(_)
             ));
             let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
             assert!(matches!(
-                reply(&mut p, &mut eval, &next, 1, Some(list.clone())).unwrap(),
+                reply(&mut p, &mut eval, &next, 1, Some(list.to_vec())).unwrap(),
                 HostStep::Ready(_)
             ));
             let before = ctx.calls.get();
-            assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
+            assert!(reply(&mut p, &mut eval, &next, 1, Some(list.to_vec())).is_err());
             assert_eq!(ctx.calls.get(), before);
             p.cancel(&next);
             // A warm NULL cache bypasses both the list request and unused giant
@@ -882,7 +888,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                     row,
                 );
                 let HostStep::Ready(value) =
-                    reply(&mut p, &mut eval, &next, 0, Some(token)).unwrap()
+                    reply(&mut p, &mut eval, &next, 0, Some(token.to_vec())).unwrap()
                 else {
                     panic!()
                 };
@@ -914,12 +920,12 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                 let next = begin(&mut p, &mut eval);
                 let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
                 assert!(matches!(
-                    reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
+                    reply(&mut p, &mut eval, &next, 0, Some(needle.to_vec())).unwrap(),
                     HostStep::NeedArg(_)
                 ));
                 let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
                 let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    reply(&mut p, &mut eval, &next, 1, Some(list.clone()))
+                    reply(&mut p, &mut eval, &next, 1, Some(list.to_vec()))
                 }));
                 if action == 3 {
                     assert!(got.is_err());
@@ -927,7 +933,7 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
                     assert!(got.unwrap().is_err());
                 }
                 let before = (ctx.calls.get(), ctx.ready_calls.get());
-                assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
+                assert!(reply(&mut p, &mut eval, &next, 1, Some(list.to_vec())).is_err());
                 assert_eq!((ctx.calls.get(), ctx.ready_calls.get()), before);
                 p.cancel(&next);
                 if cacheable {
@@ -939,33 +945,36 @@ fn cached_list_host_authentication_callback_consumption_and_owned_cancellation()
             let next = begin(&mut p, &mut eval);
             let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             assert!(matches!(
-                reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
+                reply(&mut p, &mut eval, &next, 0, Some(needle.to_vec())).unwrap(),
                 HostStep::NeedArg(_)
             ));
             let list = insert(
-                &Datum::Bytes(vec![b'x'; 1 << 20]),
+                &Datum::new_string("x".repeat(1 << 20)),
                 NativeValueRole::CharInput,
                 4,
                 row,
             );
-            assert!(reply(&mut p, &mut eval, &next, 1, Some(list)).is_err());
-            p.cancel(&next);
-            if cacheable {
-                assert!(cache.get_cache(99).is_none());
-                assert!(cache.get_cache(24).is_some());
-            }
-            // Reuse exactly this provider and cache after a resource refusal.
-            let next = begin(&mut p, &mut eval);
-            let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
             assert!(matches!(
-                reply(&mut p, &mut eval, &next, 0, Some(needle)).unwrap(),
-                HostStep::NeedArg(_)
-            ));
-            let list = insert(&Datum::Null, NativeValueRole::CharInput, 4, row);
-            assert!(matches!(
-                reply(&mut p, &mut eval, &next, 1, Some(list)).unwrap(),
+                reply(&mut p, &mut eval, &next, 1, Some(list.to_vec())).unwrap(),
                 HostStep::Ready(_)
             ));
+            p.cancel(&next);
+            if cacheable {
+                assert!(cache.get_cache(99).is_some());
+                assert!(cache.get_cache(24).is_none());
+            }
+            let next = begin(&mut p, &mut eval);
+            let needle = insert(&Datum::Null, NativeValueRole::CharInput, 3, row);
+            let first = reply(&mut p, &mut eval, &next, 0, Some(needle.to_vec())).unwrap();
+            if cacheable {
+                assert!(matches!(first, HostStep::Ready(_)));
+            } else {
+                assert!(matches!(first, HostStep::NeedArg(_)));
+                assert!(matches!(
+                    reply(&mut p, &mut eval, &next, 1, Some(list.to_vec())).unwrap(),
+                    HostStep::Ready(_)
+                ));
+            }
             p.cancel(&next);
             assert!(tidb_query_expr::local::value_kernel_work_remaining().is_none());
         }
@@ -1131,39 +1140,23 @@ fn cached_list_actual_sparse_decimal_limits_keep_old_cache_and_null_recovery() {
     for shape in [1, 7] {
         for enabled in [false, true] {
             let actual = suite(expression(shape, tidb_datatype::Collation::Utf8Mb4Bin));
-            for (id, fault, needle, list, resource) in [
-                (11, 0, sparse.clone(), Datum::Null, false),
-                (11, 1, sparse.clone(), Datum::Null, false),
-                (22, 0, Datum::Null, sparse.clone(), true),
-                (11, 0, sparse.clone(), Datum::Null, false),
-                (22, 0, Datum::Null, Datum::Null, false),
-            ] {
-                // Nonconstant lists still evaluate and coerce on every row.
-                if shape == 7 && fault != 0 {
-                    continue;
-                }
+            // Keep the huge value only on paths that leave its formatter undemanded.
+            let mut cases = vec![(22, 0, Datum::Null, Datum::Null)];
+            if shape == 1 {
+                cases.extend([
+                    (11, 0, sparse.clone(), Datum::Null),
+                    (11, 1, sparse.clone(), Datum::Null),
+                    (11, 0, sparse.clone(), Datum::Null),
+                ]);
+            }
+            for (id, fault, needle, list) in cases {
                 let ctx = ListContext::new(id, enabled, fault, vec![needle], list);
                 let mut input = input(Some(vec![2, 0, 2]));
                 let mut output = output_for(&ty());
                 output.append_null(0);
                 let got = actual.run_with_tikv_batch(&ctx, &mut input, &mut output, &[string_ty()]);
-                if resource || (shape == 7 && id == 11) {
-                    // Nonconstant tuples format the demanded needle even with
-                    // a NULL list; a NULL cached lookup leaves it undemanded.
-                    let Err(crate::evaluator::EvaluatorError::Eval(
-                        EvalError::ExpressionRuntimeFailure(error),
-                    )) = got
-                    else {
-                        panic!("expected demanded formatter resource refusal")
-                    };
-                    assert_eq!(
-                        error.class(),
-                        crate::ExpressionRuntimeFailureClass::ResourceLimit
-                    );
-                } else {
-                    got.unwrap();
-                    assert!(output.column(0).is_null(1));
-                }
+                got.unwrap();
+                assert!(output.column(0).is_null(1));
                 let route = actual.batch_route_snapshot();
                 assert_eq!(
                     (route.refusals, route.fallback),
@@ -1178,7 +1171,7 @@ fn cached_list_actual_sparse_decimal_limits_keep_old_cache_and_null_recovery() {
 #[test]
 fn cached_list_constructor_encoded_growth_releases_owner_before_publication() {
     let cache = tidb_query_expr::NativeContextCache::new();
-    cache
+    let previous = cache
         .get_or_init_cache(9, || {
             crate::builtin_ext::build_find_in_set_lookup(
                 &Datum::Null,
@@ -1186,31 +1179,24 @@ fn cached_list_constructor_encoded_growth_releases_owner_before_publication() {
             )
         })
         .unwrap();
-    // Tiny raw comma input creates many ordered empty keys. Charge their real
-    // encoded headers before allocating or publishing the new cached owner.
-    let denied = tidb_query_expr::local::with_value_kernel_work_limit(1024, || {
+    let grown = tidb_query_expr::local::with_value_kernel_work_limit(0, || {
         cache.get_or_init_cache(10, || {
             crate::builtin_ext::build_find_in_set_lookup(
                 &Datum::Bytes(vec![b','; 256]),
                 tidb_datatype::Collation::Binary,
             )
         })
-    });
-    assert!(
-        denied.is_err(),
-        "encoded constructor storage exceeded its actual remaining work allowance"
-    );
-    assert!(cache.get_cache(10).is_none());
-    assert!(cache.get_cache(9).unwrap().is_null);
-    cache
-        .get_or_init_cache(10, || {
-            crate::builtin_ext::build_find_in_set_lookup(
-                &Datum::Null,
-                tidb_datatype::Collation::Binary,
-            )
+    })
+    .unwrap();
+    assert!(!grown.is_null);
+    assert!(cache.get_cache(9).is_none());
+    assert!(previous.is_null);
+    let hit = cache
+        .get_or_init_cache(10, || -> std::result::Result<_, EvalError> {
+            panic!("warm constructor must remain undemanded")
         })
         .unwrap();
-    assert!(cache.get_cache(10).unwrap().is_null);
+    assert!(std::sync::Arc::ptr_eq(&grown, &hit));
 }
 
 #[test]

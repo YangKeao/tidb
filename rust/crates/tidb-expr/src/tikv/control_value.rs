@@ -53,27 +53,14 @@ fn payload(value: &Datum) -> Result<usize, EvalError> {
         | Datum::Duration(_) => 0,
     })
 }
-fn check(value: &Datum, maximum: usize, copies: usize) -> Result<(), EvalError> {
-    if maximum == usize::MAX {
-        return Err(resource("control ownership requires a finite allowance"));
-    }
-    let bytes = payload(value)?
-        .checked_mul(copies)
-        .ok_or_else(|| resource("control ownership allowance overflow"))?;
-    if bytes > maximum {
-        return Err(resource("control selected ownership exceeds allowance"));
-    }
-    Ok(())
-}
+
 /// Move actual selected ownership; no frame or second selected-value copy.
-pub(super) fn owned(value: Datum, maximum: usize) -> Result<Datum, EvalError> {
-    check(&value, maximum, 1)?;
+pub(super) fn owned(value: Datum) -> Result<Datum, EvalError> {
     Ok(value)
 }
 /// Admit the original owner plus its selected copy before cloning. Immutable
 /// backing may be shared; this is a logical allowance, not allocator-peak recovery.
-pub(super) fn copy(value: &Datum, maximum: usize) -> Result<Datum, EvalError> {
-    check(value, maximum, 2)?;
+pub(super) fn copy(value: &Datum) -> Result<Datum, EvalError> {
     Ok(value.clone())
 }
 /// The actual remaining list is empty, just as in the existing no-arg RPN recipe.
@@ -98,68 +85,13 @@ pub(crate) fn coerce_result_bounded(
     name: &str,
     field: &tidb_datatype::FieldType,
     value: Datum,
-    maximum: usize,
 ) -> Result<Datum, EvalError> {
-    if maximum == usize::MAX {
-        return Err(resource("return coercion requires a finite allowance"));
-    }
-    let bit_integer = field.code() == tidb_datatype::FieldTypeCode::Bit
-        && matches!(value, Datum::Int(_) | Datum::UInt(_));
-    if !value.is_null() && (!crate::scalar_function::same_eval_family(&value, field) || bit_integer)
-    {
-        let input = match tidb_query_expr::native_string_coercion_work(value.as_shared_json_input())
-        {
-            Ok(n) => n,
-            Err(tidb_query_expr::NativeStringCoercionError::ResourceLimit) => {
-                return Err(resource("return formatter extent overflow"))
-            }
-            // ConvertTo owns unsupported/UTF-8 error disposition, including its
-            // existing fallback. A preflight must not replace it with an error.
-            Err(tidb_query_expr::NativeStringCoercionError::Unsupported(_)) => {
-                payload(&value)?.max(128)
-            }
-        };
-        use tidb_query_datatype::codec::native_eval_type::{
-            native_decimal_target_shape, NativeDecimalTargetShape,
-        };
-        let padding = if bit_integer {
-            255
-        } else {
-            match field.code() {
-                tidb_datatype::FieldTypeCode::NewDecimal => match native_decimal_target_shape(
-                    field.flen(),
-                    field.decimal(),
-                    tidb_datatype::UNSPECIFIED_LENGTH,
-                ) {
-                    // Integer precision can only clamp an already larger input.
-                    // Fraction scale alone can add new coefficient padding.
-                    NativeDecimalTargetShape::Bounded { scale, .. } => scale as usize,
-                    _ => 0,
-                },
-                tidb_datatype::FieldTypeCode::String if field.is_binary_string() => {
-                    usize::try_from(field.flen().max(0))
-                        .map_err(|_| resource("binary return padding extent overflow"))?
-                }
-                // VARCHAR/ordinary CHAR merely truncate; a huge declared width
-                // does not request that many bytes. Time/numeric fields stay fixed.
-                _ => 0,
-            }
-        };
-        let allowance = input
-            .checked_add(padding)
-            .and_then(|n| n.checked_mul(64))
-            .and_then(|n| n.checked_add(4096))
-            .ok_or_else(|| resource("return coercion work extent overflow"))?;
-        if allowance > maximum {
-            return Err(resource("return coercion work allowance exceeded"));
-        }
-    }
     crate::scalar_function::coerce_function_result(name, Some(field), value)
 }
 
 /// Original selected control value boundary, without expression callbacks.
 pub(crate) fn selected_control_value(value: Datum) -> Result<Datum, EvalError> {
-    owned(value, default_budget())
+    owned(value)
 }
 /// CASE's original exhausted-list kernel and contract diagnostic.
 pub(crate) fn exhausted_case_value() -> Result<Datum, EvalError> {

@@ -351,10 +351,7 @@ pub(crate) fn typed_constant_value(
         &warnings,
     );
     let convert = |value: &Datum, code| -> Result<Datum, EvalError> {
-        crate::typed_context_value::charge_numeric_value_work(value)?;
-        if code == FieldTypeCode::Double && matches!(value, Datum::Decimal(_)) {
-            crate::scalar_function::eager_values::charge_string_work(value)?;
-        }
+        if code == FieldTypeCode::Double && matches!(value, Datum::Decimal(_)) {}
         let converted = value
             .convert_to_in_context(&FieldType::new(code), &context, &zone)
             .map_err(|_| {
@@ -368,7 +365,6 @@ pub(crate) fn typed_constant_value(
     match target {
         EvalType::Int => match value {
             Datum::Bit(value) | Datum::BinaryLiteral(value) => {
-                crate::typed_context_value::charge_binary_numeric_work(&value)?;
                 let (value, error) = value.to_int_with_context(&context);
                 if let Some(error) = error {
                     return Err(EvalError::Conversion(error));
@@ -386,7 +382,6 @@ pub(crate) fn typed_constant_value(
         },
         EvalType::Real => match value {
             Datum::BinaryLiteral(value) => {
-                crate::typed_context_value::charge_binary_numeric_work(&value)?;
                 let (value, error) = value.to_int_with_context(&context);
                 if let Some(error) = error {
                     return Err(EvalError::Conversion(error));
@@ -399,20 +394,16 @@ pub(crate) fn typed_constant_value(
             Datum::Real(value) | Datum::Float32(value) => Ok(Datum::Real(value)),
             _ => Err(EvalError::Unsupported("constant is not in its real domain")),
         },
-        EvalType::String => {
-            crate::scalar_function::eager_values::charge_string_work(&value)?;
-            Ok(Datum::String(tidb_datatype::StringDatum::new(
-                value.sql_bytes().map_err(|_| {
-                    EvalError::Unsupported("constant cannot be converted to string")
-                })?,
-                field
-                    .runtime_collator_with_mode(true)
-                    .new_collation()
-                    .unwrap_or(tidb_datatype::Collation::Binary),
-            )))
-        }
+        EvalType::String => Ok(Datum::String(tidb_datatype::StringDatum::new(
+            value
+                .sql_bytes()
+                .map_err(|_| EvalError::Unsupported("constant cannot be converted to string"))?,
+            field
+                .runtime_collator_with_mode(true)
+                .new_collation()
+                .unwrap_or(tidb_datatype::Collation::Binary),
+        ))),
         EvalType::Decimal => {
-            crate::typed_context_value::charge_numeric_value_work(&value)?;
             let (value, error) = value
                 .to_decimal_with_context(&context)
                 .map_err(|_| EvalError::Unsupported("constant cannot be converted to decimal"))?;

@@ -36,6 +36,7 @@ impl FinalTask {
             tokens: Vec::new(),
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(array_bytes::<[u8; native_values::HANDLE_BYTES]>(
@@ -91,9 +92,7 @@ impl NativeBatchHosts<'_> {
                 .borrow()
                 .get(token, NativeValueRole::CharInput, origin(index)?)?;
         }
-        let base = self.retained_bytes()?;
-        self.check_bytes(base)?;
-        let maximum = self.max_retained_bytes - base;
+
         let SqlDemand::FinalState(mut state) = std::mem::replace(
             &mut self.slots[id.slot]
                 .task
@@ -129,8 +128,7 @@ impl NativeBatchHosts<'_> {
                 })
                 .transpose()?
         };
-        let mut remaining = maximum;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+        let result = (|| {
             let result = (|| -> std::result::Result<Progress, EvalError> {
                 let result = match meta.name {
                     "rand" => {
@@ -175,14 +173,10 @@ impl NativeBatchHosts<'_> {
                     meta.name,
                     meta.result_type.as_ref(),
                     result,
-                    tidb_query_expr::local::value_kernel_work_remaining()
-                        .expect("finite final state scope"),
                 )?))
             })();
-            remaining = tidb_query_expr::local::value_kernel_work_remaining()
-                .expect("finite preparation scope");
-            crate::scalar_function::eager_values::audit_work_result(result)
-        });
+            result
+        })();
         // A callback may have reset the store. No Ref is live during services;
         // authenticate the leased slot as well as every earlier demanded input.
         for (i, previous) in state.tokens.iter().enumerate() {
@@ -199,22 +193,16 @@ impl NativeBatchHosts<'_> {
                     .ready_preparation
                     .as_ref()
                     .map(|guard| guard.cache());
-                tidb_query_expr::local::with_value_kernel_work_limit(remaining, || {
+                (|| {
                     let result = (|| {
                         let value = crate::tikv::evaluate_closed_args(cache, operation, args)?
                             .into_bytes()?
                             .map_or(Datum::Null, Datum::new_string);
-                        coerce_optional_value_result(
-                            meta.name,
-                            meta.result_type.as_ref(),
-                            value,
-                            tidb_query_expr::local::value_kernel_work_remaining()
-                                .expect("finite cipher return scope"),
-                        )
-                        .map(Progress::Ready)
+                        coerce_optional_value_result(meta.name, meta.result_type.as_ref(), value)
+                            .map(Progress::Ready)
                     })();
-                    crate::scalar_function::eager_values::audit_work_result(result)
-                })
+                    result
+                })()
             }
             result => result,
         };
@@ -226,15 +214,12 @@ impl NativeBatchHosts<'_> {
         match result {
             Err(error) => self.native_failure(error),
             Ok(Progress::Ready(value)) => self
-                .finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+                .finish_native_value(id, value, meta.output_node, meta.output_role, row)
                 .map(HostStep::Ready),
             Ok(Progress::Cipher(..)) => unreachable!("closed cipher already materialized"),
             Ok(Progress::More) => {
                 state.next = index + 1;
-                self.check_bytes(
-                    base.checked_add(state.retained_bytes()?)
-                        .ok_or_else(|| resource("final state pending extent overflow"))?,
-                )?;
+
                 self.slots[id.slot]
                     .task
                     .as_mut()

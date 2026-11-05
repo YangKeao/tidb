@@ -14,7 +14,7 @@ fn resource() -> EvalError {
     ))
 }
 fn work(maximum: usize, n: usize) -> Result<(), EvalError> {
-    if maximum == usize::MAX || n > maximum {
+    if n > maximum {
         Err(resource())
     } else {
         Ok(())
@@ -784,7 +784,7 @@ pub(crate) fn finish_source(
     } else {
         value
     };
-    super::coerce_result_bounded(op.name(), field, value, maximum)
+    super::coerce_result_bounded(op.name(), field, value)
 }
 
 pub(crate) fn default_budget() -> usize {

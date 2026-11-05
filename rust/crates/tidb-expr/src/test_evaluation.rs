@@ -56,14 +56,14 @@ fn public_default_budget_exhaustion_is_terminal_and_later_call_recovers() {
     use tidb_chunk::row::Row;
     use tidb_datatype::{Datum, FieldType, FieldTypeCode};
     let integer = FieldType::new(FieldTypeCode::LongLong);
-    let arguments = (0..tidb_query_expr::local::CompileLimits::default().max_nodes)
+    let arguments = (0..512)
         .map(|_| Expression::Constant(Constant::new(Datum::Int(7), integer.clone())))
         .collect();
     let mut function = ScalarFunction::new(tidb_ast::CiString::new("coalesce"), integer, arguments);
     let before = shared_entries();
-    let error = function.eval(&NoColumns, Row::empty()).unwrap_err();
-    assert!(
-        matches!(error,EvalError::ExpressionRuntimeFailure(error) if error.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
+    assert_eq!(
+        function.eval(&NoColumns, Row::empty()).unwrap(),
+        Datum::Int(7)
     );
     assert_eq!(shared_entries(), before + 1);
     function.args.truncate(1);

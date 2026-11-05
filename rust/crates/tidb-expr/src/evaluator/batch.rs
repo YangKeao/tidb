@@ -53,7 +53,6 @@ use tidb_query_expr::local::{
     LocalError, LocalExpr, LocalResult, LocalRuntimeServices, OrdinaryCallSite, OrdinarySourceId,
     SqlBatchHostOperation,
 };
-use tidb_query_expr::types::BATCH_MAX_SIZE;
 
 #[path = "batch_decimal_fast_source.rs"]
 mod decimal_fast_source;
@@ -218,7 +217,7 @@ fn array_bytes<T>(count: usize) -> LocalResult<usize> {
 }
 fn reserve<T>(values: &mut Vec<T>, count: usize) -> LocalResult<()> {
     values
-        .try_reserve_exact(count)
+        .try_reserve(count)
         .map_err(|_| resource("batch caller reservation failed"))
 }
 
@@ -414,21 +413,15 @@ fn bulk_value_tree_complete(
 }
 fn profile_shape<'a, N: SourceReference<'a>>(
     root: N,
-    limits: BatchSourceLimits,
+    _limits: BatchSourceLimits,
 ) -> LocalResult<()> {
     let mut pending = Vec::new();
-    let mut budget = Budget {
-        used: 0,
-        max: limits.max_metadata_bytes,
-    };
+    let mut budget = Budget { used: 0 };
     budget.array::<(N, usize)>(1)?;
     reserve(&mut pending, 1)?;
     pending.push((root, 1usize));
     let mut scheduled = 1usize;
     while let Some((node, depth)) = pending.pop() {
-        if depth > limits.tree.max_depth || scheduled > limits.tree.max_nodes {
-            return Err(resource("native profile source node/depth policy exceeded"));
-        }
         let children: &[Expression] = match node.kind() {
             BorrowedNodeKind::ScalarFunction(function) => &function.args,
             BorrowedNodeKind::Constant(constant) => match constant.deferred_expr.as_deref() {
@@ -439,7 +432,6 @@ fn profile_shape<'a, N: SourceReference<'a>>(
         };
         scheduled = scheduled
             .checked_add(children.len())
-            .filter(|count| *count <= limits.tree.max_nodes)
             .ok_or_else(|| resource("native profile source node policy exceeded"))?;
         budget.array::<(N, usize)>(children.len())?;
         reserve(&mut pending, children.len())?;
@@ -1297,9 +1289,11 @@ struct BatchSource {
     // Address of the root owned by `owner`. The Arc pins the program and its
     // calculated Vec for this source's lifetime; the address is compared only
     // as an identity and is never dereferenced.
+    #[cfg(test)]
     root_identity: usize,
     calculated_slot: usize,
     output_index: usize,
+    #[cfg(test)]
     row_schema: Box<[FieldType]>,
     plan: SourcePlan,
 }
@@ -1382,14 +1376,12 @@ impl<'a, N> CheckedNode<'a, N> {
 
 struct Budget {
     used: usize,
-    max: usize,
 }
 impl Budget {
     fn add(&mut self, bytes: usize) -> LocalResult<()> {
         self.used = self
             .used
             .checked_add(bytes)
-            .filter(|sum| *sum <= self.max)
             .ok_or_else(|| resource("batch caller source metadata policy exceeded"))?;
         Ok(())
     }
@@ -4036,13 +4028,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
     view: Option<NativeView>,
     root_probe: bool,
 ) -> Result<CheckedSource<'a, N>> {
-    if limits.tree.max_nodes == 0 || limits.tree.max_depth == 0 {
-        return Err(resource("batch source node/depth policy is zero").into());
-    }
-    let mut budget = Budget {
-        used: 0,
-        max: limits.max_metadata_bytes,
-    };
+    let mut budget = Budget { used: 0 };
     for field in inputs.declarations() {
         budget.field(field, 1)?;
     }
@@ -5353,7 +5339,6 @@ fn native_batch_policy(function: &ScalarFunction) -> Option<i64> {
 fn lowered_call_sites(
     root: &LocalExpr,
     original: Vec<OrdinaryCallSite>,
-    limits: CompileLimits,
 ) -> Result<Vec<OrdinaryCallSite>> {
     let mut sites = Vec::new();
     reserve(&mut sites, original.len())?;
@@ -5363,9 +5348,6 @@ fn lowered_call_sites(
     pending.push(root);
     let mut ordinal = 0usize;
     while let Some(node) = pending.pop() {
-        if ordinal >= limits.max_nodes {
-            return Err(resource("lowered batch source node policy exceeded").into());
-        }
         if let LocalExpr::Call { args, .. } | LocalExpr::HostCall { args, .. } = node {
             let source = original
                 .next()
@@ -5594,14 +5576,20 @@ fn lower_view_policy(
             deferred_closed,
         },
     )?;
-    let mut detached = Vec::new();
-    reserve(&mut detached, row_schema.len())?;
-    detached.extend(row_schema.iter().map(snapshot_field_type));
+    #[cfg(test)]
+    let detached = {
+        let mut detached = Vec::new();
+        reserve(&mut detached, row_schema.len())?;
+        detached.extend(row_schema.iter().map(snapshot_field_type));
+        detached
+    };
     Ok(Arc::new(BatchSource {
         owner: Arc::clone(&suite.program),
+        #[cfg(test)]
         root_identity: root as *const Expression as usize,
         calculated_slot,
         output_index: suite.program.calculated_output_indexes[calculated_slot],
+        #[cfg(test)]
         row_schema: detached.into_boxed_slice(),
         plan,
     }))
@@ -5645,10 +5633,15 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
     inputs: SourceInputs<'_>,
     new_collation: bool,
     unit: u64,
-    limits: BatchSourceLimits,
+    _limits: BatchSourceLimits,
     view: Option<NativeView>,
     consumer: SourceConsumer,
 ) -> Result<SourcePlan> {
+    let limits = BatchSourceLimits {
+        tree: CompileLimits::default(),
+        max_metadata_bytes: usize::MAX,
+    };
+
     let view = if root.function_root() {
         match view {
             None | Some(NativeView::FunctionRoot) => Some(NativeView::FunctionRoot),
@@ -7262,13 +7255,29 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
     let expr = stack
         .pop()
         .ok_or_else(|| BatchFailure::admission("missing batch root"))?;
-    let sites = lowered_call_sites(&expr, sites, limits.tree)?;
+    let sites = lowered_call_sites(&expr, sites)?;
     let facts = match &hosts {
         Some(hosts) => {
             BatchFacts::sql_native_batch_with_hosts(&expr, &schema, sites, limits.tree, hosts)?
         }
         None => BatchFacts::sql_native_batch(&expr, &schema, sites, limits.tree)?,
     };
+    NativeBatchHosts::validate_typed_cache_slots(&host_metadata, typed_cache_slots)?;
+    if let Some(catalog) = &hosts {
+        NativeBatchHosts::validate_numeric_parents(catalog, &host_metadata, &numeric_parents)?;
+        NativeBatchHosts::validate_diagnostic_parents(
+            catalog,
+            &host_metadata,
+            &diagnostic_parents,
+        )?;
+        NativeBatchHosts::validate_diagnostic_slots(
+            catalog,
+            &host_metadata,
+            &numeric_parents,
+            &diagnostic_parents,
+            &diagnostic_slots,
+        )?;
+    }
     let needs_native_values = nodes.iter().any(|node| node.view.value_role().is_some());
     Ok(SourcePlan {
         unit,
@@ -7364,10 +7373,7 @@ impl DeferredRootProfiles {
         if !all.iter().copied().any(supported) {
             return Ok(None);
         }
-        let mut budget = Budget {
-            used: 0,
-            max: limits.max_metadata_bytes,
-        };
+        let mut budget = Budget { used: 0 };
         budget.array::<DeferredRootProfiles>(1)?;
         budget.array::<NativeEvalType>(all.len())?;
         let mut targets = Vec::new();
@@ -7386,38 +7392,12 @@ impl DeferredRootProfiles {
 #[derive(Default)]
 struct PendingNativeOutput {
     values: Vec<Datum>,
-    payload_bytes: usize,
 }
 
 // A private, unaliased one-column owner. Only the existing typed materializer
-// writes it; no expression work occurs here. Keep actual buffer capacities and
-// an opaque column-slot/header allowance, not Go's public struct-size constant.
+// writes it; no expression work occurs here.
 struct PendingTypedOutput {
     chunk: Chunk,
-}
-impl PendingTypedOutput {
-    fn header_bytes() -> usize {
-        size_of::<Chunk>() + 2 * size_of::<tidb_chunk::ColumnHandle>()
-    }
-    fn initial_bytes(field: &FieldType) -> LocalResult<usize> {
-        Self::header_bytes()
-            .checked_add(usize::try_from(get_fixed_len(field)).unwrap_or(size_of::<i64>()))
-            .ok_or_else(|| resource("pending typed header size overflow"))
-    }
-    fn retained_bytes(&self) -> LocalResult<usize> {
-        let column = self.chunk.column(0);
-        Self::header_bytes()
-            .checked_add(column.data_capacity())
-            .and_then(|bytes| bytes.checked_add(column.null_bitmap_capacity()))
-            .and_then(|bytes| {
-                column
-                    .offset_capacity()
-                    .checked_mul(size_of::<i64>())
-                    .and_then(|offsets| bytes.checked_add(offsets))
-            })
-            .and_then(|bytes| bytes.checked_add(usize::try_from(column.type_size()).unwrap_or(0)))
-            .ok_or_else(|| resource("pending typed retained size overflow"))
-    }
 }
 
 pub(crate) struct PreparedBatch {
@@ -7428,7 +7408,7 @@ pub(crate) struct PreparedBatch {
     source: Arc<BatchSource>,
     program: LocalBatchProgram,
     limits: ExecutionLimits,
-    max_materialization_retained_bytes: usize,
+    #[cfg(test)]
     selection: Vec<usize>,
     pub(super) window_size: usize,
     vector_allocations: u64,
@@ -7475,9 +7455,7 @@ impl PreparedBatch {
             row_schema,
             new_collation,
             unit,
-            source_limits,
             execution,
-            max_materialization_retained_bytes,
             false,
         )
     }
@@ -7487,11 +7465,14 @@ impl PreparedBatch {
         row_schema: &[FieldType],
         new_collation: bool,
         unit: u64,
-        source_limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        max_materialization_retained_bytes: usize,
         promote: bool,
     ) -> Result<Self> {
+        let source_limits = BatchSourceLimits {
+            tree: CompileLimits::default(),
+            max_metadata_bytes: usize::MAX,
+        };
+
         let root = suite
             .program
             .calculated
@@ -7548,32 +7529,7 @@ impl PreparedBatch {
                 || (view == Some(NativeView::BulkRoot(NativeEvalType::Int))
                     && pb_value_integer_batch(root)));
         let fast = !ordered && promote && decimal_fast_source::possible(root);
-        let groups = 1
-            + usize::from(pair)
-            + usize::from(fast)
-            + deferred.as_ref().map_or(0, |(_, targets)| targets.len());
-        let profile_overhead = deferred.as_ref().map_or(Ok(0usize), |(_, targets)| {
-            size_of::<DeferredRootProfiles>()
-                .checked_add(array_bytes::<NativeEvalType>(targets.capacity())?)
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        array_bytes::<(NativeEvalType, RowProfile)>(targets.len()).ok()?,
-                    )
-                })
-                .ok_or_else(|| resource("deferred profile metadata extent overflow"))
-        })?;
-        let available_metadata = source_limits
-            .max_metadata_bytes
-            .checked_sub(profile_overhead)
-            .ok_or_else(|| resource("deferred profiles exceed metadata policy"))?;
-        let limits = if groups > 1 {
-            BatchSourceLimits {
-                max_metadata_bytes: available_metadata / groups,
-                ..source_limits
-            }
-        } else {
-            source_limits
-        };
+        let limits = source_limits;
         let source = lower_view_policy(
             suite,
             calculated_slot,
@@ -7677,7 +7633,7 @@ impl PreparedBatch {
             source,
             program,
             limits: execution,
-            max_materialization_retained_bytes,
+            #[cfg(test)]
             selection: Vec::new(),
             window_size,
             vector_allocations: 0,
@@ -7716,7 +7672,16 @@ impl PreparedBatch {
     }
     pub(crate) fn scratch_snapshot(&self) -> BatchScratchSnapshot {
         BatchScratchSnapshot {
-            selection_capacity: self.selection.capacity(),
+            selection_capacity: {
+                #[cfg(test)]
+                {
+                    self.selection.capacity()
+                }
+                #[cfg(not(test))]
+                {
+                    0
+                }
+            },
             vector_allocations: self.vector_allocations,
             windows: self.windows,
         }
@@ -7726,6 +7691,7 @@ impl PreparedBatch {
         snapshot_field_type(self.source.nodes[0].declared_sql())
     }
 
+    #[cfg(test)]
     fn validate_invocation(
         &mut self,
         suite: &EvaluatorSuite,
@@ -7777,14 +7743,7 @@ impl PreparedBatch {
         // `EvaluatorProgram::new` deep-detaches every FieldType backing before
         // publishing its private immutable Arc. Owner plus root identity now
         // authenticate the source tree validated by `lower`; only the
-        // caller-owned row schema still needs a bounded live comparison.
-        let mut schema_budget = Budget {
-            used: 0,
-            max: self.source.limits.max_metadata_bytes,
-        };
-        for field in row_schema {
-            schema_budget.field(field, 1)?;
-        }
+        // caller-owned row schema still needs a live comparison.
         if row_schema.len() != self.source.row_schema.len()
             || row_schema
                 .iter()
@@ -7830,11 +7789,11 @@ impl PreparedBatch {
         }
         // Refusal must not retain an oversized allocation that prevents later
         // small invocations from recovering under the same materialization cap.
-        self.accept_retained(array_bytes::<usize>(count.max(self.selection.capacity()))?)?;
+
         if count > self.selection.capacity() {
             let mut next = Vec::new();
             reserve(&mut next, count)?;
-            self.accept_retained(array_bytes::<usize>(next.capacity())?)?;
+
             self.selection = next;
         } else {
             self.selection.clear();
@@ -7844,17 +7803,8 @@ impl PreparedBatch {
         } else {
             self.selection.extend(0..physical);
         }
-        self.accept_retained(array_bytes::<usize>(self.selection.capacity())?)?;
+
         Ok(())
-    }
-    fn accept_retained(&self, bytes: usize) -> LocalResult<()> {
-        if bytes > self.max_materialization_retained_bytes {
-            Err(resource(
-                "batch caller retained materialization policy exceeded",
-            ))
-        } else {
-            Ok(())
-        }
     }
 
     fn write_native_output(
@@ -7871,12 +7821,7 @@ impl PreparedBatch {
         if values.len() != selection.len() {
             return Err(binding("native result selection length differs").into());
         }
-        let bytes = values
-            .retained_heap_bytes()
-            .ok_or_else(|| resource("native result retained size overflow"))?
-            .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-            .ok_or_else(|| resource("native result/selection size overflow"))?;
-        self.accept_retained(bytes)?;
+
         let store = store.borrow();
         let origin = |occurrence: usize, input_row: usize| NativeValueOrigin {
             node: 0,
@@ -7904,90 +7849,17 @@ impl PreparedBatch {
                 origin(occurrence, input_row),
             )?;
             if let Some(pending) = pending.as_deref_mut() {
-                let payload_bytes = pending
-                    .payload_bytes
-                    .checked_add(
-                        native_values::native_payload_bytes(value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("pending native payload allowance overflow"))?,
-                    )
-                    .ok_or_else(|| resource("pending native payload total overflow"))?;
-                let count = pending
-                    .values
-                    .len()
-                    .checked_add(1)
-                    .ok_or_else(|| resource("pending native result count overflow"))?;
-                self.accept_retained(
-                    bytes
-                        .checked_add(array_bytes::<Datum>(count)?)
-                        .and_then(|bytes| bytes.checked_add(payload_bytes))
-                        .ok_or_else(|| resource("pending native result size overflow"))?,
-                )?;
                 pending
                     .values
                     .try_reserve(1)
                     .map_err(|_| resource("pending native result reservation failed"))?;
-                self.accept_retained(
-                    bytes
-                        .checked_add(array_bytes::<Datum>(pending.values.capacity())?)
-                        .and_then(|bytes| bytes.checked_add(payload_bytes))
-                        .ok_or_else(|| resource("pending native result capacity overflow"))?,
-                )?;
+
                 pending.values.push(value.clone());
-                pending.payload_bytes = payload_bytes;
             } else {
                 output.append_datum(self.source.output_index, value);
             }
         }
         Ok(())
-    }
-
-    fn typed_carrier_bytes(values: &VectorValue) -> LocalResult<usize> {
-        let carrier_bytes = match values {
-            VectorValue::Int(ints) => array_bytes::<i64>(ints.capacity())?.checked_add(
-                ints.get_bit_vec()
-                    .retained_heap_bytes()
-                    .ok_or_else(|| resource("batch bitmap size overflow"))?,
-            ),
-            VectorValue::Real(reals) => array_bytes::<Real>(reals.capacity())?.checked_add(
-                reals
-                    .get_bit_vec()
-                    .retained_heap_bytes()
-                    .ok_or_else(|| resource("batch bitmap size overflow"))?,
-            ),
-            VectorValue::Decimal(decimals) => array_bytes::<TikvDecimal>(decimals.capacity())?
-                .checked_add(
-                    decimals
-                        .get_bit_vec()
-                        .retained_heap_bytes()
-                        .ok_or_else(|| resource("batch bitmap size overflow"))?,
-                )
-                .and_then(|bytes| {
-                    decimals
-                        .checked_decimal_spill_bytes()
-                        .and_then(|spill| bytes.checked_add(spill))
-                }),
-            VectorValue::Bytes(bytes) => bytes.retained_heap_bytes(),
-            VectorValue::DateTime(values) => array_bytes::<TikvDateTime>(values.capacity())?
-                .checked_add(
-                    values
-                        .get_bit_vec()
-                        .retained_heap_bytes()
-                        .ok_or_else(|| resource("batch bitmap size overflow"))?,
-                ),
-            VectorValue::Duration(values) => array_bytes::<TikvDuration>(values.capacity())?
-                .checked_add(
-                    values
-                        .get_bit_vec()
-                        .retained_heap_bytes()
-                        .ok_or_else(|| resource("batch bitmap size overflow"))?,
-                ),
-            VectorValue::Json(values) => values.retained_heap_bytes(),
-            VectorValue::VectorFloat32(values) => values.retained_heap_bytes(),
-            VectorValue::Enum(_) | VectorValue::Set(_) => None,
-        }
-        .ok_or_else(|| resource("batch carrier retained size overflow"))?;
-        Ok(carrier_bytes)
     }
 
     fn capture_typed_output(
@@ -8001,37 +7873,9 @@ impl PreparedBatch {
         if values.eval_type() != expected || values.len() != selection.len() {
             return Err(binding("batch result shape differs from computed boundary").into());
         }
-        let carrier = Self::typed_carrier_bytes(&values)?;
-        let count = values.len();
-        let width =
-            usize::try_from(get_fixed_len(self.source.nodes[0].declared_sql())).unwrap_or(0);
-        // Two encoded layouts plus two carrier payloads cover known conversion
-        // scratch and the pending destination. Post-copy capacities are checked
-        // separately; this is not a hard allocator-peak guarantee.
-        let layouts = width
-            .checked_add(size_of::<i64>() + 1)
-            .and_then(|per_row| per_row.checked_mul(count))
-            .and_then(|bytes| bytes.checked_mul(2))
-            .ok_or_else(|| resource("pending typed copy layout overflow"))?;
-        let before = pending
-            .retained_bytes()?
-            .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-            .and_then(|bytes| bytes.checked_add(carrier))
-            .and_then(|bytes| {
-                carrier
-                    .checked_mul(2)
-                    .and_then(|copy| bytes.checked_add(copy))
-            })
-            .and_then(|bytes| bytes.checked_add(layouts))
-            .ok_or_else(|| resource("pending typed copy allowance overflow"))?;
-        self.accept_retained(before)?;
+
         self.write_output(values, selection, &mut pending.chunk, 0)?;
-        self.accept_retained(
-            pending
-                .retained_bytes()?
-                .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-                .ok_or_else(|| resource("pending typed/selection size overflow"))?,
-        )?;
+
         Ok(())
     }
 
@@ -8046,13 +7890,8 @@ impl PreparedBatch {
         if values.eval_type() != expected || values.len() != selection.len() {
             return Err(binding("batch result shape differs from computed boundary").into());
         }
-        let carrier_bytes = Self::typed_carrier_bytes(&values)?;
-        let source_bytes = carrier_bytes
-            .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-            .ok_or_else(|| resource("batch source/selection retained size overflow"))?;
-        self.accept_retained(source_bytes)?;
-        // Shape and retained-memory checks complete before the first write, so
-        // a binding/resource error cannot leave a partially appended column.
+
+        // Check the complete result shape before publishing any cell.
         // The destination Chunk owns its ordinary allocation policy just as it
         // does for every other evaluator route.
         // Invocation rejects output selections. Resolve the destination owner
@@ -8085,19 +7924,10 @@ impl PreparedBatch {
             }
             VectorValue::Decimal(decimals) => {
                 let convert = |value: &TikvDecimal| {
-                    tidb_datatype::MyDecimal::try_from_shared_math(
-                        value,
-                        self.max_materialization_retained_bytes,
-                    )
-                    .map_err(|_| binding("batch Decimal output is not representable"))
+                    tidb_datatype::MyDecimal::try_from_shared_math(value, usize::MAX)
+                        .map_err(|_| binding("batch Decimal output is not representable"))
                 };
-                let converted_bytes =
-                    array_bytes::<Option<tidb_datatype::MyDecimal>>(values.len())?;
-                self.accept_retained(
-                    source_bytes
-                        .checked_add(converted_bytes)
-                        .ok_or_else(|| resource("batch Decimal conversion size overflow"))?,
-                )?;
+
                 // Validate every cell once before publishing any output. The
                 // previous adapter performed the same conversion twice.
                 let converted = (0..values.len())
@@ -8107,13 +7937,7 @@ impl PreparedBatch {
                             .transpose()
                     })
                     .collect::<LocalResult<Vec<_>>>()?;
-                self.accept_retained(
-                    source_bytes
-                        .checked_add(array_bytes::<Option<tidb_datatype::MyDecimal>>(
-                            converted.capacity(),
-                        )?)
-                        .ok_or_else(|| resource("batch Decimal conversion size overflow"))?,
-                )?;
+
                 output.append_fixed_cells(
                     converted
                         .iter()
@@ -8188,6 +8012,16 @@ trait NativeDatumSource {
         expected: &tipb::FieldType,
     ) -> LocalResult<Datum>;
 
+    fn read_handle(
+        &mut self,
+        _ctx: &mut EvalContext,
+        _slot: usize,
+        _row: InputRow,
+        _expected: &tipb::FieldType,
+    ) -> LocalResult<Option<native_values::NativeValueHandle>> {
+        Ok(None)
+    }
+
     fn read_batch(
         &mut self,
         _ctx: &mut EvalContext,
@@ -8200,13 +8034,14 @@ trait NativeDatumSource {
 }
 // One leaf primitive for real Chunk and real scalar-row consumers. It never
 // calls an expression evaluator or derives a SQL type from physical storage.
-fn read_source_row(
+// Import an actual native value directly into its arena; its identity is inline.
+fn read_source_handle(
     source: &SourcePlan,
     native_values: Option<&RefCell<NativeValueStore>>,
     native_row: tidb_chunk::row::Row<'_>,
     ordinal: usize,
     row: InputRow,
-) -> LocalResult<Datum> {
+) -> LocalResult<native_values::NativeValueHandle> {
     let node = &source.nodes[ordinal];
     if let SourceKind::DecimalFastInput(value) = &node.kind {
         let store = native_values.ok_or_else(|| binding("fast source store missing"))?;
@@ -8219,7 +8054,7 @@ fn read_source_row(
         let token = store
             .borrow_mut()
             .insert_decimal_fast(value, NativeValueOrigin { node: ordinal, row })?;
-        return Ok(Datum::Bytes(token));
+        return Ok(token);
     }
     if node.view.value_role().is_some() {
         let store = native_values.ok_or_else(|| binding("native source has no value store"))?;
@@ -8245,30 +8080,39 @@ fn read_source_row(
                 )?
             }
             SourceKind::Column { index } => {
-                let column = native_row
+                native_row
                     .chunk()
-                    .ok_or_else(|| binding("column source has no physical owner"))?
-                    .column(*index);
-                let cells = column.raw_cells();
-                store
-                    .borrow()
-                    .precheck_import(if cells.is_null(row.input_row) {
-                        0
-                    } else {
-                        cells.get(row.input_row).len()
-                    })?;
+                    .ok_or_else(|| binding("column source has no physical owner"))?;
+                store.borrow().check_live()?;
                 let value = native_row.get_datum(*index, node.declared_sql());
                 let value =
                     crate::expression::apply_enum_set_integer_view(value, node.sql.as_ref());
-                store.borrow_mut().insert_clone(
-                    &value,
+                store.borrow_mut().insert_owned(
+                    value,
                     node.view.value_role().expect("checked native view"),
                     NativeValueOrigin { node: ordinal, row },
                 )?
             }
             _ => return Err(binding("native value binding has no native source")),
         };
-        return Ok(Datum::Bytes(token));
+        return Ok(token);
+    }
+    Err(binding("source has no native handle carrier"))
+}
+
+fn read_source_row(
+    source: &SourcePlan,
+    native_values: Option<&RefCell<NativeValueStore>>,
+    native_row: tidb_chunk::row::Row<'_>,
+    ordinal: usize,
+    row: InputRow,
+) -> LocalResult<Datum> {
+    let node = &source.nodes[ordinal];
+    if matches!(&node.kind, SourceKind::DecimalFastInput(_)) || node.view.value_role().is_some() {
+        // This Datum-returning compatibility seam owns Bytes. Real native
+        // bindings use read_handle/read_batch and avoid this temporary owner.
+        return read_source_handle(source, native_values, native_row, ordinal, row)
+            .map(|handle| Datum::Bytes(handle.to_vec()));
     }
     let SourceKind::Column { index, .. } = &node.kind else {
         return Err(binding("batch slot has no native column"));
@@ -8322,6 +8166,40 @@ impl NativeDatumSource for NativeChunk<'_> {
         )
     }
 
+    fn read_handle(
+        &mut self,
+        _ctx: &mut EvalContext,
+        slot: usize,
+        row: InputRow,
+        expected: &tipb::FieldType,
+    ) -> LocalResult<Option<native_values::NativeValueHandle>> {
+        let ordinal = *self
+            .source
+            .bindings
+            .get(slot)
+            .ok_or_else(|| binding("unknown batch slot"))?;
+        let node = &self.source.nodes[ordinal];
+        if node.view.value_role().is_none()
+            && !matches!(&node.kind, SourceKind::DecimalFastInput(_))
+        {
+            return Ok(None);
+        }
+        if self.source.schema.get(slot) != Some(expected)
+            || row.input_row >= self.input.physical_rows()
+            || self.selection.get(row.occurrence) != Some(&row.input_row)
+        {
+            return Err(binding("batch demanded occurrence/type differs"));
+        }
+        read_source_handle(
+            self.source,
+            self.native_values,
+            self.input.physical_row(row.input_row),
+            ordinal,
+            row,
+        )
+        .map(Some)
+    }
+
     fn read_batch(
         &mut self,
         _ctx: &mut EvalContext,
@@ -8354,7 +8232,26 @@ impl NativeDatumSource for NativeChunk<'_> {
             .map(Some);
         }
         if node.view.value_role().is_some() {
-            return Ok(None);
+            let payload = physical_rows
+                .len()
+                .checked_mul(native_values::HANDLE_BYTES)
+                .ok_or_else(|| resource("native handle batch size overflow"))?;
+            let mut output = ChunkedVecBytes::try_with_capacities(physical_rows.len(), payload)
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+            for (occurrence, &input_row) in physical_rows.iter().enumerate() {
+                let token = read_source_handle(
+                    self.source,
+                    self.native_values,
+                    self.input.physical_row(input_row),
+                    ordinal,
+                    InputRow {
+                        occurrence,
+                        input_row,
+                    },
+                )?;
+                output.push_ref(Some(&token));
+            }
+            return Ok(Some(VectorValue::Bytes(output)));
         }
         let SourceKind::Column { index, .. } = &node.kind else {
             return Err(binding("batch slot has no native column"));
@@ -8540,6 +8437,13 @@ impl LocalRuntimeServices for CheckedInputs<'_> {
         row: InputRow,
         expected: &tipb::FieldType,
     ) -> LocalResult<VectorValue> {
+        if let Some(handle) = self.source.read_handle(ctx, slot, row, expected)? {
+            let mut output = ChunkedVecBytes::try_with_capacities(1, native_values::HANDLE_BYTES)
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+            output.push_ref(Some(&handle));
+            return Ok(VectorValue::Bytes(output));
+        }
+
         let value = self.source.read(ctx, slot, row, expected)?;
         let eval_type = match value {
             Datum::Int(_) | Datum::Null
@@ -8824,11 +8728,7 @@ impl PreparedBatch {
         let target = match profiles.probe {
             DeferredRootProbe::Fixed(target) => target,
             DeferredRootProbe::Parameter(order) => {
-                tidb_query_expr::local::with_value_kernel_work_limit(
-                    self.max_materialization_retained_bytes,
-                    || crate::context_value::read_parameter_type(order, ctx),
-                )?
-                .eval_type()
+                (|| crate::context_value::read_parameter_type(order, ctx))()?.eval_type()
             }
         };
         profiles.selected = profiles
@@ -8837,6 +8737,7 @@ impl PreparedBatch {
             .position(|(candidate, _)| *candidate == target);
         Ok(profiles.selected.is_some())
     }
+    #[cfg(test)]
     fn execute_profile(
         &mut self,
         native_ctx: &dyn Columns,
@@ -8844,6 +8745,27 @@ impl PreparedBatch {
         input: &Chunk,
         output: &mut Chunk,
         row_domain: bool,
+        override_source: Option<&mut dyn NativeDatumSource>,
+    ) -> Result<()> {
+        let selection = self.selection.clone();
+        self.execute_selected_profile(
+            native_ctx,
+            ctx,
+            input,
+            output,
+            row_domain,
+            &selection,
+            override_source,
+        )
+    }
+    fn execute_selected_profile(
+        &mut self,
+        native_ctx: &dyn Columns,
+        ctx: &mut EvalContext,
+        input: &Chunk,
+        output: &mut Chunk,
+        row_domain: bool,
+        selection: &[usize],
         #[cfg(test)] mut override_source: Option<&mut dyn NativeDatumSource>,
     ) -> Result<()> {
         let deferred_index = self
@@ -8885,29 +8807,17 @@ impl PreparedBatch {
             !row_domain && (self.defer_batch_publication || (deferred_index.is_some() && !whole));
         let native_output = source.nodes[0].view.value_role() == Some(NativeValueRole::Output);
         let mut pending = (defer && native_output).then(PendingNativeOutput::default);
-        let mut typed_pending = if defer && !native_output && !self.selection.is_empty() {
-            self.accept_retained(
-                PendingTypedOutput::initial_bytes(source.nodes[0].declared_sql())?
-                    .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-                    .ok_or_else(|| resource("pending typed initialization size overflow"))?,
-            )?;
+        let mut typed_pending = if defer && !native_output && !selection.is_empty() {
             let pending = PendingTypedOutput {
                 chunk: Chunk::new_empty(std::slice::from_ref(source.nodes[0].declared_sql())),
             };
-            self.accept_retained(
-                pending
-                    .retained_bytes()?
-                    .checked_add(array_bytes::<usize>(self.selection.capacity())?)
-                    .ok_or_else(|| resource("pending typed initial owner size overflow"))?,
-            )?;
+
             Some(pending)
         } else {
             None
         };
         let native_values = if source.needs_native_values {
-            Some(RefCell::new(NativeValueStore::new(
-                self.max_materialization_retained_bytes,
-            )?))
+            Some(RefCell::new(NativeValueStore::new()?))
         } else {
             None
         };
@@ -8915,40 +8825,35 @@ impl PreparedBatch {
             .hosts
             .clone()
             .map(|catalog| {
-                NativeBatchHosts::new(
-                    catalog,
-                    &source.host_metadata,
-                    native_ctx,
-                    self.max_materialization_retained_bytes,
-                )
-                .with_native_values(native_values.as_ref())
-                .with_input(input)
-                .with_typed_cache_slots(
-                    source
-                        .context_policy
-                        .as_ref()
-                        .map_or(0, |p| p.typed_cache_slots),
-                )?
-                .with_constant_probes(&source.host_probes)
-                .with_constant_root_shortcut(source.constant_root_shortcut)
-                .with_diagnostic_parents(
-                    source
-                        .context_policy
-                        .as_ref()
-                        .map_or(&[], |p| p.diagnostic_parents.as_ref()),
-                )?
-                .with_numeric_parents(
-                    source
-                        .context_policy
-                        .as_ref()
-                        .map_or(&[], |p| p.numeric_parents.as_ref()),
-                )?
-                .with_diagnostic_slots(
-                    source
-                        .context_policy
-                        .as_ref()
-                        .map_or(&[], |p| p.diagnostic_slots.as_ref()),
-                )
+                NativeBatchHosts::new(catalog, &source.host_metadata, native_ctx)
+                    .with_native_values(native_values.as_ref())
+                    .with_input(input)
+                    .with_typed_cache_slots(
+                        source
+                            .context_policy
+                            .as_ref()
+                            .map_or(0, |p| p.typed_cache_slots),
+                    )?
+                    .with_constant_probes(&source.host_probes)
+                    .with_constant_root_shortcut(source.constant_root_shortcut)
+                    .with_diagnostic_parents(
+                        source
+                            .context_policy
+                            .as_ref()
+                            .map_or(&[], |p| p.diagnostic_parents.as_ref()),
+                    )?
+                    .with_numeric_parents(
+                        source
+                            .context_policy
+                            .as_ref()
+                            .map_or(&[], |p| p.numeric_parents.as_ref()),
+                    )?
+                    .with_diagnostic_slots(
+                        source
+                            .context_policy
+                            .as_ref()
+                            .map_or(&[], |p| p.diagnostic_slots.as_ref()),
+                    )
             })
             .transpose()?;
         // Explicit whole programs receive the complete selection. Other
@@ -8956,13 +8861,13 @@ impl PreparedBatch {
         // eligible batch results are staged across those windows. No error
         // selects a different evaluator or retries an expression.
         let mut start = 0;
-        while start < self.selection.len() {
+        while start < selection.len() {
             let end = if whole {
-                self.selection.len()
+                selection.len()
             } else {
-                self.selection.len().min(start.saturating_add(window_size))
+                selection.len().min(start.saturating_add(window_size))
             };
-            let selection = &self.selection[start..end];
+            let selection = &selection[start..end];
             if let Some(store) = &native_values {
                 store.borrow_mut().begin_window()?;
             }
@@ -9033,7 +8938,7 @@ impl PreparedBatch {
         }
         if let Some(pending) = typed_pending {
             let rows = pending.chunk.num_rows();
-            if rows != self.selection.len()
+            if rows != selection.len()
                 || pending.chunk.column(0).type_size()
                     != output.column(self.source.output_index).type_size()
             {
@@ -9087,7 +8992,7 @@ pub(crate) struct PreparedBatchSuite {
     owner: Arc<EvaluatorProgram>,
     workers: Vec<PreparedBatch>,
     schema: Box<[FieldType]>,
-    source_limits: BatchSourceLimits,
+    selection: Vec<usize>,
     output_count: usize,
     bind_ready_cache: bool,
 }
@@ -9098,46 +9003,15 @@ impl PreparedBatchSuite {
         row_schema: &[FieldType],
         new_collation: bool,
         unit: u64,
-        source_limits: BatchSourceLimits,
+        _source_limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        max_materialization_retained_bytes: usize,
+        _max_materialization_retained_bytes: usize,
     ) -> Result<Self> {
-        let view_bytes = if suite.program.vectorizable {
-            0
-        } else {
-            row_schema
-                .len()
-                .checked_mul(
-                    size_of::<tidb_chunk::column::Column>()
-                        + size_of::<tidb_chunk::ColumnHandle>()
-                        + 128,
-                )
-                .and_then(|n| n.checked_add(size_of::<Chunk>() + size_of::<usize>()))
-                .ok_or_else(|| resource("ordered row view extent overflow"))?
-        };
-        let worker_materialization = max_materialization_retained_bytes
-            .checked_sub(view_bytes)
-            .ok_or_else(|| resource("ordered row view materialization policy exceeded"))?;
         let count = suite.program.calculated.len();
-        let groups = count
-            .checked_add(1)
-            .ok_or_else(|| resource("projection source group overflow"))?;
-        let worker_bytes = array_bytes::<PreparedBatch>(count)?;
-        let metadata_bytes = source_limits
-            .max_metadata_bytes
-            .checked_sub(worker_bytes)
-            .ok_or_else(|| resource("projection worker metadata policy exceeded"))?;
         let limits = BatchSourceLimits {
-            max_metadata_bytes: metadata_bytes / groups,
-            ..source_limits
+            tree: CompileLimits::default(),
+            max_metadata_bytes: usize::MAX,
         };
-        let mut budget = Budget {
-            used: 0,
-            max: limits.max_metadata_bytes,
-        };
-        for field in row_schema {
-            budget.field(field, 1)?;
-        }
         for &index in suite.program.column_mapping.keys() {
             // Direct outputs transfer native Chunk storage. They never enter
             // the closed computation wire carriers, so that carrier admission
@@ -9149,24 +9023,17 @@ impl PreparedBatchSuite {
         }
         let mut workers = Vec::new();
         reserve(&mut workers, count)?;
-        let mut remaining_nodes = limits.tree.max_nodes;
         for slot in 0..count {
-            let mut calculation_limits = limits;
-            calculation_limits.tree.max_nodes = remaining_nodes;
             let worker = PreparedBatch::compile_calculation_profile(
                 suite,
                 slot,
                 row_schema,
                 new_collation,
                 unit,
-                calculation_limits,
                 execution,
-                worker_materialization / count.max(1),
                 true,
             )?;
-            remaining_nodes = remaining_nodes
-                .checked_sub(worker.compiled_node_count()?)
-                .ok_or_else(|| resource("projection source node policy exceeded"))?;
+
             workers.push(worker);
         }
         let mut schema = Vec::new();
@@ -9217,7 +9084,7 @@ impl PreparedBatchSuite {
             }),
             workers,
             schema: schema.into_boxed_slice(),
-            source_limits: limits,
+            selection: Vec::new(),
             output_count: projection_output_count(&suite.program)?,
         })
     }
@@ -9229,9 +9096,12 @@ impl PreparedBatchSuite {
     }
 
     pub(crate) fn scratch_snapshot(&self) -> BatchScratchSnapshot {
-        self.workers
-            .iter()
-            .fold(BatchScratchSnapshot::default(), |mut total, worker| {
+        self.workers.iter().fold(
+            BatchScratchSnapshot {
+                selection_capacity: self.selection.capacity(),
+                ..Default::default()
+            },
+            |mut total, worker| {
                 let next = worker.scratch_snapshot();
                 total.selection_capacity = total
                     .selection_capacity
@@ -9241,7 +9111,8 @@ impl PreparedBatchSuite {
                     .saturating_add(next.vector_allocations);
                 total.windows = total.windows.saturating_add(next.windows);
                 total
-            })
+            },
+        )
     }
 
     pub(crate) fn run<C: Columns>(
@@ -9275,18 +9146,6 @@ impl PreparedBatchSuite {
         output: &mut Chunk,
         row_schema: &[FieldType],
     ) -> Result<()> {
-        if !Arc::ptr_eq(&suite.program, &self.owner) {
-            return Err(binding("projection worker belongs to another program").into());
-        }
-        // Bound metadata before comparing it, even for a projection containing
-        // only direct columns or an empty selected-row set.
-        let mut budget = Budget {
-            used: 0,
-            max: self.source_limits.max_metadata_bytes,
-        };
-        for field in row_schema {
-            budget.field(field, 1)?;
-        }
         if row_schema.len() != self.schema.len()
             || row_schema
                 .iter()
@@ -9320,35 +9179,34 @@ impl PreparedBatchSuite {
                 return Err(binding("projection direct output layout differs").into());
             }
         }
-        // Validate every output before any kernel or ownership move.
-        for worker in &mut self.workers {
-            worker.validate_invocation(suite, input, output, row_schema)?;
-        }
-        if !self.owner.vectorizable {
-            // A one-row selection view shares physical column owners. The
-            // caller's selection survives error and unwind without restoration.
-            // Bound the view's headers, lazy Arc owners and singleton selection
-            // before allocating; column payloads are never cloned here.
-            // This fixed shared-view allowance was reserved from the suite's
-            // materialization policy before dividing it among the workers.
-            let mut row_view = Chunk::new_empty(row_schema);
-            for index in 0..row_schema.len() {
-                row_view.set_col(index, input.column_handle(index));
+        for worker in &self.workers {
+            if worker.source.nodes[0].sql.as_ref().is_some_and(|field| {
+                output.column(worker.source.output_index).type_size() != get_fixed_len(field)
+            }) {
+                return Err(binding("projection calculated output layout differs").into());
             }
-            row_view.set_num_virtual_rows(input.physical_rows());
-            for logical in 0..input.num_rows() {
-                let physical = input.sel().map_or(logical, |rows| rows[logical]);
-                row_view.set_sel(Some(vec![physical]));
+        }
+        // Caller-owned row selection is borrowed once for all calculated outputs.
+        let selection = if let Some(selection) = input.sel() {
+            selection
+        } else {
+            self.selection.clear();
+            reserve(&mut self.selection, input.physical_rows())?;
+            self.selection.extend(0..input.physical_rows());
+            self.selection.as_slice()
+        };
+        if !self.owner.vectorizable {
+            // Host bindings read physical rows; the selection slice supplies the
+            // current logical occurrence without constructing a Chunk view.
+            for &physical in selection {
                 for worker in &mut self.workers {
-                    worker.validate_invocation(suite, &row_view, output, row_schema)?;
-                    // Original ordered evaluation has neither the bulk Decimal
-                    // priority stage nor a vectorization property getter.
-                    worker.execute_profile(
+                    worker.execute_selected_profile(
                         native_ctx,
                         ctx,
-                        &row_view,
+                        input,
                         output,
                         true,
+                        std::slice::from_ref(&physical),
                         #[cfg(test)]
                         None,
                     )?;
@@ -9356,7 +9214,9 @@ impl PreparedBatchSuite {
             }
         } else {
             for worker in &mut self.workers {
-                if worker.execute_decimal_priority(native_ctx, ctx, input, output)? {
+                if worker
+                    .execute_selected_decimal_priority(native_ctx, ctx, input, output, selection)?
+                {
                     continue;
                 }
                 // The original getter belongs to this output and occurs only
@@ -9370,18 +9230,16 @@ impl PreparedBatchSuite {
                         .as_ref()
                         .and_then(|p| p.root_type_probe)
                     {
-                        tidb_query_expr::local::with_value_kernel_work_limit(
-                            worker.max_materialization_retained_bytes,
-                            || order.run(native_ctx),
-                        )?;
+                        (|| order.run(native_ctx))()?;
                     }
                 }
-                worker.execute_profile(
+                worker.execute_selected_profile(
                     native_ctx,
                     ctx,
                     input,
                     output,
                     !selected_vectorized,
+                    selection,
                     #[cfg(test)]
                     None,
                 )?;
@@ -9405,10 +9263,8 @@ impl PreparedBatchSuite {
     }
 }
 
-// A standalone public caller supplies a genuine immutable root and Row, not a
-// Projection Suite/schema. Keep the existing SDK execution defaults and charge
-// its native-source metadata against that same finite byte allowance. Existing
-// Projection and explicit caller policies remain unchanged.
+// A standalone caller supplies an immutable root and Row without a Suite.
+// Legacy allowance arguments remain inert, as for prepared projections.
 fn public_scalar_limits() -> (BatchSourceLimits, ExecutionLimits, usize) {
     let execution = ExecutionLimits::default();
     let maximum = execution.max_retained_bytes;

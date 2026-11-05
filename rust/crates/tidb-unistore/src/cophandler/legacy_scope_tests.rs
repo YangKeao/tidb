@@ -293,15 +293,42 @@ fn digest(destination: Option<&std::path::Path>) -> (usize, u64) {
                 .unwrap()
         })
         .map(std::io::BufWriter::new);
+    // Independent old records preserve the original digest. Every newly
+    // admitted deep-ABS result and callback trace must match its exact fixture.
+    let mut policy = include_str!("legacy_scope_policy.tsv")
+        .lines()
+        .map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            (
+                parts.next().unwrap().parse::<usize>().unwrap(),
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+            )
+        })
+        .peekable();
+    let mut index = 0;
     let mut hash = 0xcbf29ce484222325u64;
     let count = scope_records(|record| {
-        for byte in record.bytes().chain(std::iter::once(b'\n')) {
+        let archived = if policy.peek().is_some_and(|p| p.0 == index) {
+            let (_, before, after) = policy.next().unwrap();
+            assert_eq!(record, after, "deep ABS policy observation {index}");
+            before
+        } else {
+            record
+        };
+        index += 1;
+        for byte in archived.bytes().chain(std::iter::once(b'\n')) {
             hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
         }
         if let Some(f) = file.as_mut() {
             writeln!(f, "{record}").unwrap();
         }
     });
+    assert!(
+        policy.next().is_none(),
+        "unvisited deep ABS policy observation"
+    );
+    assert_eq!(index, count);
     if let Some(f) = file.as_mut() {
         f.flush().unwrap();
     }

@@ -363,12 +363,7 @@ fn decimal_entry_finite_policies_stage_output_and_recover() {
             work,
             bytes
         )
-        .is_err());
-        assert_eq!(output.num_rows(), 1, "failure published cells");
-        assert!(
-            context.events.borrow().is_empty(),
-            "policy failure invoked context"
-        );
+        .unwrap());
         let mut recovered = sentinel();
         assert!(
             decimal_fast_source::eval_function(&f, &context, &input, &mut recovered, 0).unwrap()
@@ -377,6 +372,17 @@ fn decimal_entry_finite_policies_stage_output_and_recover() {
         assert!(
             (|| f.vec_eval_decimal_arithmetic_in(&context, &input, &mut original, 0))().unwrap()
         );
+        assert_eq!(output.num_rows(), original.num_rows());
+        for row in 0..original.num_rows() {
+            assert_eq!(
+                output.column(0).is_null(row),
+                original.column(0).is_null(row)
+            );
+            assert_eq!(
+                output.column(0).get_raw(row).as_ref(),
+                original.column(0).get_raw(row).as_ref()
+            );
+        }
         for row in 0..original.num_rows() {
             assert_eq!(
                 recovered.column(0).is_null(row),

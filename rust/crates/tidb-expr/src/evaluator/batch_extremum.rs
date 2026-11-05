@@ -70,11 +70,7 @@ impl NativeBatchHosts<'_> {
             NativeValueRole::CharInput,
             NativeValueOrigin { node, row },
         )?;
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(native_values::HANDLE_BYTES)
-                .ok_or_else(|| resource("extremum token reserve overflow"))?,
-        )?;
+
         let handle = token
             .try_into()
             .map_err(|_| binding("extremum capability width differs"))?;
@@ -90,7 +86,7 @@ impl NativeBatchHosts<'_> {
             .try_reserve_exact(1)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         tokens.push(handle);
-        self.check_bytes(self.retained_bytes()?)?;
+
         if next + 1 < metadata.arguments.len() {
             let SqlDemand::Extremum { next: index, .. } = &mut self.slots[id.slot]
                 .task
@@ -112,38 +108,23 @@ impl NativeBatchHosts<'_> {
         let SqlDemand::Extremum { tokens, .. } = &task.demand else {
             unreachable!()
         };
-        let retained = self.retained_bytes()?;
-        let mut base = retained
-            .checked_add(array_bytes::<Datum>(tokens.len())?)
-            .ok_or_else(|| resource("extremum source array overflow"))?;
+
         {
             let values = store.borrow();
             for (token, &node) in tokens.iter().zip(metadata.arguments.iter()) {
-                let payload = native_payload_bytes(values.get(
+                values.get(
                     token,
                     NativeValueRole::CharInput,
                     NativeValueOrigin { node, row },
-                )?)?;
-                base = base
-                    .checked_add(
-                        payload
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("extremum source clone allowance overflow"))?,
-                    )
-                    .ok_or_else(|| resource("extremum source live bytes overflow"))?;
+                )?;
             }
         }
-        self.check_bytes(base)?;
+
         let mut values = Vec::new();
         values
             .try_reserve_exact(tokens.len())
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        base = base
-            .checked_add(array_bytes::<Datum>(
-                values.capacity().saturating_sub(tokens.len()),
-            )?)
-            .ok_or_else(|| resource("extremum actual source array capacity overflow"))?;
-        self.check_bytes(base)?;
+
         for (token, &node) in tokens.iter().zip(metadata.arguments.iter()) {
             values.push(store.borrow().clone_for_kernel(
                 token,
@@ -164,7 +145,7 @@ impl NativeBatchHosts<'_> {
             &metadata.decimals,
             metadata.all_constant,
             metadata.collation,
-            self.max_retained_bytes - base,
+            usize::MAX,
         ) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
@@ -182,14 +163,7 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(
-            id,
-            value,
-            metadata.output_node,
-            metadata.output_role,
-            row,
-            base,
-        )
-        .map(HostStep::Ready)
+        self.finish_native_value(id, value, metadata.output_node, metadata.output_role, row)
+            .map(HostStep::Ready)
     }
 }

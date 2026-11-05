@@ -25,11 +25,8 @@ impl NativeBatchHosts<'_> {
             return Err(binding("clock source presence differs"));
         }
         let row = task.row;
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("clock work exhausted"))?;
+
+        let maximum = usize::MAX;
         let store = self
             .native_values
             .ok_or_else(|| binding("clock store missing"))?;
@@ -63,22 +60,18 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let live = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("clock result extent overflow"))?;
-        self.check_bytes(live)?;
+
         let result = match crate::tikv::clock_value::finish_source(
             *operation,
             result,
             result_type,
             self.context,
-            self.max_retained_bytes - live,
+            usize::MAX,
         ) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

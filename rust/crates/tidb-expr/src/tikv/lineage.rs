@@ -55,10 +55,8 @@ use super::context::NativeInputs;
 use super::lower::{self, ColumnBinding, LoweredSpec, NodeMetadata, SourceNode};
 use super::{catalog, SeedError, SeedResult};
 
-/// Explicit logical source/snapshot-work policy, not an allocator/peak bound.
-/// Literals charge the transport and flat-fact payload copies. Metadata charges
-/// flat scaffolding and known native/projected/fact declaration copy groups.
-/// Immutable compiler copies and allocator overhead are not totalled as heap.
+/// Compatibility settings for the retired Demo source policy. Source identity,
+/// producer IDs and input types are still validated independently of these fields.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ControlSourceLimits {
     pub(crate) tree: CompileLimits,
@@ -85,7 +83,6 @@ pub(crate) struct LoweredControlLineage {
     // Sparse record numbers never index allocations. Values are source ordinals.
     id_index: Box<[(ResultMetaId, usize)]>,
     binding_nodes: Box<[usize]>,
-    source_limits: ControlSourceLimits,
 }
 
 impl std::fmt::Debug for LoweredControlLineage {
@@ -161,7 +158,6 @@ enum Demand {
 
 struct Visit<'a> {
     node: &'a Expression,
-    depth: usize,
     demand: Demand,
     escapes: bool,
 }
@@ -180,50 +176,13 @@ struct CheckedSource<'a> {
     escapes: bool,
 }
 
-struct SourceBudget {
-    metadata: usize,
-    literal: usize,
-    limits: ControlSourceLimits,
-}
-
-impl SourceBudget {
-    fn metadata(&mut self, bytes: usize) -> LocalResult<()> {
-        self.metadata = self
-            .metadata
-            .checked_add(bytes)
-            .filter(|total| *total <= self.limits.max_metadata_bytes)
-            .ok_or_else(|| resource("control source metadata byte policy exceeded"))?;
-        Ok(())
-    }
-
-    fn array<T>(&mut self, count: usize) -> LocalResult<()> {
-        self.metadata(array_bytes::<T>(count)?)
-    }
-
-    fn field(&mut self, field: &FieldType, copies: usize) -> LocalResult<()> {
-        let bytes = field
-            .checked_snapshot_payload_bytes()
-            .and_then(|bytes| bytes.checked_mul(copies))
-            .ok_or_else(|| resource("control FieldType payload size overflow"))?;
-        self.metadata(bytes)
-    }
-
-    fn literal(&mut self, bytes: usize) -> LocalResult<()> {
-        self.literal = bytes
-            .checked_mul(2)
-            .and_then(|bytes| self.literal.checked_add(bytes))
-            .filter(|total| *total <= self.limits.max_literal_bytes)
-            .ok_or_else(|| resource("control literal byte policy exceeded"))?;
-        Ok(())
-    }
-}
-
 fn resource(message: &'static str) -> LocalError {
     LocalError::ResourceLimit(message.into())
 }
 fn contract(message: &'static str) -> LocalError {
     LocalError::BindingContract(message.into())
 }
+#[cfg(test)]
 fn array_bytes<T>(count: usize) -> LocalResult<usize> {
     count
         .checked_mul(size_of::<T>())
@@ -350,12 +309,8 @@ fn preflight<'a>(
     root: &'a Expression,
     row_schema: &[FieldType],
     ids: &[ResultMetaId],
-    limits: ControlSourceLimits,
+    _limits: ControlSourceLimits,
 ) -> SeedResult<(Vec<CheckedSource<'a>>, Vec<(ResultMetaId, usize)>)> {
-    if limits.tree.max_nodes == 0 || limits.tree.max_depth == 0 || ids.len() > limits.tree.max_nodes
-    {
-        return Err(resource("control source node/depth policy exceeded").into());
-    }
     if !matches!(root, Expression::ScalarFunction(_)) {
         return Err(SeedError::Admission(
             "control lineage requires a control root",
@@ -365,24 +320,6 @@ fn preflight<'a>(
         .first()
         .ok_or(SeedError::Admission("missing control producer IDs"))?
         .unit();
-    let mut budget = SourceBudget {
-        metadata: 0,
-        literal: 0,
-        limits,
-    };
-    // Charge flat source/index/output scaffolding BEFORE allocating it. This is
-    // a logical policy, not a promise about Vec allocator capacity or peak.
-    budget.array::<CheckedSource<'_>>(ids.len())?;
-    budget.array::<Visit<'_>>(ids.len())?;
-    budget.array::<BuildNode>(ids.len())?;
-    budget.array::<LocalExpr>(ids.len())?;
-    budget.array::<NodeMetadata>(ids.len())?;
-    budget.array::<ProducerRecord>(ids.len())?;
-    budget.array::<ControlProducerFact>(ids.len())?;
-    budget.array::<(ResultMetaId, usize)>(ids.len())?;
-    for field in row_schema {
-        budget.field(field, 1)?;
-    }
     let mut index = Vec::new();
     reserve(&mut index, ids.len())?;
     for (ordinal, id) in ids.iter().copied().enumerate() {
@@ -401,14 +338,12 @@ fn preflight<'a>(
     reserve(&mut checked, ids.len())?;
     pending.push(Visit {
         node: root,
-        depth: 1,
         demand: Demand::Value(None),
         escapes: true,
     });
     let mut scheduled = 1usize;
     while let Some(Visit {
         node,
-        depth,
         demand,
         escapes,
     }) = pending.pop()
@@ -423,14 +358,6 @@ fn preflight<'a>(
         }
         let (sql, collation) = sql_and_collation(node)?;
         let carrier = check_type(sql, demand)?;
-        // Native node metadata, projected source declaration, immutable C fact.
-        budget.field(sql, 3)?;
-        if checked.is_empty() {
-            budget.field(sql, 1)?; // detached root declaration
-        }
-        let (charset, collate) = collation.charset_and_collation();
-        budget.metadata(charset.len())?;
-        budget.metadata(collate.len())?;
         let mut selected = None;
         let (role, record, may_escape) = match node {
             Expression::Constant(constant) => {
@@ -438,11 +365,6 @@ fn preflight<'a>(
                     .literal_value()
                     .ok_or(SeedError::Admission("parameter/deferred control constant"))?;
                 let record = literal_identity(value, sql, carrier)?;
-                budget.literal(match value {
-                    Datum::String(value) => value.bytes().len(),
-                    Datum::Bytes(value) => value.len(),
-                    _ => 0,
-                })?;
                 (ControlProducerRole::Constant, record, escapes)
             }
             Expression::Column(column) => {
@@ -454,12 +376,6 @@ fn preflight<'a>(
                 if index >= row_schema.len() {
                     return Err(SeedError::Admission("control column outside row schema"));
                 }
-                // Equality is deliberately deferred until EVERY source payload
-                // has passed the static policy, including unused schema types.
-                budget.field(sql, 1)?;
-                budget.array::<ColumnBinding>(1)?;
-                budget.array::<usize>(1)?;
-                budget.metadata(column.orig_name.len())?;
                 (
                     ControlProducerRole::InputSlot,
                     input_identity(sql, carrier),
@@ -469,23 +385,17 @@ fn preflight<'a>(
             Expression::ScalarFunction(function) => {
                 selected = Some(catalog::datum_control(function)?);
                 let shape = Shape::from_name(function.func_name.lowercase())?;
-                budget.metadata(function.func_name.original().len())?;
-                budget.metadata(function.func_name.lowercase().len())?;
+
                 let arity = function.args.len();
                 scheduled = scheduled
                     .checked_add(arity)
-                    .filter(|count| *count <= limits.tree.max_nodes && *count <= ids.len())
+                    .filter(|count| *count <= ids.len())
                     .ok_or_else(|| resource("control scheduled node policy exceeded"))?;
-                let child_depth = depth
-                    .checked_add(1)
-                    .filter(|depth| *depth <= limits.tree.max_depth)
-                    .ok_or_else(|| resource("control source depth policy exceeded"))?;
                 reserve(&mut pending, arity)?;
                 for (position, child) in function.args.iter().enumerate().rev() {
                     let predicate = shape.predicate_child(position, arity);
                     pending.push(Visit {
                         node: child,
-                        depth: child_depth,
                         demand: if predicate || matches!(demand, Demand::PredicateInt) {
                             Demand::PredicateInt
                         } else {
@@ -727,7 +637,6 @@ pub(crate) fn lower_typed_control_lineage(
         records: records.into_boxed_slice(),
         id_index: id_index.into_boxed_slice(),
         binding_nodes: binding_nodes.into_boxed_slice(),
-        source_limits: limits,
     }))
 }
 
@@ -853,13 +762,12 @@ pub(crate) struct PreparedControlLineage {
     spec: Arc<LoweredControlLineage>,
     program: LocalControlProgram,
     limits: ExecutionLimits,
-    max_materialization_retained_bytes: usize,
 }
 impl PreparedControlLineage {
     pub(crate) fn compile(
         spec: Arc<LoweredControlLineage>,
         execution: ExecutionLimits,
-        max_materialization_retained_bytes: usize,
+        _max_materialization_retained_bytes: usize,
     ) -> SeedResult<Self> {
         let program = compile_control_with_lineage(
             &spec.core.expr,
@@ -873,7 +781,6 @@ impl PreparedControlLineage {
             spec,
             program,
             limits: execution,
-            max_materialization_retained_bytes,
         })
     }
 
@@ -902,16 +809,6 @@ impl PreparedControlLineage {
     }
 
     fn check_incoming_schema(&self, row_schema: &[FieldType]) -> LocalResult<()> {
-        // Existing NativeInputs::new calls FieldType Eq (slice snapshots).
-        // Bound the ENTIRE incoming payload before that equality, not after it.
-        let mut budget = SourceBudget {
-            metadata: 0,
-            literal: 0,
-            limits: self.spec.source_limits,
-        };
-        for field in row_schema {
-            budget.field(field, 1)?;
-        }
         if row_schema.len() != self.spec.core.row_schema.len()
             || row_schema
                 .iter()
@@ -923,16 +820,6 @@ impl PreparedControlLineage {
             ));
         }
         Ok(())
-    }
-
-    fn accept_materialization(&self, bytes: usize) -> LocalResult<()> {
-        if bytes > self.max_materialization_retained_bytes {
-            Err(resource(
-                "native control materialization retained-byte policy exceeded",
-            ))
-        } else {
-            Ok(())
-        }
     }
 
     // Private parts seam used only after this own program returns, plus hostile
@@ -958,56 +845,17 @@ impl PreparedControlLineage {
                 return Err(contract("NULL producer ID attached to non-NULL control value").into());
             }
         }
-        let source_bytes = vector_heap_bytes(&values)?;
-        let id_bytes = array_bytes::<ResultMetaId>(ids.capacity())?;
-        let sources = source_bytes
-            .checked_add(id_bytes)
-            .ok_or_else(|| resource("control source/ID size overflow"))?;
-        let minimum = sources
-            .checked_add(array_bytes::<Datum>(count)?)
-            .ok_or_else(|| resource("control native output size overflow"))?;
-        self.accept_materialization(minimum)?;
         let mut output = Vec::new();
         reserve(&mut output, count)?;
-        let output_bytes = array_bytes::<Datum>(output.capacity())?;
-        let fixed = sources
-            .checked_add(output_bytes)
-            .ok_or_else(|| resource("control materialization capacity overflow"))?;
-        self.accept_materialization(fixed)?;
-        let mut native_heap = 0usize;
         for (index, id) in ids.iter().copied().enumerate() {
             let (_, record) = self.spec.record(id)?;
-            let scalar = values.get_scalar_ref(index);
-            let next_minimum = match scalar {
-                ScalarValueRef::Bytes(Some(bytes)) => bytes.len(),
-                _ => 0,
-            };
-            let before = fixed
-                .checked_add(native_heap)
-                .and_then(|total| total.checked_add(next_minimum))
-                .ok_or_else(|| resource("control native payload size overflow"))?;
-            self.accept_materialization(before)?;
-            // The ID, not equal bits/bytes/NULL or the root FT, selects metadata.
-            let value = from_scalar(scalar, expected, &record.identity)?;
-            let (value, heap) = measured_native_datum(value)?;
-            native_heap = native_heap
-                .checked_add(heap)
-                .ok_or_else(|| resource("control native retained payload overflow"))?;
-            self.accept_materialization(
-                fixed
-                    .checked_add(native_heap)
-                    .ok_or_else(|| resource("control native coexistence overflow"))?,
-            )?;
-            output.push(value); // pre-reserved; no further container growth
+            // The authenticated producer ID determines the original native type.
+            output.push(from_scalar(
+                values.get_scalar_ref(index),
+                expected,
+                &record.identity,
+            )?);
         }
-        // C's source buffer remains charged until this actual drop. There is no
-        // all-owner/allocator peak promise during B copies or Vec reservations.
-        drop(values);
-        let published = id_bytes
-            .checked_add(output_bytes)
-            .and_then(|sum| sum.checked_add(native_heap))
-            .ok_or_else(|| resource("control publication retained size overflow"))?;
-        self.accept_materialization(published)?;
         Ok(NativeControlBatch {
             values: output,
             result_metadata: ids,
@@ -1047,6 +895,7 @@ fn scalar_is_null(value: ScalarValueRef<'_>) -> bool {
     }
 }
 
+#[cfg(test)]
 fn vector_heap_bytes(value: &VectorValue) -> LocalResult<usize> {
     let bytes = match value {
         VectorValue::Int(values) => values
@@ -1059,6 +908,7 @@ fn vector_heap_bytes(value: &VectorValue) -> LocalResult<usize> {
     bytes.ok_or_else(|| resource("control vector retained size overflow"))
 }
 
+#[cfg(test)]
 fn measured_native_datum(value: Datum) -> LocalResult<(Datum, usize)> {
     match value {
         Datum::String(value) => {

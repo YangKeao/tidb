@@ -46,7 +46,7 @@ impl NativeBatchHosts<'_> {
                 .try_into()
                 .map_err(|_| binding("timestamp diff capability width differs"))?,
         );
-        let base = self.retained_bytes()?;
+
         let observed_null = {
             let values = store.borrow();
             for i in 0..=next {
@@ -72,67 +72,60 @@ impl NativeBatchHosts<'_> {
                 )?
                 .is_null()
         };
-        let value =
-            if *stop_on_null && observed_null {
-                Some(Ok(Datum::Null))
-            } else if next == 2 {
-                let mut live = base;
-                {
-                    let values = store.borrow();
-                    for i in 0..3 {
-                        let value = values.get(
-                            tokens[i].as_ref().expect("complete prefix"),
-                            NativeValueRole::CharInput,
-                            NativeValueOrigin {
-                                node: arguments[i],
-                                row,
-                            },
-                        )?;
-                        live = live
-                            .checked_add(native_payload_bytes(value)?.checked_mul(2).ok_or_else(
-                                || resource("timestamp diff clone allowance overflow"),
-                            )?)
-                            .ok_or_else(|| resource("timestamp diff source extent overflow"))?;
-                    }
+        let value = if *stop_on_null && observed_null {
+            Some(Ok(Datum::Null))
+        } else if next == 2 {
+            {
+                let values = store.borrow();
+                for i in 0..3 {
+                    values.get(
+                        tokens[i].as_ref().expect("complete prefix"),
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin {
+                            node: arguments[i],
+                            row,
+                        },
+                    )?;
                 }
-                self.check_bytes(live)?;
-                let mut owned = {
-                    let values = store.borrow();
-                    let get = |i: usize| {
-                        values.clone_for_kernel(
-                            tokens[i].as_ref().expect("complete prefix"),
-                            NativeValueRole::CharInput,
-                            NativeValueOrigin {
-                                node: arguments[i],
-                                row,
-                            },
-                        )
-                    };
-                    [get(0)?, get(1)?, get(2)?]
-                };
-                // Original generic endpoint casts may read modes/zone/clock and
-                // warn. All source ownership is detached before those callbacks.
-                let cast = if *stop_on_null {
-                    Ok(())
-                } else {
-                    crate::tikv::timestamp_diff_cast_arguments_bounded(
-                        self.context,
-                        &mut owned,
-                        argument_types,
-                        self.max_retained_bytes - live,
+            }
+
+            let mut owned = {
+                let values = store.borrow();
+                let get = |i: usize| {
+                    values.clone_for_kernel(
+                        tokens[i].as_ref().expect("complete prefix"),
+                        NativeValueRole::CharInput,
+                        NativeValueOrigin {
+                            node: arguments[i],
+                            row,
+                        },
                     )
                 };
-                Some(cast.and_then(|()| {
-                    crate::tikv::timestamp_diff_values_bounded(
-                        &owned[0],
-                        &owned[1],
-                        &owned[2],
-                        self.max_retained_bytes - live,
-                    )
-                }))
-            } else {
-                None
+                [get(0)?, get(1)?, get(2)?]
             };
+            // Original generic endpoint casts may read modes/zone/clock and
+            // warn. All source ownership is detached before those callbacks.
+            let cast = if *stop_on_null {
+                Ok(())
+            } else {
+                crate::tikv::timestamp_diff_cast_arguments_bounded(
+                    self.context,
+                    &mut owned,
+                    argument_types,
+                    usize::MAX,
+                )
+            };
+            Some(cast.and_then(|()| {
+                crate::tikv::timestamp_diff_values_bounded(
+                    &owned[0],
+                    &owned[1],
+                    &owned[2],
+                    usize::MAX,
+                )
+            }))
+        } else {
+            None
+        };
         let Some(value) = value else {
             let SqlDemand::TimestampDiff {
                 next: saved,
@@ -173,7 +166,7 @@ impl NativeBatchHosts<'_> {
         };
         if let Some(role) = output_role {
             return self
-                .finish_native_value(id, value, *output_node, *role, row, base)
+                .finish_native_value(id, value, *output_node, *role, row)
                 .map(HostStep::Ready);
         }
         let value = crate::expression::apply_enum_set_integer_view(value, Some(result_type));
@@ -181,10 +174,7 @@ impl NativeBatchHosts<'_> {
             Ok(value) => value.map(|v| v as i64),
             Err(error) => return self.native_failure(error),
         };
-        self.check_bytes(
-            base.checked_add(128)
-                .ok_or_else(|| resource("timestamp diff publication extent overflow"))?,
-        )?;
+
         let output = VectorValue::from_scalar(&ScalarValue::Int(bits), 1);
         self.slots[id.slot].task = None;
         Ok(HostStep::Ready(output))

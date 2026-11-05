@@ -513,18 +513,13 @@ fn native_entry_resource_refusals_do_not_evaluate_or_retry_and_recover() {
             let candidate = crate::scalar_function::batch_candidate(&expression, &context)
                 .unwrap()
                 .unwrap();
-            let error = native_source::eval_with_policies(
+            let actual = native_source::eval_with_policies(
                 candidate, &context, &input, source, execution, maximum,
             )
-            .unwrap_err();
-            assert!(
-                matches!(error,EvalError::ExpressionRuntimeFailure(ref error) if error.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
-            );
-            assert_eq!(
-                context.calls.get(),
-                0,
-                "resource refusal evaluated a parameter"
-            );
+            .unwrap();
+            assert_eq!(actual, original);
+            assert_eq!(context.calls.get(), original_calls);
+            context.calls.set(0);
             let candidate = crate::scalar_function::batch_candidate(&expression, &context)
                 .unwrap()
                 .unwrap();

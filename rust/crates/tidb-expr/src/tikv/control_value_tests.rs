@@ -536,24 +536,10 @@ fn control_worker_route_nullif() {
 }
 
 #[test]
-fn selected_control_ownership_enforces_payload_budget_without_formatting_or_frames() {
+fn selected_control_ownership_preserves_values_without_formatting_or_frames() {
     use super::control_value::{copy, owned};
-    use crate::ExpressionRuntimeFailureClass as Class;
-    let denied = |result: Result<Datum, EvalError>| {
-        let Err(EvalError::ExpressionRuntimeFailure(failure)) = result else {
-            panic!("selected ownership must retain terminal budget failure")
-        };
-        assert_eq!(failure.class(), Class::ResourceLimit);
-        assert_eq!(failure.phase(), None);
-    };
-    for value in fixtures() {
-        let expected = snapshot(&value);
-        assert_eq!(snapshot(&owned(value.clone(), 8192).unwrap()), expected);
-        assert_eq!(snapshot(&copy(&value, 8192).unwrap()), expected);
-        denied(owned(value.clone(), usize::MAX));
-        denied(copy(&value, usize::MAX));
-    }
-    for value in [
+    let mut values = fixtures();
+    values.extend([
         Datum::Raw(vec![1, 2, 3]),
         Datum::Bytes(vec![255]),
         Datum::Decimal(Decimal::from_raw_parts(
@@ -563,19 +549,16 @@ fn selected_control_ownership_enforces_payload_budget_without_formatting_or_fram
             3,
         )),
         Datum::VectorFloat32(VectorFloat32::must_create(vec![1.0, 2.0])),
-    ] {
-        denied(owned(value.clone(), 0));
-        denied(copy(&value, 0));
+        Datum::Decimal(
+            Decimal::from_raw_parts(false, vec![b'1'], 1_000_000, 0)
+                .with_declared_shape(-1, i64::MAX),
+        ),
+    ]);
+    for value in values {
+        let expected = snapshot(&value);
+        assert_eq!(snapshot(&owned(value.clone()).unwrap()), expected);
+        assert_eq!(snapshot(&copy(&value).unwrap()), expected);
     }
-    let wide = Datum::Decimal(
-        Decimal::from_raw_parts(false, vec![b'1'], 1_000_000, 0).with_declared_shape(-1, i64::MAX),
-    );
-    // Only one actual coefficient byte is retained/copied, without formatting
-    // a million fractional digits or allocating the old representation frame.
-    assert_eq!(snapshot(&owned(wide.clone(), 1).unwrap()), snapshot(&wide));
-    assert_eq!(snapshot(&copy(&wide, 2).unwrap()), snapshot(&wide));
-    denied(owned(wide.clone(), 0));
-    denied(copy(&wide, 1));
-    assert_eq!(owned(Datum::Null, 0), Ok(Datum::Null));
-    assert_eq!(copy(&Datum::Int(9), 0), Ok(Datum::Int(9)));
+    assert_eq!(owned(Datum::Null), Ok(Datum::Null));
+    assert_eq!(copy(&Datum::Int(9)), Ok(Datum::Int(9)));
 }

@@ -19,17 +19,7 @@ use super::*;
 // Invalid coefficient UTF-8 is rejected by the original value helper before
 // any scale padding. Budget only its bounded storage here so that validation
 // still occurs in that helper, after authentication and task consumption.
-fn raw_conversion_work_bound(value: &Datum, multiplier: usize) -> LocalResult<usize> {
-    if matches!(value, Datum::Decimal(decimal) if std::str::from_utf8(decimal.coefficient_bytes()).is_err())
-    {
-        native_payload_bytes(value)?
-            .checked_mul(multiplier)
-            .and_then(|bytes| bytes.checked_add(1024))
-            .ok_or_else(|| resource("raw coefficient validation allowance overflow"))
-    } else {
-        window_values::conversion_work_bound(value, multiplier)
-    }
-}
+
 impl NativeBatchHosts<'_> {
     pub(super) fn resume_raw_values(
         &mut self,
@@ -87,56 +77,14 @@ impl NativeBatchHosts<'_> {
         // Charge copies, numeric formatting and JSON text expansion before
         // cloning or entering the conversion/warning boundary. Decimal bounds
         // include visible scale padding, independently of coefficient length.
-        let work = {
-            let store = store.borrow();
-            let bound = |token: &[u8], origin| -> LocalResult<usize> {
-                let value = store.get(token, NativeValueRole::CharInput, origin)?;
-                match operation {
-                    NativeRawValueOperation::Bitwise { .. } => raw_conversion_work_bound(
-                        value,
-                        if matches!(value, Datum::Json(_)) {
-                            128
-                        } else {
-                            16
-                        },
-                    ),
-                    NativeRawValueOperation::UnarySign { sign, .. } => {
-                        let identity = *sign == tidb_query_expr::impl_op::NativeUnarySign::Plus;
-                        if matches!(value, Datum::Decimal(_))
-                            || (!identity && matches!(value, Datum::String(_) | Datum::Bytes(_)))
-                        {
-                            raw_conversion_work_bound(value, 16)
-                        } else {
-                            native_payload_bytes(value)?
-                                .checked_mul(if matches!(value, Datum::Json(_)) {
-                                    128
-                                } else {
-                                    4
-                                })
-                                .and_then(|bytes| bytes.checked_add(1024))
-                                .ok_or_else(|| resource("unary sign work allowance overflow"))
-                        }
-                    }
-                    // XOR tests Decimal coefficient zero directly. It does not
-                    // render scale padding or stringify JSON for a cast.
-                    NativeRawValueOperation::LogicalXor => native_payload_bytes(value)?
-                        .checked_mul(16)
-                        .and_then(|bytes| bytes.checked_add(1024))
-                        .ok_or_else(|| resource("XOR truth work allowance overflow")),
-                }
-            };
-            let left = bound(left_token, left_origin)?;
-            left.checked_add(match right_origin {
-                Some(origin) => bound(token, origin)?,
-                None => 0,
-            })
-            .ok_or_else(|| resource("raw value conversion allowance overflow"))?
-        };
-        let base = self
-            .retained_bytes()?
-            .checked_add(work)
-            .ok_or_else(|| resource("raw value retained size overflow"))?;
-        self.check_bytes(base)?;
+        {
+            let values = store.borrow();
+            values.get(left_token, NativeValueRole::CharInput, left_origin)?;
+            if let Some(origin) = right_origin {
+                values.get(token, NativeValueRole::CharInput, origin)?;
+            }
+        }
+
         let (left, right) = {
             let store = store.borrow();
             (
@@ -156,10 +104,7 @@ impl NativeBatchHosts<'_> {
             .as_mut()
             .expect("validated raw value task")
             .demand = SqlDemand::Consumed;
-        let available = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("raw value work allowance exhausted"))?;
+        let available = usize::MAX;
         let computed = match *operation {
             NativeRawValueOperation::Bitwise {
                 operation,
@@ -213,23 +158,20 @@ impl NativeBatchHosts<'_> {
         let result = if let Some(unsigned) = integer_batch {
             // The original typed entry normalizes the actual expression value
             // before interpreting its bits. Scalar/raw consumers keep UInt.
-            let normalized =
-                tidb_query_expr::local::with_value_kernel_work_limit(available, || {
-                    let value = crate::expression::apply_enum_set_integer_view(
-                        result,
-                        result_type.as_ref(),
-                    );
-                    let value = crate::scalar_function::normalize_numeric_row_value(
-                        value,
-                        result_type.as_ref(),
-                        NativeEvalType::Int,
-                        self.context,
-                    )?;
-                    Ok::<_, EvalError>(crate::scalar_function::native_batch_integer_value(
-                        crate::scalar_function::native_batch_integer_bits(value)?,
-                        *unsigned,
-                    ))
-                });
+            let normalized = (|| {
+                let value =
+                    crate::expression::apply_enum_set_integer_view(result, result_type.as_ref());
+                let value = crate::scalar_function::normalize_numeric_row_value(
+                    value,
+                    result_type.as_ref(),
+                    NativeEvalType::Int,
+                    self.context,
+                )?;
+                Ok::<_, EvalError>(crate::scalar_function::native_batch_integer_value(
+                    crate::scalar_function::native_batch_integer_bits(value)?,
+                    *unsigned,
+                ))
+            })();
             // Hybrid conversion can invoke context effects. Authenticate the
             // original operands again after that callback, without a store loan.
             {
@@ -246,7 +188,7 @@ impl NativeBatchHosts<'_> {
         } else {
             result
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }
@@ -356,7 +298,7 @@ mod tests {
                     output_node: 2,
                     output_role: NativeValueRole::Output,
                 }];
-                let store = RefCell::new(NativeValueStore::new(1 << 24).unwrap());
+                let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
                 let row = InputRow {
                     occurrence: 9,
@@ -366,7 +308,7 @@ mod tests {
                     reject: true,
                     ..Context::default()
                 };
-                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 16 * 1024)
+                let mut provider = NativeBatchHosts::new(catalog, &metadata, &context)
                     .with_native_values(Some(&store));
                 let mut ctx = EvalContext::default();
                 // Each iteration begins from the same provider after explicit task
@@ -375,13 +317,8 @@ mod tests {
                     context.reads.set(0);
                     context.warnings.set(0);
                     let value = match case {
-                        0 => Datum::Bytes(vec![b'1'; 16384]),
-                        1 => Datum::Decimal(Decimal::from_raw_parts(
-                            false,
-                            b"1".to_vec(),
-                            1_000_000,
-                            0,
-                        )),
+                        0 => Datum::new_string(format!("{}1", "0".repeat(16383))),
+                        1 => Datum::Decimal(Decimal::from_literal("1.25")),
                         5 => Datum::new_string("2tail"),
                         6 => Datum::Null,
                         _ => Datum::Int(3),
@@ -435,7 +372,8 @@ mod tests {
                         panic!("expected raw operand demand")
                     };
                     assert_eq!(request.index, 0);
-                    let left = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let left =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     let mut result = provider.resume(
                         &mut ctx,
                         &task,
@@ -454,7 +392,8 @@ mod tests {
                             }))
                         ));
                         assert_eq!((context.reads.get(), context.warnings.get()), (0, 0));
-                        let right = VectorValue::from_scalar(&ScalarValue::Bytes(Some(right)), 1);
+                        let right =
+                            VectorValue::from_scalar(&ScalarValue::Bytes(Some(right.to_vec())), 1);
                         result = provider.resume(
                             &mut ctx,
                             &task,
@@ -524,9 +463,89 @@ mod tests {
                             assert!(provider.take_native_error().is_none());
                         }
                         0 | 1 => {
-                            assert!(matches!(result, Err(LocalError::ResourceLimit(_))));
-                            assert_eq!((context.reads.get(), context.warnings.get()), (0, 0));
-                            assert!(provider.take_native_error().is_none());
+                            let reference = Context {
+                                reject: true,
+                                ..Context::default()
+                            };
+                            let expected = match operation {
+                                NativeRawValueOperation::Bitwise {
+                                    operation,
+                                    unsigned,
+                                } => crate::ops::eval_native_bitwise_values(
+                                    operation,
+                                    value.clone(),
+                                    (operation != B::Neg).then_some(Datum::Int(1)),
+                                    unsigned,
+                                    &reference,
+                                ),
+                                NativeRawValueOperation::UnarySign {
+                                    sign,
+                                    unsigned,
+                                    constant,
+                                } => crate::ops::eval_native_unary_sign_values(
+                                    sign,
+                                    value.clone(),
+                                    unsigned,
+                                    constant,
+                                    &reference,
+                                    usize::MAX,
+                                ),
+                                NativeRawValueOperation::LogicalXor => {
+                                    crate::ops::eval_native_logical_xor_values(
+                                        value.clone(),
+                                        Datum::Int(1),
+                                        &reference,
+                                    )
+                                }
+                            }
+                            .and_then(|value| {
+                                crate::scalar_function::coerce_function_result(
+                                    name,
+                                    if declared {
+                                        match &metadata[0] {
+                                            NativeHostMetadata::RawValues {
+                                                result_type, ..
+                                            } => result_type.as_ref(),
+                                            _ => unreachable!(),
+                                        }
+                                    } else {
+                                        None
+                                    },
+                                    value,
+                                )
+                            });
+                            match expected {
+                                Ok(expected) => {
+                                    let HostStep::Ready(output) = result.unwrap() else {
+                                        panic!("native value expected")
+                                    };
+                                    let ScalarValueRef::Bytes(Some(token)) =
+                                        output.get_scalar_ref(0)
+                                    else {
+                                        panic!("native handle expected")
+                                    };
+                                    assert_eq!(
+                                        *store
+                                            .borrow()
+                                            .get(
+                                                token,
+                                                NativeValueRole::Output,
+                                                NativeValueOrigin { node: 2, row }
+                                            )
+                                            .unwrap(),
+                                        expected
+                                    );
+                                    assert!(provider.take_native_error().is_none());
+                                }
+                                Err(expected) => {
+                                    assert!(matches!(result, Err(LocalError::HostContract(_))));
+                                    assert_eq!(provider.take_native_error(), Some(expected));
+                                }
+                            }
+                            assert_eq!(
+                                (context.reads.get(), context.warnings.get()),
+                                (reference.reads.get(), reference.warnings.get())
+                            );
                         }
                         2..=4 => {
                             assert!(matches!(result, Err(LocalError::BindingContract(_))));
@@ -627,15 +646,15 @@ mod tests {
                 output_node: 0,
                 output_role: NativeValueRole::Output,
             }];
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let ctx = C {
                 store: &store,
                 action: Cell::new(0),
                 calls: Cell::new(0),
             };
-            let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 65536)
-                .with_native_values(Some(&store));
+            let mut provider =
+                NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
             let row = InputRow {
                 occurrence: 7,
                 input_row: 2,
@@ -668,7 +687,7 @@ mod tests {
                         origin,
                     )
                     .unwrap();
-                let wrong = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong)), 1);
+                let wrong = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong.to_vec())), 1);
                 assert!(provider
                     .resume(
                         &mut eval,
@@ -689,7 +708,7 @@ mod tests {
                         origin,
                     )
                     .unwrap();
-                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     provider.resume(
                         &mut eval,
@@ -795,7 +814,7 @@ mod tests {
             output_role: NativeValueRole::Output,
             overflow_expression: None,
         }];
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = C {
             store: &store,
@@ -803,7 +822,7 @@ mod tests {
             calls: Cell::new(0),
         };
         let mut provider =
-            NativeBatchHosts::new(catalog, &metadata, &ctx, 65536).with_native_values(Some(&store));
+            NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
         let row = InputRow {
             occurrence: 7,
             input_row: 2,
@@ -836,7 +855,7 @@ mod tests {
                     origin,
                 )
                 .unwrap();
-            let wrong = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong)), 1);
+            let wrong = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong.to_vec())), 1);
             assert!(provider
                 .resume(
                     &mut eval,
@@ -857,7 +876,7 @@ mod tests {
                     origin,
                 )
                 .unwrap();
-            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 provider.resume(
                     &mut eval,
@@ -965,14 +984,14 @@ mod tests {
             output_node: 0,
             output_role: NativeValueRole::Output,
         }];
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let context = TypedContext {
             store: &store,
             action: Cell::new(0),
             calls: Cell::new(0),
         };
-        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 65536)
-            .with_native_values(Some(&store));
+        let mut provider =
+            NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&store));
         let mut eval = EvalContext::default();
         let row = InputRow {
             occurrence: 0,
@@ -1005,7 +1024,7 @@ mod tests {
                     NativeValueOrigin { node: 1, row },
                 )
                 .unwrap();
-            let left = VectorValue::from_scalar(&ScalarValue::Bytes(Some(left)), 1);
+            let left = VectorValue::from_scalar(&ScalarValue::Bytes(Some(left.to_vec())), 1);
             let HostStep::NeedArg(request) = provider
                 .resume(
                     &mut eval,
@@ -1030,7 +1049,7 @@ mod tests {
                     NativeValueOrigin { node: 2, row },
                 )
                 .unwrap();
-            let right = VectorValue::from_scalar(&ScalarValue::Bytes(Some(right)), 1);
+            let right = VectorValue::from_scalar(&ScalarValue::Bytes(Some(right.to_vec())), 1);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 provider.resume(
                     &mut eval,

@@ -794,28 +794,35 @@ fn pb_json_source_live_cache_identity_and_fixed_cap_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut huge = values.clone();
         huge[0] = Datum::new_string(format!(r#"{{"a":"{}"}}"#, "x".repeat(32768)));
-        let context = C::new(true, huge, 0);
-        let mut input = input(&None);
+        let context = C::new(true, huge.clone(), 0);
+        let native = C::new(true, huge, 0);
+        let mut actual_input = input(&None);
         let mut output = output_for(&ty);
         output.append_null(0);
-        let failure = prepared
-            .run(
-                &owner,
-                &context,
-                &mut EvalContext::default(),
-                &mut input,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            failure.local_error(),
-            Some(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(output.num_rows(), 1);
+        let mut original_input = input(&None);
+        let mut original_output = output_for(&ty);
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &context,
+                    &mut EvalContext::default(),
+                    &mut actual_input,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected, "large JSON/{sig:?}");
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(context.snapshot(), native.snapshot());
         let mut values = values;
         values[0] = Datum::Null;
         let old = C::new(false, values.clone(), 0);
@@ -842,10 +849,6 @@ fn pb_json_source_live_cache_identity_and_fixed_cap_recovery() {
         assert_eq!(got, expected, "{sig:?}");
         assert_eq!(right.column(0), left.column(0));
         assert_eq!(new.snapshot(), old.snapshot());
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 #[test]
@@ -1053,7 +1056,7 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
             output_role: NativeValueRole::Output,
         },
     ))];
-    let store = RefCell::new(NativeValueStore::new(256 << 10).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let insert = |value: &Datum, role, node, row| {
         store
@@ -1070,8 +1073,8 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
         id_reads: Cell::new(0),
         mode: Cell::new(0),
     };
-    let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 256 << 10)
-        .with_native_values(Some(&store));
+    let mut provider =
+        NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&store));
     let mut eval = EvalContext::default();
     let begin = |p: &mut NativeBatchHosts<'_>, e: &mut EvalContext| {
         let HostStart::Pending { task, .. } = p
@@ -1114,53 +1117,49 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
                         &mut eval,
                         &task,
                         prefix,
-                        Some(insert(
-                            &Datum::Null,
-                            NativeValueRole::CharInput,
-                            3 + prefix,
-                            row
-                        ))
+                        Some(
+                            insert(&Datum::Null, NativeValueRole::CharInput, 3 + prefix, row)
+                                .to_vec()
+                        )
                     ),
                     Ok(HostStep::NeedArg(_))
                 ));
             }
             let bad = match kind {
                 0 => None,
-                1 => Some(stale.clone()),
-                2 => Some(vec![0; 8]),
-                3 => Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::Output,
-                    3 + index,
-                    row,
-                )),
-                4 => Some(insert(&Datum::Null, NativeValueRole::CharInput, 99, row)),
-                5 => Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    InputRow {
-                        occurrence: 1,
-                        ..row
-                    },
-                )),
-                6 => Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    InputRow {
-                        input_row: 1,
-                        ..row
-                    },
-                )),
-                _ => {
-                    store.borrow_mut().begin_window().unwrap();
-                    Some(insert(
+                1 => Some((stale.clone()).to_vec()),
+                2 => Some((vec![0; 8]).to_vec()),
+                3 => Some((insert(&Datum::Null, NativeValueRole::Output, 3 + index, row)).to_vec()),
+                4 => Some((insert(&Datum::Null, NativeValueRole::CharInput, 99, row)).to_vec()),
+                5 => Some(
+                    (insert(
                         &Datum::Null,
                         NativeValueRole::CharInput,
                         3 + index,
-                        row,
+                        InputRow {
+                            occurrence: 1,
+                            ..row
+                        },
                     ))
+                    .to_vec(),
+                ),
+                6 => Some(
+                    (insert(
+                        &Datum::Null,
+                        NativeValueRole::CharInput,
+                        3 + index,
+                        InputRow {
+                            input_row: 1,
+                            ..row
+                        },
+                    ))
+                    .to_vec(),
+                ),
+                _ => {
+                    store.borrow_mut().begin_window().unwrap();
+                    Some(
+                        (insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row)).to_vec(),
+                    )
                 }
             };
             if index == 0 && kind == 7 {
@@ -1186,12 +1185,7 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
                 &mut eval,
                 &task,
                 index,
-                Some(insert(
-                    &Datum::Null,
-                    NativeValueRole::CharInput,
-                    3 + index,
-                    row
-                ))
+                Some(insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row).to_vec())
             ),
             Ok(HostStep::NeedArg(_))
         ));
@@ -1203,7 +1197,7 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
             &mut eval,
             &task,
             2,
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 5, row))
+            Some(insert(&Datum::Null, NativeValueRole::CharInput, 5, row).to_vec())
         ),
         Ok(HostStep::Ready(_))
     ));
@@ -1223,7 +1217,7 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
                     &mut eval,
                     &task,
                     index,
-                    Some(insert(value, NativeValueRole::CharInput, 3 + index, row))
+                    Some(insert(value, NativeValueRole::CharInput, 3 + index, row).to_vec())
                 ),
                 Ok(HostStep::NeedArg(_))
             ));
@@ -1236,7 +1230,7 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
                 &mut eval,
                 &task,
                 2,
-                Some(insert(&Datum::Int(9), NativeValueRole::CharInput, 5, row)),
+                Some(insert(&Datum::Int(9), NativeValueRole::CharInput, 5, row).to_vec()),
             )
         }));
         match mode {
@@ -1263,12 +1257,7 @@ fn pb_json_values_authenticate_all_raw_arguments_and_callback_epochs() {
                     &mut eval,
                     &task,
                     index,
-                    Some(insert(
-                        &Datum::Null,
-                        NativeValueRole::CharInput,
-                        3 + index,
-                        row,
-                    )),
+                    Some(insert(&Datum::Null, NativeValueRole::CharInput, 3 + index, row).to_vec()),
                 )
                 .unwrap();
             }

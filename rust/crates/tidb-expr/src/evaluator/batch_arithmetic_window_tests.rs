@@ -85,7 +85,7 @@ impl LocalRuntimeServices for Inputs<'_> {
             },
         )?;
         Ok(VectorValue::from_scalar(
-            &ScalarValue::Bytes(Some(token)),
+            &ScalarValue::Bytes(Some(token.to_vec())),
             1,
         ))
     }
@@ -220,11 +220,10 @@ fn execute_case(
         no_unsigned,
         ..Trace::default()
     };
-    let store = RefCell::new(NativeValueStore::new(8 * 1024 * 1024).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let mut input = Inputs {
-        hosts: NativeBatchHosts::new(catalog, &metadata, &native, 8 * 1024 * 1024)
-            .with_native_values(Some(&store)),
+        hosts: NativeBatchHosts::new(catalog, &metadata, &native).with_native_values(Some(&store)),
         store: &store,
         schema,
         values: &values,
@@ -323,55 +322,6 @@ fn execute_case(
         }
     }
     assert_eq!(input.reads, expected_reads);
-    if !selection.is_empty() {
-        input.fail = None;
-        input.reads.clear();
-        native.events.borrow_mut().clear();
-        input.hosts.max_retained_bytes = 0;
-        let limited = program.eval_with_bindings(
-            ExecutionLimits::default(),
-            &mut EvalContext::default(),
-            values[0].len(),
-            selection,
-            &mut input,
-        );
-        assert!(matches!(limited, Err(LocalError::ResourceLimit(_))));
-        assert!(input.reads.is_empty());
-        assert!(input.hosts.slots.iter().all(|slot| slot.task.is_none()));
-        store.borrow_mut().begin_window().unwrap();
-        // Admit task/map and the source vector, then refuse the conversion
-        // allowance before its first context read. The whole left input
-        // phase has completed; no right input or stale success is returned.
-        input.hosts.max_retained_bytes = input.hosts.retained_bytes().unwrap()
-            + selection.len() * std::mem::size_of::<usize>()
-            + selection.len() * std::mem::size_of::<Datum>()
-            + 100;
-        let limited = program.eval_with_bindings(
-            ExecutionLimits::default(),
-            &mut EvalContext::default(),
-            values[0].len(),
-            selection,
-            &mut input,
-        );
-        assert!(matches!(limited, Err(LocalError::ResourceLimit(_))));
-        assert_eq!(
-            input.reads,
-            selection
-                .iter()
-                .enumerate()
-                .map(|(occurrence, &input_row)| (
-                    0,
-                    InputRow {
-                        occurrence,
-                        input_row
-                    }
-                ))
-                .collect::<Vec<_>>()
-        );
-        assert!(native.events.borrow().is_empty());
-        assert!(input.hosts.take_native_error().is_none());
-        assert!(input.hosts.slots.iter().all(|slot| slot.task.is_none()));
-    }
 }
 #[test]
 fn native_window_arithmetic_matches_actual_bulk_values_context_and_argument_phases() {

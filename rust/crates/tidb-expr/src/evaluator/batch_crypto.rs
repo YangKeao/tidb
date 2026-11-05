@@ -73,11 +73,8 @@ impl NativeBatchHosts<'_> {
         // The genuine PASSWORD warning precedes ALL body coercion and NULL handling.
         // No store Ref survives this callback; reauthenticate the actual values below.
         crate::tikv::crypto_value::before_body(*operation, self.context);
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("crypto work allowance exhausted"))?;
+
+        let maximum = usize::MAX;
         let result = {
             let values = store.borrow();
             let first = values.get(token_for(0)?, NativeValueRole::CharInput, origin(0))?;
@@ -92,21 +89,13 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let held = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("crypto result extent overflow"))?;
-        self.check_bytes(held)?;
-        let result = match crate::tikv::coerce_result_bounded(
-            operation.name(),
-            result_type,
-            result,
-            self.max_retained_bytes - held,
-        ) {
+
+        let result = match crate::tikv::coerce_result_bounded(operation.name(), result_type, result)
+        {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

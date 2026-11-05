@@ -122,13 +122,6 @@ impl PreparedQuotient {
         maximum: usize,
         ctx: &dyn crate::Columns,
     ) -> Result<Datum, EvalError> {
-        if maximum == usize::MAX {
-            return Err(crate::tikv::math_decimal_bridge_error(
-                tidb_query_datatype::codec::mysql::decimal::NativeDecimalError::Resource(
-                    "quotient requires a finite value allowance",
-                ),
-            ));
-        }
         let input_null = matches!(self, Self::Null);
         let value = match self {
             Self::Null => {
@@ -605,17 +598,22 @@ mod tests {
                 )
                 .and_then(|value| value.compute(op, 4, 0, &context)),
             );
-            resource(
+            assert_eq!(
                 prepare(
                     op,
                     Datum::Real(7.0),
                     Datum::Real(3.0),
                     [false; 2],
                     4096,
-                    &context,
+                    &context
                 )
                 .unwrap()
                 .compute(op, 4, usize::MAX, &context),
+                Ok(Datum::Real(if op == BinaryOp::Div {
+                    7.0 / 3.0
+                } else {
+                    1.0
+                }))
             );
             assert!(context.observations.borrow().is_empty());
             assert_eq!(

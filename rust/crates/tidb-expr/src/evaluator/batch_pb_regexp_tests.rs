@@ -838,7 +838,7 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let mut ctx = RegexpSourceContext::new(
             true,
             [
@@ -851,21 +851,28 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
         let mut first = input(&None);
         let mut output = output_for(&ty());
         output.append_null(0);
-        let failure = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut first,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            failure.local_error(),
-            Some(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(output.num_rows(), 1);
+        let native = RegexpSourceContext::new(true, ctx.base.values.clone(), 0);
+        let mut original_input = input(&None);
+        let mut original_output = output_for(&ty());
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut first,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected);
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         ctx.base.values[0] = Datum::Null;
         ctx.base.enabled.set(false);
         ctx.base.events.borrow_mut().clear();
@@ -896,10 +903,6 @@ fn pb_regexp_source_cache_identity_and_same_cap_recovery() {
         assert_eq!(got, expected);
         assert_eq!(right.column(0), left.column(0));
         assert_eq!(ctx.snapshot(), old.snapshot());
-        assert_eq!(
-            prepared.workers[0].max_materialization_retained_bytes,
-            16 * 1024
-        );
     }
 }
 

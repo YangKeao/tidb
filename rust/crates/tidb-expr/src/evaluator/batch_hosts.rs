@@ -118,10 +118,6 @@ struct WindowSourceFacts<'a> {
     node: usize,
     target: NativeEvalType,
 }
-struct WindowSourceValues {
-    values: Vec<Datum>,
-    retained_bytes: usize,
-}
 
 #[derive(Clone, Copy)]
 pub(super) enum NativeRawValueOperation {
@@ -513,10 +509,9 @@ fn coerce_optional_value_result(
     name: &str,
     result_type: Option<&FieldType>,
     value: Datum,
-    maximum: usize,
 ) -> std::result::Result<Datum, EvalError> {
     match result_type {
-        Some(field) => crate::tikv::identity_actual::coerce_result(name, field, value, maximum),
+        Some(field) => crate::tikv::identity_actual::coerce_result(name, field, value),
         None => Ok(value),
     }
 }
@@ -526,26 +521,23 @@ fn present_integer_batch_value(
     value: Datum,
     result_type: Option<&FieldType>,
     context: &dyn Columns,
-    maximum: usize,
 ) -> std::result::Result<Datum, EvalError> {
-    tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-        crate::scalar_function::eager_values::audit_work_result(
-            (|| -> std::result::Result<Datum, EvalError> {
-                let value = crate::expression::apply_enum_set_integer_view(value, result_type);
-                let value = crate::scalar_function::normalize_numeric_row_value(
-                    value,
-                    result_type,
-                    NativeEvalType::Int,
-                    context,
-                )?;
-                let bits = crate::scalar_function::native_batch_integer_bits(value)?;
-                Ok(crate::scalar_function::native_batch_integer_value(
-                    bits,
-                    result_type.is_some_and(FieldType::is_unsigned),
-                ))
-            })(),
-        )
-    })
+    (|| {
+        (|| -> std::result::Result<Datum, EvalError> {
+            let value = crate::expression::apply_enum_set_integer_view(value, result_type);
+            let value = crate::scalar_function::normalize_numeric_row_value(
+                value,
+                result_type,
+                NativeEvalType::Int,
+                context,
+            )?;
+            let bits = crate::scalar_function::native_batch_integer_bits(value)?;
+            Ok(crate::scalar_function::native_batch_integer_value(
+                bits,
+                result_type.is_some_and(FieldType::is_unsigned),
+            ))
+        })()
+    })()
 }
 
 impl NativeHostMetadata {
@@ -738,7 +730,6 @@ enum SqlDemand {
         next: usize,
         rows: Vec<usize>,
         left: Vec<Datum>,
-        left_bytes: usize,
     },
     Arithmetic {
         next: usize,
@@ -951,6 +942,7 @@ impl NativeTask {
             }
         }
     }
+    #[cfg(test)]
     fn retained_bytes(&self) -> LocalResult<usize> {
         let bytes = self.values.iter().flatten().try_fold(
             array_bytes::<Option<Vec<u8>>>(self.values.capacity())?,
@@ -1066,13 +1058,17 @@ impl NativeTask {
                 })
                 .ok_or_else(|| resource("fast decimal retained size overflow"));
         }
-        if let SqlDemand::WindowArithmetic {
-            rows, left_bytes, ..
-        } = &self.demand
-        {
+        if let SqlDemand::WindowArithmetic { rows, left, .. } = &self.demand {
             return bytes
                 .checked_add(array_bytes::<usize>(rows.capacity())?)
-                .and_then(|bytes| bytes.checked_add(*left_bytes))
+                .and_then(|bytes| {
+                    left.iter().try_fold(
+                        bytes.checked_add(array_bytes::<Datum>(left.capacity()).ok()?)?,
+                        |bytes, value| {
+                            bytes.checked_add(native_payload_bytes(value).ok()?.checked_mul(2)?)
+                        },
+                    )
+                })
                 .ok_or_else(|| resource("window arithmetic retained bytes overflow"));
         }
         if let SqlDemand::Arithmetic {
@@ -1093,33 +1089,9 @@ impl NativeTask {
 }
 struct CapturedWarnings {
     rows: Vec<(u16, String)>,
-    base_bytes: usize,
-    max_bytes: usize,
     failure: Option<LocalError>,
 }
 impl CapturedWarnings {
-    fn retained_bytes(&self) -> LocalResult<usize> {
-        self.rows.iter().try_fold(
-            array_bytes::<(u16, String)>(self.rows.capacity())?,
-            |bytes, (_, message)| {
-                bytes
-                    .checked_add(message.capacity())
-                    .ok_or_else(|| resource("native warning retained size overflow"))
-            },
-        )
-    }
-    fn check(&self, extra: usize) -> LocalResult<()> {
-        let bytes = self
-            .base_bytes
-            .checked_add(self.retained_bytes()?)
-            .and_then(|bytes| bytes.checked_add(extra))
-            .ok_or_else(|| resource("native warning capture size overflow"))?;
-        if bytes > self.max_bytes {
-            Err(resource("native warning capture policy exceeded"))
-        } else {
-            Ok(())
-        }
-    }
     fn capture(&mut self, code: u16, message: &str) {
         if self.failure.is_some() {
             return;
@@ -1129,26 +1101,14 @@ impl CapturedWarnings {
         }
     }
     fn try_capture(&mut self, code: u16, message: &str) -> LocalResult<()> {
-        let growth = if self.rows.len() == self.rows.capacity() {
-            size_of::<(u16, String)>()
-        } else {
-            0
-        };
-        self.check(
-            growth
-                .checked_add(message.len())
-                .ok_or_else(|| resource("native warning growth overflow"))?,
-        )?;
         self.rows
-            .try_reserve_exact(1)
+            .try_reserve(1)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        self.check(message.len())?;
         let mut owned = String::new();
         owned
             .try_reserve_exact(message.len())
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         owned.push_str(message);
-        self.check(owned.capacity())?;
         self.rows.push((code, owned));
         Ok(())
     }
@@ -1172,7 +1132,6 @@ pub(super) struct NativeBatchHosts<'a> {
     native_values: Option<&'a RefCell<NativeValueStore>>,
     slots: Vec<TaskSlot<'a>>,
     generation: u64,
-    max_retained_bytes: usize,
     native_error: Option<EvalError>,
     capture_root_error_value: bool,
     root_error_value: Option<(NativeValueOrigin, Datum)>,
@@ -1205,7 +1164,6 @@ impl<'a> NativeBatchHosts<'a> {
         catalog: HostCatalog,
         metadata: &'a [NativeHostMetadata],
         context: &'a dyn Columns,
-        max_retained_bytes: usize,
     ) -> Self {
         Self {
             ast_nodes: &[],
@@ -1219,7 +1177,6 @@ impl<'a> NativeBatchHosts<'a> {
             context,
             slots: Vec::new(),
             generation: 0,
-            max_retained_bytes,
             native_error: None,
             capture_root_error_value: false,
             root_error_value: None,
@@ -1293,14 +1250,7 @@ impl<'a> NativeBatchHosts<'a> {
             node: 0,
             row: task.row,
         };
-        let bytes = native_payload_bytes(&value)?
-            .checked_mul(3)
-            .ok_or_else(|| resource("root failure value retained extent overflow"))?;
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(bytes)
-                .ok_or_else(|| resource("root failure value retained extent overflow"))?,
-        )?;
+
         self.root_error_value = Some((origin, value));
         Ok(())
     }
@@ -1318,11 +1268,6 @@ impl<'a> NativeBatchHosts<'a> {
         let slot = match self.slots.iter().position(|slot| slot.task.is_none()) {
             Some(slot) => slot,
             None => {
-                self.check_bytes(
-                    self.retained_bytes()?
-                        .checked_add(std::mem::size_of::<TaskSlot>())
-                        .ok_or_else(|| resource("SQL host slot size overflow"))?,
-                )?;
                 self.slots
                     .try_reserve_exact(1)
                     .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
@@ -1331,7 +1276,7 @@ impl<'a> NativeBatchHosts<'a> {
                     generation: 0,
                     task: None,
                 });
-                self.check_bytes(self.retained_bytes()?)?;
+
                 self.slots.len() - 1
             }
         };
@@ -1347,11 +1292,7 @@ impl<'a> NativeBatchHosts<'a> {
             demand,
             values: Vec::new(),
         };
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(task.retained_bytes()?)
-                .ok_or_else(|| resource("SQL host task size overflow"))?,
-        )?;
+
         self.slots[slot] = TaskSlot {
             ready_preparation: None,
             generation,
@@ -1366,6 +1307,7 @@ impl<'a> NativeBatchHosts<'a> {
             },
         })
     }
+    #[cfg(test)]
     fn retained_bytes(&self) -> LocalResult<usize> {
         let typed = self.typed_values.iter().try_fold(
             array_bytes::<Option<Datum>>(self.typed_values.len())?,
@@ -1414,13 +1356,7 @@ impl<'a> NativeBatchHosts<'a> {
                 },
             )
     }
-    fn check_bytes(&self, bytes: usize) -> LocalResult<()> {
-        if bytes > self.max_retained_bytes {
-            Err(resource("SQL host retained byte cap exceeded"))
-        } else {
-            Ok(())
-        }
-    }
+
     fn task(&self, id: &HostTaskId) -> LocalResult<&NativeTask> {
         self.slots
             .get(id.slot)
@@ -1450,14 +1386,10 @@ impl<'a> NativeBatchHosts<'a> {
             unreachable!()
         };
         let terminal = demand.finish_terminal()?;
-        let other = self.retained_bytes()?;
+
         // Bound the overlap while the encoder consumes the owned prefix.
-        let task_bytes = task.retained_bytes()?;
-        let encode_cap = self
-            .max_retained_bytes
-            .checked_sub(other)
-            .and_then(|bytes| bytes.checked_sub(task_bytes))
-            .ok_or_else(|| resource("SQL host encoding overlap exceeds retained cap"))?;
+
+        let encode_cap = usize::MAX;
         let prepared = tidb_query_expr::local::prepare_concat_args(
             *kind,
             task.arity,
@@ -1465,30 +1397,14 @@ impl<'a> NativeBatchHosts<'a> {
             terminal,
             encode_cap,
         )?;
-        let output_cap = self
-            .max_retained_bytes
-            .checked_sub(other)
-            .and_then(|bytes| bytes.checked_sub(prepared.retained_encoded_bytes()))
-            .ok_or_else(|| resource("SQL host encoded transport exceeds retained cap"))?;
+        let output_cap = usize::MAX;
         let value = prepared.execute(output_cap)?;
         let len = value.as_ref().map_or(0, Vec::len);
-        let external = value.as_ref().map_or(0, Vec::capacity);
-        self.check_bytes(
-            other
-                .checked_add(external)
-                .and_then(|bytes| bytes.checked_add(len))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<usize>().saturating_mul(4)))
-                .ok_or_else(|| resource("SQL host result overlap size overflow"))?,
-        )?;
+
         let mut output = ChunkedVecBytes::try_with_capacities(1, len)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         output.push_ref(value.as_deref());
-        self.check_bytes(
-            other
-                .checked_add(external)
-                .and_then(|bytes| bytes.checked_add(output.retained_heap_bytes()?))
-                .ok_or_else(|| resource("SQL host result retained size overflow"))?,
-        )?;
+
         Ok(VectorValue::Bytes(output))
     }
     fn finish_value_cast(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
@@ -1514,20 +1430,10 @@ impl<'a> NativeBatchHosts<'a> {
             node: *argument_node,
             row,
         };
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("native CAST input allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("native CAST input size overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -1573,7 +1479,7 @@ impl<'a> NativeBatchHosts<'a> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
     }
     fn finish_header_outcome(&mut self, id: &HostTaskId) -> LocalResult<HostStep> {
         let task = self.task(id)?;
@@ -1588,20 +1494,7 @@ impl<'a> NativeBatchHosts<'a> {
         else {
             return Err(binding("header outcome descriptor missing"));
         };
-        let payload = property_value
-            .as_ref()
-            .map(native_payload_bytes)
-            .transpose()?
-            .unwrap_or(0);
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("metadata result copy overflow"))?,
-            )
-            .ok_or_else(|| resource("metadata result extent overflow"))?;
-        self.check_bytes(base)?;
+
         let (kind, value, node, role, row) = (
             *kind,
             property_value.clone(),
@@ -1614,18 +1507,14 @@ impl<'a> NativeBatchHosts<'a> {
             .as_mut()
             .expect("live header task")
             .demand = SqlDemand::Consumed;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("metadata result conversion allowance exhausted"))?;
         let result = kind.evaluate(self.context, value).and_then(|value| {
-            coerce_optional_value_result(kind.name(), result_type.as_ref(), value, maximum)
+            coerce_optional_value_result(kind.name(), result_type.as_ref(), value)
         });
         let result = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, result, node, role, row, base)
+        self.finish_native_value(id, result, node, role, row)
             .map(HostStep::Ready)
     }
     fn finish_native_value(
@@ -1635,7 +1524,6 @@ impl<'a> NativeBatchHosts<'a> {
         output_node: usize,
         output_role: NativeValueRole,
         row: InputRow,
-        base: usize,
     ) -> LocalResult<VectorValue> {
         // ScalarFunction.Eval's return normalization has already run. Its
         // enclosing Expression.Eval applies this immutable result view next.
@@ -1696,19 +1584,9 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("native result has no value store"))?;
-        let live = base
-            .checked_add(
-                native_payload_bytes(&result)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("native CAST result allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("native CAST live size overflow"))?;
-        self.check_bytes(
-            live.checked_add(128)
-                .ok_or_else(|| resource("native CAST handle overlap overflow"))?,
-        )?;
-        let token = store.borrow_mut().insert_clone(
-            &result,
+
+        let token = store.borrow_mut().insert_owned(
+            result,
             output_role,
             NativeValueOrigin {
                 node: output_node,
@@ -1718,15 +1596,7 @@ impl<'a> NativeBatchHosts<'a> {
         let mut output = ChunkedVecBytes::try_with_capacities(1, token.len())
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         output.push_ref(Some(&token));
-        self.check_bytes(
-            live.checked_add(token.capacity())
-                .and_then(|bytes| {
-                    output
-                        .retained_heap_bytes()
-                        .and_then(|more| bytes.checked_add(more))
-                })
-                .ok_or_else(|| resource("native CAST result vector size overflow"))?,
-        )?;
+
         self.slots[id.slot].task = None;
         self.slots[id.slot].ready_preparation = None;
         Ok(VectorValue::Bytes(output))
@@ -1802,20 +1672,10 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("selection has no native store"))?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("selected native payload allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("selected native input size overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -1825,7 +1685,7 @@ impl<'a> NativeBatchHosts<'a> {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
-        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+        self.finish_native_value(id, value, *output_node, *output_role, row)
     }
     fn resume_arithmetic(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
         use crate::scalar_function::NativeArithmeticInputMode as Mode;
@@ -1847,8 +1707,8 @@ impl<'a> NativeBatchHosts<'a> {
             subjects,
             subject_format_failures,
             overflow_format_failure: _,
-            overflow_expressions,
-            intdiv,
+            overflow_expressions: _,
+            intdiv: _,
             output_node: _,
             output_role: _,
             batch: None,
@@ -1872,38 +1732,10 @@ impl<'a> NativeBatchHosts<'a> {
             node: argument_nodes[index],
             row,
         };
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let diagnostic_copies = subjects
-            .iter()
-            .chain(overflow_expressions.iter())
-            .chain(
-                intdiv
-                    .as_deref()
-                    .map_or(&[][..], |facts| facts.arguments.as_slice())
-                    .iter(),
-            )
-            .flatten()
-            .try_fold(0usize, |total, text| {
-                total
-                    .checked_add(text.len())
-                    .ok_or_else(|| resource("arithmetic diagnostics overflow"))
-            })?
-            .checked_mul(2)
-            .ok_or_else(|| resource("arithmetic diagnostics copy overflow"))?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("arithmetic argument copy overflow"))?,
-            )
-            .and_then(|bytes| bytes.checked_add(diagnostic_copies))
-            .ok_or_else(|| resource("arithmetic argument allowance overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -1939,19 +1771,10 @@ impl<'a> NativeBatchHosts<'a> {
                     return self.finish_arithmetic_row_value(
                         id,
                         crate::ops::eval_binary_arithmetic_null_in(self.context),
-                        base,
                     );
                 }
                 crate::ops::arithmetic::PreparedArithmetic::Null
             } else {
-                self.check_bytes(
-                    base.checked_add(
-                        native_payload_bytes(&value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("arithmetic converted value overflow"))?,
-                    )
-                    .ok_or_else(|| resource("arithmetic left allowance overflow"))?,
-                )?;
                 let SqlDemand::Arithmetic { next, left, .. } = &mut self.slots[id.slot]
                     .task
                     .as_mut()
@@ -1981,13 +1804,10 @@ impl<'a> NativeBatchHosts<'a> {
                 .ok_or_else(|| binding("arithmetic left value missing"))?;
             let unsigned = arithmetic_unsigned(source_types);
             if quotient::is_quotient(op) {
-                let available = self
-                    .max_retained_bytes
-                    .checked_sub(base)
-                    .ok_or_else(|| resource("quotient allowance exhausted"))?;
+                let available = usize::MAX;
                 let result =
                     self.compute_quotient(&self.metadata[slot.index()], left, value, available)?;
-                return self.finish_arithmetic_row_value(id, result, base);
+                return self.finish_arithmetic_row_value(id, result);
             }
             if typed {
                 match crate::ops::prepare_native_typed_arithmetic(
@@ -2032,11 +1852,8 @@ impl<'a> NativeBatchHosts<'a> {
                 }
             }
         };
-        let available = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("arithmetic kernel allowance exhausted"))?;
-        self.finish_arithmetic_row_value(id, prepared.compute(available), base)
+        let available = usize::MAX;
+        self.finish_arithmetic_row_value(id, prepared.compute(available))
     }
 
     fn finish_math(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
@@ -2061,20 +1878,10 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("math native value store missing"))?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("math copy allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("math value size overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -2085,81 +1892,70 @@ impl<'a> NativeBatchHosts<'a> {
             .as_mut()
             .expect("authenticated math task")
             .demand = SqlDemand::Consumed;
-        let available = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("math value allowance exhausted"))?;
+        let available = usize::MAX;
         use tidb_query_expr::impl_math::{
             native_abs_decimal_value, native_abs_int_value, native_abs_real_value,
             native_abs_uint_value,
         };
-        let value =
-            match value {
-                Datum::Null => native_abs_int_value(None)
-                    .expect("NULL cannot overflow")
-                    .map_or(Datum::Null, Datum::Int),
-                Datum::Int(value) => match native_abs_int_value(Some(value)) {
-                    Ok(value) => value.map_or(Datum::Null, Datum::Int),
-                    Err(_) => {
-                        if self.diagnostic_parent(slot).is_some() {
-                            return self.begin_math_diagnostic(id, EvalError::IntOverflow);
-                        }
-                        let error =
-                            if let Some(expression) = overflow_expression {
-                                self.check_bytes(
-                                    base.checked_add(expression.len().checked_mul(2).ok_or_else(
-                                        || resource("math diagnostic copy overflow"),
-                                    )?)
-                                    .ok_or_else(|| resource("math diagnostic size overflow"))?,
-                                )?;
-                                EvalError::DataOutOfRange {
-                                    value: "BIGINT",
-                                    expression: expression.to_string(),
-                                }
-                            } else {
-                                EvalError::IntOverflow
-                            };
-                        return self.native_failure(error);
+        let value = match value {
+            Datum::Null => native_abs_int_value(None)
+                .expect("NULL cannot overflow")
+                .map_or(Datum::Null, Datum::Int),
+            Datum::Int(value) => match native_abs_int_value(Some(value)) {
+                Ok(value) => value.map_or(Datum::Null, Datum::Int),
+                Err(_) => {
+                    if self.diagnostic_parent(slot).is_some() {
+                        return self.begin_math_diagnostic(id, EvalError::IntOverflow);
                     }
-                },
-                Datum::UInt(value) => Datum::UInt(native_abs_uint_value(value)),
-                Datum::Real(value) => {
-                    native_abs_real_value(Some(value)).map_or(Datum::Null, Datum::Real)
-                }
-                Datum::Decimal(value) => {
-                    let shared = match crate::tikv::prepare_math_decimal(&value) {
-                        Ok(value) => value,
-                        Err(error) => return self.native_failure(error),
+                    let error = if let Some(expression) = overflow_expression {
+                        EvalError::DataOutOfRange {
+                            value: "BIGINT",
+                            expression: expression.to_string(),
+                        }
+                    } else {
+                        EvalError::IntOverflow
                     };
-                    let budget = u64::try_from(available)
-                        .map_err(|_| resource("math kernel allowance overflow"))?
-                        as i64;
-                    let computed = native_abs_decimal_value(&shared, &budget)
-                        .map_err(LocalError::Evaluation)?;
-                    let value = match crate::tikv::restore_math_decimal(&computed, available) {
-                        Ok(value) => value,
-                        Err(error) => return self.native_failure(error),
-                    };
-                    Datum::Decimal(value)
+                    return self.native_failure(error);
                 }
-                value => {
-                    let ready = crate::math_fn::numeric_arg(&value, self.context);
-                    store
-                        .borrow()
-                        .get(token, NativeValueRole::CharInput, origin)?;
-                    let ready = match ready {
-                        Ok(value) => value,
-                        Err(error) => return self.native_failure(error),
-                    };
-                    native_abs_real_value(ready).map_or(Datum::Null, Datum::Real)
-                }
-            };
+            },
+            Datum::UInt(value) => Datum::UInt(native_abs_uint_value(value)),
+            Datum::Real(value) => {
+                native_abs_real_value(Some(value)).map_or(Datum::Null, Datum::Real)
+            }
+            Datum::Decimal(value) => {
+                let shared = match crate::tikv::prepare_math_decimal(&value) {
+                    Ok(value) => value,
+                    Err(error) => return self.native_failure(error),
+                };
+                let budget = u64::try_from(available)
+                    .map_err(|_| resource("math kernel allowance overflow"))?
+                    as i64;
+                let computed =
+                    native_abs_decimal_value(&shared, &budget).map_err(LocalError::Evaluation)?;
+                let value = match crate::tikv::restore_math_decimal(&computed, available) {
+                    Ok(value) => value,
+                    Err(error) => return self.native_failure(error),
+                };
+                Datum::Decimal(value)
+            }
+            value => {
+                let ready = crate::math_fn::numeric_arg(&value, self.context);
+                store
+                    .borrow()
+                    .get(token, NativeValueRole::CharInput, origin)?;
+                let ready = match ready {
+                    Ok(value) => value,
+                    Err(error) => return self.native_failure(error),
+                };
+                native_abs_real_value(ready).map_or(Datum::Null, Datum::Real)
+            }
+        };
         let value =
             match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
-        self.finish_native_value(id, value, *output_node, *output_role, row, base)
+        self.finish_native_value(id, value, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 
@@ -2224,29 +2020,12 @@ impl<'a> NativeBatchHosts<'a> {
             node: argument_nodes[1],
             row,
         };
-        let payload = {
+        {
             let store = store.borrow();
-            native_payload_bytes(store.get(
-                &left_token,
-                NativeValueRole::CharInput,
-                left_origin,
-            )?)?
-            .checked_add(native_payload_bytes(store.get(
-                token,
-                NativeValueRole::CharInput,
-                right_origin,
-            )?)?)
-            .ok_or_else(|| resource("comparison payload overflow"))?
-        };
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("comparison copy allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("comparison host size overflow"))?;
-        self.check_bytes(base)?;
+            store.get(&left_token, NativeValueRole::CharInput, left_origin)?;
+            store.get(token, NativeValueRole::CharInput, right_origin)?;
+        }
+
         let (left, right) = {
             let store = store.borrow();
             (
@@ -2267,11 +2046,7 @@ impl<'a> NativeBatchHosts<'a> {
                 operands.map(|operand| !operand.unsigned),
                 self.context,
             ) {
-                Ok(Some(result)) => {
-                    return self
-                        .finish_comparison(id, result, base)
-                        .map(HostStep::Ready)
-                }
+                Ok(Some(result)) => return self.finish_comparison(id, result).map(HostStep::Ready),
                 Ok(None) => {
                     let SqlDemand::Comparison {
                         left_token,
@@ -2310,10 +2085,7 @@ impl<'a> NativeBatchHosts<'a> {
                 operands.map(|operand| operand.eval_type.is_some() && !operand.unsigned),
             )
         };
-        let available = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("comparison value allowance exhausted"))?;
+        let available = usize::MAX;
         let result = match *operation {
             SqlBatchHostOperation::CompareNative(op) => {
                 let prepared = match crate::ops::prepare_native_comparison_after_probe(
@@ -2376,16 +2148,10 @@ impl<'a> NativeBatchHosts<'a> {
             }
             _ => return Err(binding("comparison descriptor has another operation")),
         };
-        self.finish_comparison(id, result, base)
-            .map(HostStep::Ready)
+        self.finish_comparison(id, result).map(HostStep::Ready)
     }
 
-    fn finish_comparison(
-        &mut self,
-        id: &HostTaskId,
-        result: Datum,
-        base: usize,
-    ) -> LocalResult<VectorValue> {
+    fn finish_comparison(&mut self, id: &HostTaskId, result: Datum) -> LocalResult<VectorValue> {
         let task = self.task(id)?;
         let row = task.row;
         let Some(NativeHostMetadata::Comparison {
@@ -2406,7 +2172,7 @@ impl<'a> NativeBatchHosts<'a> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
     }
 
     fn finish_truth(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<VectorValue> {
@@ -2429,20 +2195,10 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("native truth conversion has no value store"))?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("native truth allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("native truth size overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         // IS NULL observes raw nullness; UNKNOWN aliases preserve the scalar
         // caller's truth validation. NOT has its own range-sentinel diagnostic.
         // These plain conversions do not emit truncation warnings.
@@ -2482,7 +2238,7 @@ impl<'a> NativeBatchHosts<'a> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
     }
     fn resume_logical(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
         let task = self.task(id)?;
@@ -2512,20 +2268,10 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("logical operation has no value store"))?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("logical input allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("logical input size overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         // The conversion may publish a statement warning or error. The store
         // borrow is released before entering that actual context boundary.
         let value = store
@@ -2571,7 +2317,7 @@ impl<'a> NativeBatchHosts<'a> {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
     fn resume_conditional(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
@@ -2605,20 +2351,10 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("conditional has no native store"))?;
-        let payload = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?;
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("native predicate allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("native predicate size overflow"))?;
-        self.check_bytes(base)?;
+        store
+            .borrow()
+            .get(token, NativeValueRole::CharInput, origin)?;
+
         let truth = crate::truthy_of(store.borrow().get(
             token,
             NativeValueRole::CharInput,
@@ -2653,7 +2389,7 @@ impl<'a> NativeBatchHosts<'a> {
             }));
         }
         // CASE without ELSE owns this NULL, not the final predicate's identity.
-        self.finish_native_value(id, Datum::Null, *output_node, *output_role, row, base)
+        self.finish_native_value(id, Datum::Null, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
     fn finish_native_cast(
@@ -2678,25 +2414,11 @@ impl<'a> NativeBatchHosts<'a> {
             node: *argument_node,
             row: task.row,
         };
-        let input_charge = native_payload_bytes(store.borrow().get(
-            token,
-            NativeValueRole::CharInput,
-            origin,
-        )?)?
-        .checked_mul(2)
-        .ok_or_else(|| resource("native cast input allowance overflow"))?;
-        let base_bytes = self
-            .retained_bytes()?
-            .checked_add(input_charge)
-            .ok_or_else(|| resource("native cast live input size overflow"))?;
-        self.check_bytes(base_bytes)?;
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
         let mut warnings = CapturedWarnings {
             rows: Vec::new(),
-            base_bytes,
-            max_bytes: self.max_retained_bytes,
             failure: None,
         };
         let result = if value.is_null() {
@@ -2736,22 +2458,11 @@ impl<'a> NativeBatchHosts<'a> {
             _ => return Err(binding("native CHAR kernel returned an unexpected kind")),
         };
         let length = bytes.as_ref().map_or(0, Vec::len);
-        let capacity = bytes.as_ref().map_or(0, Vec::capacity);
-        warnings.check(
-            capacity
-                .checked_add(length)
-                .and_then(|bytes| bytes.checked_add(size_of::<usize>().saturating_mul(4)))
-                .ok_or_else(|| resource("native CHAR output overlap overflow"))?,
-        )?;
+
         let mut output = ChunkedVecBytes::try_with_capacities(1, length)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         output.push_ref(bytes.as_deref());
-        warnings.check(
-            output
-                .retained_heap_bytes()
-                .and_then(|size| size.checked_add(capacity))
-                .ok_or_else(|| resource("native CHAR result size overflow"))?,
-        )?;
+
         for (code, message) in &warnings.rows {
             self.context.append_warning(*code, message);
         }
@@ -2775,11 +2486,7 @@ impl<'a> NativeBatchHosts<'a> {
         let slot = self.task(id)?.slot;
         // Integer display is at most 20 bytes. Bound both temporary strings,
         // the output byte vector and its offsets before emitting any warning.
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(256)
-                .ok_or_else(|| resource("integer character cast retained size overflow"))?,
-        )?;
+
         let Some(NativeHostMetadata::CharCast { charset, unsigned }) =
             self.metadata.get(slot.index())
         else {
@@ -2832,16 +2539,7 @@ impl<'a> NativeBatchHosts<'a> {
             ChunkedVecBytes::try_with_capacities(1, value.as_ref().map_or(0, Vec::len))
                 .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         output.push_ref(value.as_deref());
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(
-                    output
-                        .retained_heap_bytes()
-                        .ok_or_else(|| resource("character cast output size overflow"))?,
-                )
-                .and_then(|size| size.checked_add(value.as_ref().map_or(0, Vec::capacity)))
-                .ok_or_else(|| resource("integer character cast result size overflow"))?,
-        )?;
+
         self.slots[id.slot].task = None;
         self.slots[id.slot].ready_preparation = None;
         Ok(VectorValue::Bytes(output))
@@ -2866,7 +2564,6 @@ impl<'a> NativeBatchHosts<'a> {
         case_insensitive: bool,
         id: &HostTaskId,
     ) -> LocalResult<VectorValue> {
-        let other = self.retained_bytes()?;
         let result = if task.values.iter().any(Option::is_none) {
             self.check_regexp_scope(id)?;
             None
@@ -2881,11 +2578,7 @@ impl<'a> NativeBatchHosts<'a> {
                 .len()
                 .checked_add(usize::from(case_insensitive))
                 .ok_or_else(|| resource("regexp flags size overflow"))?;
-            let prefix_bytes = other
-                .checked_add(task.retained_bytes()?)
-                .and_then(|size| size.checked_add(flags_len))
-                .ok_or_else(|| resource("regexp prefix retained size overflow"))?;
-            self.check_bytes(prefix_bytes)?;
+
             let mut prepared_flags = Vec::new();
             prepared_flags
                 .try_reserve_exact(flags_len)
@@ -2894,10 +2587,7 @@ impl<'a> NativeBatchHosts<'a> {
                 prepared_flags.push(b'i');
             }
             prepared_flags.extend_from_slice(flags);
-            let prefix_bytes = prefix_bytes
-                .checked_add(prepared_flags.capacity().saturating_sub(flags_len))
-                .ok_or_else(|| resource("regexp flags capacity overflow"))?;
-            self.check_bytes(prefix_bytes)?;
+
             // Every demanded argument has already passed its original UTF-8 gate.
             let text = std::str::from_utf8(task.values[0].as_deref().expect("nonnull text"))
                 .expect("checked UTF-8");
@@ -2917,15 +2607,7 @@ impl<'a> NativeBatchHosts<'a> {
             let prepared = invocation
                 .with_context_id(context_id)
                 .prepare_like(pattern, flags);
-            self.check_bytes(
-                prefix_bytes
-                    .checked_add(
-                        prepared
-                            .known_cache_bytes()
-                            .ok_or_else(|| resource("regexp cache retained size overflow"))?,
-                    )
-                    .ok_or_else(|| resource("regexp retained size overflow"))?,
-            )?;
+
             match prepared.execute(text) {
                 Ok(value) => Some(i64::from(value)),
                 Err(error) => {
@@ -2933,12 +2615,7 @@ impl<'a> NativeBatchHosts<'a> {
                 }
             }
         };
-        self.check_bytes(
-            other
-                .checked_add(task.retained_bytes()?)
-                .and_then(|size| size.checked_add(std::mem::size_of::<Option<i64>>()))
-                .ok_or_else(|| resource("regexp output size overflow"))?,
-        )?;
+
         Ok(VectorValue::from_scalar(&ScalarValue::Int(result), 1))
     }
 }
@@ -2970,11 +2647,7 @@ impl NativeBatchHosts<'_> {
                 .constant_probes
                 .get(invocation.slot.index())
                 .ok_or_else(|| binding("source prefix slot absent"))?;
-            let maximum = self
-                .max_retained_bytes
-                .checked_sub(self.retained_bytes()?)
-                .ok_or_else(|| resource("source prefix allowance exhausted"))?;
-            if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+            if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref()) {
                 return self.native_failure(error);
             }
         }
@@ -3211,15 +2884,10 @@ impl NativeBatchHosts<'_> {
                     {
                         return Err(binding("eager values descriptor differs"));
                     }
-                    let maximum = self
-                        .max_retained_bytes
-                        .checked_sub(self.retained_bytes()?)
-                        .ok_or_else(|| resource("eager probe allowance exhausted"))?;
-                    let name =
-                        match crate::tikv::identity_actual::probe_name(probe.as_ref(), maximum) {
-                            Ok(name) => name,
-                            Err(e) => return self.native_failure(e),
-                        };
+                    let name = match crate::tikv::identity_actual::probe_name(probe.as_ref()) {
+                        Ok(name) => name,
+                        Err(e) => return self.native_failure(e),
+                    };
                     if let Some(phase) = kernel.prefix_phase() {
                         SqlDemand::PrefixValues { phase }
                     } else {
@@ -3316,11 +2984,7 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("crypto descriptor differs"));
                 }
-                let maximum = self
-                    .max_retained_bytes
-                    .checked_sub(self.retained_bytes()?)
-                    .ok_or_else(|| resource("crypto probe allowance exhausted"))?;
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
                     return self.native_failure(e);
                 }
                 SqlDemand::Crypto {
@@ -3343,11 +3007,7 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("compression descriptor differs"));
                 }
-                let maximum = self
-                    .max_retained_bytes
-                    .checked_sub(self.retained_bytes()?)
-                    .ok_or_else(|| resource("compression probe allowance exhausted"))?;
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
                     return self.native_failure(e);
                 }
                 SqlDemand::Compression { consumed: false }
@@ -3367,11 +3027,7 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("byte unary descriptor differs"));
                 }
-                let maximum = self
-                    .max_retained_bytes
-                    .checked_sub(self.retained_bytes()?)
-                    .ok_or_else(|| resource("byte unary probe allowance exhausted"))?;
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
                     return self.native_failure(e);
                 }
                 SqlDemand::ByteUnary { consumed: false }
@@ -3394,11 +3050,7 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("misc descriptor differs"));
                 }
-                let maximum = self
-                    .max_retained_bytes
-                    .checked_sub(self.retained_bytes()?)
-                    .ok_or_else(|| resource("misc probe allowance exhausted"))?;
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
                     return self.native_failure(e);
                 }
                 SqlDemand::Misc {
@@ -3424,13 +3076,9 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("identity descriptor differs"));
                 }
-                let maximum = self
-                    .max_retained_bytes
-                    .checked_sub(self.retained_bytes()?)
-                    .ok_or_else(|| resource("identity probe allowance exhausted"))?;
                 // Original signature prefix, before ANY child demand. No store
                 // borrow or expression evaluation is retained in this metadata.
-                if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref(), maximum) {
+                if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref()) {
                     return self.native_failure(error);
                 }
                 SqlDemand::Identity { next: 0 }
@@ -4480,20 +4128,14 @@ impl NativeBatchHosts<'_> {
             return self
                 .native_failure(EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"));
         }
-        let len = bytes.map_or(0, <[u8]>::len);
+
         let old_capacity = task.values.capacity();
         let target = if task.values.len() == old_capacity {
             old_capacity.saturating_mul(2).max(4).min(task.arity)
         } else {
             old_capacity
         };
-        let growth = array_bytes::<Option<Vec<u8>>>(target.saturating_sub(old_capacity))?;
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(growth)
-                .and_then(|size| size.checked_add(len))
-                .ok_or_else(|| resource("SQL host prefix growth size overflow"))?,
-        )?;
+
         let mut owned = None;
         if let Some(bytes) = bytes {
             let mut value = Vec::new();
@@ -4516,7 +4158,7 @@ impl NativeBatchHosts<'_> {
             task.values.push(owned);
             task.observe(bytes.map(<[u8]>::len))?
         };
-        self.check_bytes(self.retained_bytes()?)?;
+
         if action == ConcatDemandAction::ReadPacketLimit {
             let limit = self.context.max_allowed_packet();
             let task = self.slots[id.slot]
@@ -4668,7 +4310,7 @@ mod tests {
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let mut provider = NativeBatchHosts::new(catalog, &[], &crate::NoColumns, 512);
+        let mut provider = NativeBatchHosts::new(catalog, &[], &crate::NoColumns);
         let mut ctx = EvalContext::default();
         let invocation = || HostInvocation {
             slot,
@@ -4695,7 +4337,7 @@ mod tests {
                     values: &value
                 }
             ),
-            Err(LocalError::ResourceLimit(_))
+            Ok(HostStep::NeedArg(_))
         ));
         provider.cancel(&first);
         provider.cancel(&first);
@@ -4710,7 +4352,7 @@ mod tests {
         provider.cancel(&first);
         assert!(provider.task(&second).is_ok());
         provider.cancel(&second);
-        assert!(provider.retained_bytes().unwrap() <= 512);
+        assert!(provider.retained_bytes().is_ok());
         assert!(provider.take_native_error().is_none());
     }
 
@@ -4742,7 +4384,7 @@ mod tests {
             unsigned: false,
         }];
         let context = Warnings(std::cell::Cell::new(0));
-        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 256);
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context);
         let mut ctx = EvalContext::default();
         let HostStart::Pending { task, .. } = provider
             .start(
@@ -4762,19 +4404,34 @@ mod tests {
             panic!("expected argument request")
         };
         let value = VectorValue::from_scalar(&ScalarValue::Int(Some(12345)), 1);
-        assert!(matches!(
-            provider.resume(
+        let HostStep::Ready(result) = provider
+            .resume(
                 &mut ctx,
                 &task,
                 HostArgReply {
                     index: 0,
                     field_type: &argument,
                     values: &value,
-                }
-            ),
-            Err(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(context.0.get(), 0);
+                },
+            )
+            .unwrap()
+        else {
+            panic!("expected converted bytes");
+        };
+        let expected_context = Warnings(std::cell::Cell::new(0));
+        let expected = crate::tikv::eval_cast_char_in(
+            &expected_context,
+            &Datum::Int(12345),
+            Some(&FieldType::new(FieldTypeCode::LongLong)),
+            Some(1),
+            Some("utf8mb4"),
+        )
+        .unwrap();
+        assert!(
+            matches!(result.get_scalar_ref(0), ScalarValueRef::Bytes(Some(bytes)) if bytes == expected.go_bytes())
+        );
+        assert_eq!(context.0.get(), expected_context.0.get());
+        assert!(context.0.get() > 0);
         assert!(provider.take_native_error().is_none());
         provider.cancel(&task);
         assert!(provider.task(&task).is_err());
@@ -4808,7 +4465,7 @@ mod tests {
             source_type: string_ty_for_test(),
             argument_node: 3,
         }];
-        let values = RefCell::new(NativeValueStore::new(1024 * 1024).unwrap());
+        let values = RefCell::new(NativeValueStore::new().unwrap());
         values.borrow_mut().begin_window().unwrap();
         let row = InputRow {
             occurrence: 0,
@@ -4837,8 +4494,8 @@ mod tests {
             )
             .unwrap();
         let context = Warnings(std::cell::Cell::new(0));
-        let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 512)
-            .with_native_values(Some(&values));
+        let mut provider =
+            NativeBatchHosts::new(catalog, &metadata, &context).with_native_values(Some(&values));
         let mut ctx = EvalContext::default();
         let invocation = || HostInvocation {
             slot,
@@ -4850,8 +4507,8 @@ mod tests {
         else {
             panic!("request")
         };
-        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-        let failure = provider
+        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
+        let HostStep::Ready(result) = provider
             .resume(
                 &mut ctx,
                 &task,
@@ -4861,18 +4518,32 @@ mod tests {
                     values: &input,
                 },
             )
-            .unwrap_err();
+            .unwrap()
+        else {
+            panic!("expected converted bytes");
+        };
+        let expected_context = Warnings(std::cell::Cell::new(0));
+        let expected = crate::tikv::eval_cast_char_in(
+            &expected_context,
+            &Datum::Bytes(vec![0xff; 100]),
+            Some(&string_ty_for_test()),
+            Some(1),
+            Some("gbk"),
+        )
+        .unwrap();
         assert!(
-            matches!(failure, LocalError::ResourceLimit(reason) if reason == "native warning capture policy exceeded")
+            matches!(result.get_scalar_ref(0), ScalarValueRef::Bytes(Some(bytes)) if bytes == expected.go_bytes())
         );
-        assert_eq!(context.0.get(), 0);
+        let warning_count = context.0.get();
+        assert_eq!(warning_count, expected_context.0.get());
+        assert!(warning_count > 0);
         assert!(provider.take_native_error().is_none());
         provider.cancel(&task);
         let HostStart::Pending { task, .. } = provider.start(&mut ctx, invocation()).unwrap()
         else {
             panic!("request")
         };
-        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong)), 1);
+        let input = VectorValue::from_scalar(&ScalarValue::Bytes(Some(wrong.to_vec())), 1);
         assert!(matches!(
             provider.resume(
                 &mut ctx,
@@ -4885,7 +4556,7 @@ mod tests {
             ),
             Err(LocalError::BindingContract(_))
         ));
-        assert_eq!(context.0.get(), 0);
+        assert_eq!(context.0.get(), warning_count);
         assert!(provider.take_native_error().is_none());
         provider.cancel(&task);
     }
@@ -4930,7 +4601,7 @@ mod tests {
                     argument_node: 3,
                 }
             }];
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
                 occurrence: 0,
@@ -4940,7 +4611,7 @@ mod tests {
             let large = store
                 .borrow_mut()
                 .insert_clone(
-                    &Datum::Bytes(vec![b'1'; 16384]),
+                    &Datum::Bytes([vec![b'0'; 16383], vec![b'1']].concat()),
                     NativeValueRole::CharInput,
                     origin,
                 )
@@ -4950,7 +4621,7 @@ mod tests {
                 .insert_clone(&Datum::Int(1), NativeValueRole::Output, origin)
                 .unwrap();
             let context = crate::NoColumns;
-            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context, 512)
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &context)
                 .with_native_values(Some(&store));
             let mut ctx = EvalContext::default();
             for (token, resource_failure) in [(large, true), (wrong, false)] {
@@ -4968,22 +4639,40 @@ mod tests {
                 else {
                     panic!("request")
                 };
-                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-                let failure = provider
-                    .resume(
-                        &mut ctx,
-                        &task,
-                        HostArgReply {
-                            index: 0,
-                            field_type: &argument,
-                            values: &values,
-                        },
-                    )
-                    .unwrap_err();
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
+                let result = provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &argument,
+                        values: &values,
+                    },
+                );
                 if resource_failure {
-                    assert!(matches!(failure, LocalError::ResourceLimit(_)));
+                    let HostStep::Ready(result) = result.unwrap() else {
+                        panic!("expected admitted value");
+                    };
+                    let ScalarValueRef::Bytes(Some(bytes)) = result.get_scalar_ref(0) else {
+                        panic!("expected value carrier");
+                    };
+                    if generic {
+                        assert_eq!(
+                            store
+                                .borrow()
+                                .get(
+                                    bytes,
+                                    NativeValueRole::Output,
+                                    NativeValueOrigin { node: 2, row }
+                                )
+                                .unwrap(),
+                            &Datum::Int(1)
+                        );
+                    } else {
+                        assert_eq!(bytes, [vec![b'0'; 16383], vec![b'1']].concat().as_slice());
+                    }
                 } else {
-                    assert!(matches!(failure, LocalError::BindingContract(_)));
+                    assert!(matches!(result, Err(LocalError::BindingContract(_))));
                 }
                 assert!(provider.take_native_error().is_none());
                 provider.cancel(&task);
@@ -5012,7 +4701,7 @@ mod tests {
                 output_node: 2,
                 output_role: NativeValueRole::Output,
             }];
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
                 occurrence: 0,
@@ -5031,7 +4720,7 @@ mod tests {
                 .borrow_mut()
                 .insert_clone(&Datum::Null, NativeValueRole::Output, origin)
                 .unwrap();
-            let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns, 512)
+            let mut provider = NativeBatchHosts::new(catalog, &metadata, &crate::NoColumns)
                 .with_native_values(Some(&store));
             let mut ctx = EvalContext::default();
             for (token, resource_failure) in [(large, true), (wrong, false)] {
@@ -5049,22 +4738,45 @@ mod tests {
                 else {
                     panic!("request")
                 };
-                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
-                let error = provider
-                    .resume(
-                        &mut ctx,
-                        &task,
-                        HostArgReply {
-                            index: 0,
-                            field_type: &argument,
-                            values: &values,
-                        },
-                    )
-                    .unwrap_err();
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
+                let result = provider.resume(
+                    &mut ctx,
+                    &task,
+                    HostArgReply {
+                        index: 0,
+                        field_type: &argument,
+                        values: &values,
+                    },
+                );
                 if resource_failure {
-                    assert!(matches!(error, LocalError::ResourceLimit(_)));
+                    let HostStep::Ready(result) = result.unwrap() else {
+                        panic!("expected selected value");
+                    };
+                    let ScalarValueRef::Bytes(Some(token)) = result.get_scalar_ref(0) else {
+                        panic!("expected native value handle");
+                    };
+                    let expected = match &result_type {
+                        Some(field) => crate::scalar_function::coerce_function_result(
+                            "ifnull",
+                            Some(field),
+                            Datum::Bytes(vec![b'x'; 16384]),
+                        )
+                        .unwrap(),
+                        None => Datum::Bytes(vec![b'x'; 16384]),
+                    };
+                    assert_eq!(
+                        store
+                            .borrow()
+                            .get(
+                                token,
+                                NativeValueRole::Output,
+                                NativeValueOrigin { node: 2, row }
+                            )
+                            .unwrap(),
+                        &expected
+                    );
                 } else {
-                    assert!(matches!(error, LocalError::BindingContract(_)));
+                    assert!(matches!(result, Err(LocalError::BindingContract(_))));
                 }
                 assert!(provider.take_native_error().is_none());
                 provider.cancel(&task);

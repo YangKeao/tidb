@@ -1,0 +1,122 @@
+[
+  [
+    87495,
+    "65/c LIKE (@x:='a%')/0/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\"]|calls:1|flag:false|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}",
+    "65/c LIKE (@x:='a%')/0/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\"]|calls:1|flag:false|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    87497,
+    "65/c LIKE (@x:='a%')/0/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\", \"named:[\\\"c\\\"]:1\", \"set:x:08066125\", \"named:[\\\"c\\\"]:2\", \"set:x:08066125\"]|calls:3|flag:false|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}",
+    "65/c LIKE (@x:='a%')/0/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\", \"named:[\\\"c\\\"]:1\", \"set:x:08066125\", \"named:[\\\"c\\\"]:2\", \"set:x:08066125\"]|calls:3|flag:false|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    88389,
+    "65/c LIKE (@x:='a%')/3/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\"]|calls:1|flag:true|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}",
+    "65/c LIKE (@x:='a%')/3/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\"]|calls:1|flag:true|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    88391,
+    "65/c LIKE (@x:='a%')/3/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\", \"named:[\\\"c\\\"]:1\", \"set:x:08066125\", \"named:[\\\"c\\\"]:2\", \"set:x:08066125\"]|calls:3|flag:true|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}",
+    "65/c LIKE (@x:='a%')/3/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"set:x:08066125\", \"named:[\\\"c\\\"]:1\", \"set:x:08066125\", \"named:[\\\"c\\\"]:2\", \"set:x:08066125\"]|calls:3|flag:true|vars:[(\"x\", \"08066125\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    88836,
+    "66/c NOT LIKE 'a%' ESCAPE '!'/0/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "66/c NOT LIKE 'a%' ESCAPE '!'/0/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    88838,
+    "66/c NOT LIKE 'a%' ESCAPE '!'/0/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "66/c NOT LIKE 'a%' ESCAPE '!'/0/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    89730,
+    "66/c NOT LIKE 'a%' ESCAPE '!'/3/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "66/c NOT LIKE 'a%' ESCAPE '!'/3/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    89732,
+    "66/c NOT LIKE 'a%' ESCAPE '!'/3/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "66/c NOT LIKE 'a%' ESCAPE '!'/3/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    90177,
+    "67/c ILIKE 'A%'/0/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "67/c ILIKE 'A%'/0/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    90179,
+    "67/c ILIKE 'A%'/0/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "67/c ILIKE 'A%'/0/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    91071,
+    "67/c ILIKE 'A%'/3/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "67/c ILIKE 'A%'/3/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    91073,
+    "67/c ILIKE 'A%'/3/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "67/c ILIKE 'A%'/3/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    115656,
+    "86/EXTRACT(DAY FROM c)/0/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "86/EXTRACT(DAY FROM c)/0/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    115658,
+    "86/EXTRACT(DAY FROM c)/0/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "86/EXTRACT(DAY FROM c)/0/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    116550,
+    "86/EXTRACT(DAY FROM c)/3/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "86/EXTRACT(DAY FROM c)/3/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    116552,
+    "86/EXTRACT(DAY FROM c)/3/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "86/EXTRACT(DAY FROM c)/3/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    116997,
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/0/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"zone\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/0/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"zone\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    116999,
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/0/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"zone\", \"named:[\\\"c\\\"]:1\", \"zone\", \"named:[\\\"c\\\"]:2\", \"zone\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/0/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"zone\", \"named:[\\\"c\\\"]:1\", \"zone\", \"named:[\\\"c\\\"]:2\", \"zone\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    117891,
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/3/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"zone\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/3/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"zone\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    117893,
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/3/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"zone\", \"named:[\\\"c\\\"]:1\", \"zone\", \"named:[\\\"c\\\"]:2\", \"zone\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "87/TIMESTAMPADD(DAY,c,'2026-01-01')/3/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"zone\", \"named:[\\\"c\\\"]:1\", \"zone\", \"named:[\\\"c\\\"]:2\", \"zone\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    118338,
+    "88/GET_FORMAT(DATE,c)/0/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "88/GET_FORMAT(DATE,c)/0/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    118340,
+    "88/GET_FORMAT(DATE,c)/0/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "88/GET_FORMAT(DATE,c)/0/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    119232,
+    "88/GET_FORMAT(DATE,c)/3/110/0|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "88/GET_FORMAT(DATE,c)/3/110/0|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\"]|calls:1|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ],
+  [
+    119234,
+    "88/GET_FORMAT(DATE,c)/3/110/2|ERROR:ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None })|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}",
+    "88/GET_FORMAT(DATE,c)/3/110/2|PANIC:decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }|[\"named:[\\\"c\\\"]:0\", \"named:[\\\"c\\\"]:1\", \"named:[\\\"c\\\"]:2\"]|calls:3|flag:false|vars:[(\"x\", \"030100000000000000\")]|binding:None|random:0|sequences:{}"
+  ]
+]

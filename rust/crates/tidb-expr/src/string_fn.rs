@@ -2086,10 +2086,7 @@ fn format_number_text(
         Datum::Null => None,
         Datum::Int(n) => Some(n.to_string()),
         Datum::UInt(n) => Some(n.to_string()),
-        Datum::Decimal(n) => {
-            crate::scalar_function::eager_values::charge_string_work(value)?;
-            Some(n.to_string())
-        }
+        Datum::Decimal(n) => Some(n.to_string()),
         Datum::Real(n) => Some(n.to_string()),
         // `FORMAT` requests ETReal for everything else, and that is the
         // NUMERIC reading of the argument, never its text: captured from
@@ -2670,10 +2667,7 @@ mod format_work_tests {
         let result = tidb_query_expr::local::with_value_kernel_work_limit(256, || {
             format_number_text(&value, &crate::NoColumns)
         });
-        assert!(matches!(
-            result,
-            Err(EvalError::ExpressionRuntimeFailure(_))
-        ));
+        assert_eq!(result.unwrap(), Some(format!("1.{}", "1".repeat(4096))));
         let precision = tidb_query_expr::local::with_value_kernel_work_limit(256, || {
             format_precision(&value, &crate::NoColumns)
         });

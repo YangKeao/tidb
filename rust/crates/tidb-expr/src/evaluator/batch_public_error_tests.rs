@@ -170,14 +170,13 @@ fn root_error_value_and_native_cause_are_consumed_together_for_the_actual_origin
         panic!("actual root host")
     };
     assert!(args.is_empty());
-    let store = RefCell::new(NativeValueStore::new(64 << 10).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let context = Script::new(0, vec![Datum::Int(7), Datum::Null, Datum::Int(9)]);
     let mut provider = NativeBatchHosts::new(
         source.hosts.clone().unwrap(),
         &source.host_metadata,
         &context,
-        64 << 10,
     )
     .with_native_values(Some(&store))
     .with_root_error_values(true);
@@ -388,10 +387,11 @@ fn public_error_pair_plan_recovers_from_unwind_and_bounded_failure_copies() {
     assert_eq!(value, Datum::new_string("cached"));
     context.read_error.set(false);
     *context.value.borrow_mut() = Datum::Bytes(vec![b'x'; 2 << 20]);
-    let (_, error) = plan
+    let (value, error) = plan
         .eval_with_error_value(&context, Row::empty())
         .unwrap_err();
-    assert_eq!(error.refusal(), BatchRefusal::Resource);
+    assert_eq!(value, *context.value.borrow());
+    assert_eq!(error.refusal(), BatchRefusal::Native);
     *context.value.borrow_mut() = Datum::Null;
     assert_eq!(
         plan.eval_with_error_value(&context, Row::empty()).unwrap(),
@@ -427,14 +427,15 @@ fn failure_datum_copy_limits_are_opt_in_and_do_not_copy_unused_cached_values() {
     assert_eq!(error, expected);
     assert_eq!(ordinary.calls.get(), 1);
     let captured = leaf::Context::new(0, big.clone());
-    let (_, error) = plan
+    let (value, error) = plan
         .eval_with_error_value(&captured, Row::empty())
         .unwrap_err();
-    assert_eq!(error.refusal(), BatchRefusal::Resource);
+    assert_eq!(value, big);
+    assert_eq!(error.refusal(), BatchRefusal::Native);
     assert_eq!(captured.calls.get(), 1);
 
     // Cached parameter snapshots are not copied by source compilation or the
-    // ordinary error consumer. Only the demanded error-Datum copy is bounded.
+    // ordinary error consumer. The demanded failure value keeps its native error.
     let cached = expression(0, 0, None, &big);
     let mut plan = BorrowedExpression::compile(
         &cached,
@@ -461,8 +462,8 @@ fn failure_datum_copy_limits_are_opt_in_and_do_not_copy_unused_cached_values() {
     let (value, error) = plan
         .eval_with_error_value(&captured, Row::empty())
         .unwrap_err();
-    assert_eq!(value, Datum::Null);
-    assert_eq!(error.refusal(), BatchRefusal::Resource);
+    assert_eq!(value, big);
+    assert_eq!(error.refusal(), BatchRefusal::Native);
     assert_eq!(captured.calls.get(), 1);
 }
 

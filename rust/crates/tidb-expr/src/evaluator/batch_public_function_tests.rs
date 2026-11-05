@@ -559,7 +559,7 @@ fn direct_function_result_role_cannot_replace_an_expression_result_view() {
         shared_function(&function, &crate::NoColumns, Row::empty()).unwrap(),
         value
     );
-    let mut store = NativeValueStore::new(64 << 10).unwrap();
+    let mut store = NativeValueStore::new().unwrap();
     store.begin_window().unwrap();
     let origin = NativeValueOrigin {
         node: 0,
@@ -667,8 +667,8 @@ fn direct_function_same_budget_recovers_after_resource_refusal_and_bad_row_bindi
     .unwrap();
     let huge = leaf::Context::new(0, Datum::Bytes(vec![b'x'; 2 << 20]));
     assert_eq!(
-        plan.eval(&huge, Row::empty()).unwrap_err().refusal(),
-        BatchRefusal::Resource
+        plan.eval(&huge, Row::empty()).unwrap(),
+        Datum::Bytes(vec![b'x'; 2 << 20])
     );
     let empty = leaf::Context::new(0, Datum::Null);
     assert_eq!(plan.eval(&empty, Row::empty()).unwrap(), Datum::Null);

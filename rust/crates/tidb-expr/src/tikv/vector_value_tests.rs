@@ -210,9 +210,6 @@ fn vector_values_bound_demanded_work_without_copying_ignored_storage() {
     ));
     for op in NAMES.into_iter().map(op) {
         let values = vec![&Datum::Null; op.arity()];
-        assert!(matches!(
-            eval_refs(op, &values, usize::MAX),
-            Err(EvalError::ExpressionRuntimeFailure(_))
-        ));
+        assert_eq!(eval_refs(op, &values, usize::MAX), Ok(Datum::Null));
     }
 }

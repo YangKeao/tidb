@@ -45,7 +45,6 @@ pub(crate) enum PreparedNullSafeComparison {
 }
 impl PreparedNullSafeComparison {
     pub(crate) fn compute(self, available: usize) -> LocalResult<Option<i64>> {
-        finite_allowance(available)?;
         use tidb_query_expr::impl_op::{int_is_true, is_null, KeepNullOff};
         match self {
             Self::Presence(other) => is_null::<i64>(other.as_ref()).map_err(LocalError::Evaluation),
@@ -63,15 +62,7 @@ impl PreparedNullSafeComparison {
         }
     }
 }
-fn finite_allowance(available: usize) -> LocalResult<()> {
-    if available == usize::MAX {
-        Err(LocalError::ResourceLimit(
-            "comparison requires a finite value allowance".into(),
-        ))
-    } else {
-        Ok(())
-    }
-}
+
 pub(super) fn prepare_null_safe<O: ComparisonOperand>(
     left: Datum,
     right: Datum,
@@ -132,7 +123,6 @@ impl PreparedComparison {
     /// Execute the same pure value helper as the registered RPN kernel, with
     /// no argument program, callback or expression owner at this boundary.
     pub(crate) fn compute(self, available: usize) -> LocalResult<Option<i64>> {
-        finite_allowance(available)?;
         let result = match self {
             Self::Null => impl_compare::compare_null_native(None),
             Self::Integer(op, left, right) => {
@@ -908,16 +898,17 @@ mod tests {
             PreparedComparison::Vector(ComparisonOp::Eq, vector(), vector()).compute(0),
             Err(LocalError::ResourceLimit(_))
         ));
-        assert_eq!(
-            PreparedComparison::Vector(ComparisonOp::Eq, vector(), vector())
-                .compute(32)
-                .unwrap(),
-            Some(1)
-        );
-        assert!(matches!(
-            PreparedComparison::Null.compute(usize::MAX),
-            Err(LocalError::ResourceLimit(_))
-        ));
+        for available in [32, usize::MAX] {
+            assert_eq!(
+                PreparedComparison::Vector(ComparisonOp::Eq, vector(), vector())
+                    .compute(available)
+                    .unwrap(),
+                Some(1)
+            );
+        }
+        for available in [0, 32, usize::MAX] {
+            assert_eq!(PreparedComparison::Null.compute(available).unwrap(), None);
+        }
     }
     #[test]
     fn null_safe_equality_keeps_duration_false_datetime_null_and_presence_order() {
@@ -997,7 +988,7 @@ mod tests {
             error,
             EvalError::Unsupported("range sentinel expression operand")
         );
-        assert!(matches!(
+        assert_eq!(
             prepare_null_safe(
                 Datum::Null,
                 Datum::Null,
@@ -1006,8 +997,9 @@ mod tests {
                 &context
             )
             .unwrap()
-            .compute(usize::MAX),
-            Err(LocalError::ResourceLimit(_))
-        ));
+            .compute(usize::MAX)
+            .unwrap(),
+            Some(1)
+        );
     }
 }

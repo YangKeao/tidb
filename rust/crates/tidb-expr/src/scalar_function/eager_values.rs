@@ -62,9 +62,7 @@ impl EagerValueKernel {
             Phase::Union => {
                 if matches!(self.name(), "cast_real_in_union" | "cast_real_int_in_union")
                     && matches!(&value, Datum::Decimal(_))
-                {
-                    charge_string_work(&value)?;
-                }
+                {}
                 match super::prefix_value::union_value(
                     self.name(),
                     value,
@@ -491,76 +489,4 @@ pub(crate) fn prefers_common_body(function: &ScalarFunction) -> bool {
                 | "export_set"
                 | "soundex"
         )
-}
-
-/// Bound demanded original SQL string conversion only while a value body owns
-/// a finite work scope. Unsupported subjects still reach their original owner.
-pub(crate) fn charge_string_work(value: &Datum) -> Result<(), EvalError> {
-    use tidb_query_expr::local::{charge_value_kernel_work, value_kernel_work_remaining};
-    if value_kernel_work_remaining().is_none() {
-        return Ok(());
-    }
-    let charge = |n| {
-        charge_value_kernel_work(n).map_err(|e| {
-            EvalError::ExpressionRuntimeFailure(
-                crate::tikv::ExpressionRuntimeFailure::from_local_eval(e, None),
-            )
-        })
-    };
-    if let Datum::Decimal(v) = value {
-        charge(v.coefficient_bytes().len().saturating_mul(16))?;
-        if std::str::from_utf8(v.coefficient_bytes()).is_err() {
-            let _ = tidb_query_expr::native_coerce_bytes(value.as_shared_json_input());
-        }
-    }
-    match tidb_query_expr::native_byte_coercion_work(value.as_shared_json_input()) {
-        Ok(n) => charge(n),
-        Err(tidb_query_expr::NativeStringCoercionError::ResourceLimit) => charge(usize::MAX),
-        Err(tidb_query_expr::NativeStringCoercionError::Unsupported(_)) => Ok(()),
-    }
-}
-
-/// Preserve an actual returned resource cause; audit a swallowed refusal before
-/// an ordinary SQL result/error can cross the value-body boundary.
-pub(crate) fn audit_work_result<T>(result: Result<T, EvalError>) -> Result<T, EvalError> {
-    if matches!(&result,Err(EvalError::ExpressionRuntimeFailure(e)) if e.class()==crate::tikv::ExpressionRuntimeFailureClass::ResourceLimit)
-    {
-        return result;
-    }
-    tidb_query_expr::local::value_kernel_work_status().map_err(|e| {
-        EvalError::ExpressionRuntimeFailure(crate::tikv::ExpressionRuntimeFailure::from_local_eval(
-            e, None,
-        ))
-    })?;
-    result
-}
-#[cfg(test)]
-mod scope_receipt_tests {
-    use super::*;
-    #[test]
-    fn eager_scalar_work_audit_retains_actual_cause_and_rejects_swallowed_null() {
-        tidb_query_expr::local::with_value_kernel_work_limit(0, || {
-            let actual = tidb_query_expr::local::charge_value_kernel_work(1).unwrap_err();
-            let error = EvalError::ExpressionRuntimeFailure(
-                crate::tikv::ExpressionRuntimeFailure::from_local_eval(actual, None),
-            );
-            assert_eq!(
-                audit_work_result::<Datum>(Err(error.clone())).unwrap_err(),
-                error
-            );
-            assert!(matches!(
-                audit_work_result(Ok(Datum::Null)),
-                Err(EvalError::ExpressionRuntimeFailure(_))
-            ));
-            assert!(matches!(
-                audit_work_result::<Datum>(Err(EvalError::Unsupported("swallowed resource"))),
-                Err(EvalError::ExpressionRuntimeFailure(_))
-            ));
-        });
-        let error = EvalError::Unsupported("ordinary SQL error");
-        assert_eq!(
-            audit_work_result::<Datum>(Err(error.clone())).unwrap_err(),
-            error
-        );
-    }
 }

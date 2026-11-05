@@ -8,7 +8,6 @@ pub(crate) fn named_string(
     source: Option<&FieldType>,
     ctx: &dyn Columns,
 ) -> Result<Option<String>, EvalError> {
-    super::eager_values::charge_string_work(&value)?;
     let value = crate::cast::cast_arg_as_string(&value, source, ctx)?;
     if value.is_null() {
         return Ok(None);
@@ -22,11 +21,10 @@ pub(crate) fn operator_strings(
     value: &Datum,
     pattern: &Datum,
 ) -> Result<(String, String), EvalError> {
-    super::eager_values::charge_string_work(value)?;
     let text = value
         .sql_string()
         .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-    super::eager_values::charge_string_work(pattern)?;
+
     let pattern = pattern
         .sql_string()
         .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;

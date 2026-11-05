@@ -14,21 +14,18 @@
 
 //! Native values are owners, never expressions or evaluators. The private
 //! frame ABI carries checked handles, not serialized/normalized SQL values.
-//! Charges cover record capacity and a conservative logical payload allowance;
-//! external input/source owners, SDK transients and allocator peaks are outside
-//! this observer. It is not a statement memory tracker.
+//! Handles are inline identities. Value ownership and generations are checked;
+//! the former Demo payload/lease accounting and byte caps are removed.
 
 use std::cell::RefCell;
-use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 
 static NEXT_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 const MAGIC: u64 = 0x32564d5544414e; // private native-Datum value ABI version 2
 pub(super) const HANDLE_BYTES: usize = 5 * size_of::<u64>();
+pub(super) type NativeValueHandle = [u8; HANDLE_BYTES];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NativeValueRole {
@@ -63,7 +60,6 @@ struct Entry {
     version: u32,
     role: NativeValueRole,
     origin: NativeValueOrigin,
-    charge: usize,
 }
 
 /// Allocation-free actual storage inspection; no SQL stringification, type
@@ -83,13 +79,7 @@ pub(super) fn native_payload_bytes(value: &Datum) -> LocalResult<usize> {
         _ => Ok(value.go_bytes().len()),
     }
 }
-fn payload_charge(value: &Datum) -> LocalResult<usize> {
-    // The allowance is deliberately logical/conservative; shared immutable
-    // Go-string backing remains externally owned, and SmallVec may be inline.
-    native_payload_bytes(value)?
-        .checked_mul(2)
-        .ok_or_else(|| resource("native value payload allowance overflow"))
-}
+
 fn allocate_namespace(counter: &AtomicU64) -> LocalResult<u64> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -106,83 +96,50 @@ pub(super) struct NativeValueStore {
     generation: u64,
     entries: Vec<Entry>,
     free: Vec<usize>,
-    payload_charge: usize,
-    max_logical_bytes: usize,
     poisoned: bool,
-    lease_charge: Option<Arc<AtomicUsize>>,
 }
 impl NativeValueStore {
     /// A finished fragment releases its temporary owners before the next
     /// sibling demand. No allocation or namespace reservation occurs during
     /// cleanup. Generation exhaustion makes subsequent use refuse safely.
     pub(super) fn release_window(&mut self) {
-        self.entries = Vec::new();
-        self.free = Vec::new();
-        self.payload_charge = 0;
-        self.lease_charge = None;
+        self.entries.clear();
+        self.free.clear();
         match self.generation.checked_add(1) {
             Some(next) => self.generation = next,
             None => self.poisoned = true,
         }
     }
 
-    pub(super) fn new(max_logical_bytes: usize) -> LocalResult<Self> {
+    pub(super) fn new() -> LocalResult<Self> {
         Ok(Self {
             namespace: allocate_namespace(&NEXT_NAMESPACE)?,
             generation: 0,
             entries: Vec::new(),
             free: Vec::new(),
-            payload_charge: 0,
-            max_logical_bytes,
             poisoned: false,
-            lease_charge: None,
         })
     }
-    fn logical_bytes(&self) -> LocalResult<usize> {
-        array_bytes::<Entry>(self.entries.capacity())?
-            .checked_add(array_bytes::<usize>(self.free.capacity())?)
-            .and_then(|bytes| bytes.checked_add(self.payload_charge))
-            .and_then(|bytes| {
-                bytes.checked_add(self.lease_charge.as_ref().map_or(0, |charge| {
-                    // Arc header and the payload counter; allocated only on first loan.
-                    3 * size_of::<AtomicUsize>() + charge.load(Ordering::Relaxed)
-                }))
-            })
-            .ok_or_else(|| resource("native value store size overflow"))
-    }
-    fn check(&self, bytes: usize) -> LocalResult<()> {
-        if self.poisoned || bytes > self.max_logical_bytes {
-            Err(resource("native value store policy exceeded"))
+
+    /// Reject a poisoned store before materializing new native input.
+    pub(super) fn check_live(&self) -> LocalResult<()> {
+        if self.poisoned {
+            Err(invalid_handle())
         } else {
             Ok(())
         }
     }
-    /// Reject plainly oversized encoded input before asking the external SDK
-    /// to materialize a Datum. Decoding expansion/transients are still SDK
-    /// policy; insertion separately checks the actual native payload.
-    pub(super) fn precheck_import(&self, encoded_bytes: usize) -> LocalResult<()> {
-        self.check(
-            self.logical_bytes()?
-                .checked_add(
-                    encoded_bytes
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("native import allowance overflow"))?,
-                )
-                .and_then(|bytes| bytes.checked_add(size_of::<Entry>() + HANDLE_BYTES))
-                .ok_or_else(|| resource("native import size overflow"))?,
-        )
-    }
     /// Only call after every previous frame/task and output consumer finishes.
     pub(super) fn begin_window(&mut self) -> LocalResult<()> {
-        self.check(self.logical_bytes()?)?;
-        let generation = self
+        if self.poisoned {
+            return Err(invalid_handle());
+        }
+        self.generation = self
             .generation
             .checked_add(1)
             .ok_or_else(|| resource("native value generation exhausted"))?;
         self.entries.clear();
         self.free.clear();
-        self.payload_charge = 0;
-        self.generation = generation;
         Ok(())
     }
     pub(super) fn insert_clone(
@@ -190,13 +147,22 @@ impl NativeValueStore {
         value: &Datum,
         role: NativeValueRole,
         origin: NativeValueOrigin,
-    ) -> LocalResult<Vec<u8>> {
+    ) -> LocalResult<NativeValueHandle> {
         if self.generation == 0 || role == NativeValueRole::DecimalFast {
             return Err(invalid_handle());
         }
-        self.insert_with(role, origin, payload_charge(value)?, || {
-            StoredValue::Sql(value.clone())
-        })
+        self.insert_with(role, origin, || StoredValue::Sql(value.clone()))
+    }
+    pub(super) fn insert_owned(
+        &mut self,
+        value: Datum,
+        role: NativeValueRole,
+        origin: NativeValueOrigin,
+    ) -> LocalResult<NativeValueHandle> {
+        if self.generation == 0 || role == NativeValueRole::DecimalFast {
+            return Err(invalid_handle());
+        }
+        self.insert_with(role, origin, || StoredValue::Sql(value))
     }
     /// Fast representation refusal is a typed, non-SQL outcome. It cannot
     /// enter a SQL kernel or output consumer through the ordinary value API.
@@ -204,8 +170,8 @@ impl NativeValueStore {
         &mut self,
         value: tidb_query_expr::NativeDecimalFastOutcome,
         origin: NativeValueOrigin,
-    ) -> LocalResult<Vec<u8>> {
-        self.insert_with(NativeValueRole::DecimalFast, origin, 0, || {
+    ) -> LocalResult<NativeValueHandle> {
+        self.insert_with(NativeValueRole::DecimalFast, origin, || {
             StoredValue::DecimalFast(value)
         })
     }
@@ -232,8 +198,8 @@ impl NativeValueStore {
     pub(super) fn insert_diagnostic_unavailable(
         &mut self,
         origin: NativeValueOrigin,
-    ) -> LocalResult<Vec<u8>> {
-        self.insert_with(NativeValueRole::CharInput, origin, 0, || {
+    ) -> LocalResult<NativeValueHandle> {
+        self.insert_with(NativeValueRole::CharInput, origin, || {
             StoredValue::DiagnosticUnavailable
         })
     }
@@ -259,12 +225,8 @@ impl NativeValueStore {
         &mut self,
         text: String,
         origin: NativeValueOrigin,
-    ) -> LocalResult<Vec<u8>> {
-        let charge = text
-            .capacity()
-            .checked_mul(2)
-            .ok_or_else(|| resource("diagnostic text extent overflow"))?;
-        self.insert_with(NativeValueRole::CharInput, origin, charge, || {
+    ) -> LocalResult<NativeValueHandle> {
+        self.insert_with(NativeValueRole::CharInput, origin, || {
             StoredValue::DiagnosticText(text.into_boxed_str())
         })
     }
@@ -288,21 +250,12 @@ impl NativeValueStore {
         &mut self,
         role: NativeValueRole,
         origin: NativeValueOrigin,
-        charge: usize,
         make_value: impl FnOnce() -> StoredValue,
-    ) -> LocalResult<Vec<u8>> {
-        if self.generation == 0 {
+    ) -> LocalResult<NativeValueHandle> {
+        if self.poisoned || self.generation == 0 {
             return Err(invalid_handle());
         }
         let reuse = self.free.last().copied();
-        let growth = usize::from(reuse.is_none() && self.entries.len() == self.entries.capacity());
-        self.check(
-            self.logical_bytes()?
-                .checked_add(array_bytes::<Entry>(growth)?)
-                .and_then(|bytes| bytes.checked_add(charge))
-                .and_then(|bytes| bytes.checked_add(HANDLE_BYTES))
-                .ok_or_else(|| resource("native value insertion size overflow"))?,
-        )?;
         let slot = reuse.unwrap_or(self.entries.len());
         let slot_word =
             u32::try_from(slot).map_err(|_| resource("native value slot space exhausted"))?;
@@ -314,51 +267,30 @@ impl NativeValueStore {
         } else {
             1
         };
-        let index = (u64::from(version) << 32) | u64::from(slot_word);
         if reuse.is_none() {
             self.entries
-                .try_reserve_exact(1)
+                .try_reserve(1)
                 .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         }
-        let accepted = self
-            .logical_bytes()?
-            .checked_add(charge)
-            .and_then(|bytes| bytes.checked_add(HANDLE_BYTES))
-            .ok_or_else(|| resource("native value reserved size overflow"))?;
-        if let Err(error) = self.check(accepted) {
-            self.poisoned = true;
-            return Err(error);
-        }
-        let mut handle = Vec::new();
-        handle
-            .try_reserve_exact(HANDLE_BYTES)
-            .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        for word in [MAGIC, self.namespace, self.generation, index, role as u64] {
-            handle.extend_from_slice(&word.to_le_bytes());
-        }
-        self.check(
-            self.logical_bytes()?
-                .checked_add(charge)
-                .and_then(|bytes| bytes.checked_add(handle.capacity()))
-                .ok_or_else(|| resource("native value handle capacity overflow"))?,
-        )?;
-        let owned = make_value();
-        self.payload_charge = self
-            .payload_charge
-            .checked_add(charge)
-            .ok_or_else(|| resource("native value payload total overflow"))?;
         let entry = Entry {
-            value: Some(owned),
+            value: Some(make_value()),
             version,
             role,
             origin,
-            charge,
         };
         if let Some(slot) = reuse {
             self.free.pop();
             self.entries[slot] = entry;
         } else {
             self.entries.push(entry);
+        }
+        let mut handle = [0; HANDLE_BYTES];
+        let index = (u64::from(version) << 32) | u64::from(slot_word);
+        for (word, bytes) in [MAGIC, self.namespace, self.generation, index, role as u64]
+            .into_iter()
+            .zip(handle.chunks_exact_mut(8))
+        {
+            bytes.copy_from_slice(&word.to_le_bytes());
         }
         Ok(handle)
     }
@@ -405,39 +337,13 @@ impl NativeValueStore {
         if !matches!(entry.value, Some(StoredValue::Sql(_))) {
             return Err(invalid_handle());
         }
+        let version = entry.version;
         let slot = (u64::from_le_bytes(token[24..32].try_into().expect("authenticated ABI"))
             & u64::from(u32::MAX)) as usize;
-        let (version, charge) = (entry.version, entry.charge);
-        let extra = if store.lease_charge.is_none() {
-            3 * size_of::<AtomicUsize>()
-        } else {
-            0
-        };
-        store.check(
-            store
-                .logical_bytes()?
-                .checked_add(extra)
-                .ok_or_else(|| resource("native loan ledger extent overflow"))?,
-        )?;
-        let leased = store
-            .lease_charge
-            .get_or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-            .clone();
-        let total = leased
-            .load(Ordering::Relaxed)
-            .checked_add(charge)
-            .ok_or_else(|| resource("native loan payload overflow"))?;
-        let remaining = store
-            .payload_charge
-            .checked_sub(charge)
-            .ok_or_else(|| binding("native loan payload ledger differs"))?;
         let Some(StoredValue::Sql(value)) = store.entries[slot].value.replace(StoredValue::Leased)
         else {
             unreachable!("authenticated SQL owner")
         };
-        store.entries[slot].charge = 0;
-        store.payload_charge = remaining;
-        leased.store(total, Ordering::Relaxed);
         Ok(NativeValueLease {
             arena,
             value: Some(value),
@@ -447,8 +353,6 @@ impl NativeValueStore {
             version,
             role,
             origin,
-            charge,
-            leased,
         })
     }
     fn entry(
@@ -457,7 +361,9 @@ impl NativeValueStore {
         role: NativeValueRole,
         origin: NativeValueOrigin,
     ) -> LocalResult<&Entry> {
-        self.check(self.logical_bytes()?)?;
+        if self.poisoned {
+            return Err(invalid_handle());
+        }
         if handle.len() != HANDLE_BYTES {
             return Err(invalid_handle());
         }
@@ -505,22 +411,10 @@ impl NativeValueStore {
             {
                 continue;
             }
-            entry.value.take();
-            self.payload_charge = self
-                .payload_charge
-                .checked_sub(entry.charge)
-                .ok_or_else(|| binding("native release ledger differs"))?;
-            entry.charge = 0;
-            let growth = usize::from(self.free.len() == self.free.capacity());
-            self.check(
-                self.logical_bytes()?
-                    .checked_add(array_bytes::<usize>(growth)?)
-                    .ok_or_else(|| resource("native free-slot ledger overflow"))?,
-            )?;
             self.free
-                .try_reserve_exact(1)
-                .map_err(|e| LocalError::ResourceLimit(e.to_string()))?;
-            self.check(self.logical_bytes()?)?;
+                .try_reserve(1)
+                .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
+            entry.value.take();
             self.free.push(index);
         }
         Ok(())
@@ -532,18 +426,14 @@ impl NativeValueStore {
         role: NativeValueRole,
         origin: NativeValueOrigin,
     ) -> LocalResult<Datum> {
-        let entry = self.entry(handle, role, origin)?;
-        self.check(
-            self.logical_bytes()?
-                .checked_add(entry.charge)
-                .ok_or_else(|| resource("native value kernel copy size overflow"))?,
-        )?;
-        match entry.value.as_ref().expect("authenticated live value") {
+        match self
+            .entry(handle, role, origin)?
+            .value
+            .as_ref()
+            .expect("authenticated live value")
+        {
             StoredValue::Sql(value) => Ok(value.clone()),
-            StoredValue::Leased
-            | StoredValue::DecimalFast(_)
-            | StoredValue::DiagnosticUnavailable
-            | StoredValue::DiagnosticText(_) => Err(invalid_handle()),
+            _ => Err(invalid_handle()),
         }
     }
 }
@@ -559,8 +449,6 @@ pub(super) struct NativeValueLease<'a> {
     version: u32,
     role: NativeValueRole,
     origin: NativeValueOrigin,
-    charge: usize,
-    leased: Arc<AtomicUsize>,
 }
 impl NativeValueLease<'_> {
     pub(super) fn datum(&self) -> &Datum {
@@ -569,28 +457,21 @@ impl NativeValueLease<'_> {
 }
 impl Drop for NativeValueLease<'_> {
     fn drop(&mut self) {
-        // A callback's temporary borrow unwinds before us. If an intrusive
-        // caller retains a borrow, leave an unreadable marker and drop the
-        // payload rather than panic while already unwinding.
+        // A callback may reset the arena. Restore only the same live identity;
+        // never retain a RefCell borrow or panic while unwinding.
         if let Ok(mut store) = self.arena.try_borrow_mut() {
             if store.namespace == self.namespace && store.generation == self.generation {
-                if let Some(entry) = store.entries.get(self.slot) {
+                if let Some(entry) = store.entries.get_mut(self.slot) {
                     if entry.version == self.version
                         && entry.role == self.role
                         && entry.origin == self.origin
                         && matches!(entry.value, Some(StoredValue::Leased))
                     {
-                        if let Some(total) = store.payload_charge.checked_add(self.charge) {
-                            store.entries[self.slot].value =
-                                self.value.take().map(StoredValue::Sql);
-                            store.entries[self.slot].charge = self.charge;
-                            store.payload_charge = total;
-                        }
+                        entry.value = self.value.take().map(StoredValue::Sql);
                     }
                 }
             }
         }
-        self.leased.fetch_sub(self.charge, Ordering::Relaxed);
     }
 }
 
@@ -609,7 +490,7 @@ mod tests {
     }
     #[test]
     fn diagnostic_failures_are_authenticated_completions_and_never_sql_null() {
-        let mut store = NativeValueStore::new(4096).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         assert!(store.insert_diagnostic_unavailable(origin()).is_err());
         store.begin_window().unwrap();
         let failed = store.insert_diagnostic_unavailable(origin()).unwrap();
@@ -644,22 +525,18 @@ mod tests {
         wrong = origin();
         wrong.row.input_row += 1;
         assert!(store.diagnostic_unavailable(&failed, wrong).is_err());
-        let mut foreign = NativeValueStore::new(4096).unwrap();
+        let mut foreign = NativeValueStore::new().unwrap();
         foreign.begin_window().unwrap();
         assert!(foreign.diagnostic_unavailable(&failed, origin()).is_err());
         store.begin_window().unwrap();
         assert!(store.diagnostic_unavailable(&failed, origin()).is_err());
-        store.max_logical_bytes = 0;
-        assert!(matches!(
-            store.insert_diagnostic_unavailable(origin()),
-            Err(LocalError::ResourceLimit(_))
-        ));
-        assert!(store.entries.is_empty());
+        let token = store.insert_diagnostic_unavailable(origin()).unwrap();
+        assert!(store.diagnostic_unavailable(&token, origin()).unwrap());
     }
     #[test]
     fn decimal_fast_outcomes_are_distinct_from_sql_values_and_keep_provenance() {
         use tidb_query_expr::{NativeDecimalFastOutcome as Outcome, NativeDecimalFastValue};
-        let mut store = NativeValueStore::new(1 << 20).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         store.begin_window().unwrap();
         let outcomes = [
             Outcome::Unsupported,
@@ -690,7 +567,7 @@ mod tests {
             let mut wrong = origin();
             wrong.row.occurrence += 1;
             assert!(store.decimal_fast(&token, wrong).is_err());
-            let mut foreign = NativeValueStore::new(1 << 20).unwrap();
+            let mut foreign = NativeValueStore::new().unwrap();
             foreign.begin_window().unwrap();
             assert!(foreign.decimal_fast(&token, origin()).is_err());
             store.begin_window().unwrap();
@@ -709,20 +586,13 @@ mod tests {
         );
     }
     #[test]
-    fn decimal_fast_outcome_insertion_checks_budget_and_generation_before_ownership() {
+    fn decimal_fast_outcome_insertion_checks_generation_before_ownership() {
         use tidb_query_expr::NativeDecimalFastOutcome as Outcome;
-        let mut store = NativeValueStore::new(1 << 20).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         assert!(store
             .insert_decimal_fast(Outcome::Unsupported, origin())
             .is_err());
         store.begin_window().unwrap();
-        store.max_logical_bytes = size_of::<Entry>() + HANDLE_BYTES - 1;
-        assert!(matches!(
-            store.insert_decimal_fast(Outcome::Unsupported, origin()),
-            Err(LocalError::ResourceLimit(_))
-        ));
-        assert!(store.entries.is_empty());
-        store.max_logical_bytes += 1;
         let token = store
             .insert_decimal_fast(Outcome::Value(None), origin())
             .unwrap();
@@ -730,10 +600,21 @@ mod tests {
             store.decimal_fast(&token, origin()).unwrap(),
             &Outcome::Value(None)
         );
-        assert!(store
+        let unsupported = store
             .insert_decimal_fast(Outcome::Unsupported, origin())
+            .unwrap();
+        assert_eq!(
+            store.decimal_fast(&unsupported, origin()).unwrap(),
+            &Outcome::Unsupported
+        );
+        assert!(store
+            .get(&unsupported, NativeValueRole::DecimalFast, origin())
             .is_err());
-        assert_eq!(store.entries.len(), 1);
+        assert_eq!(
+            store.decimal_fast(&token, origin()).unwrap(),
+            &Outcome::Value(None)
+        );
+        assert_eq!(store.entries.len(), 2);
     }
     #[test]
     fn store_preserves_all_nineteen_native_kinds_and_raw_representations() {
@@ -772,7 +653,7 @@ mod tests {
             Datum::Raw(vec![0xff, 0]),
             Datum::VectorFloat32(vector),
         ];
-        let mut store = NativeValueStore::new(1024 * 1024).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         store.begin_window().unwrap();
         for expected in &fixtures {
             let handle = store
@@ -813,12 +694,12 @@ mod tests {
     }
     #[test]
     fn handles_reject_stale_cross_store_role_source_and_occurrence_drift() {
-        let mut store = NativeValueStore::new(4096).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         store.begin_window().unwrap();
         let token = store
             .insert_clone(&Datum::Int(7), NativeValueRole::CharInput, origin())
             .unwrap();
-        let mut other = NativeValueStore::new(4096).unwrap();
+        let mut other = NativeValueStore::new().unwrap();
         other.begin_window().unwrap();
         other
             .insert_clone(&Datum::Int(8), NativeValueRole::CharInput, origin())
@@ -831,14 +712,14 @@ mod tests {
                 .get(&token[..len], NativeValueRole::CharInput, origin())
                 .is_err());
         }
-        let mut extended = token.clone();
+        let mut extended = token.to_vec();
         extended.push(0);
         assert!(store
             .get(&extended, NativeValueRole::CharInput, origin())
             .is_err());
         let mut bytes_origin = origin();
         bytes_origin.node += 2;
-        let bytes_value = Datum::Bytes(token.clone());
+        let bytes_value = Datum::Bytes(token.to_vec());
         let bytes_token = store
             .insert_clone(&bytes_value, NativeValueRole::CharInput, bytes_origin)
             .unwrap();
@@ -887,21 +768,26 @@ mod tests {
     }
     #[test]
     fn resource_and_identity_exhaustion_never_publish_a_new_handle() {
-        let mut store = NativeValueStore::new(512).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         store.begin_window().unwrap();
         let token = store
             .insert_clone(&Datum::Int(7), NativeValueRole::CharInput, origin())
             .unwrap();
         let entries = store.entries.len();
-        assert!(matches!(
-            store.insert_clone(
+        let raw = store
+            .insert_clone(
                 &Datum::Raw(vec![0; 1000]),
                 NativeValueRole::CharInput,
-                origin()
-            ),
-            Err(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(store.entries.len(), entries);
+                origin(),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .get(&raw, NativeValueRole::CharInput, origin())
+                .unwrap(),
+            &Datum::Raw(vec![0; 1000])
+        );
+        assert_eq!(store.entries.len(), entries + 1);
         assert_eq!(
             store
                 .get(&token, NativeValueRole::CharInput, origin())
@@ -933,8 +819,8 @@ mod pool_tests {
     #[test]
     fn pool_values_and_authentication_match_independent_append_only_owner() {
         use crate::tikv::dynamic_leaf_tests::frame;
-        let mut old = original::NativeValueStore::new(8 << 20).unwrap();
-        let mut new = NativeValueStore::new(8 << 20).unwrap();
+        let mut old = original::NativeValueStore::new(64 << 20).unwrap();
+        let mut new = NativeValueStore::new().unwrap();
         let values = crate::tikv::byte_unary_value_tests::values();
         let (mut count, mut hash) = (0usize, 0xcbf29ce484222325u64);
         for epoch in 0..12 {
@@ -984,7 +870,7 @@ mod pool_tests {
     }
     #[test]
     fn consumed_subtree_slots_preserve_ancestors_and_reject_old_versions() {
-        let mut store = NativeValueStore::new(128 << 10).unwrap();
+        let mut store = NativeValueStore::new().unwrap();
         store.begin_window().unwrap();
         let row = InputRow {
             occurrence: 2,
@@ -1032,8 +918,8 @@ mod pool_tests {
                     .unwrap(),
                 &Datum::Int(12)
             );
-            assert!(store.logical_bytes().unwrap() < 4096);
-            old = Some(token);
+            assert!(store.entries.len() < 64);
+            old = Some(token.to_vec());
         }
         assert_eq!(store.entries.len(), 3);
         store.entries[2].version = u32::MAX;
@@ -1066,15 +952,13 @@ mod loan_tests {
     #[test]
     fn loan_preserves_actual_values_callbacks_and_unwind_without_a_payload_copy() {
         use crate::tikv::dynamic_leaf_tests::frame;
-        let arena = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+        let arena = RefCell::new(NativeValueStore::new().unwrap());
         for value in crate::tikv::byte_unary_value_tests::values() {
             arena.borrow_mut().begin_window().unwrap();
             let token = arena
                 .borrow_mut()
                 .insert_clone(&value, NativeValueRole::CharInput, origin())
                 .unwrap();
-            let before = arena.borrow().logical_bytes().unwrap();
-            let first = arena.borrow().lease_charge.is_none();
             for panic in [false, true] {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let loan = NativeValueStore::lease_for_kernel(
@@ -1096,10 +980,7 @@ mod loan_tests {
                     assert!(store
                         .clone_for_kernel(&token, NativeValueRole::CharInput, origin())
                         .is_err());
-                    assert_eq!(
-                        store.logical_bytes().unwrap(),
-                        before + usize::from(first) * 3 * size_of::<AtomicUsize>()
-                    );
+
                     if panic {
                         panic!("real callback unwind");
                     }
@@ -1115,21 +996,12 @@ mod loan_tests {
                     ),
                     frame(&value)
                 );
-                assert_eq!(
-                    arena
-                        .borrow()
-                        .lease_charge
-                        .as_ref()
-                        .unwrap()
-                        .load(Ordering::Relaxed),
-                    0
-                );
             }
         }
     }
     #[test]
-    fn loan_charges_active_payload_through_window_reset_and_cannot_resurrect_stale_slots() {
-        let arena = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    fn loan_retains_owned_payload_through_window_reset_and_cannot_resurrect_stale_slots() {
+        let arena = RefCell::new(NativeValueStore::new().unwrap());
         let value = Datum::Bytes(vec![0xff; 128 << 10]);
         arena.borrow_mut().begin_window().unwrap();
         let token = arena
@@ -1143,23 +1015,14 @@ mod loan_tests {
             origin(),
         )
         .unwrap();
-        let charge = payload_charge(&value).unwrap();
         arena.borrow_mut().begin_window().unwrap();
         assert!(arena
             .borrow()
             .get(&token, NativeValueRole::CharInput, origin())
             .is_err());
-        assert!(arena.borrow().logical_bytes().unwrap() >= charge);
         let fresh;
         {
             let mut store = arena.borrow_mut();
-            let before = store.logical_bytes().unwrap();
-            store.max_logical_bytes = before;
-            assert!(matches!(
-                store.insert_clone(&value, NativeValueRole::CharInput, origin()),
-                Err(LocalError::ResourceLimit(_))
-            ));
-            store.max_logical_bytes = 1 << 20;
             fresh = store
                 .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin())
                 .unwrap();
@@ -1177,7 +1040,6 @@ mod loan_tests {
             .borrow()
             .get(&token, NativeValueRole::CharInput, origin())
             .is_err());
-        assert!(arena.borrow().logical_bytes().unwrap() < charge);
         let lease = NativeValueStore::lease_for_kernel(
             &arena,
             &fresh,
@@ -1212,7 +1074,7 @@ mod loan_tests {
             origin(),
         )
         .unwrap();
-        let mut other = NativeValueStore::new(4096).unwrap();
+        let mut other = NativeValueStore::new().unwrap();
         other.begin_window().unwrap();
         let foreign = other
             .insert_clone(&Datum::Int(101), NativeValueRole::CharInput, origin())
@@ -1228,36 +1090,16 @@ mod loan_tests {
         );
     }
     #[test]
-    fn loan_preflights_ledger_without_consuming_sql_and_rejects_non_sql_or_forged_caps() {
-        let arena = RefCell::new(NativeValueStore::new(0).unwrap());
+    fn loan_rejects_non_sql_or_forged_caps_without_consuming_sql() {
+        let arena = RefCell::new(NativeValueStore::new().unwrap());
         arena.borrow_mut().begin_window().unwrap();
-        assert_eq!(arena.borrow().logical_bytes().unwrap(), 0);
-        arena.borrow_mut().max_logical_bytes = 2 << 20;
+        assert!(arena.borrow().entries.is_empty());
+
         let value = Datum::VectorFloat32(VectorFloat32::init(131_072));
         let token = arena
             .borrow_mut()
             .insert_clone(&value, NativeValueRole::CharInput, origin())
             .unwrap();
-        let before = arena.borrow().logical_bytes().unwrap();
-        arena.borrow_mut().max_logical_bytes = before + 3 * size_of::<AtomicUsize>() - 1;
-        assert!(matches!(
-            NativeValueStore::lease_for_kernel(
-                &arena,
-                &token,
-                NativeValueRole::CharInput,
-                origin()
-            ),
-            Err(LocalError::ResourceLimit(_))
-        ));
-        assert!(arena.borrow().lease_charge.is_none());
-        assert_eq!(
-            arena
-                .borrow()
-                .get(&token, NativeValueRole::CharInput, origin())
-                .unwrap(),
-            &value
-        );
-        arena.borrow_mut().max_logical_bytes += 1;
         let loan = NativeValueStore::lease_for_kernel(
             &arena,
             &token,
@@ -1303,7 +1145,7 @@ mod loan_tests {
             origin()
         )
         .is_err());
-        arena.borrow_mut().max_logical_bytes = 2 << 20;
+
         let diagnostic = arena
             .borrow_mut()
             .insert_diagnostic_unavailable(origin())

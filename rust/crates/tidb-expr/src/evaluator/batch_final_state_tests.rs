@@ -672,7 +672,7 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
                 output_role: NativeValueRole::Output,
             },
         ))];
-        let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = D {
             store: &store,
@@ -680,8 +680,8 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
             action: Cell::new(0),
             warnings: Cell::new(0),
         };
-        let mut p = hosts::NativeBatchHosts::new(catalog, &metadata, &ctx, 16384)
-            .with_native_values(Some(&store));
+        let mut p =
+            hosts::NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
         let mut eval = EvalContext::default();
         let row = InputRow {
             occurrence: 2,
@@ -730,12 +730,12 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
         let original = insert(&Datum::Null, NativeValueRole::CharInput, 3);
         let mut bad = original.clone();
         bad[0] ^= 1;
-        let mut short = original.clone();
+        let mut short = original.to_vec();
         short.pop();
-        let mut long = original.clone();
+        let mut long = original.to_vec();
         long.push(0);
         store.borrow_mut().begin_window().unwrap();
-        let mut foreign = NativeValueStore::new(4096).unwrap();
+        let mut foreign = NativeValueStore::new().unwrap();
         foreign.begin_window().unwrap();
         let foreign = foreign
             .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin(3))
@@ -770,19 +770,25 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
             .unwrap();
         for token in [
             None,
-            Some(original),
-            Some(bad),
-            Some(short),
-            Some(long),
-            Some(foreign),
-            Some(wrong_row),
-            Some(wrong_physical),
-            Some(insert(&Datum::Null, NativeValueRole::Output, 3)),
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4)),
+            Some((original).to_vec()),
+            Some((bad).to_vec()),
+            Some((short).to_vec()),
+            Some((long).to_vec()),
+            Some((foreign).to_vec()),
+            Some((wrong_row).to_vec()),
+            Some((wrong_physical).to_vec()),
+            Some((insert(&Datum::Null, NativeValueRole::Output, 3)).to_vec()),
+            Some((insert(&Datum::Null, NativeValueRole::CharInput, 4)).to_vec()),
         ] {
             let task = begin(&mut p, &mut eval);
             assert!(matches!(
-                reply(&mut p, &mut eval, &task, 0, token),
+                reply(
+                    &mut p,
+                    &mut eval,
+                    &task,
+                    0,
+                    token.map(|bytes| bytes.to_vec())
+                ),
                 Err(LocalError::BindingContract(_))
             ));
             assert_eq!(ctx.warnings.get(), 0);
@@ -792,13 +798,13 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
         let task = begin(&mut p, &mut eval);
         let input = insert(&Datum::new_string("abc"), NativeValueRole::CharInput, 3);
         assert!(matches!(
-            reply(&mut p, &mut eval, &task, 0, Some(input)),
+            reply(&mut p, &mut eval, &task, 0, Some(input.to_vec())),
             Ok(HostStep::NeedArg(_))
         ));
         ctx.action.set(2);
         let key = insert(&Datum::new_string("key"), NativeValueRole::CharInput, 4);
         assert!(matches!(
-            reply(&mut p, &mut eval, &task, 1, Some(key)),
+            reply(&mut p, &mut eval, &task, 1, Some(key.to_vec())),
             Err(LocalError::BindingContract(_))
         ));
         assert_eq!(ctx.warnings.get(), 1);
@@ -814,17 +820,17 @@ fn final_state_aes_authenticates_after_warning_before_worker_and_recovers_after_
             let abandoned = begin(&mut p, &mut eval);
             let input = insert(&Datum::new_string("abc"), NativeValueRole::CharInput, 3);
             assert!(matches!(
-                reply(&mut p, &mut eval, &abandoned, 0, Some(input)),
+                reply(&mut p, &mut eval, &abandoned, 0, Some(input.to_vec())),
                 Ok(HostStep::NeedArg(_))
             ));
             p.cancel(&abandoned);
             let current = begin(&mut p, &mut eval);
             p.cancel(&abandoned);
             let stale = insert(&Datum::new_string("key"), NativeValueRole::CharInput, 4);
-            assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(stale)).is_err());
+            assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(stale.to_vec())).is_err());
             let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
             let HostStep::Ready(values) =
-                reply(&mut p, &mut eval, &current, 0, Some(null)).unwrap()
+                reply(&mut p, &mut eval, &current, 0, Some(null.to_vec())).unwrap()
             else {
                 panic!()
             };
@@ -1166,24 +1172,34 @@ fn final_state_unused_large_values_and_real_null_recovery_do_not_clone_extra_pay
 
 #[test]
 fn final_state_demanded_vector_formatting_obeys_existing_work_limit_and_null_recovers() {
-    // A demanded vector password genuinely formats every component. The existing
-    // shared formatter budgets 512 work units/component; this exceeds the
-    // unchanged finite source allowance, unlike the ignored large IV cases.
+    // A demanded vector password uses the native formatter; NULL reuse must
+    // leave that large password undemanded on subsequent rows.
     let actual = suite(root("aes_encrypt", 1));
     let mut values = values().remove(0);
     values[1] = Datum::VectorFloat32(VectorFloat32::init((2 << 20) / std::mem::size_of::<f32>()));
     let mut c = C::new(values, 0, true, M::Aes128Ecb);
     let mut input = chunk(&[string_ty()], &[vec![Datum::new_string("unread")]]);
     let mut output = output_for(&string_ty());
-    let error = actual
+    let reference = suite(root("aes_encrypt", 1));
+    let native = C::new(c.values.clone(), 0, true, M::Aes128Ecb);
+    let mut native_input = chunk(&[string_ty()], &[vec![Datum::new_string("unread")]]);
+    let mut expected = output_for(&string_ty());
+    reference
+        .run(&native, &mut native_input, &mut expected)
+        .unwrap();
+    actual
         .run_with_tikv_batch(&c, &mut input, &mut output, &[string_ty()])
-        .unwrap_err();
-    assert!(
-        matches!(error,crate::evaluator::EvaluatorError::Eval(EvalError::ExpressionRuntimeFailure(ref failure)) if failure.class()==crate::tikv::ExpressionRuntimeFailureClass::ResourceLimit)
-    );
+        .unwrap();
+    assert_eq!(output.column(0), expected.column(0));
+    assert_eq!(c.snapshot(), native.snapshot());
     assert_eq!(c.reads[1].get(), 1);
-    assert_eq!(c.ready.prepared_worker_count(), 0);
-    assert_eq!(output.num_rows(), 0);
+    assert_eq!(
+        c.ready.prepared_worker_count(),
+        native.ready.prepared_worker_count()
+    );
+    assert_eq!(output.num_rows(), 1);
+    output = output_for(&string_ty());
+    c.events.borrow_mut().clear();
     c.values[0] = Datum::Null;
     let mut input = chunk(&[string_ty()], &vec![vec![Datum::new_string("unread")]; 3]);
     actual

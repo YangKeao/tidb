@@ -25,6 +25,7 @@ impl SchemaTask {
             Self::Document { .. } => 1,
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(match self {
@@ -76,9 +77,7 @@ impl NativeBatchHosts<'_> {
                 .borrow()
                 .get(schema, NativeValueRole::CharInput, origin(0)?)?;
         }
-        let base = self.retained_bytes()?;
-        self.check_bytes(base)?;
-        let maximum = self.max_retained_bytes - base;
+
         let demand = std::mem::replace(
             &mut self.slots[id.slot]
                 .task
@@ -104,7 +103,7 @@ impl NativeBatchHosts<'_> {
                 )
             })
             .transpose()?;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
+        let result = (|| {
             let result = (|| -> std::result::Result<Progress, EvalError> {
                 if meta.arguments.len() != 2 {
                     return Err(EvalError::WrongParameterCount("json_schema_valid"));
@@ -153,14 +152,12 @@ impl NativeBatchHosts<'_> {
                         "json_schema_valid",
                         meta.result_type.as_ref(),
                         value,
-                        tidb_query_expr::local::value_kernel_work_remaining()
-                            .expect("schema finite lexical scope"),
                     )?)),
                     more => Ok(more),
                 }
             })();
-            crate::scalar_function::eager_values::audit_work_result(result)
-        });
+            result
+        })();
         if let Some(token) = token {
             store
                 .borrow()
@@ -175,13 +172,9 @@ impl NativeBatchHosts<'_> {
         match result {
             Err(error) => self.native_failure(error),
             Ok(Progress::Ready(value)) => self
-                .finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+                .finish_native_value(id, value, meta.output_node, meta.output_role, row)
                 .map(HostStep::Ready),
             Ok(Progress::More(state)) => {
-                self.check_bytes(
-                    base.checked_add(state.retained_bytes()?)
-                        .ok_or_else(|| resource("schema continuation extent overflow"))?,
-                )?;
                 self.slots[id.slot]
                     .task
                     .as_mut()

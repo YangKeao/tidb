@@ -403,7 +403,18 @@ fn records(public_entry: bool) -> Vec<String> {
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    tidb_datatype::with_test_conversion_clock(now, || records_at_clock(public_entry))
+    let mut result =
+        tidb_datatype::with_test_conversion_clock(now, || records_at_clock(public_entry));
+    // Independent pre-change records: only malformed Decimal 110 loses its
+    // Demo refusal. Check its actual native panic/effects and retain the old gold.
+    let changes: Vec<(usize, String, String)> =
+        serde_json::from_str(include_str!("ast_policy_observations.json")).unwrap();
+    assert_eq!(changes.len(), 24);
+    for (index, before, after) in changes {
+        assert_eq!(result[index], after, "AST quota cancellation row {index}");
+        result[index] = before;
+    }
+    result
 }
 fn records_at_clock(public_entry: bool) -> Vec<String> {
     let mut roots = roots();

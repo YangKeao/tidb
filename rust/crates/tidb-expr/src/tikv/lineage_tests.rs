@@ -702,10 +702,16 @@ fn demanded_failure_and_late_materialization_refusal_keep_existing_prefix() {
     let mut prepared =
         PreparedControlLineage::compile(spec, ExecutionLimits::default(), 0).unwrap();
     let mut ctx = EvalContext::default();
-    assert!(matches!(
-        prepared.eval_test_native(&mut ctx, 1, &[0, 0], &mut raw),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
+    let output = prepared
+        .eval_test_native(&mut ctx, 1, &[0, 0], &mut raw)
+        .unwrap();
+    assert_eq!(
+        output.values(),
+        &[
+            datum_string(b"payload", ty.collation()),
+            datum_string(b"payload", ty.collation())
+        ]
+    );
     assert_eq!(raw.reads.len(), 2); // C finished; native materialization never replays it.
     assert_eq!(ctx.warnings.warning_cnt, 2);
 }
@@ -863,47 +869,37 @@ fn source_and_incoming_metadata_caps_precede_projection_snapshots_and_equality()
         ty.clone(),
     );
     let mut limits = source_limits();
-    limits.max_literal_bytes = 127; // two64-byte source/fact payload charges
-    assert!(matches!(
-        lower_typed_control_lineage(&root, &[], true, &ids_for(&root), limits),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
+    limits.max_literal_bytes = 0;
+    assert!(lower_typed_control_lineage(&root, &[], true, &ids_for(&root), limits).is_ok());
     let root = call("coalesce", bigint(), vec![int(1)]);
     limits = source_limits();
     limits.max_metadata_bytes = 1;
-    assert!(matches!(
-        lower_typed_control_lineage(&root, &[], true, &ids_for(&root), limits),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
+    assert!(lower_typed_control_lineage(&root, &[], true, &ids_for(&root), limits).is_ok());
     limits = source_limits();
     limits.tree.max_depth = 1;
-    assert!(matches!(
-        lower_typed_control_lineage(&root, &[], true, &ids_for(&root), limits),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
+    assert!(lower_typed_control_lineage(&root, &[], true, &ids_for(&root), limits).is_ok());
     let huge = bigint().with_elems(["x".repeat(source_limits().max_metadata_bytes)]);
-    // Unused schema metadata is capped too, before any Node/C snapshot.
-    assert!(matches!(
-        lower_typed_control_lineage(
-            &root,
-            &[huge.clone()],
-            true,
-            &ids_for(&root),
-            source_limits()
-        ),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
+    // Retired Demo metadata settings do not reject large unused schema types.
+    assert!(lower_typed_control_lineage(
+        &root,
+        &[huge.clone()],
+        true,
+        &ids_for(&root),
+        source_limits()
+    )
+    .is_ok());
     let root = call("coalesce", bigint(), vec![column(0, bigint())]);
     let spec = lower(&root, &[bigint()]);
     let mut prepared = prepare(spec);
     let input = chunk(&[bigint()], &[vec![Datum::Int(1)]]);
     let mut ctx = EvalContext::default();
     warn(&mut ctx, "prior");
-    // Existing Eq would fail schema matching. Resource refusal here proves the
-    // incoming byte gate ran first, not after its allocating slice comparisons.
+    // An actual schema mismatch remains invalid regardless of metadata size.
     assert!(matches!(
         prepared.eval_selected(&mut ctx, &input, &[huge], &[0]),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
+        Err(SeedError::Local(
+            LocalError::BindingContract(_) | LocalError::InvalidBatch(_)
+        ))
     ));
     assert_eq!(ctx.warnings.warning_cnt, 1);
 }
@@ -1049,10 +1045,9 @@ fn materialization_meters_source_offsets_bitmap_ids_and_live_native_output() {
     let prepared =
         PreparedControlLineage::compile(Arc::clone(&spec), ExecutionLimits::default(), naive)
             .unwrap();
-    assert!(matches!(
-        prepared.materialize_parts(values, ids, 1),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    )); // spare ID capacity is real
+    let output = prepared.materialize_parts(values, ids, 1).unwrap();
+    assert_eq!(output.values(), &[Datum::Bytes(vec![1])]);
+    assert_eq!(output.result_metadata(), &[id]);
     let mut empty = ChunkedVecBytes::try_with_capacities(1, 0).unwrap();
     empty.push_ref(None);
     assert!(vector_heap_bytes(&VectorValue::Bytes(empty)).unwrap() > 0);
@@ -1062,11 +1057,11 @@ fn materialization_meters_source_offsets_bitmap_ids_and_live_native_output() {
     let mut execution = ExecutionLimits::default();
     execution.max_retained_bytes = 0;
     let mut prepared = PreparedControlLineage::compile(spec, execution, usize::MAX).unwrap();
-    assert!(matches!(
-        prepared.eval_test_native(&mut EvalContext::default(), 1, &[0], &mut raw),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
-    assert!(raw.reads.is_empty());
+    let output = prepared
+        .eval_test_native(&mut EvalContext::default(), 1, &[0], &mut raw)
+        .unwrap();
+    assert_eq!(output.values(), &[Datum::Null]);
+    assert_eq!(raw.reads.len(), 1);
 }
 
 #[test]

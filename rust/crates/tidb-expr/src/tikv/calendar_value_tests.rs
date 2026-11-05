@@ -312,10 +312,10 @@ fn calendar_direct_never_requests_ready() {
 fn calendar_values_finite_work_null_mode_storage_and_original_panic() {
     use tidb_query_expr::NativeCalendarOperation as O;
     let ctx = context(0, 0, 0);
-    assert!(matches!(
+    assert_eq!(
         super::calendar_value::eval_bounded(O::Year, &[Datum::Null], 0, &ctx, usize::MAX),
-        Err(EvalError::ExpressionRuntimeFailure(_))
-    ));
+        Ok(Datum::Null)
+    );
     assert_eq!(
         super::calendar_value::eval_bounded(O::Year, &[Datum::Null], 0, &ctx, 0),
         Ok(Datum::Null)

@@ -306,12 +306,13 @@ mod tests {
             });
             assert_eq!(retry, Ok(Some(1)));
         }
-        assert!(matches!(
-            eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 0, 63, usize::MAX, |_, _| panic!(
-                "invalid unlimited allowance fetched a source"
-            )),
-            Err(EvalError::ExpressionRuntimeFailure(_))
-        ));
+        assert_eq!(
+            eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 0, 63, usize::MAX, |index, _| {
+                assert_eq!(index, 0);
+                Ok(Some(Vec::new()))
+            }),
+            Ok(Some(0))
+        );
         assert_eq!(
             eval_legacy_in_bytes_bounded_in::<EvalError>(&ctx, 0, 63, 0, |index, _| {
                 assert_eq!(index, 0);

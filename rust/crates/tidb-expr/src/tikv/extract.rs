@@ -53,7 +53,7 @@ fn actual_work(n: usize, m: usize, extra: usize, maximum: usize) -> Result<(), E
         .checked_mul(m)
         .and_then(|n| n.checked_add(extra))
         .ok_or_else(actual_resource)?;
-    if maximum == usize::MAX || work > maximum {
+    if work > maximum {
         return Err(actual_resource());
     }
     Ok(())

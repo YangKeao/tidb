@@ -24,28 +24,7 @@ pub(in super::super) struct NativeCharsetMetadata {
     pub output_node: usize,
     pub output_role: Option<NativeValueRole>,
 }
-fn string_work(value: &Datum) -> LocalResult<usize> {
-    match value {
-        Datum::Null | Datum::MinNotNull | Datum::MaxValue => Ok(0),
-        _ => window_values::conversion_work_bound(value, 16),
-    }
-}
-fn cast_work(value: &Datum) -> LocalResult<usize> {
-    match value {
-        // Original casts retain these immutable Go-string owners without
-        // copying their bytes. Bytes/literals have real owned Vec copies.
-        Datum::String(_)
-        | Datum::Enum(_, _)
-        | Datum::Set(_, _)
-        | Datum::Null
-        | Datum::MinNotNull
-        | Datum::MaxValue => Ok(0),
-        Datum::Bytes(_) | Datum::BinaryLiteral(_) => native_payload_bytes(value)?
-            .checked_mul(2)
-            .ok_or_else(|| resource("charset source byte clone extent overflow")),
-        _ => string_work(value),
-    }
-}
+
 impl NativeBatchHosts<'_> {
     pub(super) fn start_charset(&self, invocation: &HostInvocation<'_>) -> LocalResult<SqlDemand> {
         let Some(NativeHostMetadata::Charset(metadata)) =
@@ -98,10 +77,10 @@ impl NativeBatchHosts<'_> {
                 None
             }
         };
-        let base = self.retained_bytes()?;
-        let (value, base) = if source.is_none() {
+
+        let value = if source.is_none() {
             match decision.expect("actual first source decision") {
-                Step::Null => (crate::tikv::eval_charset_null_in(self.context), base),
+                Step::Null => crate::tikv::eval_charset_null_in(self.context),
                 Step::Target => {
                     let handle = token
                         .try_into()
@@ -131,19 +110,19 @@ impl NativeBatchHosts<'_> {
                             Op::ToBinary => crate::tikv::to_binary_bounded(
                                 value,
                                 metadata.source_type.charset_name(),
-                                self.max_retained_bytes - base,
+                                usize::MAX,
                             ),
                             Op::FromBinary => crate::tikv::from_binary_bounded(
                                 value,
                                 metadata.result_type.charset_name(),
-                                self.max_retained_bytes - base,
+                                usize::MAX,
                             ),
                             Op::ConvertUsing => {
                                 return Err(binding("charset conversion lost target demand"))
                             }
                         }
                     };
-                    (result, base)
+                    result
                 }
             }
         } else {
@@ -153,7 +132,7 @@ impl NativeBatchHosts<'_> {
             let source = source.expect("checked source capability");
             // Target coercion precedes source casting; failures must not inspect
             // or charge a later source Decimal formatter.
-            let (target, value, owned) = {
+            let (target, value) = {
                 let values = store.borrow();
                 // A retained first-source capability must still be authentic
                 // before any later target coercion or resource work.
@@ -166,10 +145,7 @@ impl NativeBatchHosts<'_> {
                     },
                 )?;
                 let target = values.get(token, NativeValueRole::CharInput, origin)?;
-                self.check_bytes(
-                    base.checked_add(string_work(target)?)
-                        .ok_or_else(|| resource("charset target work extent overflow"))?,
-                )?;
+
                 let target = match crate::coerce::coerce_str_bytes(target) {
                     Ok(value) => value.unwrap_or_default(),
                     Err(error) => return self.native_failure(error),
@@ -183,18 +159,7 @@ impl NativeBatchHosts<'_> {
                         row,
                     },
                 )?;
-                let owned = base
-                    .checked_add(target.capacity())
-                    .ok_or_else(|| resource("charset target owner extent overflow"))?;
-                self.check_bytes(
-                    owned
-                        .checked_add(cast_work(value)?)
-                        .ok_or_else(|| resource("charset source cast extent overflow"))?,
-                )?;
-                let shares_string = matches!(
-                    value,
-                    Datum::String(_) | Datum::Enum(_, _) | Datum::Set(_, _)
-                );
+
                 let value = match crate::cast::cast_arg_as_string(
                     value,
                     Some(&metadata.source_type),
@@ -203,70 +168,21 @@ impl NativeBatchHosts<'_> {
                     Ok(value) => value,
                     Err(error) => return self.native_failure(error),
                 };
-                let owned = if shares_string {
-                    owned
-                } else {
-                    owned
-                        .checked_add(
-                            native_payload_bytes(&value)?
-                                .checked_mul(2)
-                                .ok_or_else(|| resource("charset cast owner allowance overflow"))?,
-                        )
-                        .ok_or_else(|| resource("charset cast live extent overflow"))?
-                };
-                self.check_bytes(owned)?;
-                (target, value, owned)
+
+                (target, value)
             };
             // This actual getter is unconditional even for an ETString source
             // whose metadata selector ignores connection names. No store borrow
             // survives the callback; GB mode may change here and is read later.
             let connection = self.context.connection_charset_info();
             let source = &metadata.source_type;
-            let plan = tidb_query_expr::native_cast_arg_as_string_type(
-                tidb_query_expr::NativeArgStringSource {
-                    eval_type: source.eval_type(),
-                    code: source.code().as_shared_type_name_code(),
-                    flen: source.flen(),
-                    decimal: source.decimal(),
-                    charset: source.charset_name(),
-                    collation: source.collation_name(),
-                },
-                metadata.explicit_collation,
-                connection,
-            );
-            let metadata_bytes = match plan {
-                tidb_query_expr::NativeArgStringType::Original => source
-                    .checked_snapshot_payload_bytes()
-                    .ok_or_else(|| resource("charset source metadata snapshot overflow"))?,
-                tidb_query_expr::NativeArgStringType::VarString {
-                    charset, collation, ..
-                } => std::mem::size_of::<FieldType>()
-                    .checked_add(charset.len())
-                    .and_then(|n| n.checked_add(collation.len()))
-                    .ok_or_else(|| resource("charset connection metadata extent overflow"))?,
-            };
-            let live = owned
-                .checked_add(
-                    metadata_bytes
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("charset metadata clone allowance overflow"))?,
-                )
-                .ok_or_else(|| resource("charset metadata live extent overflow"))?;
-            self.check_bytes(live)?;
+
             let string_type = crate::cast::cast_arg_as_string_type(
                 source,
                 metadata.explicit_collation,
                 connection,
             );
-            (
-                crate::tikv::convert_using_bounded(
-                    &value,
-                    &string_type,
-                    &target,
-                    self.max_retained_bytes - live,
-                ),
-                live,
-            )
+            crate::tikv::convert_using_bounded(&value, &string_type, &target, usize::MAX)
         };
         let value = match value {
             Ok(value) => value,
@@ -282,7 +198,7 @@ impl NativeBatchHosts<'_> {
         };
         if let Some(role) = metadata.output_role {
             return self
-                .finish_native_value(id, value, metadata.output_node, role, row, base)
+                .finish_native_value(id, value, metadata.output_node, role, row)
                 .map(HostStep::Ready);
         }
         // Typed string parents keep their original carrier/demand profile.
@@ -295,26 +211,11 @@ impl NativeBatchHosts<'_> {
             Err(error) => return self.native_failure(error),
         };
         let len = bytes.map_or(0, <[u8]>::len);
-        self.check_bytes(
-            base.checked_add(
-                len.checked_mul(2)
-                    .ok_or_else(|| resource("charset typed publication overlap overflow"))?,
-            )
-            .and_then(|n| n.checked_add(256))
-            .ok_or_else(|| resource("charset typed publication extent overflow"))?,
-        )?;
+
         let mut output = ChunkedVecBytes::try_with_capacities(1, len)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
         output.push_ref(bytes);
-        self.check_bytes(
-            base.checked_add(len)
-                .and_then(|n| {
-                    output
-                        .retained_heap_bytes()
-                        .and_then(|more| n.checked_add(more))
-                })
-                .ok_or_else(|| resource("charset typed result capacity overflow"))?,
-        )?;
+
         self.slots[id.slot].task = None;
         Ok(HostStep::Ready(VectorValue::Bytes(output)))
     }

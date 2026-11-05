@@ -830,7 +830,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             output_node: 2,
             output_role: NativeValueRole::Output,
         }))];
-        let store = RefCell::new(NativeValueStore::new(8 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = D {
             store: &store,
@@ -838,7 +838,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             calls: Cell::new(0),
         };
         let mut p =
-            NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
+            NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
         let mut eval = EvalContext::default();
         let row = InputRow {
             occurrence: 2,
@@ -902,12 +902,12 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
         let original = insert(&Datum::Null, NativeValueRole::CharInput, 3);
         let mut bad = original.clone();
         bad[0] ^= 1;
-        let mut short = original.clone();
+        let mut short = original.to_vec();
         short.pop();
-        let mut long = original.clone();
+        let mut long = original.to_vec();
         long.push(0);
         store.borrow_mut().begin_window().unwrap();
-        let mut foreign = NativeValueStore::new(4096).unwrap();
+        let mut foreign = NativeValueStore::new().unwrap();
         foreign.begin_window().unwrap();
         let foreign = foreign
             .insert_clone(&Datum::Null, NativeValueRole::CharInput, origin(3))
@@ -942,19 +942,25 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             .unwrap();
         for token in [
             None,
-            Some(original),
-            Some(bad),
-            Some(short),
-            Some(long),
-            Some(foreign),
-            Some(wrong_row),
-            Some(wrong_physical),
-            Some(insert(&Datum::Null, NativeValueRole::Output, 3)),
-            Some(insert(&Datum::Null, NativeValueRole::CharInput, 4)),
+            Some((original).to_vec()),
+            Some((bad).to_vec()),
+            Some((short).to_vec()),
+            Some((long).to_vec()),
+            Some((foreign).to_vec()),
+            Some((wrong_row).to_vec()),
+            Some((wrong_physical).to_vec()),
+            Some((insert(&Datum::Null, NativeValueRole::Output, 3)).to_vec()),
+            Some((insert(&Datum::Null, NativeValueRole::CharInput, 4)).to_vec()),
         ] {
             let task = begin(&mut p, &mut eval);
             assert!(matches!(
-                reply(&mut p, &mut eval, &task, 0, token),
+                reply(
+                    &mut p,
+                    &mut eval,
+                    &task,
+                    0,
+                    token.map(|bytes| bytes.to_vec())
+                ),
                 Err(LocalError::BindingContract(_))
             ));
             assert_eq!(ctx.calls.get(), 0);
@@ -965,7 +971,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             let task = begin(&mut p, &mut eval);
             let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
             let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                reply(&mut p, &mut eval, &task, 0, Some(schema.clone()))
+                reply(&mut p, &mut eval, &task, 0, Some(schema.to_vec()))
             }));
             if action == 1 {
                 assert!(got.is_err())
@@ -973,7 +979,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
                 assert!(matches!(got.unwrap(), Err(LocalError::BindingContract(_))))
             }
             let before = ctx.calls.get();
-            assert!(reply(&mut p, &mut eval, &task, 0, Some(schema)).is_err());
+            assert!(reply(&mut p, &mut eval, &task, 0, Some(schema.to_vec())).is_err());
             assert_eq!(ctx.calls.get(), before);
             p.cancel(&task);
             ctx.action.set(0);
@@ -982,7 +988,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
         // schema. The same SQL context must still reject a genuinely invalid one.
         let task = begin(&mut p, &mut eval);
         let bad = insert(&Datum::new_string("[]"), NativeValueRole::CharInput, 3);
-        assert!(reply(&mut p, &mut eval, &task, 0, Some(bad)).is_err());
+        assert!(reply(&mut p, &mut eval, &task, 0, Some(bad.to_vec())).is_err());
         assert!(p.take_native_error().is_some());
         p.cancel(&task);
         for _ in 0..128 {
@@ -990,7 +996,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             let abandoned = begin(&mut p, &mut eval);
             let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
             assert!(matches!(
-                reply(&mut p, &mut eval, &abandoned, 0, Some(schema)),
+                reply(&mut p, &mut eval, &abandoned, 0, Some(schema.to_vec())),
                 Ok(HostStep::NeedArg(_))
             ));
             p.cancel(&abandoned);
@@ -998,11 +1004,11 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             p.cancel(&abandoned);
             let before = ctx.calls.get();
             let unused = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
-            assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused)).is_err());
+            assert!(reply(&mut p, &mut eval, &abandoned, 1, Some(unused.to_vec())).is_err());
             assert_eq!(ctx.calls.get(), before);
             let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
             check(
-                reply(&mut p, &mut eval, &current, 0, Some(null)).unwrap(),
+                reply(&mut p, &mut eval, &current, 0, Some(null.to_vec())).unwrap(),
                 &Datum::Null,
             );
             assert_eq!(ctx.calls.get(), before);
@@ -1011,39 +1017,39 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
         let task = begin(&mut p, &mut eval);
         let schema = insert(&Datum::new_string("false"), NativeValueRole::CharInput, 3);
         assert!(matches!(
-            reply(&mut p, &mut eval, &task, 0, Some(schema)),
+            reply(&mut p, &mut eval, &task, 0, Some(schema.to_vec())),
             Ok(HostStep::NeedArg(_))
         ));
         // The abandoned valid constructor committed before document demand, so
         // this actual false input hits that original true cache item.
         let before = ctx.calls.get();
         let wrong = insert(&Datum::new_string("7"), NativeValueRole::Output, 4);
-        assert!(reply(&mut p, &mut eval, &task, 1, Some(wrong)).is_err());
+        assert!(reply(&mut p, &mut eval, &task, 1, Some(wrong.to_vec())).is_err());
         assert_eq!(ctx.calls.get(), before);
         let doc = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
         check(
-            reply(&mut p, &mut eval, &task, 1, Some(doc)).unwrap(),
+            reply(&mut p, &mut eval, &task, 1, Some(doc.to_vec())).unwrap(),
             &Datum::Int(1),
         );
         p.cancel(&task);
         let task = begin(&mut p, &mut eval);
         let schema = insert(&Datum::new_string("true"), NativeValueRole::CharInput, 3);
         assert!(matches!(
-            reply(&mut p, &mut eval, &task, 0, Some(schema)),
+            reply(&mut p, &mut eval, &task, 0, Some(schema.to_vec())),
             Ok(HostStep::NeedArg(_))
         ));
         store.borrow_mut().begin_window().unwrap();
         let before = ctx.calls.get();
         let doc = insert(&Datum::new_string("7"), NativeValueRole::CharInput, 4);
         assert!(matches!(
-            reply(&mut p, &mut eval, &task, 1, Some(doc)),
+            reply(&mut p, &mut eval, &task, 1, Some(doc.to_vec())),
             Err(LocalError::BindingContract(_))
         ));
         assert_eq!(ctx.calls.get(), before);
         p.cancel(&task);
 
-        // A dynamic schema's retained parsed tree must fit before document demand.
-        // The existing provider policy stays fixed and must recover on real NULL.
+        // The actual large dynamic schema is admitted before document demand;
+        // cancellation still leaves the same provider reusable on NULL.
         let catalog = HostCatalog::for_sql_batch(vec![(
             SqlBatchHostOperation::EagerValuesNative,
             HostSignature {
@@ -1062,7 +1068,7 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
             output_role: NativeValueRole::Output,
         }))];
         let mut dynamic =
-            NativeBatchHosts::new(catalog, &metadata, &ctx, 16384).with_native_values(Some(&store));
+            NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
         let start = |p: &mut NativeBatchHosts<'_>, eval: &mut EvalContext| {
             let HostStart::Pending { task, .. } = p
                 .start(
@@ -1086,15 +1092,15 @@ fn json_schema_direct_host_authenticates_before_cache_publication_and_recovers_a
         let large = Datum::new_string(format!(r#"{{"$comment":"{}"}}"#, "x".repeat(32 << 10)));
         let token = insert(&large, NativeValueRole::CharInput, 3);
         assert!(matches!(
-            reply(&mut dynamic, &mut eval, &task, 0, Some(token)),
-            Err(LocalError::ResourceLimit(_))
+            reply(&mut dynamic, &mut eval, &task, 0, Some(token.to_vec())),
+            Ok(HostStep::NeedArg(request)) if request.index == 1
         ));
         assert_eq!(ctx.calls.get(), before);
         dynamic.cancel(&task);
         let task = start(&mut dynamic, &mut eval);
         let null = insert(&Datum::Null, NativeValueRole::CharInput, 3);
         check(
-            reply(&mut dynamic, &mut eval, &task, 0, Some(null)).unwrap(),
+            reply(&mut dynamic, &mut eval, &task, 0, Some(null.to_vec())).unwrap(),
             &Datum::Null,
         );
         assert_eq!(ctx.calls.get(), before);

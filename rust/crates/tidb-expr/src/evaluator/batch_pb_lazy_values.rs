@@ -27,6 +27,7 @@ impl PbLazyTask {
             tokens: Vec::new(),
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         std::mem::size_of::<Self>()
             .checked_add(array_bytes::<ConsumedArgument>(self.tokens.capacity())?)
@@ -63,35 +64,16 @@ impl NativeBatchHosts<'_> {
         if index.is_some() != token.is_some() || index.is_some_and(|i| i >= meta.arguments.len()) {
             return Err(binding("PB lazy reply differs from demanded argument"));
         }
-        let copied = {
+        {
             let values = store.borrow();
             for held in &state.tokens {
                 values.get(&held.token, NativeValueRole::CharInput, origin(held.index))?;
             }
             if let (Some(index), Some(token)) = (index, token) {
-                native_payload_bytes(values.get(
-                    token,
-                    NativeValueRole::CharInput,
-                    origin(index),
-                )?)?
-                .checked_mul(2)
-                .ok_or_else(|| resource("PB lazy copy extent overflow"))?
-            } else {
-                0
+                values.get(token, NativeValueRole::CharInput, origin(index))?;
             }
-        };
-        let base = self.retained_bytes()?;
-        let live = base
-            .checked_add(copied)
-            .and_then(|n| {
-                n.checked_add(if token.is_some() {
-                    std::mem::size_of::<ConsumedArgument>()
-                } else {
-                    0
-                })
-            })
-            .ok_or_else(|| resource("PB lazy live extent overflow"))?;
-        self.check_bytes(live)?;
+        }
+
         let value = match (index, token) {
             (Some(index), Some(token)) => Some(store.borrow().clone_for_kernel(
                 token,
@@ -111,7 +93,7 @@ impl NativeBatchHosts<'_> {
         ) else {
             unreachable!()
         };
-        let old_capacity = state.tokens.capacity();
+
         if let (Some(index), Some(token)) = (index, token) {
             state
                 .tokens
@@ -124,15 +106,7 @@ impl NativeBatchHosts<'_> {
                     .map_err(|_| binding("PB lazy capability width differs"))?,
             });
         }
-        let held_base = base
-            .checked_add(array_bytes::<ConsumedArgument>(
-                state.tokens.capacity() - old_capacity,
-            )?)
-            .ok_or_else(|| resource("PB lazy prefix extent overflow"))?;
-        let live = held_base
-            .checked_add(copied)
-            .ok_or_else(|| resource("PB lazy live extent overflow"))?;
-        self.check_bytes(live)?;
+
         let check = || -> LocalResult<()> {
             let values = store.borrow();
             for held in &state.tokens {
@@ -142,15 +116,10 @@ impl NativeBatchHosts<'_> {
         };
         let value = match phase {
             PbLazyPhase::Condition(index) => {
-                let result = tidb_query_expr::local::with_value_kernel_work_limit(
-                    self.max_retained_bytes - live,
-                    || {
-                        crate::scalar_function::eager_values::audit_work_result(
-                            meta.kernel
-                                .truth(value.as_ref().expect("actual condition"), self.context),
-                        )
-                    },
-                );
+                let result = (|| {
+                    meta.kernel
+                        .truth(value.as_ref().expect("actual condition"), self.context)
+                })();
                 drop(value);
                 check()?;
                 let truth = match result {
@@ -175,7 +144,7 @@ impl NativeBatchHosts<'_> {
                             .as_mut()
                             .expect("live PB lazy task")
                             .demand = SqlDemand::PbLazy(state);
-                        self.check_bytes(self.retained_bytes()?)?;
+
                         return Ok(HostStep::NeedArg(HostArgRequest {
                             index: next,
                             mode: ArgMode::Fresh,
@@ -198,7 +167,7 @@ impl NativeBatchHosts<'_> {
                         .as_mut()
                         .expect("live PB lazy task")
                         .demand = SqlDemand::PbLazy(state);
-                    self.check_bytes(self.retained_bytes()?)?;
+
                     return Ok(HostStep::NeedArg(HostArgRequest {
                         index: 1,
                         mode: ArgMode::Fresh,
@@ -214,48 +183,28 @@ impl NativeBatchHosts<'_> {
                 )
             }
         };
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(
-            self.max_retained_bytes - live,
-            || {
-                crate::scalar_function::eager_values::audit_work_result(match value {
-                    Some(value) => meta.kernel.selected_value(value),
-                    None => meta.kernel.exhausted_value(),
-                })
-            },
-        );
+        let result = (|| {
+            (match value {
+                Some(value) => meta.kernel.selected_value(value),
+                None => meta.kernel.exhausted_value(),
+            })
+        })();
         check()?;
         let value = match result {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let held = held_base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("PB lazy result allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("PB lazy result extent overflow"))?;
-        self.check_bytes(held)?;
+
         let value =
             crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-        let result = coerce_optional_value_result(
-            &meta.name,
-            meta.result_type.as_ref(),
-            value,
-            self.max_retained_bytes - held,
-        );
+        let result = coerce_optional_value_result(&meta.name, meta.result_type.as_ref(), value);
         check()?;
         let value = match result {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
         let result = if meta.integer_batch_result {
-            present_integer_batch_value(
-                value,
-                meta.result_type.as_ref(),
-                self.context,
-                self.max_retained_bytes - held,
-            )
+            present_integer_batch_value(value, meta.result_type.as_ref(), self.context)
         } else {
             Ok(value)
         };
@@ -264,14 +213,7 @@ impl NativeBatchHosts<'_> {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(
-            id,
-            value,
-            meta.output_node,
-            meta.output_role,
-            row,
-            held_base,
-        )
-        .map(HostStep::Ready)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
+            .map(HostStep::Ready)
     }
 }

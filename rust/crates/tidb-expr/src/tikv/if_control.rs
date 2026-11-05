@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::control_value::{default_budget, owned};
+use super::control_value::owned;
 use crate::{Columns, Datum, EvalError};
 
 pub(crate) fn eval_if_in(
@@ -25,5 +25,5 @@ pub(crate) fn eval_if_in(
         tidb_query_expr::NativeIfBranch::Then => when_true(ctx)?,
         tidb_query_expr::NativeIfBranch::Else => when_false(ctx)?,
     };
-    owned(value, default_budget())
+    owned(value)
 }

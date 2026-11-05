@@ -587,27 +587,33 @@ fn pb_arithmetic_source_direct_profiles_and_fixed_cap_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 64 * 1024;
+
         let mut ctx = C::new(true, [Datum::Int(4), Datum::Int(2), Datum::Null], 0);
         let mut a = input(&Some(vec![0; 8193]));
         let mut output = output_for(&ty);
         output.append_null(0);
-        let failure = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut a,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(matches!(
-            failure.local_error(),
-            Some(LocalError::ResourceLimit(_))
-        ));
-        assert_eq!(output.num_rows(), 1);
-        assert_eq!(prepared.workers[0].selection.capacity(), 0);
+        let reference = C::new(true, [Datum::Int(4), Datum::Int(2), Datum::Null], 0);
+        let mut native_input = input(&Some(vec![0; 8193]));
+        let mut native_output = output_for(&ty);
+        native_output.append_null(0);
+        let expected_large = original_session_read_outcome(|| {
+            owner.run(&reference, &mut native_input, &mut native_output)
+        });
+        let got_large = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut a,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got_large, expected_large);
+        assert_eq!(output.column(0), native_output.column(0));
+        assert_eq!(ctx.snapshot(), reference.snapshot());
         for value in [Datum::Null, Datum::Int(4)] {
             ctx.base.base.values[0] = value;
             ctx.base.base.events.borrow_mut().clear();
@@ -638,10 +644,6 @@ fn pb_arithmetic_source_direct_profiles_and_fixed_cap_recovery() {
             assert_eq!(got, expected, "{name}/recovery");
             assert_eq!(right.column(0), left.column(0));
             assert_eq!(ctx.snapshot(), old.snapshot(), "{name}/recovery");
-            assert_eq!(
-                prepared.workers[0].max_materialization_retained_bytes,
-                64 * 1024
-            );
         }
     }
 }

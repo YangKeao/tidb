@@ -52,27 +52,20 @@ impl NativeBatchHosts<'_> {
                 mode: ArgMode::Fresh,
             }));
         }
-        let base = self.retained_bytes()?;
-        let maximum = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("identity work allowance exhausted"))?;
+
         let result = {
             let values = store.borrow();
-            crate::tikv::identity_actual::copy_bounded(
-                values.get(token, NativeValueRole::CharInput, origin)?,
-                maximum,
-            )
+            crate::tikv::identity_actual::copy(values.get(
+                token,
+                NativeValueRole::CharInput,
+                origin,
+            )?)
         };
         let result = match result {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        let held = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("identity output extent overflow"))?;
-        self.check_bytes(held)?;
+
         let result = match crate::tikv::identity_actual::coerce_result(
             if *name_const {
                 "name_const"
@@ -81,12 +74,11 @@ impl NativeBatchHosts<'_> {
             },
             result_type,
             result,
-            self.max_retained_bytes - held,
         ) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

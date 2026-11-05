@@ -98,6 +98,7 @@ impl NumericTask {
     pub(super) fn next_argument(&self) -> usize {
         self.next
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         let mut n = std::mem::size_of::<Self>();
         if let Some(value) = &self.left {
@@ -195,24 +196,25 @@ enum Transition {
     Failure(EvalError),
 }
 impl<'a> NativeBatchHosts<'a> {
-    pub(in super::super) fn with_numeric_parents(
-        mut self,
-        parents: &'a [CompiledNumericParent],
-    ) -> LocalResult<Self> {
+    pub(in super::super) fn validate_numeric_parents(
+        catalog: &HostCatalog,
+        metadata: &[NativeHostMetadata],
+        parents: &[CompiledNumericParent],
+    ) -> LocalResult<()> {
         if parents.windows(2).any(|p| p[0].slot >= p[1].slot) {
             return Err(binding("numeric parents must be strictly increasing"));
         }
         for p in parents {
-            let slot = self.catalog.slot(p.slot)?;
-            if let Some(NativeHostMetadata::PbBinary(meta)) = self.metadata.get(p.slot) {
+            let slot = catalog.slot(p.slot)?;
+            if let Some(NativeHostMetadata::PbBinary(meta)) = metadata.get(p.slot) {
                 if meta.kernel.domain().is_none()
                     || meta.logical_arity != 2
                     || meta.arguments.len() != 2
                     || meta.operands.is_none()
                     || meta.source_types.iter().any(Option::is_none)
-                    || self.catalog.sql_batch_operation(slot)?
+                    || catalog.sql_batch_operation(slot)?
                         != SqlBatchHostOperation::EagerValuesNative
-                    || p.arguments.len() != self.catalog.signature(slot)?.arg_types.len()
+                    || p.arguments.len() != catalog.signature(slot)?.arg_types.len()
                     || p.arguments.get(..2) != Some(meta.arguments.as_ref())
                     || p.requests != [[0, 1]; 2]
                     || p.plans.len() != 6
@@ -233,7 +235,7 @@ impl<'a> NativeBatchHosts<'a> {
                 generic_mode,
                 argument_nodes,
                 ..
-            }) = self.metadata.get(p.slot)
+            }) = metadata.get(p.slot)
             else {
                 return Err(binding(
                     "numeric parent requires its original row arithmetic",
@@ -291,8 +293,8 @@ impl<'a> NativeBatchHosts<'a> {
             };
             if !valid_operation
                 || name.as_ref() != expected_name
-                || self.catalog.sql_batch_operation(slot)? != expected
-                || p.arguments.len() != self.catalog.signature(slot)?.arg_types.len()
+                || catalog.sql_batch_operation(slot)? != expected
+                || p.arguments.len() != catalog.signature(slot)?.arg_types.len()
                 || p.arguments.get(..2) != Some(argument_nodes.as_slice())
                 || p.requests[0] != [0, 1]
                 || p.requests.iter().flatten().any(|&i| i >= p.arguments.len())
@@ -327,6 +329,13 @@ impl<'a> NativeBatchHosts<'a> {
             }
             Self::validate_numeric_plan_graph(p)?;
         }
+        Ok(())
+    }
+
+    pub(in super::super) fn with_numeric_parents(
+        mut self,
+        parents: &'a [CompiledNumericParent],
+    ) -> LocalResult<Self> {
         self.numeric_parents = parents;
         Ok(self)
     }
@@ -473,27 +482,14 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("numeric store absent"))?;
-        let payload = if diagnostic {
+        if diagnostic {
+            store.borrow().diagnostic_text(token, origin)?;
+        } else {
             store
                 .borrow()
-                .diagnostic_text(token, origin)?
-                .map_or(0, str::len)
-        } else {
-            native_payload_bytes(
-                store
-                    .borrow()
-                    .get(token, NativeValueRole::CharInput, origin)?,
-            )?
-        };
-        let base = self
-            .retained_bytes()?
-            .checked_add(
-                payload
-                    .checked_mul(3)
-                    .ok_or_else(|| resource("numeric input extent overflow"))?,
-            )
-            .ok_or_else(|| resource("numeric live allowance overflow"))?;
-        self.check_bytes(base)?;
+                .get(token, NativeValueRole::CharInput, origin)?;
+        }
+
         let (value, text) = if diagnostic {
             (
                 None,
@@ -525,22 +521,17 @@ impl<'a> NativeBatchHosts<'a> {
         let SqlDemand::Numeric(state) = demand else {
             unreachable!()
         };
-        let allowance = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("numeric conversion allowance exhausted"))?;
+
         let auth = NumericAuthentication {
             store,
             token,
             origin,
             diagnostic,
         };
-        let transition = tidb_query_expr::local::with_value_kernel_work_limit(allowance, || {
-            let result =
-                self.drive_numeric_parent(slot, state, value, text.as_deref(), base, &auth);
-            tidb_query_expr::local::value_kernel_work_status()?;
+        let transition = (|| {
+            let result = self.drive_numeric_parent(slot, state, value, text.as_deref(), &auth);
             result
-        });
+        })();
         if diagnostic {
             store.borrow().diagnostic_text(token, origin)?;
         } else {
@@ -551,11 +542,7 @@ impl<'a> NativeBatchHosts<'a> {
         match transition? {
             Transition::Need(state) => {
                 let next = state.next;
-                self.check_bytes(
-                    self.retained_bytes()?
-                        .checked_add(state.retained_bytes()?)
-                        .ok_or_else(|| resource("numeric continuation extent overflow"))?,
-                )?;
+
                 self.slots[id.slot]
                     .task
                     .as_mut()
@@ -569,19 +556,10 @@ impl<'a> NativeBatchHosts<'a> {
             Transition::Failure(error) => self.native_failure(error),
             Transition::Value(value) => {
                 if let Some(NativeHostMetadata::PbBinary(meta)) = self.metadata.get(slot.index()) {
-                    let held = base
-                        .checked_add(
-                            native_payload_bytes(&value)?
-                                .checked_mul(2)
-                                .ok_or_else(|| resource("PB numeric result allowance overflow"))?,
-                        )
-                        .ok_or_else(|| resource("PB numeric result extent overflow"))?;
-                    self.check_bytes(held)?;
                     let result = super::pb_binary_values_source::present_pb_binary_value(
                         meta,
                         value,
                         self.context,
-                        self.max_retained_bytes - held,
                     );
                     auth.check()?;
                     let value = match result {
@@ -589,14 +567,7 @@ impl<'a> NativeBatchHosts<'a> {
                         Err(error) => return self.native_failure(error),
                     };
                     return self
-                        .finish_native_value(
-                            id,
-                            value,
-                            meta.output_node,
-                            meta.output_role,
-                            row,
-                            base,
-                        )
+                        .finish_native_value(id, value, meta.output_node, meta.output_role, row)
                         .map(HostStep::Ready);
                 }
                 let Some(NativeHostMetadata::Arithmetic {
@@ -617,7 +588,7 @@ impl<'a> NativeBatchHosts<'a> {
                     Ok(value) => value,
                     Err(error) => return self.native_failure(error),
                 };
-                self.finish_native_value(id, value, *output_node, *output_role, row, base)
+                self.finish_native_value(id, value, *output_node, *output_role, row)
                     .map(HostStep::Ready)
             }
         }
@@ -628,7 +599,6 @@ impl<'a> NativeBatchHosts<'a> {
         mut task: Box<NumericTask>,
         value: Option<Datum>,
         text: Option<&str>,
-        base: usize,
         auth: &NumericAuthentication<'_>,
     ) -> LocalResult<Transition> {
         let parent = self
@@ -639,10 +609,7 @@ impl<'a> NativeBatchHosts<'a> {
         let binary_literal = contract.binary_literal;
         let generic_mode = &contract.generic_mode;
         let op = contract.operation;
-        let available = self
-            .max_retained_bytes
-            .checked_sub(base)
-            .ok_or_else(|| resource("numeric kernel allowance exhausted"))?;
+        let available = usize::MAX;
         let normalized;
         if let Some(mut diag) = task.diagnostic.take() {
             let plan = &parent.plans[diag.plan];
@@ -650,38 +617,30 @@ impl<'a> NativeBatchHosts<'a> {
                 .state
                 .pending_constant()
                 .ok_or_else(|| binding("numeric diagnostic pending input absent"))?;
-            let result = tidb_query_expr::local::with_value_kernel_work_limit(available, || {
-                match &plan.body {
-                    NumericPlanBody::Subject(plan) => {
-                        plan.resume_text(&mut diag.state, index, text)
-                    }
-                    NumericPlanBody::Argument(plan) => {
-                        let actual = match &diag.reason {
-                            DiagnosticReason::DecimalDivision { values, .. } => {
-                                Some(&values[diag.plan - 2])
-                            }
-                            _ => None,
-                        };
-                        plan.resume_text(&mut diag.state, index, text, actual)
-                    }
+            let result = (|| match &plan.body {
+                NumericPlanBody::Subject(plan) => plan.resume_text(&mut diag.state, index, text),
+                NumericPlanBody::Argument(plan) => {
+                    let actual = match &diag.reason {
+                        DiagnosticReason::DecimalDivision { values, .. } => {
+                            Some(&values[diag.plan - 2])
+                        }
+                        _ => None,
+                    };
+                    plan.resume_text(&mut diag.state, index, text, actual)
                 }
-            });
+            })();
             match result {
-                Ok(step) => {
-                    match self.numeric_diagnostic_step(task, diag, step, slot, available, auth)? {
-                        DiagnosticTransition::Need(state) => return Ok(Transition::Need(state)),
-                        DiagnosticTransition::Failure(error) => {
-                            return Ok(Transition::Failure(error))
-                        }
-                        DiagnosticTransition::IntegerDivision(state, step) => {
-                            return self.drive_integer_division(slot, state, step, available, auth)
-                        }
-                        DiagnosticTransition::Operand(state, value) => {
-                            task = state;
-                            normalized = value;
-                        }
+                Ok(step) => match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
+                    DiagnosticTransition::Need(state) => return Ok(Transition::Need(state)),
+                    DiagnosticTransition::Failure(error) => return Ok(Transition::Failure(error)),
+                    DiagnosticTransition::IntegerDivision(state, step) => {
+                        return self.drive_integer_division(slot, state, step, available, auth)
                     }
-                }
+                    DiagnosticTransition::Operand(state, value) => {
+                        task = state;
+                        normalized = value;
+                    }
+                },
                 Err(error) => return Ok(Transition::Failure(error)),
             }
         } else {
@@ -718,15 +677,10 @@ impl<'a> NativeBatchHosts<'a> {
                         state: plan.state(),
                         reason: DiagnosticReason::Subject(pending),
                     };
-                    let step =
-                        tidb_query_expr::local::with_value_kernel_work_limit(available, || {
-                            plan.step(&mut diag.state)
-                        });
+                    let step = (|| plan.step(&mut diag.state))();
                     match step {
                         Ok(step) => {
-                            match self
-                                .numeric_diagnostic_step(task, diag, step, slot, available, auth)?
-                            {
+                            match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
                                 DiagnosticTransition::Need(state) => {
                                     return Ok(Transition::Need(state))
                                 }
@@ -761,7 +715,7 @@ impl<'a> NativeBatchHosts<'a> {
                 if value.is_null() && meta.kernel.stops_on_left_null() {
                     let result = meta.kernel.left_null_result(value, self.context);
                     auth.check()?;
-                    return self.numeric_result(slot, task, result, available, auth);
+                    return self.numeric_result(slot, task, result, auth);
                 }
                 task.left = Some(value);
                 task.index = 1;
@@ -787,7 +741,7 @@ impl<'a> NativeBatchHosts<'a> {
                 self.context,
             );
             auth.check()?;
-            return self.numeric_result(slot, task, result, available, auth);
+            return self.numeric_result(slot, task, result, auth);
         }
         let prepared = if task.index == 0 {
             if value.is_null()
@@ -814,7 +768,7 @@ impl<'a> NativeBatchHosts<'a> {
                 let result =
                     self.compute_quotient(&self.metadata[slot.index()], left, value, available)?;
                 auth.check()?;
-                return self.numeric_result(slot, task, result, available, auth);
+                return self.numeric_result(slot, task, result, auth);
             }
             if task.typed {
                 let prepared = crate::ops::prepare_native_typed_arithmetic(
@@ -853,14 +807,13 @@ impl<'a> NativeBatchHosts<'a> {
                 }
             }
         };
-        self.numeric_result(slot, task, prepared.compute(available), available, auth)
+        self.numeric_result(slot, task, prepared.compute(available), auth)
     }
     fn numeric_result(
         &self,
         slot: HostSlot,
         task: Box<NumericTask>,
         result: std::result::Result<Datum, EvalError>,
-        available: usize,
         auth: &NumericAuthentication<'_>,
     ) -> LocalResult<Transition> {
         let parent = self
@@ -896,14 +849,10 @@ impl<'a> NativeBatchHosts<'a> {
                     state: plan.state(),
                     reason: DiagnosticReason::Overflow { kind, left: None },
                 };
-                let step = tidb_query_expr::local::with_value_kernel_work_limit(available, || {
-                    plan.step(&mut diag.state, None)
-                });
+                let step = (|| plan.step(&mut diag.state, None))();
                 match step {
                     Ok(step) => {
-                        match self
-                            .numeric_diagnostic_step(task, diag, step, slot, available, auth)?
-                        {
+                        match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
                             DiagnosticTransition::Need(state) => Ok(Transition::Need(state)),
                             DiagnosticTransition::Failure(error) => Ok(Transition::Failure(error)),
                             DiagnosticTransition::Operand(_, _)
@@ -923,7 +872,6 @@ impl<'a> NativeBatchHosts<'a> {
         mut diag: NumericDiagnostic,
         mut step: DiagnosticStep,
         slot: HostSlot,
-        available: usize,
         auth: &NumericAuthentication<'_>,
     ) -> LocalResult<DiagnosticTransition> {
         let parent = self
@@ -995,10 +943,7 @@ impl<'a> NativeBatchHosts<'a> {
                                 unreachable!()
                             };
                             diag.state = plan.state();
-                            let result = tidb_query_expr::local::with_value_kernel_work_limit(
-                                available,
-                                || plan.step(&mut diag.state, Some(&values[1])),
-                            );
+                            let result = (|| plan.step(&mut diag.state, Some(&values[1])))();
                             // Original Option::zip evaluates the right formatter
                             // even when the left formatter was unavailable.
                             diag.reason = DiagnosticReason::DecimalDivision {
@@ -1012,33 +957,18 @@ impl<'a> NativeBatchHosts<'a> {
                             };
                         } else {
                             let result = match left.zip(text) {
-                                Some((left, right)) => {
-                                    let extent = left
-                                        .len()
-                                        .checked_add(right.len())
-                                        .and_then(|n| n.checked_mul(4))
-                                        .and_then(|n| n.checked_add(256))
-                                        .ok_or_else(|| {
-                                            resource("DIV diagnostic output extent overflow")
-                                        })?;
-                                    if extent > available {
-                                        return Err(resource(
-                                            "DIV diagnostic output exceeds allowance",
-                                        ));
-                                    }
-                                    EvalError::DataOutOfRange {
-                                        value: if unsigned {
-                                            "BIGINT UNSIGNED"
-                                        } else {
-                                            "BIGINT"
-                                        },
-                                        expression: native_render_binary_expression(
-                                            &left,
-                                            NativeArithmeticOperator::IntegerDivide,
-                                            &right,
-                                        ),
-                                    }
-                                }
+                                Some((left, right)) => EvalError::DataOutOfRange {
+                                    value: if unsigned {
+                                        "BIGINT UNSIGNED"
+                                    } else {
+                                        "BIGINT"
+                                    },
+                                    expression: native_render_binary_expression(
+                                        &left,
+                                        NativeArithmeticOperator::IntegerDivide,
+                                        &right,
+                                    ),
+                                },
                                 None => EvalError::IntOverflow,
                             };
                             return Ok(DiagnosticTransition::Failure(result));
@@ -1068,15 +998,7 @@ impl<'a> NativeBatchHosts<'a> {
                                 BinaryOp::IntDiv => NativeArithmeticOperator::IntegerDivide,
                                 _ => unreachable!(),
                             };
-                            let extent = left
-                                .len()
-                                .checked_add(text.len())
-                                .and_then(|n| n.checked_mul(4))
-                                .and_then(|n| n.checked_add(256))
-                                .ok_or_else(|| resource("numeric overflow text extent overflow"))?;
-                            if extent > available {
-                                return Err(resource("numeric overflow text allowance exceeded"));
-                            }
+
                             return Ok(DiagnosticTransition::Failure(EvalError::DataOutOfRange {
                                 value: kind.class(result_type.is_some_and(FieldType::is_unsigned)),
                                 expression: native_render_binary_expression(&left, op, &text),
@@ -1091,10 +1013,7 @@ impl<'a> NativeBatchHosts<'a> {
                             kind,
                             left: Some(text),
                         };
-                        step = match tidb_query_expr::local::with_value_kernel_work_limit(
-                            available,
-                            || plan.step(&mut diag.state, None),
-                        ) {
+                        step = match (|| plan.step(&mut diag.state, None))() {
                             Ok(step) => step,
                             Err(error) => return Ok(DiagnosticTransition::Failure(error)),
                         };
@@ -1262,7 +1181,7 @@ mod tests {
                 NativeValueOrigin { node, row },
             )
             .unwrap();
-        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1)
+        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1)
     }
     fn reply<'a>(
         field: &'a tipb::FieldType,
@@ -1281,17 +1200,13 @@ mod tests {
             for text in [Some("9"), None] {
                 let int = FieldType::new(FieldTypeCode::LongLong);
                 let f = fixture(name, int.clone(), int, false);
-                let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
-                let mut hosts = NativeBatchHosts::new(
-                    f.catalog.clone(),
-                    &f.metadata,
-                    &crate::NoColumns,
-                    1 << 20,
-                )
-                .with_native_values(Some(&store))
-                .with_numeric_parents(&f.parents)
-                .unwrap();
+                let mut hosts =
+                    NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
+                        .with_native_values(Some(&store))
+                        .with_numeric_parents(&f.parents)
+                        .unwrap();
                 let row = InputRow {
                     occurrence: 11,
                     input_row: 7,
@@ -1347,7 +1262,8 @@ mod tests {
                             },
                         )
                         .unwrap();
-                    let bad = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let bad =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(hosts
                         .resume(&mut eval, &task, reply(&f.field, left_diag, &bad))
                         .is_err());
@@ -1364,7 +1280,7 @@ mod tests {
                     None => store.borrow_mut().insert_diagnostic_unavailable(origin),
                 }
                 .unwrap();
-                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 let result = hosts.resume(&mut eval, &task, reply(&f.field, left_diag, &values));
                 if text.is_some() {
                     let right_diag = f.parents[0].plans[3].base;
@@ -1381,7 +1297,8 @@ mod tests {
                             },
                         )
                         .unwrap();
-                    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let values =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(hosts
                         .resume(&mut eval, &task, reply(&f.field, right_diag, &values))
                         .is_err());
@@ -1410,13 +1327,12 @@ mod tests {
     fn numeric_parent_failed_integer_probe_requests_the_distinct_original_general_source() {
         let int = FieldType::new(FieldTypeCode::LongLong);
         let f = fixture("plus", int, FieldType::new(FieldTypeCode::Double), true);
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
-        let mut hosts =
-            NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns, 1 << 20)
-                .with_native_values(Some(&store))
-                .with_numeric_parents(&f.parents)
-                .unwrap();
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
+            .with_native_values(Some(&store))
+            .with_numeric_parents(&f.parents)
+            .unwrap();
         let row = InputRow {
             occurrence: 0,
             input_row: 0,
@@ -1473,13 +1389,13 @@ mod tests {
     ) {
         let real = FieldType::new(FieldTypeCode::Double);
         let f = fixture("plus", real.clone(), real, false);
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let ctx = Callback {
             store: &store,
             mode: Cell::new(0),
             calls: Cell::new(0),
         };
-        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
             .with_numeric_parents(&f.parents)
             .unwrap();
@@ -1556,13 +1472,13 @@ mod tests {
             FieldType::new(FieldTypeCode::NewDecimal),
             false,
         );
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let ctx = Warning {
             store: &store,
             events: RefCell::new(vec![]),
             mode: Cell::new(0),
         };
-        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
             .with_numeric_parents(&f.parents)
             .unwrap();
@@ -1596,7 +1512,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 hosts.resume(&mut eval, &task, reply(&f.field, diag, &values))
             }));
@@ -1750,13 +1666,13 @@ mod tests {
             FieldType::new(FieldTypeCode::Double),
             FieldType::new(FieldTypeCode::NewDecimal),
         );
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let ctx = Warning {
             store: &store,
             events: RefCell::new(vec![]),
             mode: Cell::new(0),
         };
-        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
             .with_numeric_parents(&f.parents)
             .unwrap();
@@ -1810,7 +1726,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+            let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
             assert!(hosts
                 .resume(&mut eval, &task, reply(&f.field, diag, &text))
                 .is_err());
@@ -1882,17 +1798,13 @@ mod tests {
             for unavailable in [false, true] {
                 let int = FieldType::new(FieldTypeCode::LongLong);
                 let f = fixture_window(name, int.clone(), int);
-                let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
-                let mut hosts = NativeBatchHosts::new(
-                    f.catalog.clone(),
-                    &f.metadata,
-                    &crate::NoColumns,
-                    1 << 20,
-                )
-                .with_native_values(Some(&store))
-                .with_numeric_parents(&f.parents)
-                .unwrap();
+                let mut hosts =
+                    NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
+                        .with_native_values(Some(&store))
+                        .with_numeric_parents(&f.parents)
+                        .unwrap();
                 let rows = [2, 0, 2];
                 let start = 11;
                 let mut eval = EvalContext::default();
@@ -1949,7 +1861,7 @@ mod tests {
                         .insert_diagnostic_text("7".into(), origin)
                 }
                 .unwrap();
-                let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 let result = hosts.resume_window(
                     &mut eval,
                     &task,
@@ -1976,7 +1888,8 @@ mod tests {
                             },
                         )
                         .unwrap();
-                    let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let text =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(hosts
                         .resume_window(
                             &mut eval,
@@ -2003,13 +1916,13 @@ mod tests {
     fn numeric_window_consumes_callbacks_and_stops_before_next_row_after_generation_changes() {
         let real = FieldType::new(FieldTypeCode::Double);
         let f = fixture_window("plus", real.clone(), real);
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let ctx = Callback {
             store: &store,
             mode: Cell::new(0),
             calls: Cell::new(0),
         };
-        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
             .with_numeric_parents(&f.parents)
             .unwrap();
@@ -2102,17 +2015,16 @@ mod tests {
                 } else {
                     fixture(name, real.clone(), real, false)
                 };
-                let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                let store = RefCell::new(NativeValueStore::new().unwrap());
                 let ctx = Zero {
                     store: &store,
                     mode: Cell::new(0),
                     calls: Cell::new(0),
                 };
-                let mut hosts =
-                    NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
-                        .with_native_values(Some(&store))
-                        .with_numeric_parents(&f.parents)
-                        .unwrap();
+                let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
+                    .with_native_values(Some(&store))
+                    .with_numeric_parents(&f.parents)
+                    .unwrap();
                 let rows = [2, 0, 2];
                 let occurrence = 11;
                 let mut eval = EvalContext::default();
@@ -2247,13 +2159,13 @@ mod tests {
                 FieldType::new(FieldTypeCode::VarString),
                 false,
             );
-            let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+            let store = RefCell::new(NativeValueStore::new().unwrap());
             let ctx = Warning {
                 store: &store,
                 events: RefCell::new(vec![]),
                 mode: Cell::new(0),
             };
-            let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+            let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
                 .with_native_values(Some(&store))
                 .with_numeric_parents(&f.parents)
                 .unwrap();
@@ -2301,7 +2213,7 @@ mod tests {
                     .borrow_mut()
                     .insert_diagnostic_text(subject.into(), origin)
                     .unwrap();
-                let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     hosts.resume(&mut eval, &task, reply(&f.field, diag, &text))
                 }));
@@ -2334,7 +2246,7 @@ mod tests {
                             )
                             .unwrap()
                             .clone();
-                        let oldstore = RefCell::new(NativeValueStore::new(4096).unwrap());
+                        let oldstore = RefCell::new(NativeValueStore::new().unwrap());
                         let old = Warning {
                             store: &oldstore,
                             events: RefCell::new(vec![]),
@@ -2389,17 +2301,13 @@ mod tests {
                         FieldType::new(FieldTypeCode::LongLong),
                         false,
                     );
-                    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                    let store = RefCell::new(NativeValueStore::new().unwrap());
                     store.borrow_mut().begin_window().unwrap();
-                    let mut hosts = NativeBatchHosts::new(
-                        f.catalog.clone(),
-                        &f.metadata,
-                        &crate::NoColumns,
-                        1 << 20,
-                    )
-                    .with_native_values(Some(&store))
-                    .with_numeric_parents(&f.parents)
-                    .unwrap();
+                    let mut hosts =
+                        NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
+                            .with_native_values(Some(&store))
+                            .with_numeric_parents(&f.parents)
+                            .unwrap();
                     let row = InputRow {
                         occurrence: 11,
                         input_row: 7,
@@ -2440,7 +2348,8 @@ mod tests {
                             .insert_diagnostic_text("7".into(), origin)
                     }
                     .unwrap();
-                    let left_text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let left_text =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(
                         matches!(hosts.resume(&mut eval, &task, reply(&f.field, l, &left_text)).unwrap(), HostStep::NeedArg(request) if request.index == r && request.mode == ArgMode::Fresh)
                     );
@@ -2460,7 +2369,8 @@ mod tests {
                             .insert_diagnostic_text("9".into(), origin)
                     }
                     .unwrap();
-                    let right_text = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let right_text =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(hosts
                         .resume(&mut eval, &task, reply(&f.field, r, &right_text))
                         .is_err());
@@ -2591,17 +2501,13 @@ mod tests {
             for text in [Some("9"), None] {
                 let int = FieldType::new(FieldTypeCode::LongLong);
                 let f = pb_fixture(name, int.clone(), int, false);
-                let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
-                let mut hosts = NativeBatchHosts::new(
-                    f.catalog.clone(),
-                    &f.metadata,
-                    &crate::NoColumns,
-                    1 << 20,
-                )
-                .with_native_values(Some(&store))
-                .with_numeric_parents(&f.parents)
-                .unwrap();
+                let mut hosts =
+                    NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
+                        .with_native_values(Some(&store))
+                        .with_numeric_parents(&f.parents)
+                        .unwrap();
                 let row = InputRow {
                     occurrence: 11,
                     input_row: 7,
@@ -2657,7 +2563,8 @@ mod tests {
                             },
                         )
                         .unwrap();
-                    let bad = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let bad =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(hosts
                         .resume(&mut eval, &task, reply(&f.field, left_diag, &bad))
                         .is_err());
@@ -2674,7 +2581,7 @@ mod tests {
                     None => store.borrow_mut().insert_diagnostic_unavailable(origin),
                 }
                 .unwrap();
-                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                 let result = hosts.resume(&mut eval, &task, reply(&f.field, left_diag, &values));
                 if text.is_some() {
                     let right_diag = f.parents[0].plans[3].base;
@@ -2691,7 +2598,8 @@ mod tests {
                             },
                         )
                         .unwrap();
-                    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+                    let values =
+                        VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
                     assert!(hosts
                         .resume(&mut eval, &task, reply(&f.field, right_diag, &values))
                         .is_err());
@@ -2722,13 +2630,13 @@ mod tests {
     ) {
         let real = FieldType::new(FieldTypeCode::Double);
         let f = pb_fixture("div", real.clone(), real, false);
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         let ctx = Callback {
             store: &store,
             mode: Cell::new(0),
             calls: Cell::new(0),
         };
-        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx, 1 << 20)
+        let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
             .with_numeric_parents(&f.parents)
             .unwrap();

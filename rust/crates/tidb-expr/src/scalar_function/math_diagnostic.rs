@@ -71,37 +71,19 @@ impl MathDiagnostic {
         Some(Self(parts.into_boxed_slice()))
     }
     pub(crate) fn render(&self) -> Result<String, EvalError> {
-        let charge = |bytes: usize| {
-            tidb_query_expr::local::charge_value_kernel_work(bytes).map_err(|e| {
-                EvalError::ExpressionRuntimeFailure(
-                    crate::ExpressionRuntimeFailure::from_local_eval(e, None),
-                )
-            })
-        };
-        charge(self.0.len().saturating_mul(std::mem::size_of::<String>()))?;
         let mut stack = Vec::<String>::with_capacity(self.0.len());
         for part in &self.0 {
             let text = match part {
                 MathDiagnosticPart::Literal(value) => {
-                    eager_values::charge_string_work(value)?;
                     math_diagnostic_literal(value).expect("captured numeric diagnostic literal")
                 }
-                MathDiagnosticPart::Column(text) => {
-                    charge(text.len().saturating_mul(4))?;
-                    text.to_string()
-                }
+                MathDiagnosticPart::Column(text) => text.to_string(),
                 MathDiagnosticPart::Function(name, arity) => {
                     let begin = stack
                         .len()
                         .checked_sub(*arity)
                         .expect("captured diagnostic arity");
-                    let bytes = stack[begin..].iter().fold(
-                        name.len()
-                            .saturating_add(arity.saturating_mul(2))
-                            .saturating_add(2),
-                        |n, t| n.saturating_add(t.len()),
-                    );
-                    charge(bytes.saturating_mul(4))?;
+
                     let text = native_render_function_expression(name, &stack[begin..]);
                     stack.truncate(begin);
                     text
@@ -109,12 +91,7 @@ impl MathDiagnostic {
                 MathDiagnosticPart::Binary(op) => {
                     let right = stack.pop().expect("captured diagnostic right");
                     let left = stack.pop().expect("captured diagnostic left");
-                    charge(
-                        left.len()
-                            .saturating_add(right.len())
-                            .saturating_add(16)
-                            .saturating_mul(4),
-                    )?;
+
                     native_render_binary_expression(&left, *op, &right)
                 }
             };

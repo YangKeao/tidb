@@ -16,19 +16,6 @@
 //! the SDK's single frame driver; this provider owns only demanded values.
 use super::*;
 
-fn values_bytes(values: &Vec<Datum>) -> LocalResult<usize> {
-    values
-        .iter()
-        .try_fold(array_bytes::<Datum>(values.capacity())?, |bytes, value| {
-            bytes
-                .checked_add(
-                    native_payload_bytes(value)?
-                        .checked_mul(2)
-                        .ok_or_else(|| resource("window value payload overflow"))?,
-                )
-                .ok_or_else(|| resource("window value bytes overflow"))
-        })
-}
 fn row_operation(operation: SqlBatchHostOperation) -> Option<SqlBatchHostOperation> {
     Some(match operation {
         SqlBatchHostOperation::AddWindowNative => SqlBatchHostOperation::AddNative,
@@ -103,11 +90,7 @@ impl NativeBatchHosts<'_> {
         {
             return Err(binding("window arithmetic descriptor differs"));
         }
-        self.check_bytes(
-            self.retained_bytes()?
-                .checked_add(array_bytes::<usize>(invocation.physical_rows.len())?)
-                .ok_or_else(|| resource("window row map allowance overflow"))?,
-        )?;
+
         let mut rows = Vec::new();
         rows.try_reserve_exact(invocation.physical_rows.len())
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
@@ -123,7 +106,6 @@ impl NativeBatchHosts<'_> {
                 next: 0,
                 rows,
                 left: Vec::new(),
-                left_bytes: 0,
             },
         )
     }
@@ -169,11 +151,8 @@ impl NativeBatchHosts<'_> {
             return Err(binding("integer window source domain differs"));
         }
         let count = rows.len();
-        let base = self.retained_bytes()?;
-        let WindowSourceValues {
-            mut values,
-            retained_bytes: mut retained_values,
-        } = self.collect_window_source(
+
+        let mut values = self.collect_window_source(
             &reply,
             WindowSourceFacts {
                 field,
@@ -183,16 +162,8 @@ impl NativeBatchHosts<'_> {
             },
         )?;
         // The complete typed source phase precedes every numeric argument cast.
-        let diagnostic = subjects[index].as_ref().map_or(0, |text| text.len());
+
         for position in 0..count {
-            let current = base
-                .checked_add(retained_values)
-                .and_then(|bytes| bytes.checked_add(diagnostic.checked_mul(2)?))
-                .ok_or_else(|| resource("window cast allowance overflow"))?;
-            self.check_bytes(current)?;
-            let old_payload = native_payload_bytes(&values[position])?
-                .checked_mul(2)
-                .ok_or_else(|| resource("window old cast payload overflow"))?;
             let value = std::mem::replace(&mut values[position], Datum::Null);
             let value = crate::scalar_function::native_numeric_batch_cast(
                 field,
@@ -207,28 +178,9 @@ impl NativeBatchHosts<'_> {
                 Ok(value) => value,
                 Err(error) => return self.native_failure(error),
             };
-            retained_values = retained_values
-                .checked_sub(old_payload)
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        native_payload_bytes(&values[position])
-                            .ok()?
-                            .checked_mul(2)?,
-                    )
-                })
-                .ok_or_else(|| resource("window cast ledger overflow"))?;
-            self.check_bytes(
-                base.checked_add(retained_values)
-                    .ok_or_else(|| resource("window cast retained bytes overflow"))?,
-            )?;
         }
         if index == 0 {
-            let SqlDemand::WindowArithmetic {
-                next,
-                left,
-                left_bytes,
-                ..
-            } = &mut self.slots[id.slot]
+            let SqlDemand::WindowArithmetic { next, left, .. } = &mut self.slots[id.slot]
                 .task
                 .as_mut()
                 .expect("validated window task")
@@ -239,7 +191,7 @@ impl NativeBatchHosts<'_> {
             *left = values;
             // Keep this conservative charge until the task completes; nested
             // row callbacks must not rescan an ancestor's complete vector.
-            *left_bytes = retained_values;
+
             *next = 1;
             return Ok(HostStep::NeedArg(HostArgRequest {
                 index: 1,
@@ -284,28 +236,9 @@ impl NativeBatchHosts<'_> {
             SqlBatchHostOperation::IntegerDivideWindowNative => tidb_ast::BinaryOp::IntDiv,
             _ => return Err(binding("window result operation differs")),
         };
-        let diagnostic_bytes = overflow_expressions
-            .iter()
-            .flatten()
-            .try_fold(0usize, |bytes, text| {
-                bytes
-                    .checked_add(text.len())
-                    .ok_or_else(|| resource("window diagnostic bytes overflow"))
-            })?
-            .checked_mul(2)
-            .ok_or_else(|| resource("window diagnostic allowance overflow"))?;
+
         let count = right.len();
-        let base = self
-            .retained_bytes()?
-            .checked_add(values_bytes(&right)?)
-            .ok_or_else(|| resource("window compute bytes overflow"))?;
-        self.check_bytes(
-            base.checked_add(array_bytes::<usize>(count + 1)?)
-                .and_then(|bytes| {
-                    bytes.checked_add(count.checked_mul(native_values::HANDLE_BYTES + 1)?)
-                })
-                .ok_or_else(|| resource("window output allowance overflow"))?,
-        )?;
+
         let mut output =
             ChunkedVecBytes::try_with_capacities(count, count * native_values::HANDLE_BYTES)
                 .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
@@ -313,15 +246,8 @@ impl NativeBatchHosts<'_> {
             .native_values
             .ok_or_else(|| binding("window result store missing"))?;
         let staged_integer = batch.output_integer && !batch.integer;
-        let mut staged_bytes = 0usize;
+
         for position in 0..count {
-            let current = base
-                .checked_add(staged_bytes)
-                .and_then(|bytes| bytes.checked_add(diagnostic_bytes))
-                .and_then(|bytes| bytes.checked_add(128))
-                .and_then(|bytes| bytes.checked_add(output.retained_heap_bytes()?))
-                .ok_or_else(|| resource("window output bytes overflow"))?;
-            self.check_bytes(current)?;
             let SqlDemand::WindowArithmetic { left, rows, .. } = &mut self.slots[id.slot]
                 .task
                 .as_mut()
@@ -337,10 +263,7 @@ impl NativeBatchHosts<'_> {
             let lhs = std::mem::replace(&mut left[position], Datum::Null);
             let rhs = std::mem::replace(&mut right[position], Datum::Null);
             let unsigned = arithmetic_unsigned(source_types);
-            let available = self
-                .max_retained_bytes
-                .checked_sub(current)
-                .ok_or_else(|| resource("window kernel allowance exhausted"))?;
+            let available = usize::MAX;
             let computed = if quotient::is_quotient(op) {
                 self.compute_quotient(&self.metadata[slot.index()], lhs, rhs, available)?
             } else {
@@ -415,17 +338,6 @@ impl NativeBatchHosts<'_> {
             // The generic integer consumer completes all arithmetic and
             // result coercions before it collects integer carriers.
             if staged_integer {
-                let charge = native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("window staged result payload overflow"))?;
-                self.check_bytes(
-                    current
-                        .checked_add(charge)
-                        .ok_or_else(|| resource("window staged result extent overflow"))?,
-                )?;
-                staged_bytes = staged_bytes
-                    .checked_add(charge)
-                    .ok_or_else(|| resource("window staged result ledger overflow"))?;
                 right[position] = value;
                 continue;
             }
@@ -440,17 +352,9 @@ impl NativeBatchHosts<'_> {
             } else {
                 value
             };
-            self.check_bytes(
-                current
-                    .checked_add(
-                        native_payload_bytes(&value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("window result payload overflow"))?,
-                    )
-                    .ok_or_else(|| resource("window result overlap overflow"))?,
-            )?;
-            let token = store.borrow_mut().insert_clone(
-                &value,
+
+            let token = store.borrow_mut().insert_owned(
+                value,
                 *output_role,
                 NativeValueOrigin {
                     node: *output_node,
@@ -461,11 +365,6 @@ impl NativeBatchHosts<'_> {
         }
         if staged_integer {
             for (position, value) in right.iter_mut().enumerate() {
-                let current = base
-                    .checked_add(staged_bytes)
-                    .and_then(|bytes| bytes.checked_add(output.retained_heap_bytes()?))
-                    .ok_or_else(|| resource("window integer collection extent overflow"))?;
-                self.check_bytes(current)?;
                 let bits = match crate::scalar_function::native_batch_integer_bits(
                     std::mem::replace(value, Datum::Null),
                 ) {
@@ -476,18 +375,12 @@ impl NativeBatchHosts<'_> {
                     bits,
                     result_type.is_unsigned(),
                 );
-                self.check_bytes(
-                    current
-                        .checked_add(native_payload_bytes(&value)?.checked_mul(2).ok_or_else(
-                            || resource("window integer collection payload overflow"),
-                        )?)
-                        .ok_or_else(|| resource("window integer collection overlap overflow"))?,
-                )?;
+
                 let SqlDemand::WindowArithmetic { rows, .. } = &self.task(id)?.demand else {
                     unreachable!()
                 };
-                let token = store.borrow_mut().insert_clone(
-                    &value,
+                let token = store.borrow_mut().insert_owned(
+                    value,
                     *output_role,
                     NativeValueOrigin {
                         node: *output_node,

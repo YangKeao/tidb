@@ -81,46 +81,33 @@ impl NativeBatchHosts<'_> {
                 )?;
             }
         }
-        let base = self.retained_bytes()?;
+
         let owned = if arity > 0 {
             let values = store.borrow();
             let origin = NativeValueOrigin {
                 node: arguments[0],
                 row,
             };
-            let value = values.get(token_for(0)?, NativeValueRole::CharInput, origin)?;
-            let charge = native_payload_bytes(value)?
-                .checked_mul(2)
-                .and_then(|n| base.checked_add(n))
-                .ok_or_else(|| resource("epoch first clone extent overflow"))?;
-            self.check_bytes(charge)?;
-            Some((
-                values.clone_for_kernel(token_for(0)?, NativeValueRole::CharInput, origin)?,
-                charge,
-            ))
+            values.get(token_for(0)?, NativeValueRole::CharInput, origin)?;
+
+            Some(values.clone_for_kernel(token_for(0)?, NativeValueRole::CharInput, origin)?)
         } else {
             None
         };
-        let live = owned.as_ref().map_or(base, |(_, n)| *n);
-        let remaining = self
-            .max_retained_bytes
-            .checked_sub(live)
-            .ok_or_else(|| resource("epoch work allowance exhausted"))?;
+
+        let remaining = usize::MAX;
         let result = if *from {
             crate::tikv::eval_from_unixtime_head_values_bounded(
                 self.context,
-                &owned
+                owned
                     .as_ref()
-                    .ok_or_else(|| binding("epoch conversion source lost"))?
-                    .0,
+                    .ok_or_else(|| binding("epoch conversion source lost"))?,
                 remaining,
             )
         } else {
             crate::tikv::eval_unix_timestamp_values_bounded(
                 self.context,
-                owned
-                    .as_ref()
-                    .map_or(&[] as &[Datum], |(v, _)| std::slice::from_ref(v)),
+                owned.as_ref().map_or(&[] as &[Datum], std::slice::from_ref),
                 remaining,
             )
         };
@@ -133,32 +120,22 @@ impl NativeBatchHosts<'_> {
             // The frame owns the source window throughout callbacks. Re-check
             // its original capability when the format is actually consumed;
             // no store borrow spans warning, zone, clock or truncate callbacks.
-            let local = native_payload_bytes(&result)?
-                .checked_mul(2)
-                .and_then(|n| base.checked_add(n))
-                .ok_or_else(|| resource("epoch local extent overflow"))?;
-            let (format, live) = {
+
+            let format = {
                 let values = store.borrow();
                 let origin = NativeValueOrigin {
                     node: arguments[1],
                     row,
                 };
-                let value = values.get(token_for(1)?, NativeValueRole::CharInput, origin)?;
-                let live = native_payload_bytes(value)?
-                    .checked_mul(2)
-                    .and_then(|n| local.checked_add(n))
-                    .ok_or_else(|| resource("epoch format clone extent overflow"))?;
-                self.check_bytes(live)?;
-                (
-                    values.clone_for_kernel(token_for(1)?, NativeValueRole::CharInput, origin)?,
-                    live,
-                )
+                values.get(token_for(1)?, NativeValueRole::CharInput, origin)?;
+
+                values.clone_for_kernel(token_for(1)?, NativeValueRole::CharInput, origin)?
             };
             let value = crate::tikv::eval_date_format_values_bounded(
                 self.context,
                 &result,
                 &format,
-                self.max_retained_bytes - live,
+                usize::MAX,
             );
             drop(format);
             drop(result);
@@ -168,36 +145,22 @@ impl NativeBatchHosts<'_> {
             };
         }
         if *from {
-            let live = native_payload_bytes(&result)?
-                .checked_mul(2)
-                .and_then(|n| base.checked_add(n))
-                .ok_or_else(|| resource("epoch result extent overflow"))?;
-            self.check_bytes(live)?;
             result = match crate::tikv::finish_from_unixtime_values_bounded(
                 self.context,
                 result,
                 result_type,
-                self.max_retained_bytes - live,
+                usize::MAX,
             ) {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             };
         }
-        let live = native_payload_bytes(&result)?
-            .checked_mul(2)
-            .and_then(|n| base.checked_add(n))
-            .ok_or_else(|| resource("epoch return-family extent overflow"))?;
-        self.check_bytes(live)?;
-        result = match crate::tikv::finish_epoch_result_bounded(
-            result,
-            result_type,
-            *from,
-            self.max_retained_bytes - live,
-        ) {
+
+        result = match crate::tikv::finish_epoch_result_bounded(result, result_type, *from) {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
         };
-        self.finish_native_value(id, result, *output_node, *output_role, row, base)
+        self.finish_native_value(id, result, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
 }

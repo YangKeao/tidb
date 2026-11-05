@@ -426,7 +426,7 @@ fn pb_unary_source_direct_profiles_and_same_cap_recovery() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 16 * 1024;
+
         let bad = input(&Some(vec![3; 2051]));
         let mut prefix = output_for(&ty);
         prefix.append_null(0);
@@ -440,30 +440,36 @@ fn pb_unary_source_direct_profiles_and_same_cap_recovery() {
         assert_eq!(prefix.num_rows(), 1);
         assert_eq!(prepared.workers[0].selection.capacity(), 0);
         let mut ctx = RegexpSourceContext::new(true, [Datum::Int(4), Datum::Null, Datum::Null], 0);
-        // A real eligible input domain, with enough occurrences to exceed
-        // the finite vector storage policy before publication.
+        // A large real selection executes normally without a Demo storage cap.
         let mut a = input(&Some(vec![0; 2051]));
         let mut output = output_for(&ty);
         output.append_null(0);
-        let failure = prepared
-            .run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut a,
-                &mut output,
-                &[string_ty()],
-            )
-            .unwrap_err();
-        assert!(
-            matches!(failure.local_error(), Some(LocalError::ResourceLimit(_))),
-            "{name}: {failure:?}"
-        );
-        assert_eq!(output.num_rows(), 1);
+        let native = RegexpSourceContext::new(true, ctx.base.values.clone(), 0);
+        let mut original_input = input(&Some(vec![0; 2051]));
+        let mut original_output = output_for(&ty);
+        original_output.append_null(0);
+        let expected = original_session_read_outcome(|| {
+            owner.run(&native, &mut original_input, &mut original_output)
+        });
+        let got = session_read_outcome(|| {
+            prepared
+                .run(
+                    &owner,
+                    &ctx,
+                    &mut EvalContext::default(),
+                    &mut a,
+                    &mut output,
+                    &[string_ty()],
+                )
+                .map_err(BatchFailure::into_evaluator_error)
+        });
+        assert_eq!(got, expected, "large unary/{name}");
+        assert_eq!(output.column(0), original_output.column(0));
+        assert_eq!(ctx.snapshot(), native.snapshot());
         assert_eq!(
             prepared.workers[0].selection.capacity(),
             0,
-            "refusal must precede growth"
+            "physical selection is shared"
         );
         for value in [Datum::Null, Datum::Int(4)] {
             ctx.base.values[0] = value;
@@ -495,10 +501,6 @@ fn pb_unary_source_direct_profiles_and_same_cap_recovery() {
             assert_eq!(got, expected, "{name}/recovery");
             assert_eq!(right.column(0), left.column(0));
             assert_eq!(ctx.snapshot(), old.snapshot(), "{name}/recovery");
-            assert_eq!(
-                prepared.workers[0].max_materialization_retained_bytes,
-                16 * 1024
-            );
         }
     }
 }
@@ -556,7 +558,7 @@ fn pb_unary_source_scope_callback_auth_and_cleanup() {
         }
     }
     for mode in 0..3 {
-        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+        let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let ctx = C {
             store: &store,
@@ -564,10 +566,9 @@ fn pb_unary_source_scope_callback_auth_and_cleanup() {
             mode,
             calls: Cell::new(0),
         };
-        let mut hosts =
-            NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &ctx, 64 * 1024)
-                .with_native_values(Some(&store))
-                .with_constant_probes(&source.host_probes);
+        let mut hosts = NativeBatchHosts::new(catalog.clone(), &source.host_metadata, &ctx)
+            .with_native_values(Some(&store))
+            .with_constant_probes(&source.host_probes);
         let mut eval = EvalContext::default();
         let row = InputRow {
             occurrence: 7,
@@ -599,7 +600,7 @@ fn pb_unary_source_scope_callback_auth_and_cleanup() {
                 },
             )
             .unwrap();
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
         struct Cancel<'a, 'b> {
             hosts: &'a mut NativeBatchHosts<'b>,
             task: &'a tidb_query_expr::local::HostTaskId,

@@ -232,7 +232,6 @@ pub(super) fn projected_type(
 enum Step<'a> {
     Visit {
         node: &'a Expression,
-        depth: usize,
         needs_origin: bool,
     },
     Call {
@@ -248,15 +247,10 @@ pub(crate) fn lower_int_control_seed(
     new_collation: bool,
     limits: CompileLimits,
 ) -> SeedResult<Arc<LoweredSpec>> {
-    if limits.max_nodes == 0 || limits.max_depth == 0 {
-        return Err(LocalError::ResourceLimit("empty lowering node/depth budget".into()).into());
-    }
     let mut pending = vec![Step::Visit {
         node: root,
-        depth: 1,
         needs_origin: false,
     }];
-    let mut enqueued = 1usize;
     let mut built = Vec::new();
     let mut nodes = Vec::new();
     let mut bindings = Vec::new();
@@ -280,16 +274,7 @@ pub(crate) fn lower_int_control_seed(
                     metadata: CallMetadata::None,
                 });
             }
-            Step::Visit {
-                node,
-                depth,
-                needs_origin,
-            } => {
-                if depth > limits.max_depth {
-                    return Err(
-                        LocalError::ResourceLimit("lowering depth budget exceeded".into()).into(),
-                    );
-                }
+            Step::Visit { node, needs_origin } => {
                 let (sql, collation) = match node {
                     Expression::Constant(node) => (node.ret_type.as_ref(), &node.collation),
                     Expression::Column(node) => (node.ret_type.as_ref(), &node.collation),
@@ -367,12 +352,6 @@ pub(crate) fn lower_int_control_seed(
                     }
                     Expression::ScalarFunction(function) => {
                         let selected = catalog::int_control(function)?;
-                        enqueued = enqueued
-                            .checked_add(function.args.len())
-                            .filter(|count| *count <= limits.max_nodes)
-                            .ok_or_else(|| {
-                                LocalError::ResourceLimit("lowering node budget exceeded".into())
-                            })?;
                         pending.push(Step::Call {
                             function: selected,
                             arity: function.args.len(),
@@ -381,7 +360,6 @@ pub(crate) fn lower_int_control_seed(
                         for child in function.args.iter().rev() {
                             pending.push(Step::Visit {
                                 node: child,
-                                depth: depth + 1,
                                 needs_origin: needs_origin || wire.is_some(),
                             });
                         }

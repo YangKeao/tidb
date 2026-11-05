@@ -25,7 +25,7 @@ fn string_error(e: tidb_query_expr::NativeStringCoercionError) -> EvalError {
     }
 }
 fn work(max: usize, n: usize) -> Result<(), EvalError> {
-    if max == usize::MAX || n > max {
+    if n > max {
         Err(error(E::Resource))
     } else {
         Ok(())
@@ -303,7 +303,6 @@ pub(crate) fn finish_epoch_result_bounded(
     value: Datum,
     field: &tidb_datatype::FieldType,
     from: bool,
-    maximum: usize,
 ) -> Result<Datum, EvalError> {
     super::control_value::coerce_result_bounded(
         if from {
@@ -313,6 +312,5 @@ pub(crate) fn finish_epoch_result_bounded(
         },
         field,
         value,
-        maximum,
     )
 }

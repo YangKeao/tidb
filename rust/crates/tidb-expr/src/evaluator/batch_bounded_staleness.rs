@@ -68,12 +68,11 @@ impl NativeBatchHosts<'_> {
             first.as_ref().expect("retained bounded source").as_slice(),
             token,
         ];
-        let base = self.retained_bytes()?;
-        let mut live = base;
+
         {
             let values = store.borrow();
             for i in 0..2 {
-                let value = values.get(
+                values.get(
                     tokens[i],
                     NativeValueRole::CharInput,
                     NativeValueOrigin {
@@ -81,16 +80,9 @@ impl NativeBatchHosts<'_> {
                         row,
                     },
                 )?;
-                live = live
-                    .checked_add(
-                        native_payload_bytes(value)?
-                            .checked_mul(2)
-                            .ok_or_else(|| resource("bounded clone allowance overflow"))?,
-                    )
-                    .ok_or_else(|| resource("bounded source extent overflow"))?;
             }
         }
-        self.check_bytes(live)?;
+
         let mut owned = {
             let values = store.borrow();
             let get = |i: usize| {
@@ -107,7 +99,7 @@ impl NativeBatchHosts<'_> {
         };
         // All heap ownership is bounded and detached before any original cast,
         // warning or SafeTS callback can access the store or statement context.
-        let remaining = self.max_retained_bytes - live;
+        let remaining = usize::MAX;
         if let Err(error) = crate::tikv::bounded_staleness_cast_arguments(
             self.context,
             &mut owned,
@@ -132,13 +124,10 @@ impl NativeBatchHosts<'_> {
         };
         if let Some(role) = output_role {
             return self
-                .finish_native_value(id, value, *output_node, *role, row, base)
+                .finish_native_value(id, value, *output_node, *role, row)
                 .map(HostStep::Ready);
         }
-        self.check_bytes(
-            base.checked_add(128)
-                .ok_or_else(|| resource("bounded time publication overflow"))?,
-        )?;
+
         let value = match value {
             Datum::Null => None,
             Datum::Time(value) => Some(TikvDateTime::from_go_raw_like_go(value.go_raw())),

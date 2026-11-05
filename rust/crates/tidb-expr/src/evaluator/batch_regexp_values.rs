@@ -28,6 +28,7 @@ impl RegexpTask {
             Self::Flags { .. } => Some(2),
         }
     }
+    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> LocalResult<usize> {
         let bytes = match self {
             Self::Pattern(text) => text.capacity(),
@@ -97,31 +98,15 @@ impl NativeBatchHosts<'_> {
                 mode: ArgMode::Fresh,
             }));
         }
-        let base = self.retained_bytes()?;
-        let copied = {
+
+        {
             let values = store.borrow();
-            let mut bytes = native_payload_bytes(values.get(
-                token,
-                NativeValueRole::CharInput,
-                origin(index),
-            )?)?;
+            values.get(token, NativeValueRole::CharInput, origin(index))?;
             if let Some(first) = raw_first.filter(|_| !is_null) {
-                bytes = bytes
-                    .checked_add(native_payload_bytes(values.get(
-                        &first,
-                        NativeValueRole::CharInput,
-                        origin(0),
-                    )?)?)
-                    .ok_or_else(|| resource("regexp input extent overflow"))?;
+                values.get(&first, NativeValueRole::CharInput, origin(0))?;
             }
-            bytes
-                .checked_mul(2)
-                .ok_or_else(|| resource("regexp clone allowance overflow"))?
-        };
-        let live = base
-            .checked_add(copied)
-            .ok_or_else(|| resource("regexp live extent overflow"))?;
-        self.check_bytes(live)?;
+        }
+
         let demand = std::mem::replace(
             &mut self.slots[id.slot]
                 .task
@@ -144,45 +129,40 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let maximum = self.max_retained_bytes - live;
+
         let value =
             store
                 .borrow()
                 .clone_for_kernel(token, NativeValueRole::CharInput, origin(index))?;
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-            crate::scalar_function::eager_values::audit_work_result(
-                (|| -> std::result::Result<Option<(String, String, String)>, EvalError> {
-                    if meta.operator {
-                        if value.is_null() {
-                            return Ok(None);
-                        }
-                        let RegexpTask::RawPattern(first) = &*state else {
-                            unreachable!()
-                        };
-                        let text = store
-                            .borrow()
-                            .clone_for_kernel(first, NativeValueRole::CharInput, origin(0))
-                            .map_err(|error| {
-                                EvalError::ExpressionRuntimeFailure(
-                                    crate::tikv::ExpressionRuntimeFailure::from_local_eval(
-                                        error, None,
-                                    ),
-                                )
-                            })?;
-                        let (text, pattern) =
-                            crate::scalar_function::regexp_value::operator_strings(&text, &value)?;
-                        return Ok(Some((text, pattern, String::new())));
+        let result = (|| {
+            (|| -> std::result::Result<Option<(String, String, String)>, EvalError> {
+                if meta.operator {
+                    if value.is_null() {
+                        return Ok(None);
                     }
-                    let result = crate::scalar_function::regexp_value::named_string(
-                        value,
-                        meta.source_types[index].as_ref(),
-                        self.context,
-                    );
-                    crate::scalar_function::eager_values::audit_work_result(result)
-                        .map(|value| value.map(|value| (String::new(), String::new(), value)))
-                })(),
-            )
-        });
+                    let RegexpTask::RawPattern(first) = &*state else {
+                        unreachable!()
+                    };
+                    let text = store
+                        .borrow()
+                        .clone_for_kernel(first, NativeValueRole::CharInput, origin(0))
+                        .map_err(|error| {
+                            EvalError::ExpressionRuntimeFailure(
+                                crate::tikv::ExpressionRuntimeFailure::from_local_eval(error, None),
+                            )
+                        })?;
+                    let (text, pattern) =
+                        crate::scalar_function::regexp_value::operator_strings(&text, &value)?;
+                    return Ok(Some((text, pattern, String::new())));
+                }
+                let result = crate::scalar_function::regexp_value::named_string(
+                    value,
+                    meta.source_types[index].as_ref(),
+                    self.context,
+                );
+                result.map(|value| value.map(|value| (String::new(), String::new(), value)))
+            })()
+        })();
         check_tokens()?;
         let result = match result {
             Ok(result) => result,
@@ -202,7 +182,7 @@ impl NativeBatchHosts<'_> {
                                 .expect("live regexp task")
                                 .demand =
                                 SqlDemand::RegexpValues(Box::new(RegexpTask::Pattern(value)));
-                            self.check_bytes(self.retained_bytes()?)?;
+
                             return Ok(HostStep::NeedArg(HostArgRequest {
                                 index: 1,
                                 mode: ArgMode::Fresh,
@@ -217,7 +197,7 @@ impl NativeBatchHosts<'_> {
                                 text,
                                 pattern: value,
                             }));
-                            self.check_bytes(self.retained_bytes()?)?;
+
                             return Ok(HostStep::NeedArg(HostArgRequest {
                                 index: 2,
                                 mode: ArgMode::Fresh,
@@ -245,11 +225,7 @@ impl NativeBatchHosts<'_> {
             .ready_preparation
             .as_ref()
             .map(|guard| guard.cache());
-        let result = tidb_query_expr::local::with_value_kernel_work_limit(maximum, || {
-            crate::scalar_function::eager_values::audit_work_result(
-                crate::tikv::evaluate_closed_regexp_args(cache, args),
-            )
-        });
+        let result = (|| crate::tikv::evaluate_closed_regexp_args(cache, args))();
         check_tokens()?;
         let value = match result {
             Ok(value) => value,
@@ -260,35 +236,19 @@ impl NativeBatchHosts<'_> {
         } else {
             value
         };
-        let held = base
-            .checked_add(
-                native_payload_bytes(&value)?
-                    .checked_mul(2)
-                    .ok_or_else(|| resource("regexp result allowance overflow"))?,
-            )
-            .ok_or_else(|| resource("regexp result extent overflow"))?;
-        self.check_bytes(held)?;
+
         let name = if meta.operator {
             "regexp"
         } else {
             "regexp_like"
         };
-        let value = match coerce_optional_value_result(
-            name,
-            meta.result_type.as_ref(),
-            value,
-            self.max_retained_bytes - held,
-        ) {
+        let value = match coerce_optional_value_result(name, meta.result_type.as_ref(), value) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
         let value = if meta.integer_batch_result {
-            let result = present_integer_batch_value(
-                value,
-                meta.result_type.as_ref(),
-                self.context,
-                self.max_retained_bytes - held,
-            );
+            let result =
+                present_integer_batch_value(value, meta.result_type.as_ref(), self.context);
             check_tokens()?;
             match result {
                 Ok(value) => value,
@@ -298,7 +258,7 @@ impl NativeBatchHosts<'_> {
             value
         };
         check_tokens()?;
-        self.finish_native_value(id, value, meta.output_node, meta.output_role, row, base)
+        self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
     }
 }

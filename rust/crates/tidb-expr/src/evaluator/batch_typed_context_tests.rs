@@ -161,9 +161,9 @@ fn typed_context_runtime_preserves_public_domains_deferred_priority_and_callback
                         })];
                         let ctx = proof::Context::new(profile, vec![value.clone()]);
                         let old = proof::Context::new(profile, vec![value.clone()]);
-                        let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+                        let store = RefCell::new(NativeValueStore::new().unwrap());
                         store.borrow_mut().begin_window().unwrap();
-                        let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 1 << 20)
+                        let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx)
                             .with_native_values(Some(&store));
                         let input = leaf::input(true);
                         let row = InputRow {
@@ -237,8 +237,8 @@ fn typed_context_runtime_caches_each_bulk_source_across_windows_and_keeps_row_re
         let script = vec![Datum::Int(7), Datum::Int(9), Datum::Int(11)];
         let ctx = proof::Context::new(0, script.clone());
         let old = proof::Context::new(0, script);
-        let store = RefCell::new(NativeValueStore::new(65536).unwrap());
-        let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx, 65536)
+        let store = RefCell::new(NativeValueStore::new().unwrap());
+        let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx)
             .with_native_values(Some(&store))
             .with_typed_cache_slots(usize::from(cached))
             .unwrap();
@@ -335,7 +335,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
         output_node: 0,
         output_role: NativeValueRole::CharInput,
     })];
-    let store = RefCell::new(NativeValueStore::new(1 << 20).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let ctx = C {
         store: &store,
@@ -343,7 +343,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
         events: RefCell::new(vec![]),
     };
     let mut provider =
-        NativeBatchHosts::new(catalog, &metadata, &ctx, 65536).with_native_values(Some(&store));
+        NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
     let row = InputRow {
         occurrence: 7,
         input_row: 2,
@@ -375,7 +375,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
     };
     let task = start(&mut provider, &mut eval);
     let valid = insert(1, row, NativeValueRole::CharInput, &Datum::Int(7));
-    let mut foreign = NativeValueStore::new(4096).unwrap();
+    let mut foreign = NativeValueStore::new().unwrap();
     foreign.begin_window().unwrap();
     let foreign = foreign
         .insert_clone(
@@ -407,7 +407,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
             &Datum::Int(7),
         ),
     ] {
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
         assert!(provider
             .resume(
                 &mut eval,
@@ -433,7 +433,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
             }
         )
         .is_err());
-    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(valid)), 1);
+    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(valid.to_vec())), 1);
     let HostStep::Ready(_) = provider
         .resume(
             &mut eval,
@@ -465,7 +465,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
         ctx.action.set(action);
         let task = start(&mut provider, &mut eval);
         let token = insert(1, row, NativeValueRole::CharInput, &Datum::Int(7));
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             provider.resume(
                 &mut eval,
@@ -500,7 +500,7 @@ fn typed_context_runtime_authenticates_consumes_callbacks_and_recovers() {
         provider.cancel(&task);
         let next = start(&mut provider, &mut eval);
         let token = insert(1, row, NativeValueRole::CharInput, &Datum::Null);
-        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+        let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
         let HostStep::Ready(values) = provider
             .resume(
                 &mut eval,
@@ -557,14 +557,14 @@ fn typed_context_runtime_forward_ignores_wrapper_type_and_parameter_and_keeps_re
         output_role: NativeValueRole::CharInput,
     })];
     let ctx = leaf::Context::new(2, Datum::Int(99));
-    let store = RefCell::new(NativeValueStore::new(65536).unwrap());
+    let store = RefCell::new(NativeValueStore::new().unwrap());
     store.borrow_mut().begin_window().unwrap();
     let row = InputRow {
         occurrence: 5,
         input_row: 2,
     };
     let mut provider =
-        NativeBatchHosts::new(catalog, &metadata, &ctx, 65536).with_native_values(Some(&store));
+        NativeBatchHosts::new(catalog, &metadata, &ctx).with_native_values(Some(&store));
     let mut eval = EvalContext::default();
     let HostStart::Pending { task, .. } = provider
         .start(
@@ -588,7 +588,7 @@ fn typed_context_runtime_forward_ignores_wrapper_type_and_parameter_and_keeps_re
             NativeValueOrigin { node: 1, row },
         )
         .unwrap();
-    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token)), 1);
+    let values = VectorValue::from_scalar(&ScalarValue::Bytes(Some(token.to_vec())), 1);
     let HostStep::Ready(values) = provider
         .resume(
             &mut eval,
@@ -664,8 +664,8 @@ fn prepared_batch_values(
         output_node: 0,
         output_role: NativeValueRole::CharInput,
     })];
-    let store = RefCell::new(NativeValueStore::new(1 << 24).unwrap());
-    let mut provider = NativeBatchHosts::new(catalog, &metadata, ctx, 1 << 20)
+    let store = RefCell::new(NativeValueStore::new().unwrap());
+    let mut provider = NativeBatchHosts::new(catalog, &metadata, ctx)
         .with_native_values(Some(&store))
         .with_input(input)
         .with_typed_cache_slots(usize::from(cache))

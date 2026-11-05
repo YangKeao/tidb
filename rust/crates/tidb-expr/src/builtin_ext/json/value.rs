@@ -73,12 +73,6 @@ pub(super) fn json_document_string(value: &Datum) -> Result<Option<Cow<'_, str>>
 }
 
 pub(crate) fn cast_as_json(value: &Datum) -> Result<Datum, EvalError> {
-    // Decimal's original JSON numeric path formats visible scale before f64.
-    // Strict numeric rejection below has no such demand and stays uncharged.
-    if matches!(value, Datum::Decimal(_)) {
-        crate::scalar_function::eager_values::charge_string_work(value)?;
-    }
-
     cast_result(crate::tikv::native_cast_as_json(
         value.as_shared_json_input(),
     ))
@@ -94,12 +88,6 @@ pub(crate) fn cast_as_json_typed(
     value: &Datum,
     field_type: Option<&FieldType>,
 ) -> Result<Datum, EvalError> {
-    // Decimal's original JSON numeric path formats visible scale before f64.
-    // Strict numeric rejection below has no such demand and stays uncharged.
-    if matches!(value, Datum::Decimal(_)) {
-        crate::scalar_function::eager_values::charge_string_work(value)?;
-    }
-
     cast_result(crate::tikv::native_cast_as_json_typed(
         value.as_shared_json_input(),
         source(field_type),
@@ -110,12 +98,6 @@ pub(crate) fn cast_as_json_value_typed(
     value: &Datum,
     field_type: Option<&FieldType>,
 ) -> Result<Datum, EvalError> {
-    // Decimal's original JSON numeric path formats visible scale before f64.
-    // Strict numeric rejection below has no such demand and stays uncharged.
-    if matches!(value, Datum::Decimal(_)) {
-        crate::scalar_function::eager_values::charge_string_work(value)?;
-    }
-
     cast_result(crate::tikv::native_cast_as_json_value_typed(
         value.as_shared_json_input(),
         source(field_type),
@@ -156,34 +138,16 @@ pub(super) fn json_argument(
     string: StringArgument,
     field_type: Option<&FieldType>,
 ) -> Result<Json, EvalError> {
-    // Decimal's original JSON numeric path formats visible scale before f64.
-    // Strict numeric rejection below has no such demand and stays uncharged.
-    if matches!(value, Datum::Decimal(_)) {
-        crate::scalar_function::eager_values::charge_string_work(value)?;
-    }
-
     crate::tikv::native_json_argument(value.as_shared_json_input(), string, source(field_type))
         .map_err(coercion_error)
 }
 
 pub(crate) fn parse_json_document_argument(value: &Datum) -> Result<Option<Json>, EvalError> {
-    // Decimal's original JSON numeric path formats visible scale before f64.
-    // Strict numeric rejection below has no such demand and stays uncharged.
-    if matches!(value, Datum::Decimal(_)) {
-        crate::scalar_function::eager_values::charge_string_work(value)?;
-    }
-
     crate::tikv::native_parse_json_document_argument(value.as_shared_json_input())
         .map_err(coercion_error)
 }
 
 pub(crate) fn json_document_text_argument(value: &Datum) -> Result<Option<String>, EvalError> {
-    // Decimal's original JSON numeric path formats visible scale before f64.
-    // Strict numeric rejection below has no such demand and stays uncharged.
-    if matches!(value, Datum::Decimal(_)) {
-        crate::scalar_function::eager_values::charge_string_work(value)?;
-    }
-
     crate::tikv::native_json_document_text_argument(value.as_shared_json_input())
         .map_err(coercion_error)
 }

@@ -249,23 +249,31 @@ fn recovery_records(cached: bool) -> Vec<String> {
     let oversized = Arc::new(call(
         "coalesce",
         ty(),
-        (0..CompileLimits::default().max_nodes)
+        (0..512)
             .map(|_| leaf::expression("param", 0, &Datum::Null, Some(&ty()), None))
             .collect(),
     ));
     let context = leaf::Context::new(2, Datum::Int(7));
-    let error = cache
-        .with_columns(&context, |bound| {
-            if cached {
-                cache.eval_owned_expression(&oversized, bound, Row::empty())
-            } else {
-                oversized.eval(bound, Row::empty())
-            }
-        })
-        .unwrap_err();
-    assert!(matches!(error, EvalError::ExpressionRuntimeFailure(error)
-        if error.class() == crate::ExpressionRuntimeFailureClass::ResourceLimit));
-    assert_eq!(context.calls.get(), 0, "metadata work demanded a parameter");
+    let observation = leaf::observe(
+        || {
+            cache.with_columns(&context, |bound| {
+                let result = if cached {
+                    cache.eval_owned_expression(&oversized, bound, Row::empty())
+                } else {
+                    oversized.eval(bound, Row::empty())
+                };
+                result.map_err(|error| (Datum::Null, error))
+            })
+        },
+        &context,
+    );
+    assert!(observation.contains("dynamic parameter callback"));
+    assert_eq!(
+        context.calls.get(),
+        1,
+        "a demanded callback must not replay after unwind"
+    );
+    records.push(observation);
     let constant = Arc::new(int(7));
     let result = cache.with_columns(&context, |bound| {
         if cached {

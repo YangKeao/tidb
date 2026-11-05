@@ -1414,8 +1414,7 @@ fn pb_cast_source_direct_consumers_and_fixed_cap_recovery() {
                     );
                 }
             }
-            // Match this real caller result to the selected target for fixed-cap recovery.
-            // A separately tested mismatched return intentionally needs formatter allowance.
+            // Match the selected target and compare a large batch before same-owner reuse.
             let owner = make(sig, 1, result_code(sig), None, "wire display", 1, &values);
             let ty = output_type(&owner);
             let mut prepared = PreparedBatchSuite::compile(
@@ -1428,26 +1427,33 @@ fn pb_cast_source_direct_consumers_and_fixed_cap_recovery() {
                 1 << 20,
             )
             .unwrap();
-            prepared.workers[0].max_materialization_retained_bytes = 64 * 1024;
+
             let mut first = input(&Some(vec![0; 8193]));
             let mut output = output_for(&ty);
             output.append_null(0);
             let ctx = C::new(true, values.clone(), 0);
-            let failure = prepared
-                .run(
-                    &owner,
-                    &ctx,
-                    &mut EvalContext::default(),
-                    &mut first,
-                    &mut output,
-                    &[string_ty()],
-                )
-                .unwrap_err();
-            assert!(
-                matches!(failure.local_error(), Some(LocalError::ResourceLimit(_))),
-                "{sig:?}/{failure:?}"
-            );
-            assert_eq!(output.num_rows(), 1);
+            let native = C::new(true, values.clone(), 0);
+            let mut original_input = input(&Some(vec![0; 8193]));
+            let mut original_output = output_for(&ty);
+            original_output.append_null(0);
+            let expected = original_session_read_outcome(|| {
+                owner.run(&native, &mut original_input, &mut original_output)
+            });
+            let got = session_read_outcome(|| {
+                prepared
+                    .run(
+                        &owner,
+                        &ctx,
+                        &mut EvalContext::default(),
+                        &mut first,
+                        &mut output,
+                        &[string_ty()],
+                    )
+                    .map_err(BatchFailure::into_evaluator_error)
+            });
+            assert_eq!(got, expected, "large PB CAST/{sig:?}");
+            assert_eq!(output.column(0), original_output.column(0));
+            assert_eq!(ctx.snapshot(), native.snapshot());
             for null in [true, false, true] {
                 let mut values = values.clone();
                 if null && !values.is_empty() {
@@ -1477,10 +1483,6 @@ fn pb_cast_source_direct_consumers_and_fixed_cap_recovery() {
                 assert_eq!(got, expected, "recovery/{sig:?}/{null}");
                 assert_eq!(right.column(0), left.column(0));
                 assert_eq!(new.snapshot(), old.snapshot());
-                assert_eq!(
-                    prepared.workers[0].max_materialization_retained_bytes,
-                    64 * 1024
-                );
             }
         }
     });
@@ -1632,19 +1634,14 @@ fn pb_cast_source_fixed_cap_matches_original_mismatched_return_guard() {
             )
             .unwrap();
         assert!(matches!(raw, Datum::Duration(_)));
-        // Original raw value plus the existing bounded return guard is independent
-        // of the new caller's materialization ledger. This is a finite policy test,
-        // not an assertion of success equivalence with an uncapped original caller.
-        let rejected = crate::tikv::identity_actual::coerce_result(
+        // Keep the ordinary native return-family conversion after removing Demo work limits.
+        let converted = crate::tikv::identity_actual::coerce_result(
             function.func_name.lowercase(),
             function.get_static_type().unwrap(),
             raw,
-            64 * 1024,
         )
-        .unwrap_err();
-        assert!(
-            matches!(rejected,EvalError::ExpressionRuntimeFailure(e) if e.class()==crate::ExpressionRuntimeFailureClass::ResourceLimit)
-        );
+        .unwrap();
+        assert_eq!(converted, Datum::Int(4));
         let mut prepared = PreparedBatchSuite::compile(
             &owner,
             &[string_ty()],
@@ -1655,37 +1652,48 @@ fn pb_cast_source_fixed_cap_matches_original_mismatched_return_guard() {
             1 << 20,
         )
         .unwrap();
-        prepared.workers[0].max_materialization_retained_bytes = 64 * 1024;
+
         for null in [false, true, false, true] {
             let values = if null {
                 vec![Datum::Null]
             } else {
                 values.clone()
             };
-            let ctx = C::new(true, values, 0);
+            let ctx = C::new(true, values.clone(), 0);
+            let native = C::new(true, values, 0);
             let mut i = input(&None);
             let ty = output_type(&owner);
             let mut o = output_for(&ty);
             o.append_null(0);
-            let got = prepared.run(
-                &owner,
-                &ctx,
-                &mut EvalContext::default(),
-                &mut i,
-                &mut o,
-                &[string_ty()],
-            );
-            if null {
-                assert!(got.is_ok());
-                assert_eq!(o.num_rows(), 4);
-            } else {
-                assert_eq!(got.unwrap_err().refusal(), BatchRefusal::Resource);
-                assert_eq!(o.num_rows(), 1);
+            let mut original_input = input(&None);
+            let mut original_output = output_for(&ty);
+            original_output.append_null(0);
+            let expected = original_session_read_outcome(|| {
+                owner.run(&native, &mut original_input, &mut original_output)
+            });
+            let got = session_read_outcome(|| {
+                prepared
+                    .run(
+                        &owner,
+                        &ctx,
+                        &mut EvalContext::default(),
+                        &mut i,
+                        &mut o,
+                        &[string_ty()],
+                    )
+                    .map_err(BatchFailure::into_evaluator_error)
+            });
+            assert_eq!(got, expected);
+            assert_eq!(o.column(0), original_output.column(0));
+            assert_eq!(ctx.snapshot(), native.snapshot());
+            assert_eq!(o.num_rows(), 4);
+            for row in 1..4 {
+                if null {
+                    assert!(o.column(0).is_null(row));
+                } else {
+                    assert_eq!(o.column(0).get_int64(row), 4);
+                }
             }
-            assert_eq!(
-                prepared.workers[0].max_materialization_retained_bytes,
-                64 * 1024
-            );
         }
     });
 }

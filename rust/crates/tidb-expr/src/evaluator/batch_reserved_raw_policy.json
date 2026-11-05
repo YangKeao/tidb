@@ -1,0 +1,150 @@
+[
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/0/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/1/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/2/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/3/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/4/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/5/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/6/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/6/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/6/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/6/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask0/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask0/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask1/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask1/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask2/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask2/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask4/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask4/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ],
+  [
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask7/110/1|Err(ExpressionRuntimeFailure(ExpressionRuntimeFailure { class: ResourceLimit, phase: None }))|0:0|[]",
+    "reserved-prefix-raw/date_add_second_microsecond/7/mask7/110/1|PANIC:Some(\"decimal coefficients are ASCII digits: Utf8Error { valid_up_to: 1, error_len: Some(1) }\")|0:0|[]"
+  ]
+]

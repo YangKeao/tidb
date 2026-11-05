@@ -699,10 +699,14 @@ fn plus_profile_snapshot_and_limits_are_checked() {
             max_depth: 2,
         },
     ] {
-        assert!(matches!(
-            lower_typed_int_plus_row(&expression, &[bigint()], true, 7, limits),
-            Err(SeedError::Local(LocalError::ResourceLimit(_)))
-        ));
+        let spec = lower_typed_int_plus_row(&expression, &[bigint()], true, 7, limits).unwrap();
+        let mut raw = Raw::new(&spec, vec![vec![Datum::Int(1)]]);
+        let result = PreparedIntPlusRow::compile(spec, ExecutionLimits::default())
+            .unwrap()
+            .eval_test_native(&mut EvalContext::default(), 1, &[0], &mut raw)
+            .unwrap();
+        assert_eq!(result, vec![Datum::Int(2)]);
+        assert_eq!(raw.reads.len(), 1);
     }
     assert!(lower_typed_int_plus_row(
         &expression,
@@ -725,11 +729,26 @@ fn plus_profile_snapshot_and_limits_are_checked() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        program.eval_test_native(&mut EvalContext::default(), 1, &[0], &mut raw),
-        Err(SeedError::Local(LocalError::ResourceLimit(_)))
-    ));
-    assert!(raw.reads.is_empty());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| program.eval_test_native(
+            &mut EvalContext::default(),
+            1,
+            &[0],
+            &mut raw
+        )))
+        .is_err()
+    );
+    assert_eq!(raw.reads.len(), 1);
+    assert_eq!(raw.reads[0].0, 0);
+    raw.poison = None;
+    raw.reads.clear();
+    assert_eq!(
+        program
+            .eval_test_native(&mut EvalContext::default(), 1, &[0], &mut raw)
+            .unwrap(),
+        vec![Datum::Int(2)]
+    );
+    assert_eq!(raw.reads.len(), 1);
     for depth in [33, 64] {
         let mut expression = column(0);
         for _ in 0..depth {

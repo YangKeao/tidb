@@ -43,11 +43,10 @@ impl NativeBatchHosts<'_> {
                         task,
                         [left, right],
                         unsigned,
-                        available,
                         auth,
                     );
                 }
-                return self.numeric_result(slot, task, result, available, auth);
+                return self.numeric_result(slot, task, result, auth);
             }
             pair => pair,
         };
@@ -94,7 +93,7 @@ impl NativeBatchHosts<'_> {
                             ));
                         }
                     }
-                    return self.numeric_result(slot, task, result, available, auth);
+                    return self.numeric_result(slot, task, result, auth);
                 }
                 IntegerDivisionStep::Operand {
                     index,
@@ -133,9 +132,7 @@ impl NativeBatchHosts<'_> {
                                 Ok(step) => step,
                                 Err(error) => return Ok(Transition::Failure(error)),
                             };
-                            match self
-                                .numeric_diagnostic_step(task, diag, first, slot, available, auth)?
-                            {
+                            match self.numeric_diagnostic_step(task, diag, first, slot, auth)? {
                                 DiagnosticTransition::Need(task) => {
                                     return Ok(Transition::Need(task))
                                 }
@@ -165,18 +162,8 @@ impl NativeBatchHosts<'_> {
         task: Box<NumericTask>,
         values: [tidb_datatype::Decimal; 2],
         unsigned: bool,
-        available: usize,
         auth: &NumericAuthentication<'_>,
     ) -> LocalResult<Transition> {
-        let payload = values
-            .iter()
-            .try_fold(std::mem::size_of::<NumericDiagnostic>(), |n, value| {
-                n.checked_add(value.coefficient_bytes().len().checked_mul(2)?)
-            })
-            .ok_or_else(|| resource("DIV diagnostic actual-value extent overflow"))?;
-        let allowance = available
-            .checked_sub(payload)
-            .ok_or_else(|| resource("DIV diagnostic values exceed allowance"))?;
         let parent = self
             .numeric_parent(slot)
             .ok_or_else(|| binding("DIV diagnostic parent absent"))?;
@@ -184,9 +171,7 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         let mut state = plan.state();
-        let step = tidb_query_expr::local::with_value_kernel_work_limit(allowance, || {
-            plan.step(&mut state, Some(&values[0]))
-        });
+        let step = (|| plan.step(&mut state, Some(&values[0])))();
         let step = match step {
             Ok(step) => step,
             Err(error) => return Ok(Transition::Failure(error)),
@@ -200,7 +185,7 @@ impl NativeBatchHosts<'_> {
                 unsigned,
             },
         };
-        match self.numeric_diagnostic_step(task, diag, step, slot, allowance, auth)? {
+        match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
             DiagnosticTransition::Need(task) => Ok(Transition::Need(task)),
             DiagnosticTransition::Failure(error) => Ok(Transition::Failure(error)),
             DiagnosticTransition::Operand(_, _) | DiagnosticTransition::IntegerDivision(_, _) => {
