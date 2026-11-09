@@ -3802,41 +3802,36 @@ impl NativeBatchHosts<'_> {
         reply: HostArgReply<'_>,
     ) -> LocalResult<HostStep> {
         self.validate_row_reply(id, reply)?;
-        if matches!(self.task(id)?.demand, SqlDemand::Ast(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("AST source cannot be wire NULL"));
+        macro_rules! native_token {
+            ($token:ident, $message:literal) => {
+                let ScalarValueRef::Bytes(Some($token)) = reply.values.get_scalar_ref(0) else {
+                    return Err(binding($message));
+                };
             };
+        }
+        if matches!(self.task(id)?.demand, SqlDemand::Ast(_)) {
+            native_token!(token, "AST source cannot be wire NULL");
             return self.resume_ast(id, Some(token));
         }
         let task = self.task(id)?;
         if matches!(task.demand, SqlDemand::JsonSchema(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("schema source cannot be wire NULL"));
-            };
+            native_token!(token, "schema source cannot be wire NULL");
             return self.resume_json_schema(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::FinalState(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("final state source cannot be wire NULL"));
-            };
+            native_token!(token, "final state source cannot be wire NULL");
             return self.resume_final_state(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Stateful(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("stateful source cannot be wire NULL"));
-            };
+            native_token!(token, "stateful source cannot be wire NULL");
             return self.resume_stateful(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::ConcatValues { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("CONCAT value cannot be wire NULL"));
-            };
+            native_token!(token, "CONCAT value cannot be wire NULL");
             return self.resume_concat_value(id, token);
         }
         if matches!(task.demand, SqlDemand::CachedList(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("cached list source cannot be wire NULL"));
-            };
+            native_token!(token, "cached list source cannot be wire NULL");
             return self.resume_cached_list(id, token);
         }
         if matches!(task.demand, SqlDemand::TypedWindow(_)) {
@@ -3849,267 +3844,179 @@ impl NativeBatchHosts<'_> {
             return self.resume_numeric_parent(id, reply);
         }
         if matches!(task.demand, SqlDemand::TimestampDiff { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("timestamp diff source cannot be wire NULL"));
-            };
+            native_token!(token, "timestamp diff source cannot be wire NULL");
             return self.resume_timestamp_diff(id, token);
         }
         if matches!(task.demand, SqlDemand::Like { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("LIKE source cannot be wire NULL"));
-            };
+            native_token!(token, "LIKE source cannot be wire NULL");
             return self.resume_wildcard(id, token);
         }
         if matches!(task.demand, SqlDemand::Crypto { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("crypto source cannot be wire NULL"));
-            };
+            native_token!(token, "crypto source cannot be wire NULL");
             return self.resume_crypto(id, token);
         }
         if matches!(task.demand, SqlDemand::TypedContext { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("typed context operand cannot be wire NULL"));
-            };
+            native_token!(token, "typed context operand cannot be wire NULL");
             return self.finish_typed_context(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::ContextValue { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("context operand cannot be wire NULL"));
-            };
+            native_token!(token, "context operand cannot be wire NULL");
             return self.finish_context_value(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::UserVariableWrite { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("user variable operand cannot be wire NULL"));
-            };
+            native_token!(token, "user variable operand cannot be wire NULL");
             return self.finish_user_variable(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PbEagerValues { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("PB eager reply is not a capability"));
-            };
+            native_token!(token, "PB eager reply is not a capability");
             return self.resume_pb_eager_values(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PbLazy(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("PB lazy reply is not a capability"));
-            };
+            native_token!(token, "PB lazy reply is not a capability");
             return self.resume_pb_lazy(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PbBoolean(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("PB Boolean reply is not a capability"));
-            };
+            native_token!(token, "PB Boolean reply is not a capability");
             return self.resume_pb_boolean(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PbIntegerMod(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("PB MOD reply is not a capability"));
-            };
+            native_token!(token, "PB MOD reply is not a capability");
             return self.resume_pb_integer_mod(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::RegexpValues(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("regexp value reply is not a capability"));
-            };
+            native_token!(token, "regexp value reply is not a capability");
             return self.resume_regexp_values(id, token);
         }
         if matches!(task.demand, SqlDemand::WeightString(_)) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("weight reply is not a value capability"));
-            };
+            native_token!(token, "weight reply is not a value capability");
             return self.resume_weight_string(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::PrefixValues { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("prefix reply is not a value capability"));
-            };
+            native_token!(token, "prefix reply is not a value capability");
             return self.resume_prefix_value(id, token);
         }
         if matches!(task.demand, SqlDemand::EagerValues { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("eager argument cannot be wire NULL"));
-            };
+            native_token!(token, "eager argument cannot be wire NULL");
             return self.resume_eager_values(id, token);
         }
         if matches!(task.demand, SqlDemand::Compression { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("compression source cannot be wire NULL"));
-            };
+            native_token!(token, "compression source cannot be wire NULL");
             return self.resume_compression(id, token);
         }
         if matches!(task.demand, SqlDemand::ByteUnary { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("byte unary source cannot be wire NULL"));
-            };
+            native_token!(token, "byte unary source cannot be wire NULL");
             return self.resume_byte_unary(id, token);
         }
         if matches!(task.demand, SqlDemand::Misc { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("misc source cannot be wire NULL"));
-            };
+            native_token!(token, "misc source cannot be wire NULL");
             return self.resume_misc(id, token);
         }
         if matches!(task.demand, SqlDemand::Identity { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("identity source cannot be wire NULL"));
-            };
+            native_token!(token, "identity source cannot be wire NULL");
             return self.resume_identity(id, token);
         }
         if matches!(task.demand, SqlDemand::Grouping { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("GROUPING source cannot be wire NULL"));
-            };
+            native_token!(token, "GROUPING source cannot be wire NULL");
             return self.resume_grouping(id, token);
         }
         if matches!(task.demand, SqlDemand::Vector { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("vector source cannot be wire NULL"));
-            };
+            native_token!(token, "vector source cannot be wire NULL");
             return self.resume_vector(id, token);
         }
         if matches!(task.demand, SqlDemand::DurationConstruction { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("duration source cannot be wire NULL"));
-            };
+            native_token!(token, "duration source cannot be wire NULL");
             return self.resume_duration_construction(id, token);
         }
         if matches!(task.demand, SqlDemand::Calendar { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("calendar source cannot be wire NULL"));
-            };
+            native_token!(token, "calendar source cannot be wire NULL");
             return self.resume_calendar(id, token);
         }
         if matches!(task.demand, SqlDemand::Clock) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("clock source cannot be wire NULL"));
-            };
+            native_token!(token, "clock source cannot be wire NULL");
             return self.resume_clock(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Tso) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("TSO source cannot be wire NULL"));
-            };
+            native_token!(token, "TSO source cannot be wire NULL");
             return self.resume_tso(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Epoch { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("epoch source cannot be wire NULL"));
-            };
+            native_token!(token, "epoch source cannot be wire NULL");
             return self.resume_epoch(id, Some(token));
         }
         if matches!(task.demand, SqlDemand::Extract { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("EXTRACT source cannot be wire NULL"));
-            };
+            native_token!(token, "EXTRACT source cannot be wire NULL");
             return self.resume_extract(id, token);
         }
         if matches!(task.demand, SqlDemand::DateArithmetic { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("date arithmetic source cannot be wire NULL"));
-            };
+            native_token!(token, "date arithmetic source cannot be wire NULL");
             return self.resume_date_arithmetic(id, token);
         }
         if matches!(task.demand, SqlDemand::BoundedStaleness { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("bounded source cannot be wire NULL"));
-            };
+            native_token!(token, "bounded source cannot be wire NULL");
             return self.resume_bounded_staleness(id, token);
         }
         if matches!(task.demand, SqlDemand::StrToDate { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("date source cannot be wire NULL"));
-            };
+            native_token!(token, "date source cannot be wire NULL");
             return self.resume_str_to_date(id, token);
         }
         if matches!(task.demand, SqlDemand::JsonSumCrc32) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("JSON checksum source cannot be wire NULL"));
-            };
+            native_token!(token, "JSON checksum source cannot be wire NULL");
             return self.resume_json_sum_crc32(id, token);
         }
         if matches!(task.demand, SqlDemand::Charset { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("charset source cannot be wire NULL"));
-            };
+            native_token!(token, "charset source cannot be wire NULL");
             return self.resume_charset(id, token);
         }
         if matches!(task.demand, SqlDemand::Extremum { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("extremum source cannot be wire NULL"));
-            };
+            native_token!(token, "extremum source cannot be wire NULL");
             return self.resume_extremum(id, token);
         }
         if matches!(task.demand, SqlDemand::Interval { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("INTERVAL source cannot be wire NULL"));
-            };
+            native_token!(token, "INTERVAL source cannot be wire NULL");
             return self.resume_interval(id, token);
         }
         if matches!(task.demand, SqlDemand::In { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native IN argument cannot be wire NULL"));
-            };
+            native_token!(token, "native IN argument cannot be wire NULL");
             return self.resume_in(id, token);
         }
         if matches!(task.demand, SqlDemand::Arithmetic { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("arithmetic argument cannot be wire NULL"));
-            };
+            native_token!(token, "arithmetic argument cannot be wire NULL");
             return self.resume_arithmetic(id, token);
         }
         if matches!(task.demand, SqlDemand::RawValues { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("raw value argument cannot be wire NULL"));
-            };
+            native_token!(token, "raw value argument cannot be wire NULL");
             return self.resume_raw_values(id, token);
         }
         if matches!(task.demand, SqlDemand::Math) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("math argument cannot be wire NULL"));
-            };
+            native_token!(token, "math argument cannot be wire NULL");
             return self.finish_math(id, token);
         }
         if matches!(task.demand, SqlDemand::Comparison { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native comparison argument cannot be wire NULL"));
-            };
+            native_token!(token, "native comparison argument cannot be wire NULL");
             return self.resume_comparison(id, token);
         }
         if matches!(task.demand, SqlDemand::Truth) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native truth argument cannot be wire NULL"));
-            };
+            native_token!(token, "native truth argument cannot be wire NULL");
             return self.finish_truth(id, token).map(HostStep::Ready);
         }
         if matches!(task.demand, SqlDemand::Logical { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native logical argument cannot be wire NULL"));
-            };
+            native_token!(token, "native logical argument cannot be wire NULL");
             return self.resume_logical(id, token);
         }
         if matches!(task.demand, SqlDemand::Conditional { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native predicate/branch cannot be wire NULL"));
-            };
+            native_token!(token, "native predicate/branch cannot be wire NULL");
             return self.resume_conditional(id, token);
         }
         if matches!(task.demand, SqlDemand::Nullable { .. }) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native nullable argument cannot be wire NULL"));
-            };
+            native_token!(token, "native nullable argument cannot be wire NULL");
             return self.resume_nullable(id, token);
         }
         if matches!(task.demand, SqlDemand::ValueCast) {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native CAST argument handle cannot be wire NULL"));
-            };
+            native_token!(token, "native CAST argument handle cannot be wire NULL");
             return self.finish_value_cast(id, token).map(HostStep::Ready);
         }
         if let SqlDemand::CastCharNative { len } = &task.demand {
-            let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(0) else {
-                return Err(binding("native value handle cannot be wire NULL"));
-            };
+            native_token!(token, "native value handle cannot be wire NULL");
             return self
                 .finish_native_cast(id, token, *len)
                 .map(HostStep::Ready);
