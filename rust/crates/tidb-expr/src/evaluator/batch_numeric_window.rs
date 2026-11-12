@@ -247,10 +247,7 @@ impl NativeBatchHosts<'_> {
             state.values[state.index] = values;
         }
 
-        let transition = (|| {
-            let result = self.drive_numeric_window(slot, start, state, text.as_deref(), &auth);
-            result
-        })();
+        let transition = self.drive_numeric_window(slot, start, state, text.as_deref(), &auth);
         authenticate()?;
         match transition? {
             WindowTransition::Need(state) => {

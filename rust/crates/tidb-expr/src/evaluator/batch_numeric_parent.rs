@@ -527,10 +527,7 @@ impl<'a> NativeBatchHosts<'a> {
             origin,
             diagnostic,
         };
-        let transition = (|| {
-            let result = self.drive_numeric_parent(slot, state, value, text.as_deref(), &auth);
-            result
-        })();
+        let transition = self.drive_numeric_parent(slot, state, value, text.as_deref(), &auth);
         if diagnostic {
             store.borrow().diagnostic_text(token, origin)?;
         } else {

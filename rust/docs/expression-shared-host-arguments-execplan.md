@@ -153,3 +153,14 @@ The release unit build completed0/280.175s, the1013 selection completed1012pass/
 The final comparison completes224 cells/139985 full queries; strict56 preflight and448 persisted before/after records pass audit. All owned services and both temporary database directories are removed. [The final dispatch result](expression-resume-dispatch-results.zh.md) records every scene, favorable/adverse direction, absolute metric and paired range; [the evidence](expression-resume-dispatch-results/) includes a standard-library verifier. The prior28b19112e3 result remains separately fixed. Retain the simplification as requested, without inferring universal no-regression or completed project-wide unification. Human review remains pending.
 
 The remaining21 single-entry adapter checks were not traded for new state-carrying structures or extensive parameter changes. Multi-entry adapters and callback-related checks still protect real boundaries; do not delete them using only a single caller's assumptions. This closes the reviewed cleanup scope, leaving broader API/ownership redesign for a separately specified change.
+
+
+## Final remaining-logic follow-up
+
+
+WorkMacOperator independently verified the2897e0289d report and requested another bounded review. Two remaining numeric resume closures contain only a single call and an immediate return of its result. Replace them with direct calls in batch_numeric_parent.rs and batch_numeric_window.rs. Preserve the authentication after each call and propagate the result only afterward. This changes no API, state branch, callback, test, or fixture. Remaining multi-step closures retain their local error domains and early returns.
+
+- [x] Remove the two single-call wrappers.
+- [ ] Build, validate the same1013 selection and separately measure the final source against pinned6765; preserve all earlier evidence.
+
+Evidence belongs in a new numeric-direct-call-cleanup directory. The earlier2897 report remains an immutable completed result; this follow-up is not yet validated.
