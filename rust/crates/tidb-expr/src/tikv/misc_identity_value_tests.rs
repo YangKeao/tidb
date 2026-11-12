@@ -299,7 +299,9 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
             .is_ok()
     );
     let invalid = extra_values().remove(4);
-    assert!(std::panic::catch_unwind(|| super::identity_actual::probe(Some(&invalid))).is_err());
+    assert!(
+        std::panic::catch_unwind(|| super::identity_actual::probe_name(Some(&invalid))).is_err()
+    );
     for v in [
         Datum::new_string(vec![255; 1 << 20]),
         Datum::Enum(
@@ -317,7 +319,7 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
                 .is_ok()
         );
     }
-    assert!(super::identity_actual::probe(None).is_ok());
+    assert!(super::identity_actual::probe_name(None).is_none());
     assert_eq!(
         crate::builtin_ext::misc::dispatch("ANY_VALUE", std::slice::from_ref(&Datum::Null))
             .unwrap()

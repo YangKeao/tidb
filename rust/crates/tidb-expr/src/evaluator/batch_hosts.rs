@@ -2283,9 +2283,7 @@ impl NativeBatchHosts<'_> {
                 .constant_probes
                 .get(invocation.slot.index())
                 .ok_or_else(|| binding("source prefix slot absent"))?;
-            if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref()) {
-                return self.native_failure(error);
-            }
+            let _ = crate::tikv::identity_actual::probe_name(probe.as_ref());
         }
         if self.numeric_parent(invocation.slot).is_some() {
             return self.start_numeric_parent(invocation);
@@ -2520,10 +2518,7 @@ impl NativeBatchHosts<'_> {
                     {
                         return Err(binding("eager values descriptor differs"));
                     }
-                    let name = match crate::tikv::identity_actual::probe_name(probe.as_ref()) {
-                        Ok(name) => name,
-                        Err(e) => return self.native_failure(e),
-                    };
+                    let name = crate::tikv::identity_actual::probe_name(probe.as_ref());
                     if let Some(phase) = kernel.prefix_phase() {
                         SqlDemand::PrefixValues { phase }
                     } else {
@@ -2607,9 +2602,7 @@ impl NativeBatchHosts<'_> {
                 {
                     return Err(binding("native argument descriptor differs"));
                 }
-                if let Err(error) = crate::tikv::identity_actual::probe(meta.probe()) {
-                    return self.native_failure(error);
-                }
+                let _ = crate::tikv::identity_actual::probe_name(meta.probe());
                 SqlDemand::Arguments {
                     next: 0,
                     tokens: [None; 3],

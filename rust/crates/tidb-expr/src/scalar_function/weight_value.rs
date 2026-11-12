@@ -27,9 +27,9 @@ pub(crate) fn source_type(source: Option<&FieldType>) -> std::borrow::Cow<'_, Fi
         None => std::borrow::Cow::Owned(FieldType::new(FieldTypeCode::VarString)),
     }
 }
-pub(crate) fn padding(kind: &Datum, length: &Datum) -> Result<(bool, i64), EvalError> {
+pub(crate) fn padding(kind: &Datum, length: &Datum) -> (bool, i64) {
     let binary = kind.sql_string().is_ok_and(|k| k == "BINARY");
-    Ok((binary, crate::cast::to_i64_signed(length)))
+    (binary, crate::cast::to_i64_signed(length))
 }
 pub(crate) fn numeric_code(
     source: Option<&FieldType>,

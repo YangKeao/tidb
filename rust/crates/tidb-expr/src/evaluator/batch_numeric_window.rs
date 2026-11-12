@@ -354,7 +354,7 @@ impl NativeBatchHosts<'_> {
                     if task.computing {
                         return Err(binding("window overflow produced an operand"));
                     }
-                    Self::numeric_window_cast_value(&mut task, value)?;
+                    Self::numeric_window_cast_value(&mut task, value);
                 }
             }
         }
@@ -398,7 +398,7 @@ impl NativeBatchHosts<'_> {
                 auth.check()?;
                 match step {
                     Ok(NumericOperandStep::Ready(value)) => {
-                        Self::numeric_window_cast_value(&mut task, value)?;
+                        Self::numeric_window_cast_value(&mut task, value);
                     }
                     Ok(NumericOperandStep::Subject(pending)) => {
                         let NumericPlanBody::Subject(plan) = &parent.plans[index].body else {
@@ -432,7 +432,7 @@ impl NativeBatchHosts<'_> {
                                 return Err(binding("window cannot resume raw row DIV promotion"))
                             }
                             DiagnosticTransition::Operand(_, value) => {
-                                Self::numeric_window_cast_value(&mut task, value)?
+                                Self::numeric_window_cast_value(&mut task, value)
                             }
                         }
                     }
@@ -623,9 +623,8 @@ impl NativeBatchHosts<'_> {
             task.position += 1;
         }
     }
-    fn numeric_window_cast_value(task: &mut NumericWindowTask, value: Datum) -> LocalResult<()> {
+    fn numeric_window_cast_value(task: &mut NumericWindowTask, value: Datum) {
         task.values[task.index][task.position] = value;
         task.position += 1;
-        Ok(())
     }
 }

@@ -8682,8 +8682,7 @@ fn weight_source_host_auth_callbacks_and_recovery() {
             let expected = crate::scalar_function::weight_value::padding(
                 &Datum::Bytes(vec![b'X'; 16384]),
                 &Datum::Int(2),
-            )
-            .unwrap();
+            );
             assert_eq!(expected, (false, 2));
             assert!(
                 matches!(feed(&mut hosts, &mut eval, &task, 2, Some(length.to_vec())),

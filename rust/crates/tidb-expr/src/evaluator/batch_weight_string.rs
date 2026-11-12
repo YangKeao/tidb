@@ -117,12 +117,9 @@ impl NativeBatchHosts<'_> {
                     )?,
                 )
             };
-            let result = (|| weight_value::padding(&kind, &length))();
+            let padding = weight_value::padding(&kind, &length);
             check_tokens()?;
-            match result {
-                Ok(padding) => Some(padding),
-                Err(e) => return self.native_failure(e),
-            }
+            Some(padding)
         } else if let WeightTask::Value(padding) = state {
             padding
         } else {

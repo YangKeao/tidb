@@ -21,6 +21,8 @@ Reduce repeated per-function state machines, validation and empty ownership/coer
 - [x] Fix the offline verifier’s Python 3.9 compatibility separately at0623f21305; raw measurements remain unchanged.
 - [x] Remove28 compiler-confirmed unused private functions/methods after checking references and configuration; no fixture values or test functions changed. This checkpoint removes323 net production lines.
 - [x] Remove seven unused test-only forwarding helpers; retain every test function and fixture value, including unused fixture generators.
+- [x] Compile the28-private/seven-test-wrapper cleanup atae4b0b5965 (actual0/280.571s); no runtime checks attributed to this interim build.
+- [x] Remove infallible Result contracts from numeric-window assignment, identity-name probing and WEIGHT_STRING padding; retain formatting panic order and token checks after conversion. Remove the newly unused private JSON re-export.
 - [ ] Save and push a new source checkpoint, then run cumulative scoped checks and the final SQL comparison against the pinned43ba91c201 binary.
 - [ ] Human review and final acceptance. The broader project's path-unification and performance goals remain incomplete.
 

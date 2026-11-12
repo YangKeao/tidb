@@ -29,12 +29,8 @@ pub(crate) fn copy_extent(value: &Datum) -> Result<usize, EvalError> {
 /// Preserve ScalarFunction's pre-existing constant-first uservar-name probe,
 /// whose ignored formatting result can still panic before child evaluation.
 /// This is separate from the actual identity body and never evaluates a child.
-pub(crate) fn probe(value: Option<&Datum>) -> Result<(), EvalError> {
-    probe_name(value).map(|_| ())
-}
-/// Same original formatting operation, retaining its name only when demanded.
-pub(crate) fn probe_name(value: Option<&Datum>) -> Result<Option<String>, EvalError> {
-    Ok(value.and_then(|value| value.sql_string().ok()))
+pub(crate) fn probe_name(value: Option<&Datum>) -> Option<String> {
+    value.and_then(|value| value.sql_string().ok())
 }
 
 pub(crate) fn default_budget() -> usize {
