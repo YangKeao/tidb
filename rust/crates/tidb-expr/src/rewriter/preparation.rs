@@ -16,7 +16,6 @@
 //!
 //! Structural metadata is not value-refined SqlBuild metadata. In particular,
 //! this boundary must not publish a computed NOT_NULL flag or cast precision.
-#![allow(dead_code)] // Explicit private entrypoints, not a public execution route.
 
 use super::ColumnResolver;
 use crate::constant_fold::ConstantFoldMode;

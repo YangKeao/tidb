@@ -18,7 +18,6 @@
 //! and owns its own non-Sync official TiKV RPN program.
 
 // Control/PLUS prototypes remain private; direct values and compatibility hooks coexist.
-#![allow(dead_code)]
 
 mod adapter_failure;
 mod predicate_value;
