@@ -665,22 +665,6 @@ fn binary_expression(
                             }
                         }
                     }
-                    tidb_datatype::EvalType::Decimal => {
-                        for argument in &mut args {
-                            if is_hybrid_argument(argument) {
-                                continue;
-                            }
-                            *argument = crate::aggregation::wrap_cast::wrap_with_cast_as_decimal(
-                                std::mem::replace(
-                                    argument,
-                                    Expression::Constant(Constant::new_null()),
-                                ),
-                            )?;
-                            if is_newly_built_cast(argument) {
-                                purpose.fold(resolver, argument, ConstantFoldMode::Normal);
-                            }
-                        }
-                    }
                     tidb_datatype::EvalType::Int => {
                         for argument in &mut args {
                             if is_hybrid_argument(argument) {

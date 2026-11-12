@@ -73,7 +73,7 @@ pub(super) fn float_binary(
     }
     let a = to_f64(l);
     let b = to_f64(r);
-    Ok(match op {
+    match op {
         Plus | Minus | Mul => unreachable!("worker arithmetic dispatched before this ladder"),
         Div => unreachable!("worker arithmetic dispatched before this ladder"),
         IntDiv => unreachable!("DIV evaluates decimal operands before real dispatch"),
@@ -87,10 +87,10 @@ pub(super) fn float_binary(
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err(EvalError::IntOverflow),
             };
-            return eval_bitwise_binary_in(op, Some(ai), Some(bi), ctx);
+            eval_bitwise_binary_in(op, Some(ai), Some(bi), ctx)
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
-    })
+    }
 }
 
 // Expression-owned real DIV requires its actual declared source type. The

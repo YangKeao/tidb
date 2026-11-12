@@ -1657,7 +1657,6 @@ fn check_type(sql: &FieldType) -> Result<()> {
         NativeEvalType::Duration => sql.code() == FieldTypeCode::Duration,
         NativeEvalType::Json => sql.code() == FieldTypeCode::Json,
         NativeEvalType::VectorFloat32 => sql.code() == FieldTypeCode::VectorFloat32,
-        _ => false,
     };
     if (sql.is_unsigned() && sql.eval_type() != NativeEvalType::Int)
         || !carrier_ok
@@ -6962,10 +6961,7 @@ struct DeferredRootProfiles {
     selected: Option<usize>,
 }
 impl DeferredRootProfiles {
-    fn possible(
-        root: &Expression,
-        limits: BatchSourceLimits,
-    ) -> Result<Option<(DeferredRootProbe, Vec<NativeEvalType>)>> {
+    fn possible(root: &Expression) -> Result<Option<(DeferredRootProbe, Vec<NativeEvalType>)>> {
         let Expression::Constant(c) = root else {
             return Ok(None);
         };
@@ -7114,7 +7110,7 @@ impl PreparedBatch {
         let deferred = if ordered {
             None
         } else {
-            DeferredRootProfiles::possible(root, source_limits)?
+            DeferredRootProfiles::possible(root)?
         };
         let native_context_view = if ordered || deferred.is_some() {
             None
@@ -8035,7 +8031,6 @@ impl NativeDatumSource for NativeChunk<'_> {
                 }
                 Ok(Some(VectorValue::VectorFloat32(output)))
             }
-            _ => Err(binding("batch native column has an unsupported carrier")),
         }
     }
 }
