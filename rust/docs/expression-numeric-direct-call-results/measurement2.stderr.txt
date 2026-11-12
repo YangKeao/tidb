@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/compare.py", line 106, in <module>
+    if sys.argv[1]=='preflight':preflight()
+                                ~~~~~~~~~^^
+  File "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/compare.py", line 48, in preflight
+    out=BASE/'preflight.json';assert not out.exists();prepare_environment();observations=[]
+                                     ^^^^^^^^^^^^^^^^
+AssertionError
+Traceback (most recent call last):
+  File "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/run_comparison.py", line 13, in <module>
+    subprocess.run([sys.executable,str(F/'compare.py'),'preflight'],check=True)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['/usr/lib/python-exec/python3.14/python3', '/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/compare.py', 'preflight']' returned non-zero exit status 1.

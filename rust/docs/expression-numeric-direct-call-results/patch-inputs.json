@@ -1,0 +1,10 @@
+{
+  "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs": {
+    "before": "        let transition = (|| {\n            let result = self.drive_numeric_parent(slot, state, value, text.as_deref(), &auth);\n            result\n        })();",
+    "after": "        let transition = self.drive_numeric_parent(slot, state, value, text.as_deref(), &auth);"
+  },
+  "rust/crates/tidb-expr/src/evaluator/batch_numeric_window.rs": {
+    "before": "        let transition = (|| {\n            let result = self.drive_numeric_window(slot, start, state, text.as_deref(), &auth);\n            result\n        })();",
+    "after": "        let transition = self.drive_numeric_window(slot, start, state, text.as_deref(), &auth);"
+  }
+}

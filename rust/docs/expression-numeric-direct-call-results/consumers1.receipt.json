@@ -1,0 +1,16 @@
+{
+  "runner_pid": 297029,
+  "runner_birth": "1551225",
+  "command": [
+    "python3",
+    "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/run_consumers.py"
+  ],
+  "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup",
+  "started": 1794514967.2713897,
+  "state": "complete",
+  "child_pid": 297030,
+  "child_birth": "1551227",
+  "returncode": 0,
+  "ended": 1794516010.4150252,
+  "wall_seconds": 1043.1436355113983
+}

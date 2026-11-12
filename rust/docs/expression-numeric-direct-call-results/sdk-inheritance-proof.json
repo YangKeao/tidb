@@ -1,0 +1,37 @@
+{
+  "source": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/remove-demo-policy/performance/followon-forwarding-direct",
+  "tested_sdk_files_equal_current": true,
+  "file_count": 1574,
+  "current_sdk_head": "f7672bf980143f2938fd0f900650a4c29091e70f",
+  "tested_snapshot_sha256": "14339a8d6160b1b7ccbf837ddb3c18de5f3ce1848e5fe595ef810373c59eefe1",
+  "actual_test_receipt": {
+    "runner_pid": 1749642,
+    "runner_birth": "8144552",
+    "command": [
+      "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/remove-demo-policy/performance/followon-forwarding-direct/sdk-unit-round6",
+      "--test-threads=1",
+      "--format=json",
+      "-Z",
+      "unstable-options"
+    ],
+    "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/remove-demo-policy/performance/followon-forwarding-direct",
+    "started": 1793926406.4386027,
+    "state": "complete",
+    "child_pid": 1749643,
+    "child_birth": "8144554",
+    "returncode": 101,
+    "ended": 1793926407.454782,
+    "wall_seconds": 1.0161793231964111
+  },
+  "suite": {
+    "type": "suite",
+    "event": "failed",
+    "passed": 1159,
+    "failed": 1,
+    "ignored": 1,
+    "measured": 0,
+    "filtered_out": 0,
+    "exec_time": 0.969575533
+  },
+  "note": "Inheritance uses retained task11 round6 whose entire SDK source/config inventory matches, NOT withdrawn task26 candidate with changed native_regexp.rs; no new SDK test execution."
+}

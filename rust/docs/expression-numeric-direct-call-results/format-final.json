@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-08-22-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2021",
+    "--config",
+    "skip_children=true",
+    "--check",
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_window.rs"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": ""
+}

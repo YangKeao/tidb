@@ -1,0 +1,13 @@
+{
+  "commit": "2897e0289dc697678b8e558604a79cdd9b0c8d1c",
+  "source_commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+  "remote_verified": "2897e0289dc697678b8e558604a79cdd9b0c8d1c",
+  "remote": "fork",
+  "branch": "expression-unification-demo",
+  "checked": 1794514384.3045208,
+  "manifest_files": 97,
+  "staged_paths": 101,
+  "staged_Git_blob_hashes_verified": true,
+  "committed_standalone_verifier": "PASS",
+  "docs_lint_returncode": 0
+}

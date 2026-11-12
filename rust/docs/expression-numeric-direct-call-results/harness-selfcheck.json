@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "same14_SQL_specs_and_balanced_orders": true,
+  "unchanged_files": [
+    "cases.py",
+    "workloads.py",
+    "analyze.py"
+  ],
+  "compare_py_only_LABELS_changed": true,
+  "baseline_source": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+  "A_B_same_ELF": "evidence/path-unification/resume-dispatch-cleanup/tidb-server-candidate"
+}

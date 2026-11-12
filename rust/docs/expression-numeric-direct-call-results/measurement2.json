@@ -1,0 +1,9 @@
+{
+  "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup",
+  "command": [
+    "python3",
+    "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/run_comparison.py"
+  ],
+  "environment": {},
+  "timeout_seconds": 2400
+}

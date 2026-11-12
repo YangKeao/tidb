@@ -1,0 +1,321 @@
+{
+  "source": "84df525b257f0cab76e4883a65be183095ac1a4f",
+  "scope": "Textual .method(...) calls in evaluator/*.rs; does not prove dynamic callgraph completeness",
+  "calls": {
+    "finish_context_value": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3038,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3124,
+        "test_file": false
+      }
+    ],
+    "finish_int_cast": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3222,
+        "test_file": false
+      }
+    ],
+    "finish_math": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3188,
+        "test_file": false
+      }
+    ],
+    "finish_native_cast": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3217,
+        "test_file": false
+      }
+    ],
+    "finish_truth": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3196,
+        "test_file": false
+      }
+    ],
+    "finish_typed_context": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3035,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3120,
+        "test_file": false
+      }
+    ],
+    "finish_user_variable": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3042,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3128,
+        "test_file": false
+      }
+    ],
+    "finish_value_cast": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3212,
+        "test_file": false
+      }
+    ],
+    "resume_arguments": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3048,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3083,
+        "test_file": false
+      }
+    ],
+    "resume_arithmetic": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3180,
+        "test_file": false
+      }
+    ],
+    "resume_ast": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_ast_host.rs",
+        "line": 50,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3078,
+        "test_file": false
+      }
+    ],
+    "resume_cached_list": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3103,
+        "test_file": false
+      }
+    ],
+    "resume_charset": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3164,
+        "test_file": false
+      }
+    ],
+    "resume_comparison": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3192,
+        "test_file": false
+      }
+    ],
+    "resume_concat_value": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3099,
+        "test_file": false
+      }
+    ],
+    "resume_conditional": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3204,
+        "test_file": false
+      }
+    ],
+    "resume_eager_values": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3160,
+        "test_file": false
+      }
+    ],
+    "resume_extremum": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3168,
+        "test_file": false
+      }
+    ],
+    "resume_final_state": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3032,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3091,
+        "test_file": false
+      }
+    ],
+    "resume_in": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3176,
+        "test_file": false
+      }
+    ],
+    "resume_interval": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3172,
+        "test_file": false
+      }
+    ],
+    "resume_json_schema": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3031,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3087,
+        "test_file": false
+      }
+    ],
+    "resume_logical": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3200,
+        "test_file": false
+      }
+    ],
+    "resume_nullable": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3208,
+        "test_file": false
+      }
+    ],
+    "resume_numeric_parent": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_diagnostic.rs",
+        "line": 311,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3112,
+        "test_file": false
+      }
+    ],
+    "resume_pb_boolean": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3021,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3140,
+        "test_file": false
+      }
+    ],
+    "resume_pb_eager_values": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3026,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3132,
+        "test_file": false
+      }
+    ],
+    "resume_pb_integer_mod": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3023,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3144,
+        "test_file": false
+      }
+    ],
+    "resume_pb_lazy": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3020,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3136,
+        "test_file": false
+      }
+    ],
+    "resume_prefix_value": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3156,
+        "test_file": false
+      }
+    ],
+    "resume_raw_values": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3184,
+        "test_file": false
+      }
+    ],
+    "resume_regexp_values": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3148,
+        "test_file": false
+      }
+    ],
+    "resume_stateful": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3033,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3095,
+        "test_file": false
+      }
+    ],
+    "resume_weight_string": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3029,
+        "test_file": false
+      },
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3152,
+        "test_file": false
+      }
+    ],
+    "resume_wildcard": [
+      {
+        "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+        "line": 3116,
+        "test_file": false
+      }
+    ]
+  }
+}

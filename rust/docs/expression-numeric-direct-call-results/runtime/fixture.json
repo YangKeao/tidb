@@ -1,0 +1,13 @@
+{
+  "database": "expr_policy_optimization",
+  "table": "t",
+  "rows": 8192,
+  "counts": [
+    "8192",
+    "-1166",
+    "7372",
+    "82"
+  ],
+  "table_id": 119,
+  "generator_sha256": "bd494442f6da3c30fdd0a07b1c3820c5df64e326946163000d7f37cc0bac2445"
+}

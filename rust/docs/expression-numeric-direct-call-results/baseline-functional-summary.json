@@ -1,0 +1,23 @@
+{
+  "completed": 1013,
+  "total": 1013,
+  "counts": {
+    "ok": 1012,
+    "failed": 1
+  },
+  "started": 1794511834.5405066,
+  "updated": 1794512872.5064394,
+  "last": "evaluator::batch::tests::stateful_tests::pb_regexp_tests::eager_tests::lazy_tests::pb_lazy_source_actual_phases",
+  "binary": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/front-unit-candidate",
+  "binary_sha256": "a586f244b7430c7a8bef1a5d29307a13357278abc5e40ce4fe2467d9fab84b7b",
+  "test_only_memory_limit_bytes": 805306368,
+  "test_only_timeout_seconds": 1800,
+  "large_native_corpus_memory_overrides": {
+    "tikv::digest_value_tests::digest_actual_original_scalar_observations": 4294967296,
+    "tikv::eager_scalar_value_tests::eager_value_kernel_matches_frozen_observations": 4294967296
+  },
+  "workers": 8,
+  "scope": "Explicit scoped frontend consumer list, each from one pinned binary in its own memory-bounded process. Timeouts or absent terminal events are failures of verification, never passes.",
+  "state": "complete",
+  "ended": 1794512872.507112
+}

@@ -1,0 +1,27 @@
+{
+  "status": "PASS artifact collision before prepare_environment; no frontend started or SQL retry performed",
+  "checked": 1794516230.8005626,
+  "blocked_receipt": {
+    "runner_pid": 339135,
+    "runner_birth": "1671409",
+    "command": [
+      "python3",
+      "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/run_comparison.py"
+    ],
+    "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup",
+    "started": 1794516169.112952,
+    "state": "complete",
+    "child_pid": 339136,
+    "child_birth": "1671411",
+    "returncode": 1,
+    "ended": 1794516180.0530212,
+    "wall_seconds": 10.940069198608398
+  },
+  "assertion": "preflight.json must not exist before prepare_environment",
+  "stderr_sha256": "ccc416fc5bd694dd3e26a9701dd6ea91a4ed394ad24fc39e502bde281126cb51",
+  "working_preflight_equal_preserved_initial": true,
+  "preserved_preflight_sha256": "7eac40de48aa25f45bcf794074a9c05add4340e4eae9dfe734e187695e429c6b",
+  "frontend_launches_during_blocked_attempt": [],
+  "primary_timing_absent": true,
+  "continuation": "Move duplicate working artifacts aside and re-open same owned storage. Keep strict comparison unchanged; allow only the single actual SQL retry after original estRows-only proof."
+}

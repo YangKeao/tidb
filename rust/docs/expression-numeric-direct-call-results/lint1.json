@@ -1,0 +1,9 @@
+{
+  "cwd": "/home/agent/tidb/expression-unification/tidb",
+  "command": [
+    "make",
+    "lint"
+  ],
+  "environment": {},
+  "timeout_seconds": 1200
+}

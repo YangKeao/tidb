@@ -1,0 +1,27 @@
+[
+  {
+    "name": "native",
+    "binary": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/tidb-server-candidate",
+    "binary_sha256": "6e89d6b18b079c3af5ddfa5a9c1adabfe63a50598714fc6f92a050d08148c43e"
+  },
+  {
+    "name": "retained_b",
+    "binary": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/tidb-server-candidate",
+    "binary_sha256": "6e89d6b18b079c3af5ddfa5a9c1adabfe63a50598714fc6f92a050d08148c43e"
+  },
+  {
+    "name": "current",
+    "binary": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/numeric-direct-call-cleanup/tidb-server-candidate",
+    "binary_sha256": "bdfa816bb44cccaa84ac9808cc8f2664c015e490dc37eda8b563be1b1351d17b"
+  },
+  {
+    "name": "frozen",
+    "binary": "/home/agent/tidb/expression-unification/target-perf-baseline/release/tidb-server",
+    "binary_sha256": "99a4c3e566774ba9733bc9d54366cf1e9b85446f63fa9a7418bfef5d3daeddd2"
+  },
+  {
+    "name": "tikv",
+    "binary": "/home/agent/tidb/expression-unification/target-tikv/release/tikv-server",
+    "binary_sha256": "355be0acec593a24bb43ac0f5e6b8e30aae354b7e63fdd3530f3f2895c41e029"
+  }
+]

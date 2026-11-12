@@ -161,6 +161,16 @@ The remaining21 single-entry adapter checks were not traded for new state-carryi
 WorkMacOperator independently verified the2897e0289d report and requested another bounded review. Two remaining numeric resume closures contain only a single call and an immediate return of its result. Replace them with direct calls in batch_numeric_parent.rs and batch_numeric_window.rs. Preserve the authentication after each call and propagate the result only afterward. This changes no API, state branch, callback, test, or fixture. Remaining multi-step closures retain their local error domains and early returns.
 
 - [x] Remove the two single-call wrappers.
-- [ ] Build, validate the same1013 selection and separately measure the final source against pinned6765; preserve all earlier evidence.
+- [x] Build, validate the same1013 selection and separately measure the final source against pinned6765; preserve all earlier evidence.
 
-Evidence belongs in a new numeric-direct-call-cleanup directory. The earlier2897 report remains an immutable completed result; this follow-up is not yet validated.
+Evidence belongs in a new numeric-direct-call-cleanup directory. The earlier2897 report remains an immutable completed result; this follow-up now has separate completed evidence below.
+
+
+## Numeric direct-call follow-up outcome
+
+
+Source84df525b257f0cab76e4883a65be183095ac1a4f changes two production files (2 additions/8 deletions,6 fewer lines) and no tests. The post-first-round total is551 fewer production lines and86 fewer test-helper lines relative to43ba91c201. WorkMacOperator independently reviewed both driver calls and their authentication/error ordering.
+
+The final release unit and service builds, same1013 selection (1012pass/1sameknown failure),2441-name inventory, formatting and root lint all completed. The fixed source and protected inputs remain consistent. The separate14-scene comparison completed224 cells/139471 queries, with strict56 preflight and448 before/after observations audited. All owned services and both temporary database directories were removed. [The final numeric direct-call report](expression-numeric-direct-call-results.zh.md) and [remaining logic review](expression-numeric-direct-call-results/REMAINING-LOGIC-REVIEW.zh.md) preserve actual results and explicit retention reasons. Earlier2897/e5e/28b191 evidence stays independent.
+
+This closes the bounded remaining-logic review. No new SDK/full2441/Go/datatype/allocation-failure coverage is claimed; project-wide unification and universal performance improvement remain unproven. Human review remains pending.
