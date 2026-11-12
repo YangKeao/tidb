@@ -20,6 +20,7 @@ Reduce repeated per-function state machines, validation and empty ownership/coer
 - [x] Prepare the Git review report, raw timing and test evidence, and a standalone verifier.
 - [x] Fix the offline verifier’s Python 3.9 compatibility separately at0623f21305; raw measurements remain unchanged.
 - [x] Remove28 compiler-confirmed unused private functions/methods after checking references and configuration; no fixture values or test functions changed. This checkpoint removes323 net production lines.
+- [x] Remove seven unused test-only forwarding helpers; retain every test function and fixture value, including unused fixture generators.
 - [ ] Save and push a new source checkpoint, then run cumulative scoped checks and the final SQL comparison against the pinned43ba91c201 binary.
 - [ ] Human review and final acceptance. The broader project's path-unification and performance goals remain incomplete.
 

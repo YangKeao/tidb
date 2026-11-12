@@ -785,17 +785,6 @@ impl PreparedBatch {
     /// Execute native's priority coefficient stage before the vector flag.
     /// false is exclusively the stage's typed Unsupported outcome. Every
     /// SDK/resource error returns Err and cannot select a different program.
-    #[cfg(test)]
-    pub(super) fn execute_decimal_priority(
-        &mut self,
-        native_ctx: &dyn Columns,
-        ctx: &mut EvalContext,
-        input: &Chunk,
-        output: &mut Chunk,
-    ) -> Result<bool> {
-        let selection = self.selection.clone();
-        self.execute_selected_decimal_priority(native_ctx, ctx, input, output, &selection)
-    }
     pub(super) fn execute_selected_decimal_priority(
         &mut self,
         native_ctx: &dyn Columns,

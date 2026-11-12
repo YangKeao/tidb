@@ -713,10 +713,6 @@ pub(crate) fn negate_if(v: Datum, neg: bool, cols: &dyn Columns) -> Result<Datum
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> Datum {
-        Datum::new_string(s.to_string())
-    }
-
     /// Go `builtinCastRealAsRealSig.evalReal`
     /// (`builtin_cast.go:1346-1352`): an in-union unsigned-target cast
     /// clamps a negative to 0.

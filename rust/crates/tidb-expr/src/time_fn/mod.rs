@@ -733,11 +733,6 @@ fn makedate_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     )
 }
 
-#[cfg(test)]
-fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
-    makedate_in(vals, &crate::NoColumns)
-}
-
 /// MAKETIME converts every original part before validity, then computes actual
 /// signed seconds before demanding precision. Consuming states preserve that
 /// boundary without another argument program or callback-driven evaluator.

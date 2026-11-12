@@ -451,11 +451,6 @@ pub(crate) fn substring_ready_in(
 /// (`reverseBytes`) for a binary or BIT argument and `builtinReverseUTF8Sig`
 /// (`reverseRunes`) otherwise, so reversing a binary value must NOT permute
 /// the bytes of a multi-byte character back into a valid one.
-#[cfg(test)]
-pub(crate) fn reverse(vals: &[Datum]) -> Result<Datum, EvalError> {
-    reverse_in(vals, &crate::NoColumns)
-}
-
 pub(crate) fn reverse_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad REVERSE arity"));
@@ -1537,11 +1532,6 @@ pub(crate) fn str_insert(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Dat
 /// 1-based position has the corresponding bit set in `bits` (arg `i` is
 /// included when bit `i-1` of `bits` is `1`). `NULL` arguments are excluded
 /// even when their bit is set (matching MySQL). `NULL` if `bits` is `NULL`.
-#[cfg(test)]
-pub(crate) fn make_set(vals: &[Datum]) -> Result<Datum, EvalError> {
-    make_set_in(vals, &crate::NoColumns)
-}
-
 pub(crate) fn make_set_in(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     // `bits` is Go's `types.ETInt` argument, cast by `crate::arg_eval_type`
     // before this body runs, so a SET/ENUM/BIT operand reaches here as the

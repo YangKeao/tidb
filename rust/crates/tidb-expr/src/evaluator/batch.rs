@@ -5469,25 +5469,6 @@ fn arithmetic_host_metadata<'a, N: SourceReference<'a>>(
                                 })
 }
 
-#[cfg(test)]
-fn lower(
-    suite: &EvaluatorSuite,
-    calculated_slot: usize,
-    row_schema: &[FieldType],
-    new_collation: bool,
-    unit: u64,
-    limits: BatchSourceLimits,
-) -> Result<Arc<BatchSource>> {
-    lower_view(
-        suite,
-        calculated_slot,
-        row_schema,
-        new_collation,
-        unit,
-        limits,
-        None,
-    )
-}
 fn lower_view(
     suite: &EvaluatorSuite,
     calculated_slot: usize,
