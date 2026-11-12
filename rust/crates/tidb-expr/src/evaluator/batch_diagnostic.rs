@@ -69,6 +69,7 @@ impl DiagnosticTask {
 impl NativeHostMetadata {
     fn native_output(&self) -> Option<(usize, NativeValueRole)> {
         match self {
+            Self::Arguments(meta) => meta.output_role.map(|role| (meta.output_node, role)),
             Self::TypedContext(meta) => Some((meta.output_node, meta.output_role)),
             Self::ContextValue {
                 output_node,
@@ -80,67 +81,7 @@ impl NativeHostMetadata {
                 output_role,
                 ..
             }
-            | Self::Crypto {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Compression {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::ByteUnary {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Misc {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Identity {
-                output_node,
-                output_role,
-                ..
-            }
             | Self::Like {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Grouping {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Vector {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::DurationConstruction {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Calendar {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Clock {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Tso {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Epoch {
                 output_node,
                 output_role,
                 ..
@@ -180,27 +121,7 @@ impl NativeHostMetadata {
                 output_role,
                 ..
             } => Some((*output_node, *output_role)),
-            Self::TimestampDiff {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::Extract {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::DateArithmetic {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::BoundedStaleness {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::StrToDate {
+            Self::DateArithmetic {
                 output_node,
                 output_role,
                 ..
@@ -220,32 +141,16 @@ impl NativeHostMetadata {
     fn native_argument_node(&self, index: usize) -> Option<usize> {
         let single = |node: &usize| (index == 0).then_some(*node);
         match self {
+            Self::Arguments(meta) => meta.arguments.get(index).copied(),
             Self::TypedContext(meta) => meta.argument.filter(|_| index == 0),
-            Self::ContextValue { argument, .. }
-            | Self::Clock { argument, .. }
-            | Self::Tso { argument, .. } => argument.filter(|_| index == 0),
-            Self::EagerValues { arguments, .. }
-            | Self::Crypto { arguments, .. }
-            | Self::Misc { arguments, .. }
-            | Self::Identity { arguments, .. }
-            | Self::Vector { arguments, .. }
-            | Self::DurationConstruction { arguments, .. }
-            | Self::Calendar { arguments, .. }
-            | Self::Epoch { arguments, .. }
-            | Self::Extract { arguments, .. } => arguments.get(index).copied(),
-            Self::Compression { argument, .. }
-            | Self::ByteUnary { argument, .. }
-            | Self::Grouping { argument, .. } => single(argument),
+            Self::ContextValue { argument, .. } => argument.filter(|_| index == 0),
+            Self::EagerValues { arguments, .. } => arguments.get(index).copied(),
             Self::JsonSumCrc32 { argument_node, .. }
             | Self::Math { argument_node, .. }
             | Self::ValueCast { argument_node, .. }
             | Self::UnaryWindow { argument_node, .. } => single(argument_node),
-            Self::Like { arguments, .. } | Self::TimestampDiff { arguments, .. } => {
-                arguments.get(index).copied()
-            }
-            Self::DateArithmetic { arguments, .. }
-            | Self::BoundedStaleness { arguments, .. }
-            | Self::StrToDate { arguments, .. } => arguments.get(index).copied(),
+            Self::Like { arguments, .. } => arguments.get(index).copied(),
+            Self::DateArithmetic { arguments, .. } => arguments.get(index).copied(),
             Self::Selection { argument_nodes, .. } | Self::DecimalFast { argument_nodes, .. } => {
                 argument_nodes.get(index).copied()
             }
@@ -504,7 +409,7 @@ impl<'a> NativeBatchHosts<'a> {
                 _ => {
                     return Err(binding(
                         "diagnostic parent requires its original numeric source",
-                    ))
+                    ));
                 }
             };
             if !valid_operation

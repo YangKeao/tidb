@@ -164,7 +164,7 @@ impl BatchFailure {
                 NativeJsonTypeDisposition::EmptyText => crate::context::JsonError::EmptyText,
                 NativeJsonTypeDisposition::InvalidText => crate::context::JsonError::InvalidText,
                 NativeJsonTypeDisposition::InvalidUtf8 => {
-                    return EvalError::Unsupported("invalid UTF-8 string datum").into()
+                    return EvalError::Unsupported("invalid UTF-8 string datum").into();
                 }
             };
             return EvalError::Json(error).into();
@@ -1261,7 +1261,7 @@ impl SourceKind {
                 unreachable!("scalar call captured without inventing SQL metadata")
             }
             BorrowedNodeKind::CorrelatedColumn(_) => {
-                return Err(BatchFailure::admission("correlated source"))
+                return Err(BatchFailure::admission("correlated source"));
             }
         })
     }
@@ -3205,7 +3205,7 @@ fn resolve_specific_call_in_view(
                 _ => {
                     return Err(BatchFailure::admission(
                         "date arithmetic result carrier is not covered",
-                    ))
+                    ));
                 }
             }
         };
@@ -3280,7 +3280,7 @@ fn resolve_specific_call_in_view(
                 _ => {
                     return Err(BatchFailure::admission(
                         "date typed result family is outside its signature",
-                    ))
+                    ));
                 }
             }
         };
@@ -3476,13 +3476,13 @@ fn native_int_is_unsigned(mut node: &Expression, limits: CompileLimits) -> Resul
                     _ => Err(BatchFailure::admission(
                         "integer result kind needs native value transport",
                     )),
-                }
+                };
             }
             Expression::Column(column) => {
                 return column
                     .get_static_type()
                     .map(FieldType::is_unsigned)
-                    .ok_or_else(|| BatchFailure::admission("integer source has no declaration"))
+                    .ok_or_else(|| BatchFailure::admission("integer source has no declaration"));
             }
             Expression::ScalarFunction(function) => match resolve_call(function)?.0 {
                 CallTarget::Kernel(function_ref) => match batch_int_kind(function_ref) {
@@ -3497,20 +3497,20 @@ fn native_int_is_unsigned(mut node: &Expression, limits: CompileLimits) -> Resul
                     None => {
                         return Err(BatchFailure::admission(
                             "integer result kind has no registry policy",
-                        ))
+                        ));
                     }
                 },
                 CallTarget::Host(operation) if operation.output_type() == TikvEvalType::Int => {
-                    return Ok(false)
+                    return Ok(false);
                 }
                 _ => {
                     return Err(BatchFailure::admission(
                         "integer result kind has no native policy",
-                    ))
+                    ));
                 }
             },
             Expression::CorrelatedColumn(_) => {
-                return Err(BatchFailure::admission("correlated integer kind"))
+                return Err(BatchFailure::admission("correlated integer kind"));
             }
         }
     }
@@ -3612,7 +3612,7 @@ fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
             _ => {
                 return Err(BatchFailure::admission(
                     "JSON_TYPE needs a ready string or raw native JSON leaf",
-                ))
+                ));
             }
         };
         return Ok((FunctionRef::Local(operation), 1));
@@ -3666,7 +3666,7 @@ fn batch_fact(function: &ScalarFunction) -> Result<(FunctionRef, usize)> {
             _ => {
                 return Err(BatchFailure::admission(
                     "control result needs a supported shared carrier",
-                ))
+                ));
             }
         };
         let function_ref = FunctionRef::TiPb(signature);
@@ -4346,7 +4346,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 _ => {
                     return Err(BatchFailure::admission(
                         "optional leaf lacks its actual value/error producer",
-                    ))
+                    ));
                 }
             }
             if view.diagnostic()
@@ -5711,7 +5711,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
         let kind = SourceKind::capture(item.node, item.sql, item.view, inputs)?;
         let construction = match &kind {
             SourceKind::DecimalFastInput(_) => {
-                return Err(binding("fast source entered the ordinary source factory").into())
+                return Err(binding("fast source entered the ordinary source factory").into());
             }
             SourceKind::Constant { value, .. } => BuildKind::Literal(value.clone()),
             SourceKind::Column { .. } | SourceKind::NativeConstant { .. } => {
@@ -6099,33 +6099,6 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                             next_diagnostic += 1;
                         }
                         host_metadata.push(match operation {
-                            SqlBatchHostOperation::TimestampDiffNative { stop_on_null, .. } => {
-                                let mut arguments = [0; 3];
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("timestamp diff ordinal overflow"))?;
-                                for argument in &mut arguments {
-                                    *argument = child;
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("timestamp diff child absent"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::TimestampDiff {
-                                    arguments,
-                                    argument_types: std::array::from_fn(|i| {
-                                        snapshot_field_type(
-                                            sql.args[i]
-                                                .static_type()
-                                                .expect("checked timestamp argument"),
-                                        )
-                                    }),
-                                    stop_on_null,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role(),
-                                }
-                            }
                             SqlBatchHostOperation::Concat | SqlBatchHostOperation::ConcatWs if item.view.value_role().is_some() => {
                                 let mut arguments = Vec::new();
                                 reserve(&mut arguments, *arity)?;
@@ -6164,31 +6137,6 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                         .view
                                         .value_role()
                                         .ok_or_else(|| binding("LIKE result role missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::CryptoNative(operation) => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, *arity)?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("crypto child overflow"))?;
-                                for _ in 0..*arity {
-                                    arguments.push(child);
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("crypto child absent"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::Crypto {
-                                    arguments: arguments.into_boxed_slice(),
-                                    operation,
-                                    probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("crypto output view missing"))?,
                                 }
                             }
                             SqlBatchHostOperation::EagerValuesNative if sql.pb_lazy_values().is_some() => {
@@ -6338,269 +6286,79 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                     output_role:item.view.value_role().ok_or_else(||binding("eager output view absent"))?,
                                 }
                             }
-                            SqlBatchHostOperation::CompressionNative(operation) => {
-                                NativeHostMetadata::Compression {
-                                    argument: ordinal
-                                        .checked_add(1)
-                                        .ok_or_else(|| resource("compression child overflow"))?,
-                                    operation,
-                                    probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role().ok_or_else(|| {
-                                        binding("compression output view missing")
-                                    })?,
-                                }
-                            }
-                            SqlBatchHostOperation::ByteUnaryNative(operation) => {
-                                NativeHostMetadata::ByteUnary {
-                                    argument: ordinal
-                                        .checked_add(1)
-                                        .ok_or_else(|| resource("byte unary child overflow"))?,
-                                    operation,
-                                    probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("byte unary output view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::MiscNative {
-                                operation,
-                                arity: _,
-                            } => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, *arity)?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("misc child overflow"))?;
-                                for _ in 0..*arity {
-                                    arguments.push(child);
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("misc child absent"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::Misc {
-                                    arguments: arguments.into_boxed_slice(),
-                                    operation,
-                                    probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("misc output view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::ValueIdentityNative { name_const } => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, *arity)?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("identity child overflow"))?;
-                                for _ in 0..*arity {
-                                    arguments.push(child);
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("identity child absent"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::Identity {
-                                    arguments: arguments.into_boxed_slice(),
-                                    name_const,
-                                    probe: sql.identity_constant_probe().cloned(),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("identity result view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::GroupingNative => NativeHostMetadata::Grouping {
-                                argument: ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("GROUPING child overflow"))?,
-                                metadata: sql.shared_grouping_metadata(),
-                                result_type: item.sql.map(snapshot_field_type),
-                                output_node: ordinal,
-                                output_role: item
-                                    .view
-                                    .value_role()
-                                    .ok_or_else(|| binding("GROUPING result view missing"))?,
-                            },
-                            SqlBatchHostOperation::VectorNative(op) => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, op.arity())?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("vector ordinal overflow"))?;
-                                for _ in 0..op.arity() {
-                                    arguments.push(child);
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("vector child missing"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::Vector {
-                                    arguments: arguments.into_boxed_slice(),
-                                    operation: op,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("vector result view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::DurationConstructionNative(op) => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, op.arity())?;
-                                let mut types = Vec::new();
-                                reserve(&mut types, op.arity())?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("duration ordinal overflow"))?;
-                                for arg in &sql.args {
-                                    arguments.push(child);
-                                    types.push(snapshot_field_type(
-                                        arg.static_type().expect("checked duration source"),
-                                    ));
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("duration source node missing"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::DurationConstruction {
-                                    arguments: arguments.into_boxed_slice(),
-                                    argument_types: types.into_boxed_slice(),
-                                    operation: op,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("duration result view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::CalendarNative { operation, arity } => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, usize::from(arity))?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("calendar ordinal overflow"))?;
-                                for _ in 0..arity {
-                                    arguments.push(child);
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("calendar argument missing"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::Calendar {
-                                    arguments: arguments.into_boxed_slice(),
-                                    source_type: snapshot_field_type(
-                                        sql.args[0].static_type().expect("checked calendar source"),
-                                    ),
-                                    operation,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("calendar result view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::ClockNative { operation, arity } => {
-                                NativeHostMetadata::Clock {
-                                    argument: (arity != 0).then_some(
-                                        ordinal
-                                            .checked_add(1)
-                                            .ok_or_else(|| resource("clock ordinal overflow"))?,
-                                    ),
-                                    operation,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("clock result view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::TsoNative(op) => NativeHostMetadata::Tso {
-                                argument_type: sql.args.first().map(|arg| {
-                                    snapshot_field_type(
-                                        arg.static_type().expect("checked TSO source"),
-                                    )
-                                }),
-                                argument: (op.arity() != 0).then_some(
-                                    ordinal
-                                        .checked_add(1)
-                                        .ok_or_else(|| resource("TSO ordinal overflow"))?,
-                                ),
-                                operation: op,
-                                result_type: snapshot_field_type(item.declared_sql()),
-                                output_node: ordinal,
-                                output_role: item
-                                    .view
-                                    .value_role()
-                                    .ok_or_else(|| binding("TSO result view missing"))?,
-                            },
-                            SqlBatchHostOperation::EpochNative { from, arity } => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, usize::from(arity))?;
-                                let mut child = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("epoch ordinal overflow"))?;
-                                for _ in 0..arity {
-                                    arguments.push(child);
-                                    child = checked
-                                        .get(child)
-                                        .ok_or_else(|| binding("epoch argument node missing"))?
-                                        .subtree_end;
-                                }
-                                NativeHostMetadata::Epoch {
-                                    arguments: arguments.into_boxed_slice(),
-                                    from,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item
-                                        .view
-                                        .value_role()
-                                        .ok_or_else(|| binding("epoch result view missing"))?,
-                                }
-                            }
-                            SqlBatchHostOperation::ExtractNative { composite, .. } => {
-                                let first = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("EXTRACT ordinal overflow"))?;
-                                let arguments = if composite {
-                                    vec![first]
-                                } else {
-                                    vec![
-                                        first,
-                                        checked
-                                            .get(first)
-                                            .ok_or_else(|| binding("EXTRACT first source absent"))?
-                                            .subtree_end,
-                                    ]
+                            operation @ (SqlBatchHostOperation::CryptoNative(_)
+                            | SqlBatchHostOperation::CompressionNative(_)
+                            | SqlBatchHostOperation::ByteUnaryNative(_)
+                            | SqlBatchHostOperation::MiscNative { .. }
+                            | SqlBatchHostOperation::ValueIdentityNative { .. }
+                            | SqlBatchHostOperation::GroupingNative
+                            | SqlBatchHostOperation::VectorNative(_)
+                            | SqlBatchHostOperation::DurationConstructionNative(_)
+                            | SqlBatchHostOperation::CalendarNative { .. }
+                            | SqlBatchHostOperation::ClockNative { .. }
+                            | SqlBatchHostOperation::TsoNative(_)
+                            | SqlBatchHostOperation::EpochNative { .. }
+                            | SqlBatchHostOperation::ExtractNative { .. }
+                            | SqlBatchHostOperation::TimestampDiffNative { .. }
+                            | SqlBatchHostOperation::BoundedStalenessNative { .. }
+                            | SqlBatchHostOperation::StrToDateNative { .. }) => {
+                                use hosts::{NativeArgumentKernel as K, NativeArgumentNodes as N};
+                                let source_type = |i: usize| snapshot_field_type(sql.args[i].static_type().expect("checked native argument type"));
+                                let kernel = match operation {
+                                    SqlBatchHostOperation::CryptoNative(op) => K::Crypto { operation: op, probe: sql.identity_constant_probe().cloned() },
+                                    SqlBatchHostOperation::CompressionNative(op) => K::Compression { operation: op, probe: sql.identity_constant_probe().cloned() },
+                                    SqlBatchHostOperation::ByteUnaryNative(op) => K::ByteUnary { operation: op, probe: sql.identity_constant_probe().cloned() },
+                                    SqlBatchHostOperation::MiscNative { operation: op, .. } => K::Misc { operation: op, probe: sql.identity_constant_probe().cloned() },
+                                    SqlBatchHostOperation::ValueIdentityNative { name_const } => K::Identity { name_const: name_const, probe: sql.identity_constant_probe().cloned() },
+                                    SqlBatchHostOperation::GroupingNative => K::Grouping(sql.shared_grouping_metadata()),
+                                    SqlBatchHostOperation::VectorNative(op) => K::Vector(op),
+                                    SqlBatchHostOperation::DurationConstructionNative(operation) => {
+                                        let mut types = Vec::new();
+                                        reserve(&mut types, operation.arity())?;
+                                        types.extend((0..sql.args.len()).map(source_type));
+                                        K::DurationConstruction { operation, argument_types: types.into_boxed_slice() }
+                                    }
+                                    SqlBatchHostOperation::CalendarNative { operation, .. } => K::Calendar { operation, source_type: source_type(0) },
+                                    SqlBatchHostOperation::ClockNative { operation, .. } => K::Clock { operation },
+                                    SqlBatchHostOperation::TsoNative(operation) => K::Tso { operation, argument_type: sql.args.first().map(|_| source_type(0)) },
+                                    SqlBatchHostOperation::EpochNative { from, .. } => K::Epoch { from },
+                                    SqlBatchHostOperation::TimestampDiffNative { stop_on_null, .. } => K::TimestampDiff { stop_on_null, argument_types: std::array::from_fn(source_type) },
+                                    SqlBatchHostOperation::ExtractNative { composite, .. } => K::Extract {
+                                        source_type: source_type(usize::from(!composite)),
+                                        unit: native_extract_call(sql).ok_or_else(|| binding("EXTRACT source keyword lost"))?.unit().map(Into::into),
+                                    },
+                                    SqlBatchHostOperation::BoundedStalenessNative { .. } => K::BoundedStaleness { argument_types: std::array::from_fn(source_type) },
+                                    SqlBatchHostOperation::StrToDateNative { output } => K::StrToDate { output },
+                                    _ => unreachable!(),
                                 };
-                                let call = native_extract_call(sql)
-                                    .ok_or_else(|| binding("EXTRACT source keyword lost"))?;
-                                NativeHostMetadata::Extract {
-                                    arguments: arguments.into_boxed_slice(),
-                                    source_type: snapshot_field_type(
-                                        sql.args[usize::from(!composite)]
-                                            .static_type()
-                                            .expect("checked EXTRACT value source"),
-                                    ),
-                                    unit: call.unit().map(Into::into),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role(),
+                                let mut child = ordinal.checked_add(1).ok_or_else(|| resource("native argument ordinal overflow"))?;
+                                let mut next_node = || -> LocalResult<usize> {
+                                    let node = child;
+                                    child = checked.get(child).ok_or_else(|| binding("native argument child absent"))?.subtree_end;
+                                    Ok(node)
+                                };
+                                let arguments = match *arity {
+                                    0 => N::Empty,
+                                    1 => N::One(next_node()?),
+                                    2 => N::Two([next_node()?, next_node()?]),
+                                    3 => N::Three([next_node()?, next_node()?, next_node()?]),
+                                    _ => {
+                                        let mut nodes = Vec::new();
+                                        reserve(&mut nodes, *arity)?;
+                                        for _ in 0..*arity { nodes.push(next_node()?); }
+                                        N::Many(nodes.into_boxed_slice())
+                                    }
+                                };
+                                let result_type = if matches!(kernel, K::Grouping(_)) {
+                                    item.sql.map(snapshot_field_type)
+                                } else { Some(snapshot_field_type(item.declared_sql())) };
+                                let output_role = item.view.value_role();
+                                if output_role.is_none() && !matches!(kernel, K::TimestampDiff { .. } | K::Extract { .. } | K::BoundedStaleness { .. } | K::StrToDate { .. }) {
+                                    return Err(binding("native argument output view missing").into());
                                 }
+                                NativeHostMetadata::Arguments(hosts::NativeArguments {
+                                    arguments, kernel, result_type, output_node: ordinal, output_role,
+                                })
                             }
                             SqlBatchHostOperation::DateArithmeticNative { output } => {
                                 let first = ordinal
@@ -6626,46 +6384,6 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                     sign,
                                     result_fsp,
                                     result_type: item.sql.map(snapshot_field_type),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role(),
-                                    output,
-                                }
-                            }
-                            SqlBatchHostOperation::BoundedStalenessNative { .. } => {
-                                let first = ordinal.checked_add(1).ok_or_else(|| {
-                                    resource("bounded staleness ordinal overflow")
-                                })?;
-                                let second = checked
-                                    .get(first)
-                                    .ok_or_else(|| {
-                                        binding("bounded staleness first source absent")
-                                    })?
-                                    .subtree_end;
-                                NativeHostMetadata::BoundedStaleness {
-                                    arguments: [first, second],
-                                    argument_types: std::array::from_fn(|i| {
-                                        snapshot_field_type(
-                                            sql.args[i]
-                                                .static_type()
-                                                .expect("checked bounded argument"),
-                                        )
-                                    }),
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role(),
-                                }
-                            }
-                            SqlBatchHostOperation::StrToDateNative { output } => {
-                                let first = ordinal
-                                    .checked_add(1)
-                                    .ok_or_else(|| resource("date source ordinal overflow"))?;
-                                let second = checked
-                                    .get(first)
-                                    .ok_or_else(|| binding("date first source absent"))?
-                                    .subtree_end;
-                                NativeHostMetadata::StrToDate {
-                                    arguments: [first, second],
-                                    result_type: snapshot_field_type(item.declared_sql()),
                                     output_node: ordinal,
                                     output_role: item.view.value_role(),
                                     output,

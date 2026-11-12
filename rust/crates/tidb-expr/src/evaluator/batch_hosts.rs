@@ -26,46 +26,16 @@ use tidb_query_expr::local::{
 
 #[path = "batch_arithmetic_window.rs"]
 mod arithmetic_window;
-#[path = "batch_bounded_staleness.rs"]
-mod bounded_staleness_source;
-#[path = "batch_byte_unary.rs"]
-mod byte_unary;
-#[path = "batch_calendar.rs"]
-mod calendar_source;
 #[path = "batch_charset.rs"]
 mod charset_source;
-#[path = "batch_clock.rs"]
-mod clock_source;
-#[path = "batch_crypto.rs"]
-mod crypto;
 #[path = "batch_date_arithmetic.rs"]
 mod date_arithmetic_source;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
-#[path = "batch_duration_construction.rs"]
-mod duration_construction_source;
-#[path = "batch_epoch.rs"]
-mod epoch_source;
-#[path = "batch_extract.rs"]
-mod extract_source;
-#[path = "batch_grouping.rs"]
-mod grouping;
-#[path = "batch_identity.rs"]
-mod identity;
 #[path = "batch_json_sum_crc32.rs"]
 mod json_sum_crc32_source;
-#[path = "batch_misc.rs"]
-mod misc;
-#[path = "batch_str_to_date.rs"]
-mod str_to_date_source;
-#[path = "batch_timestamp_diff.rs"]
-mod timestamp_diff_source;
-#[path = "batch_tso.rs"]
-mod tso_source;
 #[path = "batch_typed_window.rs"]
 mod typed_window;
-#[path = "batch_vector.rs"]
-mod vector;
 #[path = "batch_wildcard.rs"]
 mod wildcard;
 pub(super) use charset_source::NativeCharsetMetadata;
@@ -191,7 +161,12 @@ pub(super) use final_state_source::NativeFinalState;
 mod json_schema_source;
 pub(super) use json_schema_source::NativeJsonSchema;
 
+#[path = "batch_arguments.rs"]
+mod argument_source;
+pub(super) use argument_source::{NativeArgumentKernel, NativeArgumentNodes, NativeArguments};
+
 pub(super) enum NativeHostMetadata {
+    Arguments(NativeArguments),
     Ast {
         node: usize,
         arguments: Box<[usize]>,
@@ -232,46 +207,6 @@ pub(super) enum NativeHostMetadata {
         output_node: usize,
         output_role: NativeValueRole,
     },
-    Crypto {
-        arguments: Box<[usize]>,
-        operation: tidb_query_expr::NativeCryptoOperation,
-        probe: Option<Datum>,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Compression {
-        argument: usize,
-        operation: tidb_query_expr::NativeCompressionOperation,
-        probe: Option<Datum>,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    ByteUnary {
-        argument: usize,
-        operation: tidb_query_expr::NativeByteUnaryOperation,
-        probe: Option<Datum>,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Misc {
-        arguments: Box<[usize]>,
-        operation: tidb_query_expr::NativeMiscOperation,
-        probe: Option<Datum>,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Identity {
-        arguments: Box<[usize]>,
-        name_const: bool,
-        probe: Option<Datum>,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
     ConcatValues {
         arguments: Box<[usize]>,
         kind: ConcatKind,
@@ -291,74 +226,6 @@ pub(super) enum NativeHostMetadata {
     Interval(NativeIntervalMetadata),
     Extremum(NativeExtremumMetadata),
     Charset(NativeCharsetMetadata),
-    TimestampDiff {
-        arguments: [usize; 3],
-        argument_types: [FieldType; 3],
-        stop_on_null: bool,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: Option<NativeValueRole>,
-    },
-    Grouping {
-        argument: usize,
-        metadata: Option<std::sync::Arc<crate::grouping::GroupingMetadata>>,
-        result_type: Option<FieldType>,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Vector {
-        arguments: Box<[usize]>,
-        operation: tidb_query_expr::NativeVectorOperation,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    DurationConstruction {
-        arguments: Box<[usize]>,
-        argument_types: Box<[FieldType]>,
-        operation: tidb_query_expr::NativeDurationConstructionOperation,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Calendar {
-        arguments: Box<[usize]>,
-        source_type: FieldType,
-        operation: tidb_query_expr::NativeCalendarOperation,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Clock {
-        argument: Option<usize>,
-        operation: tidb_query_expr::NativeClockOperation,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Tso {
-        argument_type: Option<FieldType>,
-        argument: Option<usize>,
-        operation: tidb_query_expr::NativeTsoOperation,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Epoch {
-        arguments: Box<[usize]>,
-        from: bool,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: NativeValueRole,
-    },
-    Extract {
-        arguments: Box<[usize]>,
-        source_type: FieldType,
-        unit: Option<Box<str>>,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: Option<NativeValueRole>,
-    },
     DateArithmetic {
         arguments: [usize; 2],
         argument_types: [Option<FieldType>; 2],
@@ -366,20 +233,6 @@ pub(super) enum NativeHostMetadata {
         sign: i64,
         result_fsp: Option<u32>,
         result_type: Option<FieldType>,
-        output_node: usize,
-        output_role: Option<NativeValueRole>,
-        output: tidb_query_expr::local::SqlTemporalOutput,
-    },
-    BoundedStaleness {
-        arguments: [usize; 2],
-        argument_types: [FieldType; 2],
-        result_type: FieldType,
-        output_node: usize,
-        output_role: Option<NativeValueRole>,
-    },
-    StrToDate {
-        arguments: [usize; 2],
-        result_type: FieldType,
         output_node: usize,
         output_role: Option<NativeValueRole>,
         output: tidb_query_expr::local::SqlTemporalOutput,
@@ -543,6 +396,7 @@ fn present_integer_batch_value(
 impl NativeHostMetadata {
     fn result_type(&self) -> Option<&FieldType> {
         match self {
+            Self::Arguments(meta) => meta.result_type.as_ref(),
             Self::EagerValues { result_type, .. } => result_type.as_ref(),
             Self::Selection { result_type, .. } => result_type.as_ref(),
             Self::HeaderOutcome { result_type, .. } => result_type.as_ref(),
@@ -558,7 +412,7 @@ impl NativeHostMetadata {
             Self::PbBinary(metadata) => metadata.result_type.as_ref(),
             Self::PbLazy(metadata) => metadata.result_type.as_ref(),
             Self::PbBoolean(metadata) => metadata.result_type.as_ref(),
-            Self::Grouping { result_type, .. } => result_type.as_ref(),
+
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
             Self::Arithmetic { result_type, .. } => result_type.as_ref(),
@@ -567,22 +421,8 @@ impl NativeHostMetadata {
             Self::Interval(metadata) => metadata.result_type.as_ref(),
             Self::Extremum(metadata) => metadata.result_type.as_ref(),
             Self::Charset(metadata) => Some(&metadata.result_type),
-            Self::TimestampDiff { result_type, .. }
-            | Self::Clock { result_type, .. }
-            | Self::Calendar { result_type, .. }
-            | Self::DurationConstruction { result_type, .. }
-            | Self::Vector { result_type, .. }
-            | Self::Crypto { result_type, .. }
-            | Self::Compression { result_type, .. }
-            | Self::ByteUnary { result_type, .. }
-            | Self::Misc { result_type, .. }
-            | Self::Identity { result_type, .. }
-            | Self::Tso { result_type, .. }
-            | Self::Epoch { result_type, .. }
-            | Self::Extract { result_type, .. }
-            | Self::BoundedStaleness { result_type, .. }
-            | Self::StrToDate { result_type, .. }
-            | Self::JsonSumCrc32 { result_type, .. }
+
+            Self::JsonSumCrc32 { result_type, .. }
             | Self::UnaryWindow { result_type, .. }
             | Self::Math { result_type, .. }
             | Self::ValueCast { result_type, .. } => Some(result_type),
@@ -597,10 +437,11 @@ impl NativeHostMetadata {
     }
 }
 
-#[path = "batch_compression.rs"]
-mod compression_source;
-
 enum SqlDemand {
+    Arguments {
+        next: usize,
+        tokens: [Option<native_values::NativeValueHandle>; 3],
+    },
     Ast(Box<ast_source::AstTask>),
     PbLazy(Box<pb_lazy_values_source::PbLazyTask>),
     PbBoolean(Box<pb_boolean_values_source::PbBooleanTask>),
@@ -644,59 +485,10 @@ enum SqlDemand {
         next: usize,
         tokens: Vec<[u8; native_values::HANDLE_BYTES]>,
     },
-    Crypto {
-        next: usize,
-        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
-    },
-    Compression {
-        consumed: bool,
-    },
-    ByteUnary {
-        consumed: bool,
-    },
-    Misc {
-        next: usize,
-        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
-    },
-    Identity {
-        next: usize,
-    },
     Like {
         pending: Option<crate::tikv::wildcard_value::Prepared>,
     },
-    Grouping {
-        consumed: bool,
-    },
-    Vector {
-        next: usize,
-        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 2],
-    },
-    DurationConstruction {
-        next: usize,
-        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
-    },
-    TimestampDiff {
-        next: usize,
-        tokens: [Option<[u8; native_values::HANDLE_BYTES]>; 3],
-    },
-    Calendar {
-        first: Option<[u8; native_values::HANDLE_BYTES]>,
-    },
-    Clock,
-    Tso,
-    Epoch {
-        first: Option<[u8; native_values::HANDLE_BYTES]>,
-    },
-    Extract {
-        first: Option<[u8; native_values::HANDLE_BYTES]>,
-    },
     DateArithmetic {
-        first: Option<[u8; native_values::HANDLE_BYTES]>,
-    },
-    BoundedStaleness {
-        first: Option<[u8; native_values::HANDLE_BYTES]>,
-    },
-    StrToDate {
         first: Option<[u8; native_values::HANDLE_BYTES]>,
     },
     JsonSumCrc32,
@@ -810,23 +602,11 @@ impl NativeTask {
             SqlDemand::UserVariableRead { .. } => Ok(None),
             SqlDemand::UserVariableWrite { consumed, .. } => Ok((!*consumed).then_some(1)),
             SqlDemand::Like { pending } => Ok(pending.as_ref().map(|p| p.argument())),
-            SqlDemand::EagerValues { next, .. } | SqlDemand::Crypto { next, .. } => Ok(Some(*next)),
-            SqlDemand::Compression { consumed } | SqlDemand::ByteUnary { consumed } => {
-                Ok(Some(usize::from(*consumed)))
+            SqlDemand::EagerValues { next, .. } | SqlDemand::Arguments { next, .. } => {
+                Ok(Some(*next))
             }
-            SqlDemand::Misc { next, .. } => Ok(Some(*next)),
-            SqlDemand::Identity { next } => Ok(Some(*next)),
-            SqlDemand::Grouping { consumed } => Ok(Some(usize::from(*consumed))),
-            SqlDemand::TimestampDiff { next, .. }
-            | SqlDemand::DurationConstruction { next, .. }
-            | SqlDemand::Vector { next, .. } => Ok(Some(*next)),
-            SqlDemand::Calendar { first }
-            | SqlDemand::Epoch { first }
-            | SqlDemand::Extract { first }
-            | SqlDemand::DateArithmetic { first }
-            | SqlDemand::BoundedStaleness { first }
-            | SqlDemand::StrToDate { first } => Ok(Some(usize::from(first.is_some()))),
-            SqlDemand::Clock | SqlDemand::Tso | SqlDemand::JsonSumCrc32 => Ok(Some(0)),
+            SqlDemand::DateArithmetic { first } => Ok(Some(usize::from(first.is_some()))),
+            SqlDemand::JsonSumCrc32 => Ok(Some(0)),
             SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
             SqlDemand::Interval { search } => Ok(match search.step() {
                 tidb_query_expr::NativeIntervalValueStep::Probe { index, .. } => Some(index),
@@ -884,27 +664,12 @@ impl NativeTask {
             SqlDemand::EagerValues { .. } => {
                 Err(binding("eager values cannot buffer a wire prefix"))
             }
-            SqlDemand::Crypto { .. } => Err(binding("crypto cannot buffer a wire prefix")),
-            SqlDemand::Compression { .. } => {
-                Err(binding("compression cannot buffer a wire prefix"))
+            SqlDemand::Arguments { .. } => {
+                Err(binding("native arguments cannot buffer wire values"))
             }
-            SqlDemand::ByteUnary { .. } => Err(binding("byte unary cannot buffer a wire prefix")),
-            SqlDemand::Misc { .. } => Err(binding("misc cannot buffer a wire prefix")),
-            SqlDemand::Identity { .. } => Err(binding("identity cannot retain a wire prefix")),
-            SqlDemand::Grouping { .. } => Err(binding("GROUPING demand cannot retain byte prefix")),
-            SqlDemand::TimestampDiff { .. }
-            | SqlDemand::DurationConstruction { .. }
-            | SqlDemand::Vector { .. } => {
-                Err(binding("timestamp diff demand cannot retain byte prefix"))
+            SqlDemand::DateArithmetic { .. } => {
+                Err(binding("date demand cannot retain byte prefix"))
             }
-            SqlDemand::Calendar { .. }
-            | SqlDemand::Clock
-            | SqlDemand::Tso
-            | SqlDemand::Epoch { .. }
-            | SqlDemand::Extract { .. }
-            | SqlDemand::DateArithmetic { .. }
-            | SqlDemand::BoundedStaleness { .. }
-            | SqlDemand::StrToDate { .. } => Err(binding("date demand cannot retain byte prefix")),
             SqlDemand::JsonSumCrc32 => Err(binding("JSON checksum cannot retain byte prefix")),
             SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
             SqlDemand::Extremum { .. }
@@ -1562,7 +1327,7 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::HeaderOutcome { .. }
                 | NativeHostMetadata::Comparison { .. }
                 | NativeHostMetadata::RawValues { .. }
-                | NativeHostMetadata::Grouping { .. }
+                | NativeHostMetadata::Arguments(_)
                 | NativeHostMetadata::Like { .. }
                 | NativeHostMetadata::ConcatValues { .. }
                 | NativeHostMetadata::Arithmetic { batch: None, .. }
@@ -2529,7 +2294,7 @@ impl<'a> NativeBatchHosts<'a> {
                 Err(NativeCastStringError::Child(error)) => return self.native_failure(error),
                 Err(NativeCastStringError::InvalidUtf8StringCoercion) => {
                     return self
-                        .native_failure(EvalError::Unsupported("invalid UTF-8 string coercion"))
+                        .native_failure(EvalError::Unsupported("invalid UTF-8 string coercion"));
                 }
             }
         } else {
@@ -2611,7 +2376,7 @@ impl<'a> NativeBatchHosts<'a> {
             match prepared.execute(text) {
                 Ok(value) => Some(i64::from(value)),
                 Err(error) => {
-                    return self.native_failure(crate::regexp::native_regexp_error(&error))
+                    return self.native_failure(crate::regexp::native_regexp_error(&error));
                 }
             }
         };
@@ -2921,30 +2686,6 @@ impl NativeBatchHosts<'_> {
                 }
             }
 
-            SqlBatchHostOperation::TimestampDiffNative {
-                typed,
-                stop_on_null,
-            } => {
-                let Some(NativeHostMetadata::TimestampDiff {
-                    stop_on_null: declared,
-                    output_role,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("timestamp diff descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || invocation.arg_types.len() != 3
-                    || typed != output_role.is_none()
-                    || stop_on_null != *declared
-                {
-                    return Err(binding("timestamp diff descriptor differs"));
-                }
-                SqlDemand::TimestampDiff {
-                    next: 0,
-                    tokens: [None; 3],
-                }
-            }
             SqlBatchHostOperation::LikeNative { ilike } => {
                 let Some(NativeHostMetadata::Like {
                     invocation: value, ..
@@ -2967,273 +2708,39 @@ impl NativeBatchHosts<'_> {
                     pending: Some(crate::tikv::wildcard_value::Prepared::Text),
                 }
             }
-            SqlBatchHostOperation::CryptoNative(operation) => {
-                let Some(NativeHostMetadata::Crypto {
-                    operation: declared,
-                    arguments,
-                    probe,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
+            operation @ (SqlBatchHostOperation::CryptoNative(_)
+            | SqlBatchHostOperation::CompressionNative(_)
+            | SqlBatchHostOperation::ByteUnaryNative(_)
+            | SqlBatchHostOperation::MiscNative { .. }
+            | SqlBatchHostOperation::ValueIdentityNative { .. }
+            | SqlBatchHostOperation::GroupingNative
+            | SqlBatchHostOperation::VectorNative(_)
+            | SqlBatchHostOperation::DurationConstructionNative(_)
+            | SqlBatchHostOperation::CalendarNative { .. }
+            | SqlBatchHostOperation::ClockNative { .. }
+            | SqlBatchHostOperation::TsoNative(_)
+            | SqlBatchHostOperation::EpochNative { .. }
+            | SqlBatchHostOperation::TimestampDiffNative { .. }
+            | SqlBatchHostOperation::ExtractNative { .. }
+            | SqlBatchHostOperation::BoundedStalenessNative { .. }
+            | SqlBatchHostOperation::StrToDateNative { .. }) => {
+                let Some(NativeHostMetadata::Arguments(meta)) =
+                    self.metadata.get(invocation.slot.index())
                 else {
-                    return Err(binding("crypto descriptor absent"));
+                    return Err(binding("native argument descriptor absent"));
                 };
                 if self.native_values.is_none()
-                    || operation != *declared
-                    || arguments.len() != operation.arity()
-                    || invocation.arg_types.len() != arguments.len()
+                    || !meta.accepts(operation, invocation.arg_types.len())
                 {
-                    return Err(binding("crypto descriptor differs"));
+                    return Err(binding("native argument descriptor differs"));
                 }
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
-                    return self.native_failure(e);
-                }
-                SqlDemand::Crypto {
-                    next: 0,
-                    tokens: [None; 2],
-                }
-            }
-            SqlBatchHostOperation::CompressionNative(operation) => {
-                let Some(NativeHostMetadata::Compression {
-                    operation: declared,
-                    probe,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("compression descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || operation != *declared
-                    || invocation.arg_types.len() != 1
-                {
-                    return Err(binding("compression descriptor differs"));
-                }
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
-                    return self.native_failure(e);
-                }
-                SqlDemand::Compression { consumed: false }
-            }
-            SqlBatchHostOperation::ByteUnaryNative(operation) => {
-                let Some(NativeHostMetadata::ByteUnary {
-                    operation: declared,
-                    probe,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("byte unary descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || operation != *declared
-                    || invocation.arg_types.len() != 1
-                {
-                    return Err(binding("byte unary descriptor differs"));
-                }
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
-                    return self.native_failure(e);
-                }
-                SqlDemand::ByteUnary { consumed: false }
-            }
-            SqlBatchHostOperation::MiscNative { operation, arity } => {
-                let Some(NativeHostMetadata::Misc {
-                    arguments,
-                    operation: declared,
-                    probe,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("misc descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || operation != *declared
-                    || usize::from(arity) != arguments.len()
-                    || invocation.arg_types.len() != arguments.len()
-                    || !operation.accepts_arity(arguments.len())
-                {
-                    return Err(binding("misc descriptor differs"));
-                }
-                if let Err(e) = crate::tikv::identity_actual::probe(probe.as_ref()) {
-                    return self.native_failure(e);
-                }
-                SqlDemand::Misc {
-                    next: 0,
-                    tokens: [None; 2],
-                }
-            }
-            SqlBatchHostOperation::ValueIdentityNative { name_const } => {
-                let Some(NativeHostMetadata::Identity {
-                    arguments,
-                    name_const: declared,
-                    probe,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("identity descriptor absent"));
-                };
-                let arity = 1 + usize::from(name_const);
-                if self.native_values.is_none()
-                    || *declared != name_const
-                    || arguments.len() != arity
-                    || invocation.arg_types.len() != arity
-                {
-                    return Err(binding("identity descriptor differs"));
-                }
-                // Original signature prefix, before ANY child demand. No store
-                // borrow or expression evaluation is retained in this metadata.
-                if let Err(error) = crate::tikv::identity_actual::probe(probe.as_ref()) {
+                if let Err(error) = crate::tikv::identity_actual::probe(meta.probe()) {
                     return self.native_failure(error);
                 }
-                SqlDemand::Identity { next: 0 }
-            }
-            SqlBatchHostOperation::GroupingNative => {
-                if self.native_values.is_none()
-                    || invocation.arg_types.len() != 1
-                    || !matches!(
-                        self.metadata.get(invocation.slot.index()),
-                        Some(NativeHostMetadata::Grouping { .. })
-                    )
-                {
-                    return Err(binding("GROUPING descriptor differs"));
-                }
-                SqlDemand::Grouping { consumed: false }
-            }
-            SqlBatchHostOperation::VectorNative(op) => {
-                let Some(NativeHostMetadata::Vector {
-                    arguments,
-                    operation,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("vector descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || op != *operation
-                    || arguments.len() != op.arity()
-                    || invocation.arg_types.len() != op.arity()
-                {
-                    return Err(binding("vector descriptor differs"));
-                }
-                SqlDemand::Vector {
-                    next: 0,
-                    tokens: [None; 2],
-                }
-            }
-            SqlBatchHostOperation::DurationConstructionNative(op) => {
-                let Some(NativeHostMetadata::DurationConstruction {
-                    arguments,
-                    argument_types,
-                    operation,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("duration descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || op != *operation
-                    || arguments.len() != op.arity()
-                    || argument_types.len() != op.arity()
-                    || invocation.arg_types.len() != op.arity()
-                {
-                    return Err(binding("duration descriptor differs"));
-                }
-                SqlDemand::DurationConstruction {
+                SqlDemand::Arguments {
                     next: 0,
                     tokens: [None; 3],
                 }
-            }
-            SqlBatchHostOperation::CalendarNative { operation, arity } => {
-                let Some(NativeHostMetadata::Calendar {
-                    arguments,
-                    operation: declared,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("calendar descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || operation != *declared
-                    || !operation.accepts_arity(usize::from(arity))
-                    || arguments.len() != usize::from(arity)
-                    || invocation.arg_types.len() != arguments.len()
-                {
-                    return Err(binding("calendar descriptor differs"));
-                }
-                SqlDemand::Calendar { first: None }
-            }
-            SqlBatchHostOperation::ClockNative { operation, arity } => {
-                let Some(NativeHostMetadata::Clock {
-                    argument,
-                    operation: declared,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("clock descriptor missing"));
-                };
-                if self.native_values.is_none()
-                    || operation != *declared
-                    || !operation.accepts_arity(usize::from(arity))
-                    || invocation.arg_types.len() != usize::from(arity)
-                    || argument.is_some() != (arity != 0)
-                {
-                    return Err(binding("clock descriptor differs"));
-                }
-                SqlDemand::Clock
-            }
-            SqlBatchHostOperation::TsoNative(op) => {
-                let Some(NativeHostMetadata::Tso {
-                    argument,
-                    argument_type,
-                    operation,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("TSO descriptor missing"));
-                };
-                if self.native_values.is_none()
-                    || op != *operation
-                    || argument.is_some() != (op.arity() != 0)
-                    || argument_type.is_some() != argument.is_some()
-                    || invocation.arg_types.len() != op.arity()
-                {
-                    return Err(binding("TSO descriptor differs"));
-                }
-                SqlDemand::Tso
-            }
-            SqlBatchHostOperation::EpochNative { from, arity } => {
-                let Some(NativeHostMetadata::Epoch {
-                    arguments,
-                    from: declared,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("epoch descriptor missing"));
-                };
-                if self.native_values.is_none()
-                    || *declared != from
-                    || arguments.len() != usize::from(arity)
-                    || invocation.arg_types.len() != arguments.len()
-                {
-                    return Err(binding("epoch descriptor differs"));
-                }
-                SqlDemand::Epoch { first: None }
-            }
-            SqlBatchHostOperation::ExtractNative { typed, composite } => {
-                let Some(NativeHostMetadata::Extract {
-                    arguments,
-                    unit,
-                    output_role,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("EXTRACT descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || arguments.len() != if composite { 1 } else { 2 }
-                    || invocation.arg_types.len() != arguments.len()
-                    || unit.is_some() != composite
-                    || typed == output_role.is_some()
-                {
-                    return Err(binding("EXTRACT descriptor differs"));
-                }
-                SqlDemand::Extract { first: None }
             }
             SqlBatchHostOperation::DateArithmeticNative { output } => {
                 let Some(NativeHostMetadata::DateArithmetic {
@@ -3257,39 +2764,6 @@ impl NativeBatchHosts<'_> {
                     return Err(binding("date arithmetic descriptor differs"));
                 }
                 SqlDemand::DateArithmetic { first: None }
-            }
-            SqlBatchHostOperation::BoundedStalenessNative { typed } => {
-                let Some(NativeHostMetadata::BoundedStaleness { output_role, .. }) =
-                    self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("bounded descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || invocation.arg_types.len() != 2
-                    || typed != output_role.is_none()
-                {
-                    return Err(binding("bounded source descriptor differs"));
-                }
-                SqlDemand::BoundedStaleness { first: None }
-            }
-            SqlBatchHostOperation::StrToDateNative { output } => {
-                let Some(NativeHostMetadata::StrToDate {
-                    output: declared,
-                    output_role,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("date descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || invocation.arg_types.len() != 2
-                    || output != *declared
-                    || (output == tidb_query_expr::local::SqlTemporalOutput::Value)
-                        != output_role.is_some()
-                {
-                    return Err(binding("date source descriptor differs"));
-                }
-                SqlDemand::StrToDate { first: None }
             }
             SqlBatchHostOperation::JsonSumCrc32Native { typed } => {
                 let Some(NativeHostMetadata::JsonSumCrc32 { output_role, .. }) =
@@ -3680,9 +3154,7 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::EagerValues { .. }
                     | SqlDemand::ContextValue { .. }
                     | SqlDemand::TypedContext { .. }
-                    | SqlDemand::Clock
-                    | SqlDemand::Tso
-                    | SqlDemand::Epoch { .. }
+                    | SqlDemand::Arguments { .. }
             ) && invocation.arg_types.is_empty());
         let start = self.install_task(
             invocation.slot,
@@ -3778,12 +3250,15 @@ impl NativeBatchHosts<'_> {
                 SqlDemand::UserVariableRead { .. }
             ) {
                 guard.provider.finish_user_variable(&guard.task, None)
-            } else if matches!(guard.provider.task(&guard.task)?.demand, SqlDemand::Clock) {
-                guard.provider.resume_clock(&guard.task, None)
-            } else if matches!(guard.provider.task(&guard.task)?.demand, SqlDemand::Tso) {
-                guard.provider.resume_tso(&guard.task, None)
             } else {
-                guard.provider.resume_epoch(&guard.task, None)
+                let current = guard.provider.task(&guard.task)?;
+                let SqlDemand::Arguments { next, tokens } = current.demand else {
+                    return Err(binding("niladic argument task differs"));
+                };
+                let (slot, row) = (current.slot, current.row);
+                guard
+                    .provider
+                    .resume_arguments(&guard.task, slot, row, next, tokens, None)
             };
             return match result {
                 Ok(HostStep::Ready(value)) => Ok(HostStart::Ready(value)),
@@ -3801,7 +3276,7 @@ impl NativeBatchHosts<'_> {
         id: &HostTaskId,
         reply: HostArgReply<'_>,
     ) -> LocalResult<HostStep> {
-        self.validate_row_reply(id, reply)?;
+        let task = self.validate_row_reply(id, reply)?;
         macro_rules! native_token {
             ($token:ident, $message:literal) => {
                 let ScalarValueRef::Bytes(Some($token)) = reply.values.get_scalar_ref(0) else {
@@ -3809,11 +3284,15 @@ impl NativeBatchHosts<'_> {
                 };
             };
         }
-        if matches!(self.task(id)?.demand, SqlDemand::Ast(_)) {
+        if matches!(task.demand, SqlDemand::Ast(_)) {
             native_token!(token, "AST source cannot be wire NULL");
             return self.resume_ast(id, Some(token));
         }
-        let task = self.task(id)?;
+        if let SqlDemand::Arguments { next, tokens } = task.demand {
+            native_token!(token, "native argument cannot be wire NULL");
+            let (slot, row) = (task.slot, task.row);
+            return self.resume_arguments(id, slot, row, next, tokens, Some(token));
+        }
         if matches!(task.demand, SqlDemand::JsonSchema(_)) {
             native_token!(token, "schema source cannot be wire NULL");
             return self.resume_json_schema(id, Some(token));
@@ -3843,17 +3322,9 @@ impl NativeBatchHosts<'_> {
         if matches!(task.demand, SqlDemand::Numeric(_)) {
             return self.resume_numeric_parent(id, reply);
         }
-        if matches!(task.demand, SqlDemand::TimestampDiff { .. }) {
-            native_token!(token, "timestamp diff source cannot be wire NULL");
-            return self.resume_timestamp_diff(id, token);
-        }
         if matches!(task.demand, SqlDemand::Like { .. }) {
             native_token!(token, "LIKE source cannot be wire NULL");
             return self.resume_wildcard(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Crypto { .. }) {
-            native_token!(token, "crypto source cannot be wire NULL");
-            return self.resume_crypto(id, token);
         }
         if matches!(task.demand, SqlDemand::TypedContext { .. }) {
             native_token!(token, "typed context operand cannot be wire NULL");
@@ -3899,65 +3370,9 @@ impl NativeBatchHosts<'_> {
             native_token!(token, "eager argument cannot be wire NULL");
             return self.resume_eager_values(id, token);
         }
-        if matches!(task.demand, SqlDemand::Compression { .. }) {
-            native_token!(token, "compression source cannot be wire NULL");
-            return self.resume_compression(id, token);
-        }
-        if matches!(task.demand, SqlDemand::ByteUnary { .. }) {
-            native_token!(token, "byte unary source cannot be wire NULL");
-            return self.resume_byte_unary(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Misc { .. }) {
-            native_token!(token, "misc source cannot be wire NULL");
-            return self.resume_misc(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Identity { .. }) {
-            native_token!(token, "identity source cannot be wire NULL");
-            return self.resume_identity(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Grouping { .. }) {
-            native_token!(token, "GROUPING source cannot be wire NULL");
-            return self.resume_grouping(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Vector { .. }) {
-            native_token!(token, "vector source cannot be wire NULL");
-            return self.resume_vector(id, token);
-        }
-        if matches!(task.demand, SqlDemand::DurationConstruction { .. }) {
-            native_token!(token, "duration source cannot be wire NULL");
-            return self.resume_duration_construction(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Calendar { .. }) {
-            native_token!(token, "calendar source cannot be wire NULL");
-            return self.resume_calendar(id, token);
-        }
-        if matches!(task.demand, SqlDemand::Clock) {
-            native_token!(token, "clock source cannot be wire NULL");
-            return self.resume_clock(id, Some(token));
-        }
-        if matches!(task.demand, SqlDemand::Tso) {
-            native_token!(token, "TSO source cannot be wire NULL");
-            return self.resume_tso(id, Some(token));
-        }
-        if matches!(task.demand, SqlDemand::Epoch { .. }) {
-            native_token!(token, "epoch source cannot be wire NULL");
-            return self.resume_epoch(id, Some(token));
-        }
-        if matches!(task.demand, SqlDemand::Extract { .. }) {
-            native_token!(token, "EXTRACT source cannot be wire NULL");
-            return self.resume_extract(id, token);
-        }
         if matches!(task.demand, SqlDemand::DateArithmetic { .. }) {
             native_token!(token, "date arithmetic source cannot be wire NULL");
             return self.resume_date_arithmetic(id, token);
-        }
-        if matches!(task.demand, SqlDemand::BoundedStaleness { .. }) {
-            native_token!(token, "bounded source cannot be wire NULL");
-            return self.resume_bounded_staleness(id, token);
-        }
-        if matches!(task.demand, SqlDemand::StrToDate { .. }) {
-            native_token!(token, "date source cannot be wire NULL");
-            return self.resume_str_to_date(id, token);
         }
         if matches!(task.demand, SqlDemand::JsonSumCrc32) {
             native_token!(token, "JSON checksum source cannot be wire NULL");
@@ -4098,7 +3513,11 @@ impl NativeBatchHosts<'_> {
             None => self.finish(id).map(HostStep::Ready),
         }
     }
-    fn validate_row_reply(&self, id: &HostTaskId, reply: HostArgReply<'_>) -> LocalResult<()> {
+    fn validate_row_reply(
+        &self,
+        id: &HostTaskId,
+        reply: HostArgReply<'_>,
+    ) -> LocalResult<&NativeTask> {
         let task = self.task(id)?;
         if task.next_argument()? != Some(reply.index)
             || self
@@ -4118,7 +3537,7 @@ impl NativeBatchHosts<'_> {
                 "SQL host reply differs from its demanded argument".into(),
             ));
         }
-        Ok(())
+        Ok(task)
     }
 }
 

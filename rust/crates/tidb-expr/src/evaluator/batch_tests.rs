@@ -13011,13 +13011,13 @@ fn native_str_to_date_providers_keep_capabilities_resources_callbacks_and_cancel
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::StrToDate {
-            arguments: [3, 8],
-            result_type,
+        let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+            arguments: ([3, 8]).into(),
+            kernel: hosts::NativeArgumentKernel::StrToDate { output: output },
+            result_type: Some(result_type),
             output_node: 2,
             output_role: (output == Output::Value).then_some(NativeValueRole::Output),
-            output,
-        }];
+        })];
         let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let row = InputRow {
@@ -13732,14 +13732,16 @@ fn native_timestamp_diff_providers_authenticate_all_prefixes_bound_work_and_reus
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::TimestampDiff {
-                arguments: [3, 8, 13],
-                argument_types: [string_ty(), string_ty(), string_ty()],
-                stop_on_null,
-                result_type,
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ([3, 8, 13]).into(),
+                kernel: hosts::NativeArgumentKernel::TimestampDiff {
+                    argument_types: [string_ty(), string_ty(), string_ty()],
+                    stop_on_null: stop_on_null,
+                },
+                result_type: Some(result_type),
                 output_node: 2,
                 output_role: (!typed).then_some(NativeValueRole::Output),
-            }];
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -14632,15 +14634,17 @@ fn native_bounded_staleness_capabilities_budget_cancel_and_exclusive_safe_callba
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::BoundedStaleness {
-            arguments: [3, 8],
-            argument_types: std::array::from_fn(|_| {
-                FieldType::new(FieldTypeCode::Datetime).with_decimal(6)
-            }),
-            result_type,
+        let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+            arguments: ([3, 8]).into(),
+            kernel: hosts::NativeArgumentKernel::BoundedStaleness {
+                argument_types: std::array::from_fn(|_| {
+                    FieldType::new(FieldTypeCode::Datetime).with_decimal(6)
+                }),
+            },
+            result_type: Some(result_type),
             output_node: 2,
             output_role: (!typed).then_some(NativeValueRole::Output),
-        }];
+        })];
         let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let row = InputRow {
@@ -15791,14 +15795,16 @@ fn native_extract_capabilities_budget_cancel_and_exclusive_callbacks() {
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::Extract {
-                arguments: arguments.clone(),
-                source_type: string_ty(),
-                unit: composite.then(|| "DAY_SECOND".into()),
-                result_type: ty(),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: (arguments.clone()).into(),
+                kernel: hosts::NativeArgumentKernel::Extract {
+                    source_type: string_ty(),
+                    unit: composite.then(|| "DAY_SECOND".into()),
+                },
+                result_type: Some(ty()),
                 output_node: 2,
                 output_role: (!typed).then_some(NativeValueRole::Output),
-            }];
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -16572,13 +16578,13 @@ fn native_unix_epoch_capabilities_deferred_format_resources_clock_cleanup_and_ex
             .unwrap();
             let slot = catalog.slot(0).unwrap();
             let nodes = [3, 8][..arity].to_vec();
-            let metadata = [NativeHostMetadata::Epoch {
-                arguments: nodes.clone().into_boxed_slice(),
-                from,
-                result_type: if from { string_ty() } else { ty() },
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: (nodes.clone().into_boxed_slice()).into(),
+                kernel: hosts::NativeArgumentKernel::Epoch { from: from },
+                result_type: Some(if from { string_ty() } else { ty() }),
                 output_node: 2,
-                output_role,
-            }];
+                output_role: Some(output_role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -16838,13 +16844,13 @@ fn native_unix_epoch_capabilities_deferred_format_resources_clock_cleanup_and_ex
                 drop(provider);
                 context.events.borrow_mut().clear();
                 context.error.set(false);
-                let metadata = [NativeHostMetadata::Epoch {
-                    arguments: vec![3].into_boxed_slice(),
-                    from: true,
-                    result_type: FieldType::new(FieldTypeCode::Datetime).with_decimal(3),
+                let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                    arguments: (vec![3].into_boxed_slice()).into(),
+                    kernel: hosts::NativeArgumentKernel::Epoch { from: true },
+                    result_type: Some(FieldType::new(FieldTypeCode::Datetime).with_decimal(3)),
                     output_node: 2,
-                    output_role,
-                }];
+                    output_role: Some(output_role),
+                })];
                 let catalog = HostCatalog::for_sql_batch(vec![(
                     op,
                     HostSignature {
@@ -17208,18 +17214,20 @@ fn native_tso_capabilities_budget_error_cancel_reuse_and_exclusive_callbacks() {
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::Tso {
-                argument_type: (op.arity() != 0).then(ty),
-                argument: (op.arity() != 0).then_some(3),
-                operation: op,
-                result_type: if op == Op::Physical {
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ((op.arity() != 0).then_some(3)).into(),
+                kernel: hosts::NativeArgumentKernel::Tso {
+                    argument_type: (op.arity() != 0).then(ty),
+                    operation: op,
+                },
+                result_type: Some(if op == Op::Physical {
                     FieldType::new(FieldTypeCode::Datetime).with_decimal(0)
                 } else {
                     ty()
-                },
+                }),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -17921,17 +17929,19 @@ fn native_clock_capabilities_precision_without_copy_resources_cleanup_and_exclus
                 )])
                 .unwrap();
                 let slot = catalog.slot(0).unwrap();
-                let metadata = [NativeHostMetadata::Clock {
-                    argument: (arity != 0).then_some(3),
-                    operation: op,
-                    result_type: if matches!(op, Op::Curtime | Op::CurrentTime | Op::UtcTime) {
-                        FieldType::new(FieldTypeCode::Duration).with_decimal(6)
-                    } else {
-                        FieldType::new(FieldTypeCode::Datetime).with_decimal(6)
-                    },
+                let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                    arguments: ((arity != 0).then_some(3)).into(),
+                    kernel: hosts::NativeArgumentKernel::Clock { operation: op },
+                    result_type: Some(
+                        if matches!(op, Op::Curtime | Op::CurrentTime | Op::UtcTime) {
+                            FieldType::new(FieldTypeCode::Duration).with_decimal(6)
+                        } else {
+                            FieldType::new(FieldTypeCode::Datetime).with_decimal(6)
+                        },
+                    ),
                     output_node: 2,
-                    output_role: role,
-                }];
+                    output_role: Some(role),
+                })];
                 let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
                 let row = InputRow {
@@ -18482,20 +18492,22 @@ fn native_calendar_capabilities_eager_mode_resources_cancel_and_exclusive_callba
                 )])
                 .unwrap();
                 let slot = catalog.slot(0).unwrap();
-                let metadata = [NativeHostMetadata::Calendar {
-                    arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                    source_type: string_ty(),
-                    operation: op,
-                    result_type: if matches!(op, O::Date | O::LastDay) {
+                let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                    arguments: ((3..3 + arity).collect::<Vec<_>>().into_boxed_slice()).into(),
+                    kernel: hosts::NativeArgumentKernel::Calendar {
+                        source_type: string_ty(),
+                        operation: op,
+                    },
+                    result_type: Some(if matches!(op, O::Date | O::LastDay) {
                         FieldType::new(FieldTypeCode::Date)
                     } else if matches!(op, O::MonthName | O::DayName) {
                         string_ty()
                     } else {
                         ty()
-                    },
+                    }),
                     output_node: 2,
-                    output_role: role,
-                }];
+                    output_role: Some(role),
+                })];
                 let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
                 let row = InputRow {
@@ -19148,14 +19160,16 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                     .collect::<Vec<_>>(),
                 _ => vec![string_ty(); arity],
             };
-            let metadata = [NativeHostMetadata::DurationConstruction {
-                arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                argument_types: original_types.clone().into_boxed_slice(),
-                operation: op,
-                result_type: string_ty(),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ((3..3 + arity).collect::<Vec<_>>().into_boxed_slice()).into(),
+                kernel: hosts::NativeArgumentKernel::DurationConstruction {
+                    argument_types: original_types.clone().into_boxed_slice(),
+                    operation: op,
+                },
+                result_type: Some(string_ty()),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -21106,13 +21120,13 @@ fn native_vector_capabilities_resources_and_cancel_cleanup() {
                 O::FromText => FieldType::new(FieldTypeCode::VectorFloat32),
                 _ => real_ty(),
             };
-            let metadata = [NativeHostMetadata::Vector {
-                arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                operation: op,
-                result_type: result_type.clone(),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ((3..3 + arity).collect::<Vec<_>>().into_boxed_slice()).into(),
+                kernel: hosts::NativeArgumentKernel::Vector(op),
+                result_type: Some(result_type.clone()),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -21712,13 +21726,15 @@ fn native_grouping_capabilities_resources_and_cancel_cleanup() {
                 .unwrap();
                 let slot = catalog.slot(0).unwrap();
 
-                let metadata = [NativeHostMetadata::Grouping {
-                    argument: 3,
-                    metadata: metadata_case.clone().map(std::sync::Arc::new),
+                let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                    arguments: (3).into(),
+                    kernel: hosts::NativeArgumentKernel::Grouping(
+                        metadata_case.clone().map(std::sync::Arc::new),
+                    ),
                     result_type: result_type.clone(),
                     output_node: 2,
-                    output_role: role,
-                }];
+                    output_role: Some(role),
+                })];
                 let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
                 let row = InputRow {
@@ -23184,14 +23200,16 @@ fn native_misc_identity_capabilities_consumption_resources_panics_and_recovery()
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::Identity {
-                arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                name_const,
-                probe: None,
-                result_type: ty().with_unsigned(true),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ((3..3 + arity).collect::<Vec<_>>().into_boxed_slice()).into(),
+                kernel: hosts::NativeArgumentKernel::Identity {
+                    name_const: name_const,
+                    probe: None,
+                },
+                result_type: Some(ty().with_unsigned(true)),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -23828,14 +23846,16 @@ fn misc_native_capabilities_callbacks_ignored_payloads_panics_and_recovery() {
                 )])
                 .unwrap();
                 let slot = catalog.slot(0).unwrap();
-                let metadata = [NativeHostMetadata::Misc {
-                    arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                    operation: op,
-                    probe: None,
-                    result_type: string_ty(),
+                let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                    arguments: ((3..3 + arity).collect::<Vec<_>>().into_boxed_slice()).into(),
+                    kernel: hosts::NativeArgumentKernel::Misc {
+                        operation: op,
+                        probe: None,
+                    },
+                    result_type: Some(string_ty()),
                     output_node: 2,
-                    output_role: role,
-                }];
+                    output_role: Some(role),
+                })];
                 let store = RefCell::new(NativeValueStore::new().unwrap());
                 store.borrow_mut().begin_window().unwrap();
                 let row = InputRow {
@@ -24159,14 +24179,16 @@ fn misc_native_hash_unused_vector_payload_keeps_original_small_body_work() {
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::Misc {
-            arguments: vec![3].into_boxed_slice(),
-            operation: op,
-            probe: None,
-            result_type: ty().with_unsigned(true),
+        let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+            arguments: (vec![3].into_boxed_slice()).into(),
+            kernel: hosts::NativeArgumentKernel::Misc {
+                operation: op,
+                probe: None,
+            },
+            result_type: Some(ty().with_unsigned(true)),
             output_node: 2,
-            output_role: NativeValueRole::Output,
-        }];
+            output_role: Some(NativeValueRole::Output),
+        })];
         let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let row = InputRow {
@@ -24429,14 +24451,16 @@ fn byte_unary_capabilities_consumption_panics_resources_ignored_suffix_and_recov
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::ByteUnary {
-                argument: 3,
-                operation: op,
-                probe: None,
-                result_type: ret.clone(),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: (3).into(),
+                kernel: hosts::NativeArgumentKernel::ByteUnary {
+                    operation: op,
+                    probe: None,
+                },
+                result_type: Some(ret.clone()),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -24878,14 +24902,16 @@ fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::Crypto {
-                arguments: (3..3 + arity).collect::<Vec<_>>().into_boxed_slice(),
-                operation: op,
-                probe: None,
-                result_type: string_ty(),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ((3..3 + arity).collect::<Vec<_>>().into_boxed_slice()).into(),
+                kernel: hosts::NativeArgumentKernel::Crypto {
+                    operation: op,
+                    probe: None,
+                },
+                result_type: Some(string_ty()),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
@@ -25556,14 +25582,16 @@ fn compression_actual_capabilities_warnings_callbacks_resources_and_recovery() {
             )])
             .unwrap();
             let slot = catalog.slot(0).unwrap();
-            let metadata = [NativeHostMetadata::Compression {
-                argument: 3,
-                operation: op,
-                probe: None,
-                result_type: ret.clone(),
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: (3).into(),
+                kernel: hosts::NativeArgumentKernel::Compression {
+                    operation: op,
+                    probe: None,
+                },
+                result_type: Some(ret.clone()),
                 output_node: 2,
-                output_role: role,
-            }];
+                output_role: Some(role),
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let row = InputRow {
