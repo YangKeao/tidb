@@ -462,8 +462,7 @@ impl<'a> NativeBatchHosts<'a> {
         id: &HostTaskId,
         reply: HostArgReply<'_>,
     ) -> LocalResult<HostStep> {
-        self.validate_row_reply(id, reply)?;
-        let task = self.task(id)?;
+        let task = self.validate_row_reply(id, reply)?;
         let (slot, row) = (task.slot, task.row);
         let SqlDemand::Numeric(state) = &task.demand else {
             return Err(binding("numeric continuation absent"));

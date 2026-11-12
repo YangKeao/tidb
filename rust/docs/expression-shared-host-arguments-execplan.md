@@ -27,7 +27,8 @@ Reduce repeated per-function state machines, validation and empty ownership/coer
 - [x] Complete the cumulative1013 selection (1012pass/1sameknown), both release builds,54-file format check, root lint and unchanged source/isolation proof.
 - [x] Complete the next14-scene224-cell comparison against pinned43ba91c201 and the frozen original; preserve the initial estRows-only preflight failure, one restart and strict successful retry; clean owned services/data.
 - [x] Prepare the second result report, complete raw evidence and independently runnable Python3.9 verifier.
-- [ ] Apply the separately reviewed small dispatch/direct-call cleanup, then build, validate and measure that source separately.
+- [x] Apply the separately reviewed six-file dispatch/direct-call cleanup:44 fewer production lines, no test or fixture changes.
+- [ ] Build, validate and measure the six-file checkpoint separately against pinnedffb508eeae.
 - [ ] Human review and final acceptance. The broader project's path-unification and performance goals remain incomplete.
 
 ## Surprises & Discoveries

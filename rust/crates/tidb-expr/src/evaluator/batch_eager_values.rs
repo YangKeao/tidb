@@ -140,8 +140,7 @@ impl NativeBatchHosts<'_> {
             }
         }
 
-        let result =
-            (|| kernel.eval_in(self.context, ready, |error| kernel.source_math_error(error)))();
+        let result = kernel.eval_in(self.context, ready, |error| kernel.source_math_error(error));
         // Every original callback ran without a storage Ref. It may have changed
         // the store, so none of the consumed capabilities can be trusted again.
         {
@@ -242,9 +241,9 @@ impl NativeBatchHosts<'_> {
                 store
                     .borrow()
                     .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
-            (|| action.write(self.context, &name, value))()
+            action.write(self.context, &name, value)
         } else {
-            (|| action.read(self.context, &name))()
+            action.read(self.context, &name)
         };
         if let Some(token) = token {
             store

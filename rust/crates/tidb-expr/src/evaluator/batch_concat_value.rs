@@ -46,7 +46,7 @@ impl NativeBatchHosts<'_> {
         let converted = {
             let values = store.borrow();
             let value = values.get(token, NativeValueRole::CharInput, origin)?;
-            (|| crate::coerce::coerce_str_bytes(value))()
+            crate::coerce::coerce_str_bytes(value)
         };
         let converted = match converted {
             Ok(value) => value,

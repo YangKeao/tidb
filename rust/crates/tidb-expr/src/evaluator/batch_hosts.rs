@@ -3014,80 +3014,40 @@ impl NativeBatchHosts<'_> {
                 provider: self,
                 task,
             };
-            let result = if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::HeaderOutcome
-            ) {
-                guard.provider.finish_header_outcome(&guard.task)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::PbLazy(_)
-            ) {
-                guard.provider.resume_pb_lazy(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::PbBoolean(_)
-            ) {
-                guard.provider.resume_pb_boolean(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::PbIntegerMod(_)
-            ) {
-                guard.provider.resume_pb_integer_mod(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::PbEagerValues { .. }
-            ) {
-                guard.provider.resume_pb_eager_values(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::WeightString(_)
-            ) {
-                guard.provider.resume_weight_string(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::JsonSchema(_)
-            ) {
-                guard.provider.resume_json_schema(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::FinalState(_)
-            ) {
-                guard.provider.resume_final_state(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::Stateful(_)
-            ) {
-                guard.provider.resume_stateful(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::TypedContext { .. }
-            ) {
-                guard.provider.finish_typed_context(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::ContextValue { .. }
-            ) {
-                guard.provider.finish_context_value(&guard.task, None)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::EagerValues { .. }
-            ) {
-                guard.provider.finish_eager_values(&guard.task)
-            } else if matches!(
-                guard.provider.task(&guard.task)?.demand,
-                SqlDemand::UserVariableRead { .. }
-            ) {
-                guard.provider.finish_user_variable(&guard.task, None)
-            } else {
-                let current = guard.provider.task(&guard.task)?;
-                let SqlDemand::Arguments { next, tokens } = current.demand else {
-                    return Err(binding("niladic argument task differs"));
-                };
-                let (slot, row) = (current.slot, current.row);
-                guard
-                    .provider
-                    .resume_arguments(&guard.task, slot, row, next, tokens, None)
+            let current = guard.provider.task(&guard.task)?;
+            let result = match current.demand {
+                SqlDemand::HeaderOutcome => guard.provider.finish_header_outcome(&guard.task),
+                SqlDemand::PbLazy(_) => guard.provider.resume_pb_lazy(&guard.task, None),
+                SqlDemand::PbBoolean(_) => guard.provider.resume_pb_boolean(&guard.task, None),
+                SqlDemand::PbIntegerMod(_) => {
+                    guard.provider.resume_pb_integer_mod(&guard.task, None)
+                }
+                SqlDemand::PbEagerValues { .. } => {
+                    guard.provider.resume_pb_eager_values(&guard.task, None)
+                }
+                SqlDemand::WeightString(_) => {
+                    guard.provider.resume_weight_string(&guard.task, None)
+                }
+                SqlDemand::JsonSchema(_) => guard.provider.resume_json_schema(&guard.task, None),
+                SqlDemand::FinalState(_) => guard.provider.resume_final_state(&guard.task, None),
+                SqlDemand::Stateful(_) => guard.provider.resume_stateful(&guard.task, None),
+                SqlDemand::TypedContext { .. } => {
+                    guard.provider.finish_typed_context(&guard.task, None)
+                }
+                SqlDemand::ContextValue { .. } => {
+                    guard.provider.finish_context_value(&guard.task, None)
+                }
+                SqlDemand::EagerValues { .. } => guard.provider.finish_eager_values(&guard.task),
+                SqlDemand::UserVariableRead { .. } => {
+                    guard.provider.finish_user_variable(&guard.task, None)
+                }
+                SqlDemand::Arguments { next, tokens } => {
+                    let (slot, row) = (current.slot, current.row);
+                    guard
+                        .provider
+                        .resume_arguments(&guard.task, slot, row, next, tokens, None)
+                }
+                _ => return Err(binding("niladic argument task differs")),
             };
             return match result {
                 Ok(HostStep::Ready(value)) => Ok(HostStart::Ready(value)),

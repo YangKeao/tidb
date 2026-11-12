@@ -148,15 +148,13 @@ impl NativeBatchHosts<'_> {
                 NativeValueRole::CharInput,
                 origin(0),
             )?;
-            (|| {
-                weight_value::evaluate(
-                    value,
-                    &weight_value::source_type(meta.source_type.as_ref()),
-                    meta.explicit_collation,
-                    padding,
-                    self.context,
-                )
-            })()
+            weight_value::evaluate(
+                value,
+                &weight_value::source_type(meta.source_type.as_ref()),
+                meta.explicit_collation,
+                padding,
+                self.context,
+            )
         };
         check_tokens()?;
         let value = match result {

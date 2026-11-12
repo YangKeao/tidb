@@ -8346,7 +8346,7 @@ impl PreparedBatch {
         let target = match profiles.probe {
             DeferredRootProbe::Fixed(target) => target,
             DeferredRootProbe::Parameter(order) => {
-                (|| crate::context_value::read_parameter_type(order, ctx))()?.eval_type()
+                crate::context_value::read_parameter_type(order, ctx)?.eval_type()
             }
         };
         profiles.selected = profiles
@@ -8845,7 +8845,7 @@ impl PreparedBatchSuite {
                         .as_ref()
                         .and_then(|p| p.root_type_probe)
                     {
-                        (|| order.run(native_ctx))()?;
+                        order.run(native_ctx)?;
                     }
                 }
                 worker.execute_selected_profile(
