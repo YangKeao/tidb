@@ -89,3 +89,5 @@ Latest review directive ac4f0165 authorizes Git push for review and replaces sou
 ## Overnight selected-value cleanup
 
 Checkpoint 4724a80b2a and unchanged SDK f7672bf are pushed to the existing forks. Static review found no blocker; cumulative validation remains pending. The next step removes selected-value functions that only return Ok(value) or Ok(value.clone()), replaces exhausted CASE/COALESCE's empty-kernel invocation with NULL, and calls the existing scalar result conversion directly. Demand cursors, callback order, store reauthentication, payload extent accounting and real conversion errors remain. Existing opaque-value tests exercise actual IF/COALESCE/ANY_VALUE paths after helper removal. Preserve the checkpoint, then run cumulative unit tests, lint and the final SQL comparison including date arithmetic and JSON checksum.
+
+Cumulative build attempt 1 caught a remaining decimal fast-source call to the deleted output-free profile_shape walk. Remove this last call; keep the failed compiler receipt and retry the same build. No SQL timing has started.

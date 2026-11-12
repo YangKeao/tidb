@@ -348,7 +348,6 @@ fn compile_plan<'a, N: SourceReference<'a>>(
     if arithmetic(root.into()).is_none() && !cast_root(root.into()) {
         return Err(binding("fast root is outside the priority arithmetic shape").into());
     }
-    profile_shape(root, limits)?;
     let mut budget = Budget { used: 0 };
     if let Storage::Schema(fields) = storage {
         for field in fields {
