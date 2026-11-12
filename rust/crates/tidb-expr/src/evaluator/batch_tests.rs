@@ -12336,12 +12336,13 @@ fn native_json_sum_crc32_capabilities_resources_and_cancel_reuse_are_terminal() 
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::JsonSumCrc32 {
-            argument_node: 3,
-            result_type: ty(),
+        let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+            arguments: (3).into(),
+            kernel: hosts::NativeArgumentKernel::JsonSumCrc32,
+            result_type: Some(ty()),
             output_node: 2,
             output_role: (!typed).then_some(NativeValueRole::Output),
-        }];
+        })];
         let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let row = InputRow {
@@ -15222,25 +15223,27 @@ fn native_date_arithmetic_capabilities_budget_cancel_and_exclusive_callbacks() {
         )])
         .unwrap();
         let slot = catalog.slot(0).unwrap();
-        let metadata = [NativeHostMetadata::DateArithmetic {
-            arguments: [3, 8],
-            argument_types: [
-                if temporal {
-                    FieldType::new(FieldTypeCode::Duration).with_decimal(6)
-                } else {
-                    string_ty()
-                },
-                string_ty(),
-            ]
-            .map(Some),
-            unit: if temporal { "HOUR_MINUTE" } else { "DAY" }.into(),
-            sign: 1,
-            result_fsp: temporal.then_some(6),
-            output,
+        let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+            arguments: ([3, 8]).into(),
+            kernel: hosts::NativeArgumentKernel::DateArithmetic {
+                argument_types: [
+                    if temporal {
+                        FieldType::new(FieldTypeCode::Duration).with_decimal(6)
+                    } else {
+                        string_ty()
+                    },
+                    string_ty(),
+                ]
+                .map(Some),
+                unit: if temporal { "HOUR_MINUTE" } else { "DAY" }.into(),
+                sign: 1,
+                result_fsp: temporal.then_some(6),
+                output: output,
+            },
             result_type: Some(result_type),
             output_node: 2,
             output_role: (output == SqlTemporalOutput::Value).then_some(NativeValueRole::Output),
-        }];
+        })];
         let store = RefCell::new(NativeValueStore::new().unwrap());
         store.borrow_mut().begin_window().unwrap();
         let row = InputRow {

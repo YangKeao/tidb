@@ -14,18 +14,8 @@
 
 //! Complete source-typed vector ownership shared by native window operators.
 use super::*;
-/// Includes Decimal padding before any native conversion can format it.
-/// Coefficient storage alone does not bound a value's displayed work buffers.
-
 impl NativeBatchHosts<'_> {
     pub(super) fn collect_window_source(
-        &mut self,
-        reply: &HostWindowArgReply<'_>,
-        facts: WindowSourceFacts<'_>,
-    ) -> LocalResult<Vec<Datum>> {
-        self.collect_window_source_charged(reply, facts, None)
-    }
-    pub(super) fn collect_window_source_charged(
         &mut self,
         reply: &HostWindowArgReply<'_>,
         facts: WindowSourceFacts<'_>,
@@ -47,8 +37,6 @@ impl NativeBatchHosts<'_> {
         values
             .try_reserve_exact(count)
             .map_err(|error| LocalError::ResourceLimit(error.to_string()))?;
-        // Capacity is fixed for this source phase; carry the payload charge
-        // incrementally rather than rescanning every prefix before each row.
 
         for position in 0..count {
             let ScalarValueRef::Bytes(Some(token)) = reply.values.get_scalar_ref(position) else {
@@ -61,13 +49,12 @@ impl NativeBatchHosts<'_> {
                     input_row: reply.physical_rows[position],
                 },
             };
-            store
-                .borrow()
-                .get(token, NativeValueRole::CharInput, origin)?;
-
             let value = if matches!(owner, WindowArithmeticSource::Literal) && position != 0 {
                 // Validate every capability, but perform literal typed conversion
                 // only once, exactly before the original broadcast.
+                store
+                    .borrow()
+                    .get(token, NativeValueRole::CharInput, origin)?;
                 values[0].clone()
             } else {
                 let value =
@@ -76,8 +63,7 @@ impl NativeBatchHosts<'_> {
                         .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
 
                 // Forwarded values have already crossed their typed owner.
-                // Copy capacity is billed separately; no display/formatter
-                // work occurs in these branches, including Decimal + NULL.
+                // No display/formatter work occurs in these branches.
 
                 let value = match owner {
                     WindowArithmeticSource::Literal => {

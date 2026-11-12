@@ -160,6 +160,7 @@ impl NativeBatchHosts<'_> {
                 node: argument_nodes[index],
                 target: source,
             },
+            None,
         )?;
         // The complete typed source phase precedes every numeric argument cast.
 

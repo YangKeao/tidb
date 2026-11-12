@@ -191,8 +191,6 @@ impl NativeBatchHosts<'_> {
                     input_row: reply.physical_rows[0],
                 },
             };
-            store.borrow().diagnostic_text(token, origin)?;
-
             store
                 .borrow()
                 .diagnostic_text(token, origin)?
@@ -227,7 +225,7 @@ impl NativeBatchHosts<'_> {
                 binary_literal[state.index],
                 batch.domain,
             );
-            let values = self.collect_window_source_charged(
+            let values = self.collect_window_source(
                 &reply,
                 WindowSourceFacts {
                     field,

@@ -7518,10 +7518,9 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                                                             arguments,
                                                             ..
                                                         } => arguments[request.index],
-                                                        NativeHostMetadata::DateArithmetic {
-                                                            arguments,
-                                                            ..
-                                                        } => arguments[request.index],
+                                                        NativeHostMetadata::Arguments(meta) => {
+                                                            meta.arguments[request.index]
+                                                        }
                                                         NativeHostMetadata::ValueCast {
                                                             argument_node,
                                                             ..
@@ -8087,20 +8086,22 @@ fn optional_reserved_prefix_date_typed_claims_require_genuine_fields() {
         .unwrap();
         let slot = catalog.slot(0).unwrap();
         for mask in [0u8, 1, 2, 4, 7] {
-            let metadata = [NativeHostMetadata::DateArithmetic {
-                arguments: [1, 2],
-                argument_types: [
-                    (mask & 2 == 0).then(string_ty),
-                    (mask & 4 == 0).then(string_ty),
-                ],
-                unit: "DAY".into(),
-                sign: 1,
-                result_fsp: None,
+            let metadata = [NativeHostMetadata::Arguments(hosts::NativeArguments {
+                arguments: ([1, 2]).into(),
+                kernel: hosts::NativeArgumentKernel::DateArithmetic {
+                    argument_types: [
+                        (mask & 2 == 0).then(string_ty),
+                        (mask & 4 == 0).then(string_ty),
+                    ],
+                    unit: "DAY".into(),
+                    sign: 1,
+                    result_fsp: None,
+                    output: output,
+                },
                 result_type: (mask & 1 == 0).then(|| result.clone()),
                 output_node: 0,
                 output_role: (output == Output::Value).then_some(NativeValueRole::Output),
-                output,
-            }];
+            })];
             let store = RefCell::new(NativeValueStore::new().unwrap());
             store.borrow_mut().begin_window().unwrap();
             let mut hosts = NativeBatchHosts::new(catalog.clone(), &metadata, &context)

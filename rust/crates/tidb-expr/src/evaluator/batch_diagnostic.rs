@@ -121,16 +121,6 @@ impl NativeHostMetadata {
                 output_role,
                 ..
             } => Some((*output_node, *output_role)),
-            Self::DateArithmetic {
-                output_node,
-                output_role,
-                ..
-            }
-            | Self::JsonSumCrc32 {
-                output_node,
-                output_role,
-                ..
-            } => output_role.map(|role| (*output_node, role)),
             Self::In(v) => Some((v.output_node, v.output_role)),
             Self::Interval(v) => Some((v.output_node, v.output_role)),
             Self::Extremum(v) => Some((v.output_node, v.output_role)),
@@ -145,12 +135,10 @@ impl NativeHostMetadata {
             Self::TypedContext(meta) => meta.argument.filter(|_| index == 0),
             Self::ContextValue { argument, .. } => argument.filter(|_| index == 0),
             Self::EagerValues { arguments, .. } => arguments.get(index).copied(),
-            Self::JsonSumCrc32 { argument_node, .. }
-            | Self::Math { argument_node, .. }
+            Self::Math { argument_node, .. }
             | Self::ValueCast { argument_node, .. }
             | Self::UnaryWindow { argument_node, .. } => single(argument_node),
             Self::Like { arguments, .. } => arguments.get(index).copied(),
-            Self::DateArithmetic { arguments, .. } => arguments.get(index).copied(),
             Self::Selection { argument_nodes, .. } | Self::DecimalFast { argument_nodes, .. } => {
                 argument_nodes.get(index).copied()
             }

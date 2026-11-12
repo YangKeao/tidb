@@ -47,6 +47,14 @@ impl std::ops::Deref for NativeArgumentNodes {
     }
 }
 pub(in super::super) enum NativeArgumentKernel {
+    DateArithmetic {
+        argument_types: [Option<FieldType>; 2],
+        unit: Box<str>,
+        sign: i64,
+        result_fsp: Option<u32>,
+        output: tidb_query_expr::local::SqlTemporalOutput,
+    },
+    JsonSumCrc32,
     Extract {
         source_type: FieldType,
         unit: Option<Box<str>>,
@@ -125,11 +133,15 @@ impl NativeArguments {
     pub(super) fn accepts(&self, operation: SqlBatchHostOperation, arity: usize) -> bool {
         if arity != self.arguments.len()
             || arity > 3
-            || (!matches!(self.kernel, NativeArgumentKernel::Grouping(_))
-                && self.result_type.is_none())
             || (!matches!(
                 self.kernel,
-                NativeArgumentKernel::TimestampDiff { .. }
+                NativeArgumentKernel::Grouping(_) | NativeArgumentKernel::DateArithmetic { .. }
+            ) && self.result_type.is_none())
+            || (!matches!(
+                self.kernel,
+                NativeArgumentKernel::DateArithmetic { .. }
+                    | NativeArgumentKernel::JsonSumCrc32
+                    | NativeArgumentKernel::TimestampDiff { .. }
                     | NativeArgumentKernel::Extract { .. }
                     | NativeArgumentKernel::BoundedStaleness { .. }
                     | NativeArgumentKernel::StrToDate { .. }
@@ -138,6 +150,26 @@ impl NativeArguments {
             return false;
         }
         match (&self.kernel, operation) {
+            (
+                NativeArgumentKernel::DateArithmetic {
+                    output,
+                    argument_types,
+                    ..
+                },
+                SqlBatchHostOperation::DateArithmeticNative { output: declared },
+            ) => {
+                arity == 2
+                    && *output == declared
+                    && (declared == tidb_query_expr::local::SqlTemporalOutput::Value
+                        || (self.result_type.is_some()
+                            && argument_types.iter().all(Option::is_some)))
+                    && (declared == tidb_query_expr::local::SqlTemporalOutput::Value)
+                        == self.output_role.is_some()
+            }
+            (
+                NativeArgumentKernel::JsonSumCrc32,
+                SqlBatchHostOperation::JsonSumCrc32Native { typed },
+            ) => arity == 1 && typed == self.output_role.is_none(),
             (
                 NativeArgumentKernel::Crypto { operation: a, .. },
                 SqlBatchHostOperation::CryptoNative(b),
@@ -234,6 +266,14 @@ impl NativeArguments {
     }
     fn name(&self) -> &'static str {
         match self.kernel {
+            NativeArgumentKernel::DateArithmetic { sign, .. } => {
+                if sign < 0 {
+                    "date_sub"
+                } else {
+                    "date_add"
+                }
+            }
+            NativeArgumentKernel::JsonSumCrc32 => "json_sum_crc32",
             NativeArgumentKernel::Crypto { operation: op, .. } => op.name(),
             NativeArgumentKernel::Compression { operation: op, .. } => op.name(),
             NativeArgumentKernel::ByteUnary { operation: op, .. } => op.name(),
@@ -356,6 +396,7 @@ impl NativeBatchHosts<'_> {
                 | NativeArgumentKernel::Extract { .. }
                 | NativeArgumentKernel::BoundedStaleness { .. }
                 | NativeArgumentKernel::StrToDate { .. }
+                | NativeArgumentKernel::DateArithmetic { .. }
         ) {
             let values = store.borrow();
             for i in 0..arity {
@@ -367,6 +408,43 @@ impl NativeBatchHosts<'_> {
             Ok(Datum::Null)
         } else {
             match &meta.kernel {
+                NativeArgumentKernel::DateArithmetic {
+                    argument_types,
+                    unit,
+                    sign,
+                    result_fsp,
+                    ..
+                } => {
+                    let mut owned = [inputs.copy(0)?, inputs.copy(1)?];
+                    let value = crate::tikv::date_add_scalar_values_bounded(
+                        self.context,
+                        unit,
+                        &mut owned,
+                        argument_types.each_ref().map(Option::as_ref),
+                        meta.result_type.as_ref(),
+                        *sign,
+                        *result_fsp,
+                        maximum,
+                    );
+                    drop(owned);
+                    value.and_then(|value| {
+                        coerce_optional_value_result(meta.name(), meta.result_type.as_ref(), value)
+                    })
+                }
+                NativeArgumentKernel::JsonSumCrc32 => {
+                    let value = {
+                        let values = store.borrow();
+                        crate::tikv::json_sum_crc32_bounded(inputs.get(&values, 0)?, maximum)
+                    };
+                    value.and_then(|value| {
+                        crate::scalar_function::coerce_function_result(
+                            "json_sum_crc32",
+                            meta.result_type.as_ref(),
+                            value,
+                        )
+                    })
+                }
+
                 NativeArgumentKernel::Extract { source_type, unit } => {
                     let null_unit = arity == 2 && inputs.get(&store.borrow(), 0)?.is_null();
                     if null_unit {
@@ -1174,7 +1252,9 @@ impl NativeBatchHosts<'_> {
         };
         let body_coerced = matches!(
             meta.kernel,
-            NativeArgumentKernel::DurationConstruction { .. }
+            NativeArgumentKernel::DateArithmetic { .. }
+                | NativeArgumentKernel::JsonSumCrc32
+                | NativeArgumentKernel::DurationConstruction { .. }
                 | NativeArgumentKernel::Calendar { .. }
                 | NativeArgumentKernel::Clock { .. }
                 | NativeArgumentKernel::Epoch { .. }
@@ -1196,7 +1276,7 @@ impl NativeBatchHosts<'_> {
                 .map(HostStep::Ready);
         }
         let output = match &meta.kernel {
-            NativeArgumentKernel::TimestampDiff { .. } => {
+            NativeArgumentKernel::TimestampDiff { .. } | NativeArgumentKernel::JsonSumCrc32 => {
                 let result = crate::expression::apply_enum_set_integer_view(
                     result,
                     meta.result_type.as_ref(),
@@ -1223,7 +1303,8 @@ impl NativeBatchHosts<'_> {
                 };
                 VectorValue::from_scalar(&ScalarValue::DateTime(value), 1)
             }
-            NativeArgumentKernel::StrToDate { output } => {
+            NativeArgumentKernel::StrToDate { output }
+            | NativeArgumentKernel::DateArithmetic { output, .. } => {
                 use tidb_query_expr::local::SqlTemporalOutput as Output;
                 let value = result;
                 let value = crate::expression::apply_enum_set_integer_view(
@@ -1232,7 +1313,7 @@ impl NativeBatchHosts<'_> {
                 );
                 match output {
                     Output::Value => {
-                        return Err(binding("STR_TO_DATE native carrier lost output role"));
+                        return Err(binding("temporal native carrier lost output role"));
                     }
                     Output::Bytes => {
                         let bytes = match crate::arg_eval_type::eval_string_ref(&value) {
@@ -1254,9 +1335,7 @@ impl NativeBatchHosts<'_> {
                                 Some(TikvDateTime::from_go_raw_like_go(value.go_raw()))
                             }
                             _ => {
-                                return Err(binding(
-                                    "STR_TO_DATE temporal result differs from its carrier",
-                                ));
+                                return Err(binding("temporal result differs from its carrier"));
                             }
                         };
                         VectorValue::from_scalar(&ScalarValue::DateTime(value), 1)
@@ -1274,9 +1353,7 @@ impl NativeBatchHosts<'_> {
                                 .map_err(|_| binding("date duration is not representable"))?,
                             ),
                             _ => {
-                                return Err(binding(
-                                    "STR_TO_DATE duration result differs from its carrier",
-                                ));
+                                return Err(binding("duration result differs from its carrier"));
                             }
                         };
                         VectorValue::from_scalar(&ScalarValue::Duration(value), 1)

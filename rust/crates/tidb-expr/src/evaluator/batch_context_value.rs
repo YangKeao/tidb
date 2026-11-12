@@ -100,25 +100,18 @@ impl NativeBatchHosts<'_> {
                 .map(HostStep::Ready);
         }
         let capture_error_value = self.capture_root_error_value;
-        if capture_error_value {
-            // The callback has supplied its owned value. Bound any additional
-            // conversion/error-Datum copies before the original converter can
-            // clone an unconverted payload into its failure pair.
-        }
         let mut error_value = None;
         let value = if shortcut {
             Ok(value)
         } else {
-            (|| {
-                descriptor
-                    .finish_expression(value, self.context)
-                    .map_err(|(value, error)| {
-                        if capture_error_value {
-                            error_value = Some(value);
-                        }
-                        error
-                    })
-            })()
+            descriptor
+                .finish_expression(value, self.context)
+                .map_err(|(value, error)| {
+                    if capture_error_value {
+                        error_value = Some(value);
+                    }
+                    error
+                })
         };
         if let (Some(token), Some(origin)) = (token, origin) {
             store

@@ -6098,15 +6098,24 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                             });
                             next_diagnostic += 1;
                         }
+                        let child_nodes = |count| -> LocalResult<Vec<usize>> {
+                            let mut arguments = Vec::new();
+                            reserve(&mut arguments, count)?;
+                            let mut child = ordinal
+                                .checked_add(1)
+                                .ok_or_else(|| resource("host child ordinal overflow"))?;
+                            for _ in 0..count {
+                                arguments.push(child);
+                                child = checked
+                                    .get(child)
+                                    .ok_or_else(|| binding("host child absent"))?
+                                    .subtree_end;
+                            }
+                            Ok(arguments)
+                        };
                         host_metadata.push(match operation {
                             SqlBatchHostOperation::Concat | SqlBatchHostOperation::ConcatWs if item.view.value_role().is_some() => {
-                                let mut arguments = Vec::new();
-                                reserve(&mut arguments, *arity)?;
-                                let mut child = ordinal.checked_add(1).ok_or_else(|| resource("CONCAT child overflow"))?;
-                                for _ in 0..*arity {
-                                    arguments.push(child);
-                                    child = checked.get(child).ok_or_else(|| binding("CONCAT child missing"))?.subtree_end;
-                                }
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::ConcatValues {
                                     arguments: arguments.into_boxed_slice(),
                                     kind: if operation == SqlBatchHostOperation::Concat { tidb_query_expr::local::ConcatKind::Concat } else { tidb_query_expr::local::ConcatKind::ConcatWs },
@@ -6142,8 +6151,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                             SqlBatchHostOperation::EagerValuesNative if sql.pb_lazy_values().is_some() => {
                                 let kernel=sql.pb_lazy_values().expect("actual lazy owner");
                                 debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
-                                let mut arguments=Vec::new();let data=source_data_arity(sql);reserve(&mut arguments,data)?;let mut child=ordinal+1;
-                                for _ in 0..data{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB lazy child absent"))?.subtree_end;}
+                                let arguments = child_nodes(source_data_arity(sql))?;
                                 NativeHostMetadata::PbLazy(Box::new(hosts::NativePbLazy {
                                     kernel,arguments:arguments.into_boxed_slice(),logical_arity:sql.args.len(),
                                     name:sql.func_name.lowercase().into(),result_type:item.sql.map(snapshot_field_type),
@@ -6154,8 +6162,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                             SqlBatchHostOperation::EagerValuesNative if sql.pb_boolean_values().is_some() => {
                                 let kernel=sql.pb_boolean_values().expect("actual Boolean owner");
                                 debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
-                                let mut arguments=Vec::new();let data=source_data_arity(sql);reserve(&mut arguments,data)?;let mut child=ordinal+1;
-                                for _ in 0..data{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB Boolean child absent"))?.subtree_end;}
+                                let arguments = child_nodes(source_data_arity(sql))?;
                                 NativeHostMetadata::PbBoolean(Box::new(hosts::NativePbBoolean {
                                     kernel,arguments:arguments.into_boxed_slice(),logical_arity:sql.args.len(),
                                     name:sql.func_name.lowercase().into(),result_type:item.sql.map(snapshot_field_type),
@@ -6166,8 +6173,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                             SqlBatchHostOperation::EagerValuesNative if sql.pb_binary_values().is_some() && !native_no_argument_header_call(sql) => {
                                 let kernel=sql.pb_binary_values().expect("actual selected binary owner");
                                 debug_assert_eq!(Some(kernel.signature()),sql.pb_signature());
-                                let mut arguments=Vec::new();let data=source_data_arity(sql);reserve(&mut arguments,data)?;let mut child=ordinal+1;
-                                for _ in 0..data{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB binary child absent"))?.subtree_end;}
+                                let arguments = child_nodes(source_data_arity(sql))?;
                                 NativeHostMetadata::PbBinary(Box::new(hosts::NativePbBinary {
                                     kernel,logical_arity:sql.args.len(),arguments:arguments.into_boxed_slice(),
                                     source_types:[0,1].map(|i|sql.args.get(i).and_then(Expression::static_type).map(snapshot_field_type)),
@@ -6178,8 +6184,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_pb_eager_values(sql) && !native_no_argument_header_call(sql) => {
-                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
-                                for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("PB eager child absent"))?.subtree_end;}
+                                let arguments = child_nodes(*arity)?;
                                 let kernel=if let Some(kernel)=sql.pb_cast_values(){
     let child=checked.get(ordinal+1).ok_or_else(||binding("PB cast child absent"))?;
     hosts::PbValueKernel::Cast(Box::new(hosts::PbCastKernel{kernel,source_type:sql.args[0].static_type().map(snapshot_field_type),input:numeric_source::preparation(child)}))
@@ -6193,8 +6198,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_regexp_call(sql) => {
-                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;let mut child=ordinal+1;
-                                for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("regexp child absent"))?.subtree_end;}
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::RegexpValues(Box::new(hosts::NativeRegexpValues{
                                     arguments:arguments.into_boxed_slice(),source_types:sql.args.iter().map(|arg|arg.static_type().map(snapshot_field_type)).collect(),
                                     operator:!pb_regexp_owner(sql) && sql.func_name.lowercase()=="regexp",protobuf_result:pb_regexp_owner(sql),integer_batch_result:pb_regexp_owner(sql) && item.view==NativeView::BulkRoot(NativeEvalType::Int),invocation:sql.batch_regexp_like_invocation(),collation:sql.derived_collation(),
@@ -6202,9 +6206,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_weight_string_call(sql) => {
-                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
-                                let mut child=ordinal+1;
-                                for _ in 0..*arity {arguments.push(child);child=checked.get(child).ok_or_else(||binding("weight child absent"))?.subtree_end;}
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::WeightString(Box::new(hosts::NativeWeightString {
                                     arguments:arguments.into_boxed_slice(),logical_arity:sql.args.len(),
                                     source_type:sql.args[0].static_type().map(snapshot_field_type),
@@ -6224,9 +6226,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_json_schema_call(sql) => {
-                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
-                                let mut child=ordinal+1;
-                                for _ in 0..*arity {arguments.push(child);child=checked.get(child).ok_or_else(||binding("schema child absent"))?.subtree_end;}
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::JsonSchema(Box::new(NativeJsonSchema{
                                     arguments:arguments.into_boxed_slice(),
                                     cacheable:sql.args.first().is_some_and(|a|a.const_level()>=crate::expression::ConstLevel::ONLY_IN_CONTEXT),
@@ -6235,9 +6235,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_final_state_call(sql) => {
-                                let mut arguments=Vec::new(); reserve(&mut arguments,*arity)?;
-                                let mut child=ordinal+1;
-                                for _ in 0..*arity { arguments.push(child);child=checked.get(child).ok_or_else(||binding("final state child absent"))?.subtree_end; }
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::FinalState(Box::new(NativeFinalState {
                                     arguments:arguments.into_boxed_slice(),
                                     name:match sql.func_name.lowercase() { "rand"=>"rand", "tidb_is_ddl_owner"=>"tidb_is_ddl_owner", "aes_encrypt"=>"aes_encrypt", "aes_decrypt"=>"aes_decrypt", _=>unreachable!() },
@@ -6248,9 +6246,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative if native_stateful_call(sql) => {
-                                let mut arguments=Vec::new(); reserve(&mut arguments,*arity)?;
-                                let mut child=ordinal+1;
-                                for _ in 0..*arity { arguments.push(child);child=checked.get(child).ok_or_else(||binding("stateful child absent"))?.subtree_end; }
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::Stateful(Box::new(NativeStateful {
                                     repeated_subtree: if sql.func_name.lowercase()=="benchmark" && *arity==2 { Some(arguments[1]..checked[arguments[1]].subtree_end) } else { None },
                                     arguments:arguments.into_boxed_slice(),
@@ -6272,9 +6268,7 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                 }))
                             }
                             SqlBatchHostOperation::EagerValuesNative=>{
-                                let mut arguments=Vec::new();reserve(&mut arguments,*arity)?;
-                                let mut child=ordinal+1;
-                                for _ in 0..*arity{arguments.push(child);child=checked.get(child).ok_or_else(||binding("eager child absent"))?.subtree_end;}
+                                let arguments = child_nodes(*arity)?;
                                 NativeHostMetadata::EagerValues{
                                     arguments:arguments.into_boxed_slice(),
                                     kernel:crate::scalar_function::eager_values::EagerValueKernel::capture(sql).with_math_diagnostic(
@@ -6377,27 +6371,12 @@ fn lower_source_plan<'a, N: SourceReference<'a>>(
                                     sql.args[0].static_type(),
                                     sql.args[1].static_type(),
                                 )?;
-                                NativeHostMetadata::DateArithmetic {
-                                    arguments: [first, second],
-                                    argument_types: std::array::from_fn(|i|sql.args[i].static_type().map(snapshot_field_type)),
-                                    unit: unit.into(),
-                                    sign,
-                                    result_fsp,
-                                    result_type: item.sql.map(snapshot_field_type),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role(),
-                                    output,
-                                }
+                                NativeHostMetadata::Arguments(hosts::NativeArguments { arguments: ([first, second]).into(), kernel: hosts::NativeArgumentKernel::DateArithmetic { argument_types: std::array::from_fn(|i|sql.args[i].static_type().map(snapshot_field_type)), unit: unit.into(), sign: sign, result_fsp: result_fsp, output: output }, result_type: item.sql.map(snapshot_field_type), output_node: ordinal, output_role: item.view.value_role() })
                             }
                             SqlBatchHostOperation::JsonSumCrc32Native { .. } => {
-                                NativeHostMetadata::JsonSumCrc32 {
-                                    argument_node: ordinal.checked_add(1).ok_or_else(|| {
+                                NativeHostMetadata::Arguments(hosts::NativeArguments { arguments: (ordinal.checked_add(1).ok_or_else(|| {
                                         resource("JSON checksum argument ordinal overflow")
-                                    })?,
-                                    result_type: snapshot_field_type(item.declared_sql()),
-                                    output_node: ordinal,
-                                    output_role: item.view.value_role(),
-                                }
+                                    })?).into(), kernel: hosts::NativeArgumentKernel::JsonSumCrc32, result_type: Some(snapshot_field_type(item.declared_sql())), output_node: ordinal, output_role: item.view.value_role() })
                             }
                             SqlBatchHostOperation::CharsetNative(operation) => {
                                 let mut arguments = Vec::new();

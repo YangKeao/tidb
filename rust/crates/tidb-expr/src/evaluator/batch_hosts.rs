@@ -28,12 +28,8 @@ use tidb_query_expr::local::{
 mod arithmetic_window;
 #[path = "batch_charset.rs"]
 mod charset_source;
-#[path = "batch_date_arithmetic.rs"]
-mod date_arithmetic_source;
 #[path = "batch_decimal_fast_window.rs"]
 mod decimal_fast_window;
-#[path = "batch_json_sum_crc32.rs"]
-mod json_sum_crc32_source;
 #[path = "batch_typed_window.rs"]
 mod typed_window;
 #[path = "batch_wildcard.rs"]
@@ -226,23 +222,6 @@ pub(super) enum NativeHostMetadata {
     Interval(NativeIntervalMetadata),
     Extremum(NativeExtremumMetadata),
     Charset(NativeCharsetMetadata),
-    DateArithmetic {
-        arguments: [usize; 2],
-        argument_types: [Option<FieldType>; 2],
-        unit: Box<str>,
-        sign: i64,
-        result_fsp: Option<u32>,
-        result_type: Option<FieldType>,
-        output_node: usize,
-        output_role: Option<NativeValueRole>,
-        output: tidb_query_expr::local::SqlTemporalOutput,
-    },
-    JsonSumCrc32 {
-        argument_node: usize,
-        result_type: FieldType,
-        output_node: usize,
-        output_role: Option<NativeValueRole>,
-    },
     RawValues {
         operation: NativeRawValueOperation,
         // Actual typed batch consumer; Some(true) is its unsigned root.
@@ -416,14 +395,12 @@ impl NativeHostMetadata {
             Self::Like { result_type, .. } => result_type.as_ref(),
             Self::ConcatValues { result_type, .. } => result_type.as_ref(),
             Self::Arithmetic { result_type, .. } => result_type.as_ref(),
-            Self::DateArithmetic { result_type, .. } => result_type.as_ref(),
             Self::In(metadata) => metadata.result_type.as_ref(),
             Self::Interval(metadata) => metadata.result_type.as_ref(),
             Self::Extremum(metadata) => metadata.result_type.as_ref(),
             Self::Charset(metadata) => Some(&metadata.result_type),
 
-            Self::JsonSumCrc32 { result_type, .. }
-            | Self::UnaryWindow { result_type, .. }
+            Self::UnaryWindow { result_type, .. }
             | Self::Math { result_type, .. }
             | Self::ValueCast { result_type, .. } => Some(result_type),
             _ => None,
@@ -488,10 +465,6 @@ enum SqlDemand {
     Like {
         pending: Option<crate::tikv::wildcard_value::Prepared>,
     },
-    DateArithmetic {
-        first: Option<[u8; native_values::HANDLE_BYTES]>,
-    },
-    JsonSumCrc32,
     Charset {
         source: Option<[u8; native_values::HANDLE_BYTES]>,
     },
@@ -605,8 +578,6 @@ impl NativeTask {
             SqlDemand::EagerValues { next, .. } | SqlDemand::Arguments { next, .. } => {
                 Ok(Some(*next))
             }
-            SqlDemand::DateArithmetic { first } => Ok(Some(usize::from(first.is_some()))),
-            SqlDemand::JsonSumCrc32 => Ok(Some(0)),
             SqlDemand::Charset { source } => Ok(Some(usize::from(source.is_some()))),
             SqlDemand::Interval { search } => Ok(match search.step() {
                 tidb_query_expr::NativeIntervalValueStep::Probe { index, .. } => Some(index),
@@ -667,10 +638,6 @@ impl NativeTask {
             SqlDemand::Arguments { .. } => {
                 Err(binding("native arguments cannot buffer wire values"))
             }
-            SqlDemand::DateArithmetic { .. } => {
-                Err(binding("date demand cannot retain byte prefix"))
-            }
-            SqlDemand::JsonSumCrc32 => Err(binding("JSON checksum cannot retain byte prefix")),
             SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
             SqlDemand::Extremum { .. }
             | SqlDemand::Interval { .. }
@@ -1195,10 +1162,6 @@ impl<'a> NativeBatchHosts<'a> {
             node: *argument_node,
             row,
         };
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
-
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -1334,10 +1297,6 @@ impl<'a> NativeBatchHosts<'a> {
                 | NativeHostMetadata::In(_)
                 | NativeHostMetadata::Interval(_)
                 | NativeHostMetadata::Extremum(_)
-                | NativeHostMetadata::DateArithmetic {
-                    output: tidb_query_expr::local::SqlTemporalOutput::Value,
-                    ..
-                }
         ) {
             crate::expression::apply_enum_set_integer_view(result, metadata.result_type())
         } else {
@@ -1437,10 +1396,6 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("selection has no native store"))?;
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
-
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -1497,10 +1452,6 @@ impl<'a> NativeBatchHosts<'a> {
             node: argument_nodes[index],
             row,
         };
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
-
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -1643,10 +1594,6 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("math native value store missing"))?;
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
-
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -2723,7 +2670,9 @@ impl NativeBatchHosts<'_> {
             | SqlBatchHostOperation::TimestampDiffNative { .. }
             | SqlBatchHostOperation::ExtractNative { .. }
             | SqlBatchHostOperation::BoundedStalenessNative { .. }
-            | SqlBatchHostOperation::StrToDateNative { .. }) => {
+            | SqlBatchHostOperation::StrToDateNative { .. }
+            | SqlBatchHostOperation::DateArithmeticNative { .. }
+            | SqlBatchHostOperation::JsonSumCrc32Native { .. }) => {
                 let Some(NativeHostMetadata::Arguments(meta)) =
                     self.metadata.get(invocation.slot.index())
                 else {
@@ -2741,43 +2690,6 @@ impl NativeBatchHosts<'_> {
                     next: 0,
                     tokens: [None; 3],
                 }
-            }
-            SqlBatchHostOperation::DateArithmeticNative { output } => {
-                let Some(NativeHostMetadata::DateArithmetic {
-                    output: declared,
-                    output_role,
-                    argument_types,
-                    result_type,
-                    ..
-                }) = self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("date arithmetic descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || invocation.arg_types.len() != 2
-                    || output != *declared
-                    || (output != tidb_query_expr::local::SqlTemporalOutput::Value
-                        && (result_type.is_none() || argument_types.iter().any(Option::is_none)))
-                    || (output == tidb_query_expr::local::SqlTemporalOutput::Value)
-                        != output_role.is_some()
-                {
-                    return Err(binding("date arithmetic descriptor differs"));
-                }
-                SqlDemand::DateArithmetic { first: None }
-            }
-            SqlBatchHostOperation::JsonSumCrc32Native { typed } => {
-                let Some(NativeHostMetadata::JsonSumCrc32 { output_role, .. }) =
-                    self.metadata.get(invocation.slot.index())
-                else {
-                    return Err(binding("JSON checksum descriptor absent"));
-                };
-                if self.native_values.is_none()
-                    || invocation.arg_types.len() != 1
-                    || typed != output_role.is_none()
-                {
-                    return Err(binding("JSON checksum source descriptor differs"));
-                }
-                SqlDemand::JsonSumCrc32
             }
             SqlBatchHostOperation::IntervalNative => self.start_interval(&invocation)?,
             SqlBatchHostOperation::ExtremumNative => self.start_extremum(&invocation)?,
@@ -3370,14 +3282,6 @@ impl NativeBatchHosts<'_> {
             native_token!(token, "eager argument cannot be wire NULL");
             return self.resume_eager_values(id, token);
         }
-        if matches!(task.demand, SqlDemand::DateArithmetic { .. }) {
-            native_token!(token, "date arithmetic source cannot be wire NULL");
-            return self.resume_date_arithmetic(id, token);
-        }
-        if matches!(task.demand, SqlDemand::JsonSumCrc32) {
-            native_token!(token, "JSON checksum source cannot be wire NULL");
-            return self.resume_json_sum_crc32(id, token);
-        }
         if matches!(task.demand, SqlDemand::Charset { .. }) {
             native_token!(token, "charset source cannot be wire NULL");
             return self.resume_charset(id, token);
@@ -3586,20 +3490,13 @@ impl LocalHostServices for NativeBatchHosts<'_> {
         id: &HostTaskId,
         reply: HostWindowArgReply<'_>,
     ) -> LocalResult<HostStep> {
-        if matches!(self.task(id)?.demand, SqlDemand::TypedWindow(_)) {
-            return self.resume_typed_window(id, reply);
-        }
-        if matches!(self.task(id)?.demand, SqlDemand::NumericWindow(_)) {
-            return self.resume_numeric_window(id, reply);
-        }
-        if matches!(self.task(id)?.demand, SqlDemand::Diagnostic(_)) {
-            self.resume_window_math_diagnostic(id, reply)
-        } else if matches!(self.task(id)?.demand, SqlDemand::WindowUnary { .. }) {
-            self.resume_unary_window(id, reply)
-        } else if matches!(self.task(id)?.demand, SqlDemand::WindowDecimalFast { .. }) {
-            self.resume_decimal_fast_window(id, reply)
-        } else {
-            self.resume_arithmetic_window(id, reply)
+        match &self.task(id)?.demand {
+            SqlDemand::TypedWindow(_) => self.resume_typed_window(id, reply),
+            SqlDemand::NumericWindow(_) => self.resume_numeric_window(id, reply),
+            SqlDemand::Diagnostic(_) => self.resume_window_math_diagnostic(id, reply),
+            SqlDemand::WindowUnary { .. } => self.resume_unary_window(id, reply),
+            SqlDemand::WindowDecimalFast { .. } => self.resume_decimal_fast_window(id, reply),
+            _ => self.resume_arithmetic_window(id, reply),
         }
     }
     fn resume(

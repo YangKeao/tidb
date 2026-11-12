@@ -35,10 +35,6 @@ impl NativeBatchHosts<'_> {
             .native_values
             .ok_or_else(|| binding("prefix value store absent"))?;
 
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
-
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
@@ -52,7 +48,7 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         *stage = PrefixPhase::Consumed;
-        let result = (|| kernel.eval_prefix(phase, value, self.context))();
+        let result = kernel.eval_prefix(phase, value, self.context);
         // No Ref survives an original callback. Authenticate the actual reply
         // again before a fresh child request or output can cross this boundary.
         store

@@ -144,6 +144,7 @@ impl NativeBatchHosts<'_> {
                 node: *argument_node,
                 target,
             },
+            None,
         )?;
         let count = reply.physical_rows.len();
 
