@@ -78,11 +78,8 @@ impl NativeBatchHosts<'_> {
                 }))
             }
             PrefixStep::Value(value) => {
-                let value = match crate::scalar_function::coerce_function_result(
-                    kernel.name(),
-                    result_type.as_ref(),
-                    value,
-                ) {
+                let value = match coerce_function_result(kernel.name(), result_type.as_ref(), value)
+                {
                     Ok(value) => value,
                     Err(error) => return self.native_failure(error),
                 };

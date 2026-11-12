@@ -114,11 +114,7 @@ impl NativeBatchHosts<'_> {
                             self.context,
                         )
                         .and_then(|value| {
-                            crate::scalar_function::coerce_function_result(
-                                "find_in_set",
-                                meta.result_type.as_ref(),
-                                value,
-                            )
+                            coerce_function_result("find_in_set", meta.result_type.as_ref(), value)
                         })
                     }))
                 })()?;
@@ -207,11 +203,7 @@ impl NativeBatchHosts<'_> {
                     self.context,
                 )
                 .and_then(|value| {
-                    crate::scalar_function::coerce_function_result(
-                        "find_in_set",
-                        meta.result_type.as_ref(),
-                        value,
-                    )
+                    coerce_function_result("find_in_set", meta.result_type.as_ref(), value)
                 })
             }))
         })()?;

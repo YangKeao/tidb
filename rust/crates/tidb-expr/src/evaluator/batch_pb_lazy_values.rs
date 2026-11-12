@@ -188,11 +188,7 @@ impl NativeBatchHosts<'_> {
 
         let value =
             crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-        let result = crate::scalar_function::coerce_function_result(
-            &meta.name,
-            meta.result_type.as_ref(),
-            value,
-        );
+        let result = coerce_function_result(&meta.name, meta.result_type.as_ref(), value);
         check()?;
         let value = match result {
             Ok(v) => v,

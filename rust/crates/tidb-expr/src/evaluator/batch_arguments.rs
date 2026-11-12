@@ -428,11 +428,7 @@ impl NativeBatchHosts<'_> {
                     );
                     drop(owned);
                     value.and_then(|value| {
-                        crate::scalar_function::coerce_function_result(
-                            meta.name(),
-                            meta.result_type.as_ref(),
-                            value,
-                        )
+                        coerce_function_result(meta.name(), meta.result_type.as_ref(), value)
                     })
                 }
                 NativeArgumentKernel::JsonSumCrc32 => {
@@ -441,11 +437,7 @@ impl NativeBatchHosts<'_> {
                         crate::tikv::json_sum_crc32_bounded(inputs.get(&values, 0)?, maximum)
                     };
                     value.and_then(|value| {
-                        crate::scalar_function::coerce_function_result(
-                            "json_sum_crc32",
-                            meta.result_type.as_ref(),
-                            value,
-                        )
+                        coerce_function_result("json_sum_crc32", meta.result_type.as_ref(), value)
                     })
                 }
 
@@ -882,14 +874,11 @@ impl NativeBatchHosts<'_> {
                         Err(e) => return self.native_failure(e),
                     };
 
-                    let result = match crate::scalar_function::coerce_function_result(
-                        operation.name(),
-                        Some(result_type),
-                        result,
-                    ) {
-                        Ok(v) => v,
-                        Err(e) => return self.native_failure(e),
-                    };
+                    let result =
+                        match coerce_function_result(operation.name(), Some(result_type), result) {
+                            Ok(v) => v,
+                            Err(e) => return self.native_failure(e),
+                        };
                     Ok(result)
                 }
                 NativeArgumentKernel::Epoch { from } => {
@@ -1259,7 +1248,7 @@ impl NativeBatchHosts<'_> {
         let result = if body_coerced {
             result
         } else if let Some(field) = &meta.result_type {
-            match crate::scalar_function::coerce_function_result(meta.name(), Some(field), result) {
+            match coerce_function_result(meta.name(), Some(field), result) {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             }

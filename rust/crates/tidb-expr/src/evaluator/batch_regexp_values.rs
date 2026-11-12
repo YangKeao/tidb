@@ -242,11 +242,7 @@ impl NativeBatchHosts<'_> {
         } else {
             "regexp_like"
         };
-        let value = match crate::scalar_function::coerce_function_result(
-            name,
-            meta.result_type.as_ref(),
-            value,
-        ) {
+        let value = match coerce_function_result(name, meta.result_type.as_ref(), value) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };

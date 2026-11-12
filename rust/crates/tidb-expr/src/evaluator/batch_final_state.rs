@@ -169,13 +169,11 @@ impl NativeBatchHosts<'_> {
                     }
                     _ => unreachable!("closed final state source"),
                 };
-                Ok(Progress::Ready(
-                    crate::scalar_function::coerce_function_result(
-                        meta.name,
-                        meta.result_type.as_ref(),
-                        result,
-                    )?,
-                ))
+                Ok(Progress::Ready(coerce_function_result(
+                    meta.name,
+                    meta.result_type.as_ref(),
+                    result,
+                )?))
             })();
             result
         })();
@@ -200,12 +198,8 @@ impl NativeBatchHosts<'_> {
                         let value = crate::tikv::evaluate_closed_args(cache, operation, args)?
                             .into_bytes()?
                             .map_or(Datum::Null, Datum::new_string);
-                        crate::scalar_function::coerce_function_result(
-                            meta.name,
-                            meta.result_type.as_ref(),
-                            value,
-                        )
-                        .map(Progress::Ready)
+                        coerce_function_result(meta.name, meta.result_type.as_ref(), value)
+                            .map(Progress::Ready)
                     })();
                     result
                 })()

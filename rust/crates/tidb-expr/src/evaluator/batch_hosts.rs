@@ -1150,9 +1150,7 @@ impl<'a> NativeBatchHosts<'a> {
         } else {
             crate::cast::eval_cast(cast_type, value, Some(source_type), self.context)
         }
-        .and_then(|value| {
-            crate::scalar_function::coerce_function_result(name, Some(result_type), value)
-        });
+        .and_then(|value| coerce_function_result(name, Some(result_type), value));
         let result = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
@@ -1185,9 +1183,9 @@ impl<'a> NativeBatchHosts<'a> {
             .as_mut()
             .expect("live header task")
             .demand = SqlDemand::Consumed;
-        let result = kind.evaluate(self.context, value).and_then(|value| {
-            crate::scalar_function::coerce_function_result(kind.name(), result_type.as_ref(), value)
-        });
+        let result = kind
+            .evaluate(self.context, value)
+            .and_then(|value| coerce_function_result(kind.name(), result_type.as_ref(), value));
         let result = match result {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
@@ -1349,12 +1347,10 @@ impl<'a> NativeBatchHosts<'a> {
         let value = store
             .borrow()
             .clone_for_kernel(token, NativeValueRole::CharInput, origin)?;
-        let value =
-            match crate::scalar_function::coerce_function_result(name, result_type.as_ref(), value)
-            {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
+        let value = match coerce_function_result(name, result_type.as_ref(), value) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
         self.finish_native_value(id, value, *output_node, *output_role, row)
     }
     fn resume_arithmetic(&mut self, id: &HostTaskId, token: &[u8]) -> LocalResult<HostStep> {
@@ -1612,11 +1608,10 @@ impl<'a> NativeBatchHosts<'a> {
                 native_abs_real_value(ready).map_or(Datum::Null, Datum::Real)
             }
         };
-        let value =
-            match crate::scalar_function::coerce_function_result(name, Some(result_type), value) {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
+        let value = match coerce_function_result(name, Some(result_type), value) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
         self.finish_native_value(id, value, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }
@@ -1826,11 +1821,7 @@ impl<'a> NativeBatchHosts<'a> {
         else {
             return Err(binding("comparison finish descriptor missing"));
         };
-        let result = match crate::scalar_function::coerce_function_result(
-            name,
-            result_type.as_ref(),
-            result,
-        ) {
+        let result = match coerce_function_result(name, result_type.as_ref(), result) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
@@ -1889,11 +1880,7 @@ impl<'a> NativeBatchHosts<'a> {
         };
         let result = crate::tikv::boolean_value(function, truth)?;
         let result = result.map_or(Datum::Null, Datum::Int);
-        let result = match crate::scalar_function::coerce_function_result(
-            name,
-            result_type.as_ref(),
-            result,
-        ) {
+        let result = match coerce_function_result(name, result_type.as_ref(), result) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
@@ -1965,11 +1952,7 @@ impl<'a> NativeBatchHosts<'a> {
         }
         let result = crate::tikv::logical_value(function, left, right)?;
         let result = result.map_or(Datum::Null, Datum::Int);
-        let result = match crate::scalar_function::coerce_function_result(
-            name,
-            result_type.as_ref(),
-            result,
-        ) {
+        let result = match coerce_function_result(name, result_type.as_ref(), result) {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),
         };
@@ -3920,7 +3903,7 @@ mod tests {
                         panic!("expected native value handle");
                     };
                     let expected = match &result_type {
-                        Some(field) => crate::scalar_function::coerce_function_result(
+                        Some(field) => coerce_function_result(
                             "ifnull",
                             Some(field),
                             Datum::Bytes(vec![b'x'; 16384]),

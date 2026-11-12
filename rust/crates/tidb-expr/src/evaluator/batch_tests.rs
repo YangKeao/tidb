@@ -16067,13 +16067,7 @@ fn native_extract_capabilities_budget_cancel_and_exclusive_callbacks() {
                             usize::MAX,
                         )
                     }
-                    .and_then(|value| {
-                        crate::scalar_function::coerce_function_result(
-                            "extract",
-                            Some(&ty()),
-                            value,
-                        )
-                    });
+                    .and_then(|value| coerce_function_result("extract", Some(&ty()), value));
                     match expected {
                         Err(expected) => {
                             assert!(
@@ -19442,11 +19436,7 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                             &context,
                         )
                         .and_then(|value| {
-                            crate::scalar_function::coerce_function_result(
-                                op.name(),
-                                Some(&string_ty()),
-                                value,
-                            )
+                            coerce_function_result(op.name(), Some(&string_ty()), value)
                         })
                     }
                     // This host probe receives values after source preparation;
@@ -23743,9 +23733,7 @@ fn misc_native_resource_failure_is_terminal_and_same_source_null_recovers() {
             &native,
             usize::MAX,
         )
-        .and_then(|value| {
-            crate::scalar_function::coerce_function_result(name, Some(&string_ty()), value)
-        });
+        .and_then(|value| coerce_function_result(name, Some(&string_ty()), value));
         match expected {
             Ok(value) => {
                 actual
@@ -24094,11 +24082,7 @@ fn misc_native_capabilities_callbacks_ignored_payloads_panics_and_recovery() {
                             crate::builtin_ext::misc::dispatch_in(name, &values, &context)
                                 .unwrap()
                                 .and_then(|v| {
-                                    crate::scalar_function::coerce_function_result(
-                                        op.name(),
-                                        Some(&string_ty()),
-                                        v,
-                                    )
+                                    coerce_function_result(op.name(), Some(&string_ty()), v)
                                 })
                         });
                         assert_eq!(actual, expected, "{name} arity={arity} level={level}");
@@ -24644,9 +24628,7 @@ fn byte_unary_capabilities_consumption_panics_resources_ignored_suffix_and_recov
                         value,
                         &context,
                     )
-                    .and_then(|v| {
-                        crate::scalar_function::coerce_function_result(op.name(), Some(&ret), v)
-                    })
+                    .and_then(|v| coerce_function_result(op.name(), Some(&ret), v))
                 });
                 assert_eq!(actual, expected, "byte unary provider {op:?} role={role:?}");
                 assert!(reply(
@@ -25173,13 +25155,7 @@ fn crypto_actual_capabilities_warning_callbacks_consumption_and_ignored_password
                         &context,
                     )
                     .unwrap()
-                    .and_then(|v| {
-                        crate::scalar_function::coerce_function_result(
-                            op.name(),
-                            Some(&string_ty()),
-                            v,
-                        )
-                    })
+                    .and_then(|v| coerce_function_result(op.name(), Some(&string_ty()), v))
                 });
                 assert_eq!(actual, expected, "crypto provider {op:?} role={role:?}");
                 assert_eq!(events, *context.events.borrow());
@@ -25784,9 +25760,7 @@ fn compression_actual_capabilities_warnings_callbacks_resources_and_recovery() {
                         &ctx,
                     )
                     .unwrap()
-                    .and_then(|v| {
-                        crate::scalar_function::coerce_function_result(op.name(), Some(&ret), v)
-                    })
+                    .and_then(|v| coerce_function_result(op.name(), Some(&ret), v))
                 });
                 assert_eq!(
                     actual, expected,
@@ -25888,7 +25862,7 @@ fn compression_actual_capabilities_warnings_callbacks_resources_and_recovery() {
                 &ctx,
             )
             .unwrap()
-            .and_then(|v| crate::scalar_function::coerce_function_result(op.name(), Some(&ret), v))
+            .and_then(|v| coerce_function_result(op.name(), Some(&ret), v))
             .unwrap();
             assert_eq!(actual, expected);
             assert!(provider.take_native_error().is_none());

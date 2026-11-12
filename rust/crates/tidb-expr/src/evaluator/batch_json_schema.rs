@@ -148,13 +148,11 @@ impl NativeBatchHosts<'_> {
                     }
                 };
                 match progress {
-                    Progress::Ready(value) => Ok(Progress::Ready(
-                        crate::scalar_function::coerce_function_result(
-                            "json_schema_valid",
-                            meta.result_type.as_ref(),
-                            value,
-                        )?,
-                    )),
+                    Progress::Ready(value) => Ok(Progress::Ready(coerce_function_result(
+                        "json_schema_valid",
+                        meta.result_type.as_ref(),
+                        value,
+                    )?)),
                     more => Ok(more),
                 }
             })();

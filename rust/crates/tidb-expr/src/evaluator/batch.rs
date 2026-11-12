@@ -78,7 +78,7 @@ use tidb_query_expr::local::LocalHostServices;
 
 use crate::expr_collation::CollationInfo;
 use crate::pushdown_catalog::CATALOG;
-use crate::scalar_function::ScalarFunction;
+use crate::scalar_function::{coerce_function_result, ScalarFunction};
 
 use super::{
     BatchRefusal, BatchScratchSnapshot, Chunk, Columns, EvalError, EvaluatorError,

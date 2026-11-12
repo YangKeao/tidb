@@ -156,11 +156,7 @@ impl NativeBatchHosts<'_> {
             Err(e) => return self.begin_math_diagnostic(id, e),
         };
 
-        let converted = crate::scalar_function::coerce_function_result(
-            kernel.name(),
-            result_type.as_ref(),
-            result,
-        );
+        let converted = coerce_function_result(kernel.name(), result_type.as_ref(), result);
         let result = match converted {
             Ok(v) => v,
             Err(e) => return self.native_failure(e),
@@ -262,11 +258,7 @@ impl NativeBatchHosts<'_> {
 
         // The setter already stored the raw value. Return conversion can fail
         // or panic afterward; neither outcome rolls back that original effect.
-        let converted = crate::scalar_function::coerce_function_result(
-            kernel.name(),
-            result_type.as_ref(),
-            value,
-        );
+        let converted = coerce_function_result(kernel.name(), result_type.as_ref(), value);
         let value = match converted {
             Ok(value) => value,
             Err(error) => return self.native_failure(error),

@@ -1583,7 +1583,7 @@ fn pb_lazy_source_authenticates_actual_case_indices_and_callback_epochs() {
         let expected = value.clone();
         let expected =
             crate::scalar_function::interpret_integer_result(expected, function.ret_type.as_ref());
-        let expected = crate::scalar_function::coerce_function_result(
+        let expected = coerce_function_result(
             function.func_name.lowercase(),
             function.ret_type.as_ref(),
             expected,

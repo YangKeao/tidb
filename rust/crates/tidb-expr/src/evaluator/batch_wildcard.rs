@@ -119,8 +119,7 @@ impl NativeBatchHosts<'_> {
         };
 
         let result = if let Some(result_type) = result_type {
-            match crate::scalar_function::coerce_function_result("like", Some(result_type), result)
-            {
+            match coerce_function_result("like", Some(result_type), result) {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             }

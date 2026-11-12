@@ -167,11 +167,8 @@ impl NativeBatchHosts<'_> {
             Err(e) => return self.native_failure(e),
         };
 
-        let value = match crate::scalar_function::coerce_function_result(
-            "weight_string",
-            meta.result_type.as_ref(),
-            value,
-        ) {
+        let value = match coerce_function_result("weight_string", meta.result_type.as_ref(), value)
+        {
             Ok(value) => value,
             Err(e) => return self.native_failure(e),
         };

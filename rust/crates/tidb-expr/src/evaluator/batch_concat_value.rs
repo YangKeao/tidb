@@ -160,12 +160,10 @@ impl NativeBatchHosts<'_> {
             ConcatKind::Concat => "concat",
             ConcatKind::ConcatWs => "concat_ws",
         };
-        let value =
-            match crate::scalar_function::coerce_function_result(name, result_type.as_ref(), value)
-            {
-                Ok(value) => value,
-                Err(error) => return self.native_failure(error),
-            };
+        let value = match coerce_function_result(name, result_type.as_ref(), value) {
+            Ok(value) => value,
+            Err(error) => return self.native_failure(error),
+        };
         self.finish_native_value(id, value, *output_node, *output_role, row)
             .map(HostStep::Ready)
     }

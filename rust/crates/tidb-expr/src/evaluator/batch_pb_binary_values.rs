@@ -43,11 +43,7 @@ pub(super) fn present_pb_binary_value(
     context: &dyn Columns,
 ) -> std::result::Result<Datum, EvalError> {
     let value = crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-    let value = crate::scalar_function::coerce_function_result(
-        &meta.name,
-        meta.result_type.as_ref(),
-        value,
-    )?;
+    let value = coerce_function_result(&meta.name, meta.result_type.as_ref(), value)?;
     if meta.integer_batch_result {
         present_integer_batch_value(value, meta.result_type.as_ref(), context)
     } else {
