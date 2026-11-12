@@ -170,19 +170,19 @@ pub(crate) fn eval(
         values,
         default,
         ctx,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 pub(crate) fn core(op: Op, value: Option<CoreTime>) -> Result<Option<i64>, EvalError> {
     tidb_query_expr::native_calendar_core(
         op,
         value.map(CoreTime::raw),
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
     .map_err(error)
 }
 pub(crate) fn nanos(op: Op, value: Option<i64>) -> Result<Option<i64>, EvalError> {
-    tidb_query_expr::native_calendar_nanos(op, value, super::control_value::default_budget())
+    tidb_query_expr::native_calendar_nanos(op, value, super::identity_actual::default_budget())
         .map_err(error)
 }
 /// Original static source declaration matters, particularly YEAR source values.
@@ -217,5 +217,5 @@ pub(crate) fn finish_source(
     } else {
         value
     };
-    super::coerce_result_bounded(op.name(), field, value)
+    crate::scalar_function::coerce_function_result(op.name(), Some(field), value)
 }

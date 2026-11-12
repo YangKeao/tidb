@@ -1982,7 +1982,7 @@ pub fn eval_legacy_microsecond_in(
         1,
         value.map(|v| v as u64),
         None,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 
@@ -1993,7 +1993,7 @@ pub fn eval_legacy_date_in(core: Option<u64>, ctx: &dyn Columns) -> Result<Optio
         2,
         core,
         None,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 

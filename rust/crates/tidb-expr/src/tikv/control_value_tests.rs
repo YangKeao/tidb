@@ -537,7 +537,6 @@ fn control_worker_route_nullif() {
 
 #[test]
 fn selected_control_ownership_preserves_values_without_formatting_or_frames() {
-    use super::control_value::{copy, owned};
     let mut values = fixtures();
     values.extend([
         Datum::Raw(vec![1, 2, 3]),
@@ -556,9 +555,37 @@ fn selected_control_ownership_preserves_values_without_formatting_or_frames() {
     ]);
     for value in values {
         let expected = snapshot(&value);
-        assert_eq!(snapshot(&owned(value.clone()).unwrap()), expected);
-        assert_eq!(snapshot(&copy(&value).unwrap()), expected);
+        assert_eq!(
+            snapshot(
+                &super::if_control::eval_if_in(
+                    &crate::NoColumns,
+                    |_| Ok(Some(true)),
+                    |_| Ok(value.clone()),
+                    |_| unreachable!()
+                )
+                .unwrap()
+            ),
+            expected
+        );
+        assert_eq!(
+            snapshot(
+                &super::coalesce::eval_coalesce_in(&crate::NoColumns, 1, |_, _| Ok(&value))
+                    .unwrap()
+            ),
+            expected
+        );
     }
-    assert_eq!(owned(Datum::Null), Ok(Datum::Null));
-    assert_eq!(copy(&Datum::Int(9)), Ok(Datum::Int(9)));
+    assert_eq!(
+        super::if_control::eval_if_in(
+            &crate::NoColumns,
+            |_| Ok(Some(true)),
+            |_| Ok(Datum::Null),
+            |_| unreachable!()
+        ),
+        Ok(Datum::Null)
+    );
+    assert_eq!(
+        super::coalesce::eval_coalesce_in(&crate::NoColumns, 1, |_, _| Ok(Datum::Int(9))),
+        Ok(Datum::Int(9))
+    );
 }

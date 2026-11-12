@@ -49,7 +49,7 @@ pub(crate) fn eval_date_add_in(
         date,
         amount,
         tidb_query_expr::NativeDateArithmeticValueConfig::calendar(sign, result_fsp),
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 pub(crate) fn eval_date_add_default_in(
@@ -66,7 +66,7 @@ pub(crate) fn eval_date_add_default_in(
         date,
         amount,
         tidb_query_expr::NativeDateArithmeticValueConfig::calendar(sign, None),
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 fn value_error(error: tidb_query_expr::NativeDateArithmeticValueError) -> EvalError {
@@ -223,7 +223,7 @@ pub(crate) fn date_add_result_fsp_checked(
         )
     }) {
         let work = unit.len().checked_mul(2).ok_or_else(value_resource)?;
-        if work > super::control_value::default_budget() {
+        if work > super::identity_actual::default_budget() {
             return Err(value_resource());
         }
     }
@@ -325,6 +325,6 @@ pub(crate) fn date_add_scalar_values_in(
         result,
         sign,
         result_fsp,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }

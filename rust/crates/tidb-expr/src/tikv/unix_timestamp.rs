@@ -25,7 +25,7 @@ pub fn unix_timestamp_int_legacy_in(
         value,
         zone,
         false,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )? {
         Datum::Null => Ok(None),
         Datum::Int(n) => Ok(Some(i128::from(n))),
@@ -42,7 +42,7 @@ pub fn unix_timestamp_dec_legacy_in(
         value,
         zone,
         true,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )? {
         Datum::Null => Ok(None),
         Datum::Decimal(n) => Ok(Some(n)),

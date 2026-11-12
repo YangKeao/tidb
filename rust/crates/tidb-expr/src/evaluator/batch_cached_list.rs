@@ -114,7 +114,11 @@ impl NativeBatchHosts<'_> {
                             self.context,
                         )
                         .and_then(|value| {
-                            coerce_cached_list_result(value, meta.result_type.as_ref())
+                            crate::scalar_function::coerce_function_result(
+                                "find_in_set",
+                                meta.result_type.as_ref(),
+                                value,
+                            )
                         })
                     }))
                 })()?;
@@ -202,7 +206,13 @@ impl NativeBatchHosts<'_> {
                     meta.cacheable,
                     self.context,
                 )
-                .and_then(|value| coerce_cached_list_result(value, meta.result_type.as_ref()))
+                .and_then(|value| {
+                    crate::scalar_function::coerce_function_result(
+                        "find_in_set",
+                        meta.result_type.as_ref(),
+                        value,
+                    )
+                })
             }))
         })()?;
         store
@@ -217,17 +227,5 @@ impl NativeBatchHosts<'_> {
         };
         self.finish_native_value(id, value, meta.output_node, meta.output_role, row)
             .map(HostStep::Ready)
-    }
-}
-
-// ScalarFunction.Eval normalizes the returned family before Expression.Eval's
-// enum/set view.
-fn coerce_cached_list_result(
-    value: Datum,
-    field: Option<&FieldType>,
-) -> std::result::Result<Datum, EvalError> {
-    match field {
-        Some(field) => crate::tikv::coerce_result_bounded("find_in_set", field, value),
-        None => Ok(value),
     }
 }

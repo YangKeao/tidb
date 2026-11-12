@@ -252,22 +252,22 @@ pub(crate) fn date_format_legacy_values_bounded(
 }
 
 pub(crate) fn unix_in(ctx: &dyn Columns, values: &[Datum]) -> Result<Datum, EvalError> {
-    unix_values_bounded(ctx, values, super::control_value::default_budget())
+    unix_values_bounded(ctx, values, super::identity_actual::default_budget())
 }
 pub(crate) fn from_in(ctx: &dyn Columns, values: &[Datum]) -> Result<Datum, EvalError> {
-    from_values_bounded(ctx, values, super::control_value::default_budget())
+    from_values_bounded(ctx, values, super::identity_actual::default_budget())
 }
 pub(crate) fn date_format_in(
     ctx: &dyn Columns,
     date: &Datum,
     format: &Datum,
 ) -> Result<Datum, EvalError> {
-    date_format_values_bounded(ctx, date, format, super::control_value::default_budget())
+    date_format_values_bounded(ctx, date, format, super::identity_actual::default_budget())
 }
 pub(crate) fn legacy_format_in(
     value: Option<(CoreTime, Option<&str>)>,
 ) -> Result<Option<Vec<u8>>, EvalError> {
-    date_format_legacy_values_bounded(value, super::control_value::default_budget())
+    date_format_legacy_values_bounded(value, super::identity_actual::default_budget())
 }
 
 /// The original scalar temporal result policy, with parser/diagnostic
@@ -304,13 +304,13 @@ pub(crate) fn finish_epoch_result_bounded(
     field: &tidb_datatype::FieldType,
     from: bool,
 ) -> Result<Datum, EvalError> {
-    super::control_value::coerce_result_bounded(
+    crate::scalar_function::coerce_function_result(
         if from {
             "from_unixtime"
         } else {
             "unix_timestamp"
         },
-        field,
+        Some(field),
         value,
     )
 }

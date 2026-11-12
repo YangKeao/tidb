@@ -16067,7 +16067,13 @@ fn native_extract_capabilities_budget_cancel_and_exclusive_callbacks() {
                             usize::MAX,
                         )
                     }
-                    .and_then(|value| crate::tikv::coerce_result_bounded("extract", &ty(), value));
+                    .and_then(|value| {
+                        crate::scalar_function::coerce_function_result(
+                            "extract",
+                            Some(&ty()),
+                            value,
+                        )
+                    });
                     match expected {
                         Err(expected) => {
                             assert!(
@@ -19436,7 +19442,11 @@ fn native_duration_construction_capabilities_resources_panic_cleanup_and_exclusi
                             &context,
                         )
                         .and_then(|value| {
-                            crate::tikv::coerce_result_bounded(op.name(), &string_ty(), value)
+                            crate::scalar_function::coerce_function_result(
+                                op.name(),
+                                Some(&string_ty()),
+                                value,
+                            )
                         })
                     }
                     // This host probe receives values after source preparation;

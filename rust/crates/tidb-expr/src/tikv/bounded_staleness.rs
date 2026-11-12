@@ -19,7 +19,7 @@ pub(crate) fn eval_bounded_staleness_in(
     ctx: &dyn Columns,
     vals: &[Datum],
 ) -> Result<Datum, EvalError> {
-    bounded_staleness_bounded(ctx, vals, super::control_value::default_budget())
+    bounded_staleness_bounded(ctx, vals, super::identity_actual::default_budget())
 }
 fn shared_time(
     value: tidb_datatype::Time,

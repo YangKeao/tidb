@@ -1635,9 +1635,9 @@ fn pb_cast_source_fixed_cap_matches_original_mismatched_return_guard() {
             .unwrap();
         assert!(matches!(raw, Datum::Duration(_)));
         // Keep the ordinary native return-family conversion after removing Demo work limits.
-        let converted = crate::tikv::identity_actual::coerce_result(
+        let converted = crate::scalar_function::coerce_function_result(
             function.func_name.lowercase(),
-            function.get_static_type().unwrap(),
+            Some(function.get_static_type().unwrap()),
             raw,
         )
         .unwrap();

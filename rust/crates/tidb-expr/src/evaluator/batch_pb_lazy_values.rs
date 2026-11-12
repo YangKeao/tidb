@@ -183,21 +183,16 @@ impl NativeBatchHosts<'_> {
                 )
             }
         };
-        let result = (|| {
-            (match value {
-                Some(value) => meta.kernel.selected_value(value),
-                None => meta.kernel.exhausted_value(),
-            })
-        })();
+        let value = value.unwrap_or(Datum::Null);
         check()?;
-        let value = match result {
-            Ok(v) => v,
-            Err(e) => return self.native_failure(e),
-        };
 
         let value =
             crate::scalar_function::interpret_integer_result(value, meta.result_type.as_ref());
-        let result = coerce_optional_value_result(&meta.name, meta.result_type.as_ref(), value);
+        let result = crate::scalar_function::coerce_function_result(
+            &meta.name,
+            meta.result_type.as_ref(),
+            value,
+        );
         check()?;
         let value = match result {
             Ok(v) => v,

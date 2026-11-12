@@ -50,7 +50,7 @@ impl NativeBatchHosts<'_> {
             && *output_node == 0
             && descriptor.root_broadcast;
         let value = if shortcut && self.root_value.is_some() {
-            crate::tikv::identity_actual::copy(self.root_value.as_ref().unwrap())
+            Ok(self.root_value.as_ref().unwrap().clone())
         } else if let (Some(token), Some(origin)) = (token, origin) {
             Ok(store
                 .borrow()
@@ -65,7 +65,7 @@ impl NativeBatchHosts<'_> {
                 {
                     Ok(Datum::UInt(integer))
                 } else {
-                    crate::tikv::identity_actual::copy(&raw)
+                    Ok((*raw).clone())
                 }
             } else {
                 Ok(Datum::Null)

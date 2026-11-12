@@ -278,7 +278,9 @@ fn misc_identity_never_requests_ready() {
 fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order() {
     for value in extra_values() {
         let extent = super::identity_actual::copy_extent(&value).unwrap();
-        let copy = super::identity_actual::copy(&value).unwrap();
+        let copy = crate::builtin_ext::misc::dispatch("ANY_VALUE", std::slice::from_ref(&value))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             super::identity_value::encode(&value).unwrap(),
             super::identity_value::encode(&copy).unwrap()
@@ -291,7 +293,11 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
         u32::MAX,
         1,
     ));
-    assert!(super::identity_actual::copy(&huge_scale).is_ok());
+    assert!(
+        crate::builtin_ext::misc::dispatch("ANY_VALUE", std::slice::from_ref(&huge_scale))
+            .unwrap()
+            .is_ok()
+    );
     let invalid = extra_values().remove(4);
     assert!(std::panic::catch_unwind(|| super::identity_actual::probe(Some(&invalid))).is_err());
     for v in [
@@ -305,11 +311,17 @@ fn misc_identity_actual_copy_preserves_opaque_payloads_and_bounded_probe_order()
             Collation::Utf8Mb4Bin,
         ),
     ] {
-        assert!(super::identity_actual::copy(&v).is_ok());
+        assert!(
+            crate::builtin_ext::misc::dispatch("ANY_VALUE", std::slice::from_ref(&v))
+                .unwrap()
+                .is_ok()
+        );
     }
     assert!(super::identity_actual::probe(None).is_ok());
     assert_eq!(
-        super::identity_actual::copy(&Datum::Null).unwrap(),
+        crate::builtin_ext::misc::dispatch("ANY_VALUE", std::slice::from_ref(&Datum::Null))
+            .unwrap()
+            .unwrap(),
         Datum::Null
     );
     assert_eq!(

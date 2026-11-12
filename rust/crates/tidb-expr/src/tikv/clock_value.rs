@@ -159,7 +159,7 @@ pub(crate) fn eval(operation: Op, values: &[Datum], ctx: &dyn Columns) -> Result
         operation,
         values,
         ctx,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 
@@ -192,5 +192,5 @@ pub(crate) fn finish_source(
     } else {
         super::finish_temporal_values_bounded(ctx, result, field, maximum)?
     };
-    super::coerce_result_bounded(operation.name(), field, result)
+    crate::scalar_function::coerce_function_result(operation.name(), Some(field), result)
 }

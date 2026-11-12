@@ -216,11 +216,13 @@ impl NativeBatchHosts<'_> {
                     }
                 };
                 match progress {
-                    Progress::Ready(value) => Ok(Progress::Ready(coerce_optional_value_result(
-                        meta.descriptor.operation_name(),
-                        meta.result_type.as_ref(),
-                        value,
-                    )?)),
+                    Progress::Ready(value) => Ok(Progress::Ready(
+                        crate::scalar_function::coerce_function_result(
+                            meta.descriptor.operation_name(),
+                            meta.result_type.as_ref(),
+                            value,
+                        )?,
+                    )),
                     more => Ok(more),
                 }
             })();

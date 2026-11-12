@@ -428,7 +428,11 @@ impl NativeBatchHosts<'_> {
                     );
                     drop(owned);
                     value.and_then(|value| {
-                        coerce_optional_value_result(meta.name(), meta.result_type.as_ref(), value)
+                        crate::scalar_function::coerce_function_result(
+                            meta.name(),
+                            meta.result_type.as_ref(),
+                            value,
+                        )
                     })
                 }
                 NativeArgumentKernel::JsonSumCrc32 => {
@@ -878,9 +882,9 @@ impl NativeBatchHosts<'_> {
                         Err(e) => return self.native_failure(e),
                     };
 
-                    let result = match crate::tikv::coerce_result_bounded(
+                    let result = match crate::scalar_function::coerce_function_result(
                         operation.name(),
-                        result_type,
+                        Some(result_type),
                         result,
                     ) {
                         Ok(v) => v,
@@ -1069,7 +1073,7 @@ impl NativeBatchHosts<'_> {
                 }
                 NativeArgumentKernel::Identity { name_const: _, .. } => {
                     let values = store.borrow();
-                    crate::tikv::identity_actual::copy(inputs.get(&values, next)?)
+                    Ok(inputs.get(&values, next)?.clone())
                 }
                 NativeArgumentKernel::Grouping(metadata) => {
                     let values = store.borrow();
@@ -1121,11 +1125,7 @@ impl NativeBatchHosts<'_> {
                             } else {
                                 let owned = {
                                     let values = store.borrow();
-                                    crate::tikv::identity_actual::copy(inputs.get(&values, 0)?)
-                                };
-                                let owned = match owned {
-                                    Ok(v) => v,
-                                    Err(e) => return self.native_failure(e),
+                                    inputs.get(&values, 0)?.clone()
                                 };
                                 crate::tikv::misc_value::hash(
                                     *operation,
@@ -1148,11 +1148,7 @@ impl NativeBatchHosts<'_> {
                             let flag = if callback_flag {
                                 let owned = {
                                     let values = store.borrow();
-                                    crate::tikv::identity_actual::copy(inputs.get(&values, 1)?)
-                                };
-                                let owned = match owned {
-                                    Ok(v) => v,
-                                    Err(e) => return self.native_failure(e),
+                                    inputs.get(&values, 1)?.clone()
                                 };
                                 // Only string/bytes flags call Columns. Share actual string
                                 // headers and detach demanded byte ownership before callbacks.
@@ -1263,7 +1259,7 @@ impl NativeBatchHosts<'_> {
         let result = if body_coerced {
             result
         } else if let Some(field) = &meta.result_type {
-            match crate::tikv::coerce_result_bounded(meta.name(), field, result) {
+            match crate::scalar_function::coerce_function_result(meta.name(), Some(field), result) {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             }

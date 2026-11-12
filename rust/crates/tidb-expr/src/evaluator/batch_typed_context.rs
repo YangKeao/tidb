@@ -101,7 +101,7 @@ impl NativeTypedDescriptor {
                 let field = field
                     .as_ref()
                     .ok_or(EvalError::Unsupported("constant has no result type"))?;
-                let value = crate::tikv::identity_actual::copy(value)?;
+                let value = value.clone();
                 crate::constant::typed_constant_value(field, ctx, target, value)?
             }
             Self::Column { index, field } => {
@@ -291,7 +291,7 @@ impl<'a> NativeBatchHosts<'a> {
         let cached = meta.cache_slot.and_then(|i| self.typed_values[i].as_ref());
         let value = (|| {
             let result = if let Some(cached) = cached {
-                crate::tikv::identity_actual::copy(cached)
+                Ok(cached.clone())
             } else if let (Some(token), Some(origin)) = (token, origin) {
                 let value = store
                     .borrow()
@@ -342,14 +342,7 @@ impl<'a> NativeBatchHosts<'a> {
         };
         let save = meta.cache_slot.filter(|&i| self.typed_values[i].is_none());
 
-        let saved = if save.is_some() {
-            match crate::tikv::identity_actual::copy(&value) {
-                Ok(value) => Some(value),
-                Err(error) => return self.native_failure(error),
-            }
-        } else {
-            None
-        };
+        let saved = save.map(|_| value.clone());
         let output =
             self.finish_native_value(id, value, meta.output_node, meta.output_role, row)?;
         if let Some(index) = save {

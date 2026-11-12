@@ -336,17 +336,6 @@ fn arithmetic_typed_source(
         .and_then(Option::as_ref)
         .ok_or_else(|| binding("typed arithmetic source declaration missing"))
 }
-// Absence is actual SQL metadata; do not synthesize a coercion target.
-fn coerce_optional_value_result(
-    name: &str,
-    result_type: Option<&FieldType>,
-    value: Datum,
-) -> std::result::Result<Datum, EvalError> {
-    match result_type {
-        Some(field) => crate::tikv::identity_actual::coerce_result(name, field, value),
-        None => Ok(value),
-    }
-}
 
 // The original generic integer batch consumer, independent of PB signature.
 fn present_integer_batch_value(
@@ -1197,7 +1186,7 @@ impl<'a> NativeBatchHosts<'a> {
             .expect("live header task")
             .demand = SqlDemand::Consumed;
         let result = kind.evaluate(self.context, value).and_then(|value| {
-            coerce_optional_value_result(kind.name(), result_type.as_ref(), value)
+            crate::scalar_function::coerce_function_result(kind.name(), result_type.as_ref(), value)
         });
         let result = match result {
             Ok(value) => value,

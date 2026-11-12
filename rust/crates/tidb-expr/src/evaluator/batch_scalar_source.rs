@@ -210,12 +210,7 @@ impl ScalarPlan {
                 // value after a failed read/child. This is data inspection,
                 // with no new evaluation or replacement expression.
                 let value = match root.kind() {
-                    BorrowedNodeKind::Constant(constant) => {
-                        match crate::tikv::identity_actual::copy(&constant.value) {
-                            Ok(value) => value,
-                            Err(error) => return Err((Datum::Null, error.into())),
-                        }
-                    }
+                    BorrowedNodeKind::Constant(constant) => constant.value.clone(),
                     _ => Datum::Null,
                 };
                 Err((value, error))

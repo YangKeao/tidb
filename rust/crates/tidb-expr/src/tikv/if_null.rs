@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::control_value::owned;
 use crate::{Columns, Datum, EvalError};
 
 pub(crate) fn eval_if_null_in(
@@ -21,10 +20,8 @@ pub(crate) fn eval_if_null_in(
     second: impl FnOnce(&dyn Columns) -> Result<Datum, EvalError>,
 ) -> Result<Datum, EvalError> {
     let first = first(ctx)?;
-    let value =
-        match tidb_query_expr::native_if_null_choose_first((!first.is_null()).then_some(first)) {
-            tidb_query_expr::NativeIfNullChoice::Done(value) => value,
-            tidb_query_expr::NativeIfNullChoice::NeedSecond => second(ctx)?,
-        };
-    owned(value)
+    match tidb_query_expr::native_if_null_choose_first((!first.is_null()).then_some(first)) {
+        tidb_query_expr::NativeIfNullChoice::Done(value) => Ok(value),
+        tidb_query_expr::NativeIfNullChoice::NeedSecond => second(ctx),
+    }
 }

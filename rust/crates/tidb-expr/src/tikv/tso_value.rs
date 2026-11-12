@@ -90,7 +90,7 @@ pub(crate) fn eval_bounded(
     )
 }
 pub(crate) fn eval(op: Op, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    eval_bounded(op, values, ctx, super::control_value::default_budget())
+    eval_bounded(op, values, ctx, super::identity_actual::default_budget())
 }
 
 /// ScalarFunction's original ETInt argument boundary precedes the signature.

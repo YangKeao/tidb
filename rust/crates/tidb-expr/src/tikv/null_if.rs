@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
-use super::control_value::copy;
 use crate::{Columns, Datum, EvalError};
 
 fn invalid_comparison() -> EvalError {
@@ -37,6 +36,6 @@ pub(crate) fn eval_null_if_in(
     };
     match tidb_query_expr::native_if_choose_branch(comparison) {
         tidb_query_expr::NativeIfBranch::Then => Ok(Datum::Null),
-        tidb_query_expr::NativeIfBranch::Else => copy(first),
+        tidb_query_expr::NativeIfBranch::Else => Ok(first.clone()),
     }
 }

@@ -62,7 +62,7 @@ fn retained(value: &Cow<'_, VectorFloat32>) -> Result<usize, EvalError> {
     }
 }
 pub(crate) fn eval(op: O, values: &[Datum]) -> Result<Datum, EvalError> {
-    let maximum = super::control_value::default_budget();
+    let maximum = super::identity_actual::default_budget();
     match values {
         [value] => eval_refs(op, &[value], maximum),
         [left, right] => eval_refs(op, &[left, right], maximum),

@@ -70,7 +70,7 @@ impl TypedContextValue {
                 let value = binding
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                crate::tikv::identity_actual::copy(&value)?
+                value.clone()
             } else {
                 Datum::Null
             }

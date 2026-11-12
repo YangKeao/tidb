@@ -269,13 +269,6 @@ impl PbLazyValues {
             tidb_query_expr::NativeIfNullChoice::NeedSecond
         )
     }
-    pub(crate) fn selected_value(self, value: Datum) -> Result<Datum, EvalError> {
-        crate::tikv::selected_control_value(value)
-    }
-    pub(crate) fn exhausted_value(self) -> Result<Datum, EvalError> {
-        debug_assert!(matches!(self.builtin.kernel, Kernel::Case));
-        crate::tikv::exhausted_case_value()
-    }
 }
 
 /// Actual selected PB Boolean implementation, with no expression children.

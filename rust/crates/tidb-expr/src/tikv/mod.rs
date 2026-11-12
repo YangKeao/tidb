@@ -32,7 +32,6 @@ pub(crate) use bounded_staleness::{
 };
 mod case_control;
 mod cast_arg_string;
-mod control_value;
 #[cfg(test)]
 mod control_value_tests;
 pub(crate) use cast_arg_string::{eval_cast_arg_as_string, eval_cast_arg_as_string_type};
@@ -651,9 +650,6 @@ pub(crate) use epoch_value::{
 pub(crate) use epoch_value::finish_epoch_result_bounded;
 
 pub(crate) use case_control::{case_after_truth, case_start, CaseDemand};
-pub(crate) use control_value::{
-    coerce_result_bounded, exhausted_case_value, selected_control_value,
-};
 
 #[cfg(test)]
 pub(crate) mod tso_value_tests;

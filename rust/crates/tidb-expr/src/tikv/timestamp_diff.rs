@@ -21,7 +21,7 @@ pub(crate) fn eval_timestamp_diff_in(
     _ctx: &dyn Columns,
     vals: &[Datum],
 ) -> Result<Datum, EvalError> {
-    timestamp_diff_bounded(vals, super::control_value::default_budget())
+    timestamp_diff_bounded(vals, super::identity_actual::default_budget())
 }
 /// Only an actually observed early NULL in the PB argument prefix.
 pub(crate) fn eval_timestamp_diff_null_in(_ctx: &dyn Columns) -> Result<Datum, EvalError> {

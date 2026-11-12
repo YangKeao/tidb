@@ -91,7 +91,7 @@ impl LegacyDateArithmeticMachine {
         Ok(Self {
             state: tidb_query_expr::NativeLegacyDateArithmeticValues::new(
                 metadata,
-                super::control_value::default_budget(),
+                super::identity_actual::default_budget(),
             )
             .map_err(actual_error)?,
             output,
@@ -385,7 +385,7 @@ fn evaluate<E: From<EvalError>>(
         metadata,
         zone,
         eval,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 

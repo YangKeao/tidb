@@ -148,7 +148,7 @@ impl AstTask {
                 },
                 Stage::Select,
             ),
-            CaseDemand::Exhausted => self.ready(crate::tikv::exhausted_case_value()?),
+            CaseDemand::Exhausted => self.ready(Datum::Null),
         })
     }
     /// The caller moves this state out of its authenticated task BEFORE callbacks.
@@ -182,7 +182,7 @@ impl AstTask {
                     Ok(self.ready(value))
                 }
             }
-            Stage::Select => Ok(self.ready(crate::tikv::selected_control_value(value)?)),
+            Stage::Select => Ok(self.ready(value)),
             Stage::If => {
                 let branch = tidb_query_expr::native_if_choose_branch(crate::truthy_of(&value)?);
                 Ok(self.need(
@@ -197,9 +197,7 @@ impl AstTask {
             Stage::IfNull => match tidb_query_expr::native_if_null_choose_first(
                 (!value.is_null()).then_some(value),
             ) {
-                tidb_query_expr::NativeIfNullChoice::Done(value) => {
-                    Ok(self.ready(crate::tikv::selected_control_value(value)?))
-                }
+                tidb_query_expr::NativeIfNullChoice::Done(value) => Ok(self.ready(value)),
                 tidb_query_expr::NativeIfNullChoice::NeedSecond => Ok(self.need(1, Stage::Select)),
             },
             Stage::Coalesce => {

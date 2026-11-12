@@ -25,5 +25,10 @@ pub(crate) fn eval_str_to_date_in(
     values: &[Datum],
     target: Option<FieldTypeCode>,
 ) -> Result<Datum, EvalError> {
-    str_to_date_bounded(ctx, values, target, super::control_value::default_budget())
+    str_to_date_bounded(
+        ctx,
+        values,
+        target,
+        super::identity_actual::default_budget(),
+    )
 }

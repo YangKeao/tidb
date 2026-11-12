@@ -662,7 +662,7 @@ pub(crate) fn eval_bounded(
     prepared.into_value()
 }
 pub(crate) fn eval(op: O, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    eval_bounded(op, values, ctx, super::control_value::default_budget())
+    eval_bounded(op, values, ctx, super::identity_actual::default_budget())
 }
 pub(crate) fn get_format_ast(
     kind: &str,
@@ -784,9 +784,9 @@ pub(crate) fn finish_source(
     } else {
         value
     };
-    super::coerce_result_bounded(op.name(), field, value)
+    crate::scalar_function::coerce_function_result(op.name(), Some(field), value)
 }
 
 pub(crate) fn default_budget() -> usize {
-    super::control_value::default_budget()
+    super::identity_actual::default_budget()
 }

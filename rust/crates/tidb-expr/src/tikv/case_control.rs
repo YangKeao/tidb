@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::control_value::{exhausted_case_value, selected_control_value};
 use crate::{Columns, Datum, EvalError};
 
 /// The original CASE pair cursor, shared by callback and value continuations.
@@ -66,8 +65,8 @@ pub(crate) fn eval_case_in<P>(
                 demand =
                     case_after_truth(pair_count, has_else, index, condition(index, &state, ctx)?);
             }
-            CaseDemand::Value(index) => return selected_control_value(value(index, ctx)?),
-            CaseDemand::Exhausted => return exhausted_case_value(),
+            CaseDemand::Value(index) => return value(index, ctx),
+            CaseDemand::Exhausted => return Ok(Datum::Null),
         }
     }
 }

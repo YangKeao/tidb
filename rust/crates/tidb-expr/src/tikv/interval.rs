@@ -145,7 +145,7 @@ fn eager_view(value: &Datum) -> Input {
     }
 }
 pub(crate) fn eval_interval_in(ctx: &dyn Columns, vals: &[Datum]) -> Result<Datum, EvalError> {
-    eager_bounded(ctx, vals, super::control_value::default_budget())
+    eager_bounded(ctx, vals, super::identity_actual::default_budget())
 }
 fn eager_bounded(ctx: &dyn Columns, vals: &[Datum], maximum: usize) -> Result<Datum, EvalError> {
     if vals.len() < 2 {
@@ -210,7 +210,12 @@ pub(crate) fn eval_interval_lazy_in(
     eval: impl FnMut(usize) -> Result<Datum, EvalError>,
 ) -> Result<Datum, EvalError> {
     debug_assert!(arg_types.len() >= 2);
-    lazy_bounded(ctx, arg_types, eval, super::control_value::default_budget())
+    lazy_bounded(
+        ctx,
+        arg_types,
+        eval,
+        super::identity_actual::default_budget(),
+    )
 }
 fn lazy_bounded(
     ctx: &dyn Columns,

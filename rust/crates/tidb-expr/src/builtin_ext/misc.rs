@@ -40,9 +40,9 @@ pub(crate) fn dispatch_in(
         ("UUID", []) => Some(uuid_v1()),
         ("UUID_V4", []) => Some(uuid_v4()),
         ("UUID_V7", []) => Some(uuid_v7()),
-        ("ANY_VALUE", [value]) => Some(crate::tikv::identity_actual::copy(value)),
+        ("ANY_VALUE", [value]) => Some(Ok(value.clone())),
         // Both children have already run; the name is never coerced here.
-        ("NAME_CONST", [_, value]) => Some(crate::tikv::identity_actual::copy(value)),
+        ("NAME_CONST", [_, value]) => Some(Ok(value.clone())),
         ("IS_UUID", [value]) => Some(is_uuid(value, ctx)),
         ("UUID_VERSION", [value]) => Some(uuid_version(value, ctx)),
         ("UUID_TIMESTAMP", [value]) => Some(uuid_timestamp(value, ctx)),

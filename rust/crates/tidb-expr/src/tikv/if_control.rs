@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::control_value::owned;
 use crate::{Columns, Datum, EvalError};
 
 pub(crate) fn eval_if_in(
@@ -21,9 +20,8 @@ pub(crate) fn eval_if_in(
     when_true: impl FnOnce(&dyn Columns) -> Result<Datum, EvalError>,
     when_false: impl FnOnce(&dyn Columns) -> Result<Datum, EvalError>,
 ) -> Result<Datum, EvalError> {
-    let value = match tidb_query_expr::native_if_choose_branch(condition(ctx)?) {
-        tidb_query_expr::NativeIfBranch::Then => when_true(ctx)?,
-        tidb_query_expr::NativeIfBranch::Else => when_false(ctx)?,
-    };
-    owned(value)
+    match tidb_query_expr::native_if_choose_branch(condition(ctx)?) {
+        tidb_query_expr::NativeIfBranch::Then => when_true(ctx),
+        tidb_query_expr::NativeIfBranch::Else => when_false(ctx),
+    }
 }

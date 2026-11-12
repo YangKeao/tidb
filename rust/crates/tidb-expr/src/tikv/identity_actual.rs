@@ -25,12 +25,6 @@ pub(crate) fn copy_extent(value: &Datum) -> Result<usize, EvalError> {
         _ => 0,
     })
 }
-/// Bound demanded owned payload before cloning the authentic selected value.
-/// This is a logical copy allowance, not a physical whole-statement heap limit.
-
-pub(crate) fn copy(value: &Datum) -> Result<Datum, EvalError> {
-    Ok(value.clone())
-}
 
 /// Preserve ScalarFunction's pre-existing constant-first uservar-name probe,
 /// whose ignored formatting result can still panic before child evaluation.
@@ -44,16 +38,5 @@ pub(crate) fn probe_name(value: Option<&Datum>) -> Result<Option<String>, EvalEr
 }
 
 pub(crate) fn default_budget() -> usize {
-    super::control_value::default_budget()
-}
-
-/// The ordinary result conversion still validates a demanded malformed Decimal
-/// coefficient before visible scale. Do not let conservative formatter work
-/// estimation turn that original panic into a metadata-only Resource failure.
-pub(crate) fn coerce_result(
-    name: &str,
-    field: &tidb_datatype::FieldType,
-    value: Datum,
-) -> Result<Datum, EvalError> {
-    crate::scalar_function::coerce_function_result(name, Some(field), value)
+    tidb_query_expr::local::ExecutionLimits::default().max_retained_bytes
 }

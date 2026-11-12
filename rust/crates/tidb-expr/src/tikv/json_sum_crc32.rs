@@ -20,5 +20,5 @@ pub(crate) fn eval_json_sum_crc32_in(
     _ctx: &dyn Columns,
     value: &Datum,
 ) -> Result<Datum, EvalError> {
-    json_sum_crc32_bounded(value, super::control_value::default_budget())
+    json_sum_crc32_bounded(value, super::identity_actual::default_budget())
 }

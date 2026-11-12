@@ -32,7 +32,7 @@ pub(crate) fn eval_extract_in(
         unit,
         value,
         source,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
 pub(crate) fn eval_extract_composite_in(
@@ -40,7 +40,12 @@ pub(crate) fn eval_extract_composite_in(
     unit: &str,
     values: &[Datum],
 ) -> Result<Datum, EvalError> {
-    eval_extract_composite_values_bounded(ctx, unit, values, super::control_value::default_budget())
+    eval_extract_composite_values_bounded(
+        ctx,
+        unit,
+        values,
+        super::identity_actual::default_budget(),
+    )
 }
 fn actual_resource() -> EvalError {
     EvalError::ExpressionRuntimeFailure(super::ExpressionRuntimeFailure::from_local_eval(
@@ -243,6 +248,6 @@ pub(crate) fn eval_extract_scalar_values_in(
         unit,
         value,
         source,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }

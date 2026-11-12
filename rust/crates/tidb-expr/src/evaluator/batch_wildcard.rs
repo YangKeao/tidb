@@ -119,7 +119,8 @@ impl NativeBatchHosts<'_> {
         };
 
         let result = if let Some(result_type) = result_type {
-            match crate::tikv::coerce_result_bounded("like", result_type, result) {
+            match crate::scalar_function::coerce_function_result("like", Some(result_type), result)
+            {
                 Ok(v) => v,
                 Err(e) => return self.native_failure(e),
             }

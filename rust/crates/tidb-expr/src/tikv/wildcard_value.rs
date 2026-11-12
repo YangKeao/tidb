@@ -180,7 +180,7 @@ pub(crate) fn value(
 }
 
 pub(crate) fn default_budget() -> usize {
-    super::control_value::default_budget()
+    super::identity_actual::default_budget()
 }
 
 /// The AST caller has already evaluated both children. A NULL on either side

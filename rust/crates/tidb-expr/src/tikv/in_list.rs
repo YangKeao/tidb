@@ -130,7 +130,7 @@ impl LegacyInMachine {
             state: LegacyInState::Bytes {
                 state: tidb_query_expr::NativeInLegacyBytesValues::new(
                     count,
-                    super::control_value::default_budget(),
+                    super::identity_actual::default_budget(),
                 )
                 .map_err(machine_error)?,
                 collation,
@@ -228,7 +228,7 @@ pub fn eval_legacy_in_bytes_in<E: From<EvalError>>(
         ctx,
         count,
         collation,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
         eval,
     )
 }

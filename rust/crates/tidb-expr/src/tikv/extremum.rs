@@ -90,6 +90,6 @@ pub(crate) fn eval_extremum_in(
         arg_decimals,
         all_constant,
         collation,
-        super::control_value::default_budget(),
+        super::identity_actual::default_budget(),
     )
 }
