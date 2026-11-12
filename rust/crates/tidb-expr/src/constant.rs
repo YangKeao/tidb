@@ -340,7 +340,6 @@ pub(crate) fn typed_constant_value(
         &warnings,
     );
     let convert = |value: &Datum, code| -> Result<Datum, EvalError> {
-        if code == FieldTypeCode::Double && matches!(value, Datum::Decimal(_)) {}
         let converted = value
             .convert_to_in_context(&FieldType::new(code), &context, &zone)
             .map_err(|_| {

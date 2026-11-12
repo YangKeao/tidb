@@ -60,9 +60,6 @@ impl EagerValueKernel {
         use super::prefix_value::{PrefixPhase as Phase, PrefixStep as Step};
         match phase {
             Phase::Union => {
-                if matches!(self.name(), "cast_real_in_union" | "cast_real_int_in_union")
-                    && matches!(&value, Datum::Decimal(_))
-                {}
                 match super::prefix_value::union_value(
                     self.name(),
                     value,
@@ -159,9 +156,9 @@ impl EagerValueKernel {
             _ => return error,
         };
         match &self.overflow_expression {
-            Some(expression) => match expression.render() {
-                Ok(expression) => EvalError::DataOutOfRange { value, expression },
-                Err(error) => error,
+            Some(expression) => EvalError::DataOutOfRange {
+                value,
+                expression: expression.render(),
             },
             None => error,
         }

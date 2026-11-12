@@ -43,7 +43,7 @@ fn runtime_resource(message: &'static str) -> EvalError {
 }
 
 impl LiteralPolicy {
-    pub(crate) fn render(self, value: &Datum) -> Result<Option<String>, EvalError> {
+    pub(crate) fn render(self, value: &Datum) -> Option<String> {
         let supported = match self {
             Self::Math => matches!(
                 value,
@@ -69,17 +69,13 @@ impl LiteralPolicy {
             ),
         };
         if !supported {
-            return Ok(None);
+            return None;
         }
-        // The original formatter remains the owner of literal spelling and
-        // malformed-prefix panics. Bound only genuinely demanded formatting.
-
-        let text = match self {
+        // Preserve original literal spelling and malformed-prefix panics.
+        match self {
             Self::Numeric(float) => numeric_diagnostic_literal(value, float),
             Self::Math => math_diagnostic_literal(value),
-        };
-
-        Ok(text)
+        }
     }
 }
 enum Part<'a> {
@@ -371,7 +367,7 @@ impl DynamicDiagnostic {
                     return Ok(DiagnosticStep::NeedConstant(*index));
                 }
                 Instruction::Stop => return Ok(state.unavailable()),
-                Instruction::Literal(value, policy) => policy.render(value)?,
+                Instruction::Literal(value, policy) => policy.render(value),
                 Instruction::SavedBinary(value, mode) => {
                     let value = value.to_int().value();
                     Some(match mode {
@@ -432,7 +428,7 @@ impl DynamicDiagnostic {
         let Some(value) = value else {
             return Ok(state.unavailable());
         };
-        let Some(text) = policy.render(value)? else {
+        let Some(text) = policy.render(value) else {
             return Ok(state.unavailable());
         };
         state.push(text)?;

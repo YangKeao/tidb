@@ -82,7 +82,7 @@ impl NativeBatchHosts<'_> {
                 let value = descriptor
                     .finish_raw(value, self.context)
                     .map_err(|(_, error)| error)?;
-                policy.render(&value)
+                Ok(policy.render(&value))
             })();
             if let (Some(token), Some(origin)) = (token, origin) {
                 store

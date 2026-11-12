@@ -124,11 +124,7 @@ impl AstTask {
         self.next = None;
         AstProgress::Ready(value)
     }
-    fn case_next(
-        &mut self,
-        root: &Expr,
-        demand: CaseDemand,
-    ) -> std::result::Result<AstProgress, EvalError> {
+    fn case_next(&mut self, root: &Expr, demand: CaseDemand) -> AstProgress {
         let Expr::Case {
             value,
             when_clauses,
@@ -138,7 +134,7 @@ impl AstTask {
             unreachable!()
         };
         let offset = usize::from(value.is_some());
-        Ok(match demand {
+        match demand {
             CaseDemand::Condition(i) => self.need(offset + 2 * i, Stage::CaseCondition(i)),
             CaseDemand::Value(i) => self.need(
                 if i == when_clauses.len() {
@@ -149,7 +145,7 @@ impl AstTask {
                 Stage::Select,
             ),
             CaseDemand::Exhausted => self.ready(Datum::Null),
-        })
+        }
     }
     /// The caller moves this state out of its authenticated task BEFORE callbacks.
     /// An error or unwind consumes the phase; it cannot replay a prior side effect.
@@ -202,18 +198,11 @@ impl AstTask {
             },
             Stage::Coalesce => {
                 if !value.is_null() {
-                    // This is the existing copy/exhaustion boundary, with one
-                    // already selected actual value and no expression callback.
-                    let result = crate::tikv::eval_coalesce_in(ctx, 1, |_, _| Ok(&value))?;
-                    Ok(self.ready(result))
+                    Ok(self.ready(value))
                 } else if index + 1 < arity {
                     Ok(self.need(index + 1, Stage::Coalesce))
                 } else {
-                    Ok(self.ready(crate::tikv::eval_coalesce_in::<Datum>(
-                        ctx,
-                        0,
-                        |_, _| unreachable!(),
-                    )?))
+                    Ok(self.ready(Datum::Null))
                 }
             }
             Stage::EagerBetween => {
@@ -301,7 +290,7 @@ impl AstTask {
                 else {
                     unreachable!()
                 };
-                self.case_next(root, case_start(when_clauses.len(), else_clause.is_some()))
+                Ok(self.case_next(root, case_start(when_clauses.len(), else_clause.is_some())))
             }
             Stage::CaseCondition(pair) => {
                 let Expr::Case {
@@ -326,10 +315,10 @@ impl AstTask {
                 } else {
                     crate::truthy_of(&value)?
                 };
-                self.case_next(
+                Ok(self.case_next(
                     root,
                     case_after_truth(when_clauses.len(), else_clause.is_some(), pair, truth),
-                )
+                ))
             }
             Stage::Length(built, function) => {
                 let value = match function {
@@ -476,7 +465,9 @@ impl AstTask {
                 if value.is_some() {
                     return Ok(self.need(0, Stage::CaseBase));
                 }
-                return self.case_next(root, case_start(when_clauses.len(), else_clause.is_some()));
+                return Ok(
+                    self.case_next(root, case_start(when_clauses.len(), else_clause.is_some()))
+                );
             }
             Expr::In { expr, .. } => {
                 let left_count = match &**expr {
@@ -543,11 +534,7 @@ impl AstTask {
                     }
                     "COALESCE" => {
                         if arity == 0 {
-                            return Ok(self.ready(crate::tikv::eval_coalesce_in::<Datum>(
-                                ctx,
-                                0,
-                                |_, _| unreachable!(),
-                            )?));
+                            return Ok(self.ready(Datum::Null));
                         }
                         return Ok(self.need(0, Stage::Coalesce));
                     }

@@ -107,3 +107,17 @@ The report links full-base and incremental Git comparisons. The result directory
 Private NativeHostMetadata, SqlDemand, NativeTask and NativeArguments changed. HostInvocation/HostArgReply/HostStep, native-store provenance, public source views, value semantics and SDK interfaces remain compatible. No dependency or public SDK API changed. Existing fixed arities determine inline argument storage; no new SQL arity limit was imposed.
 
 Revision November13 02:00 Asia/Shanghai: continue the authorized overnight simplification after fixing the first measured result in Git; preserve its evidence and use it as the next comparison baseline.
+
+
+## Continuation: remove empty control work and inspect hidden dead code
+
+
+The 85da8c2a85 checkpoint completed995 scoped checks (994 pass, one unchanged known failure),16 additional existing AST/control/diagnostic checks, both builds, format and lint. Its service and source proof are preserved in evidence/path-unification/unused-private-helpers. It was not SQL benchmarked: the next comparison will use the final cumulative source.
+
+First remove empty type branches and infallible private result wrappers in AST demand, diagnostics, native view selection and Decimal fast inputs. COALESCE can move its already-owned selected value directly. Preserve child demand, formatting panics, unsupported outcomes and all handle checks after callbacks. Next remove immediately invoked closures that only return their expression; keep closures that contain early returns or question-mark propagation needed before callback revalidation.
+
+Restore dead-code diagnostics in tikv/mod.rs and rewriter/preparation.rs, which currently suppress warnings across whole modules. Compile before deciding whether newly exposed private remnants can be removed; preserve public APIs, existing test cases and fixtures. Save each independent source checkpoint and push for review. Use evidence/path-unification/control-result-cleanup for new receipts, never overwrite the prior measured round.
+
+The final validation selection is the previous995 plus16 existing AST/control/diagnostic tests (1011 total), retaining the2441-name inventory. Repeat the release offline library/service commands above and make lint. Then run the same14-scene matrix once on cumulative source, with pinned43ba91c201 SHA783723c0 as identical A/B controls and the original frozen service as F. A later checkpoint does not inherit the85da runtime results.
+
+Revision November13 02:33 Asia/Shanghai: record intermediate functional completion and next cumulative cleanup before applying it.

@@ -263,20 +263,15 @@ pub(crate) fn to_f64_nontext(v: &Datum) -> Option<Result<f64, EvalError>> {
     if matches!(v, Datum::String(_) | Datum::Bytes(_)) {
         return None;
     }
-    Some((|| {
-        if matches!(v, Datum::Decimal(_)) {}
-        match v {
-            Datum::Int(_)
-            | Datum::UInt(_)
-            | Datum::Decimal(_)
-            | Datum::Real(_)
-            | Datum::Float32(_) => Ok(to_f64(v.clone())),
-            other => other
-                .to_f64()
-                .map(|converted| converted.value)
-                .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
+    Some(match v {
+        Datum::Int(_) | Datum::UInt(_) | Datum::Decimal(_) | Datum::Real(_) | Datum::Float32(_) => {
+            Ok(to_f64(v.clone()))
         }
-    })())
+        other => other
+            .to_f64()
+            .map(|converted| converted.value)
+            .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
+    })
 }
 
 /// `types.StrToFloat` over the RAW BYTES of a SQL string.

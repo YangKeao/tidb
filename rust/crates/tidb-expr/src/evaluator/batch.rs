@@ -411,12 +411,9 @@ fn bulk_value_tree_complete(
         )
     })
 }
-fn promoted_native_root_view(
-    root: &Expression,
-    limits: BatchSourceLimits,
-) -> Result<Option<NativeView>> {
+fn promoted_native_root_view(root: &Expression, limits: BatchSourceLimits) -> Option<NativeView> {
     let Expression::ScalarFunction(function) = root else {
-        return Ok(None);
+        return None;
     };
     let row_control = native_json_schema_call(function)
         || native_final_state_call(function)
@@ -466,10 +463,10 @@ fn promoted_native_root_view(
         )
         && !row_control
     {
-        return Ok(None);
+        return None;
     }
     let Some(field) = root.static_type() else {
-        return Ok(None);
+        return None;
     };
 
     // Extending actual-value producers must not replace an already closed
@@ -480,7 +477,7 @@ fn promoted_native_root_view(
             limits.tree.max_nodes
         })
     {
-        return Ok(None);
+        return None;
     }
     if row_control {
         // Native controls/comparisons invoke their selected operands per row,
@@ -488,13 +485,13 @@ fn promoted_native_root_view(
         // can change demand and error identity without any arithmetic node.
         // A closed native-value subtree therefore keeps its genuine row domain
         // independently of the spelling or carrier types of its descendants.
-        return Ok(
-            native_value_tree_complete(root, limits.tree.max_depth, &mut { limits.tree.max_nodes })
-                .then_some(NativeView::RootValue),
-        );
+        return native_value_tree_complete(root, limits.tree.max_depth, &mut {
+            limits.tree.max_nodes
+        })
+        .then_some(NativeView::RootValue);
     }
     let target = field.eval_type();
-    Ok(if crate::scalar_function::batch_supported(root, target) {
+    if crate::scalar_function::batch_supported(root, target) {
         let view = NativeView::BulkRoot(target);
         bulk_value_tree_complete(root, view, limits.tree.max_depth, &mut {
             limits.tree.max_nodes
@@ -503,7 +500,7 @@ fn promoted_native_root_view(
     } else {
         native_value_tree_complete(root, limits.tree.max_depth, &mut { limits.tree.max_nodes })
             .then_some(NativeView::RootValue)
-    })
+    }
 }
 
 // Native value roots use the checked output ABI. Ordinary representable
@@ -743,16 +740,16 @@ fn native_integer_row_batch(root: &Expression) -> bool {
 fn additional_context_native_view(
     root: &Expression,
     limits: BatchSourceLimits,
-) -> Result<Option<NativeView>> {
+) -> Option<NativeView> {
     let Expression::ScalarFunction(function) = root else {
-        return Ok(None);
+        return None;
     };
     if function.pb_signature().is_some()
         || function.pb_origin().is_some()
         || function.has_values_offset()
         || function.has_grouping_metadata()
     {
-        return Ok(None);
+        return None;
     }
     if native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || matches!(
@@ -773,21 +770,19 @@ fn additional_context_native_view(
         || native_regexp_row_batch(root)
         || native_integer_row_batch(root)
     {
-        return Ok(None);
+        return None;
     }
     if !contains_context_value(root, limits.tree.max_depth, &mut { limits.tree.max_nodes }) {
-        return Ok(None);
+        return None;
     }
     let Some(target) = crate::scalar_function::static_batch_target(root) else {
-        return Ok(None);
+        return None;
     };
-    Ok(Some(
-        if crate::scalar_function::native_scalar_row_batch(root) {
-            NativeView::RootValue
-        } else {
-            NativeView::BulkRoot(target)
-        },
-    ))
+    Some(if crate::scalar_function::native_scalar_row_batch(root) {
+        NativeView::RootValue
+    } else {
+        NativeView::BulkRoot(target)
+    })
 }
 fn context_root_policy(
     root: &Expression,
@@ -798,7 +793,7 @@ fn context_root_policy(
     if !contains_context_value(root, limits.tree.max_depth, &mut { limits.tree.max_nodes }) {
         return Ok((shortcut, false, None));
     }
-    if unordered && additional_context_native_view(root, limits)?.is_some() {
+    if unordered && additional_context_native_view(root, limits).is_some() {
         return Ok((shortcut, false, None));
     }
     let mut probe = None;
@@ -7124,7 +7119,7 @@ impl PreparedBatch {
         let native_context_view = if ordered || deferred.is_some() {
             None
         } else {
-            additional_context_native_view(root, source_limits)?
+            additional_context_native_view(root, source_limits)
         };
         let view = if ordered || deferred.is_some() {
             Some(NativeView::RootValue)
@@ -7147,7 +7142,7 @@ impl PreparedBatch {
         {
             Some(NativeView::BulkRoot(NativeEvalType::Int))
         } else if promote {
-            promoted_native_root_view(root, source_limits)?
+            promoted_native_root_view(root, source_limits)
         } else {
             None
         };
@@ -7678,7 +7673,7 @@ fn read_source_handle(
                 .chunk()
                 .ok_or_else(|| binding("fast source has no physical owner"))?,
             row.input_row,
-        )?;
+        );
         let token = store
             .borrow_mut()
             .insert_decimal_fast(value, NativeValueOrigin { node: ordinal, row })?;
@@ -8669,16 +8664,11 @@ impl PreparedBatchSuite {
         let mut schema = Vec::new();
         reserve(&mut schema, row_schema.len())?;
         schema.extend(row_schema.iter().map(snapshot_field_type));
-        let bind_context_native =
-            suite
-                .program
-                .calculated
-                .iter()
-                .try_fold(false, |bound, root| {
-                    Ok::<_, BatchFailure>(
-                        bound || additional_context_native_view(root, limits)?.is_some(),
-                    )
-                })?;
+        let bind_context_native = suite
+            .program
+            .calculated
+            .iter()
+            .any(|root| additional_context_native_view(root, limits).is_some());
         Ok(Self {
             owner: Arc::clone(&suite.program),
             bind_ready_cache: bind_context_native || workers.iter().any(|worker| {

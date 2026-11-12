@@ -142,9 +142,7 @@ pub(crate) fn read_parameter_type(order: i64, ctx: &dyn Columns) -> Result<Field
     let order =
         usize::try_from(order).map_err(|_| EvalError::Unsupported("unbound prepared parameter"))?;
     let value = ctx.param_value(order)?;
-    // Type inference formats Decimal and Duration to obtain their display
-    // width. Charge that actual phase after the original parameter callback.
-    if matches!(&value, Datum::Decimal(_) | Datum::Duration(_)) {}
+    // Display-width inference follows the original parameter callback.
     Ok(tidb_datatype::infer_param_type_from_datum(&value))
 }
 pub(crate) fn probe_parameter_type(order: i64, ctx: &dyn Columns) -> Result<(), EvalError> {

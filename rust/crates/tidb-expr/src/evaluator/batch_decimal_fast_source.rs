@@ -34,9 +34,9 @@ pub(super) enum FastInput {
     },
 }
 impl FastInput {
-    pub(super) fn read(&self, input: &Chunk, row: usize) -> LocalResult<Outcome> {
+    pub(super) fn read(&self, input: &Chunk, row: usize) -> Outcome {
         let (index, decimal, cast, unsigned) = match self {
-            Self::Constant(value) => return Ok(value.clone()),
+            Self::Constant(value) => return value.clone(),
             Self::Column {
                 index,
                 unsigned,
@@ -46,7 +46,7 @@ impl FastInput {
         };
         let column = input.column(index);
         if column.is_null(row) {
-            return Ok(Outcome::Value(None));
+            return Outcome::Value(None);
         }
         let value = if decimal {
             DecimalValue::from_my_decimal(&column.get_my_decimal(row))
@@ -60,10 +60,10 @@ impl FastInput {
                 crate::coerce::Integer::Signed(bits)
             }))
         };
-        Ok(match value {
+        match value {
             Some(value) => Outcome::Value(Some(value.0)),
             None => Outcome::Unsupported,
-        })
+        }
     }
 }
 // The same closed fast-leaf batch loop serves both genuine source contracts.
@@ -88,7 +88,7 @@ pub(super) fn read_batch(
         let observed = if unsupported {
             tidb_query_expr::NativeDecimalFastOutcome::Unsupported
         } else {
-            value.read(input, input_row)?
+            value.read(input, input_row)
         };
         unsupported |= matches!(
             observed,

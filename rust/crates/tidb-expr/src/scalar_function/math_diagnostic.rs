@@ -70,7 +70,7 @@ impl MathDiagnostic {
         assert!(parts.len() <= parts_hint, "admitted diagnostic part count");
         Some(Self(parts.into_boxed_slice()))
     }
-    pub(crate) fn render(&self) -> Result<String, EvalError> {
+    pub(crate) fn render(&self) -> String {
         let mut stack = Vec::<String>::with_capacity(self.0.len());
         for part in &self.0 {
             let text = match part {
@@ -98,7 +98,7 @@ impl MathDiagnostic {
             stack.push(text);
         }
         assert_eq!(stack.len(), 1, "captured diagnostic root");
-        Ok(stack.pop().unwrap())
+        stack.pop().unwrap()
     }
 }
 
@@ -152,7 +152,7 @@ mod tests {
                     let expected = observe(|| static_math_overflow_expression(&f).unwrap());
                     let actual = observe(|| {
                         tidb_query_expr::local::with_value_kernel_work_limit(65536, || {
-                            metadata.render().unwrap()
+                            metadata.render()
                         })
                     });
                     assert_eq!(actual, expected, "{name} nested={nested}");
